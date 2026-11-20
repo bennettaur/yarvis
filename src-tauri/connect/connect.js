@@ -5,9 +5,9 @@ const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args);
 
 const $ = (id) => document.getElementById(id);
 const form = $("form");
-let filledIn = false;
+let formPrefilled = false;
 
-function describe(status) {
+function statusText(status) {
   switch (status.state) {
     case "starting":
       return "Starting…";
@@ -22,6 +22,11 @@ function describe(status) {
   }
 }
 
+function showError(e) {
+  $("error").textContent = String(e);
+  $("error").hidden = false;
+}
+
 function showRemoteFields() {
   $("remote").hidden = form.elements.mode.value !== "remote";
 }
@@ -29,14 +34,15 @@ function showRemoteFields() {
 async function refresh() {
   try {
     const settings = await invoke("get_connection_settings");
-    $("status").textContent = describe(settings.status);
+    $("status").textContent = statusText(settings.status);
     $("open").hidden = settings.status.state !== "connected";
-    if (!filledIn) {
+    if (!formPrefilled) {
       form.elements.mode.value = settings.mode;
       $("url").value = settings.remoteUrl ?? "";
       showRemoteFields();
-      filledIn = true;
+      formPrefilled = true;
     }
+    // Nothing pushes status to this page, so poll while the server starts.
     if (settings.status.state === "starting") setTimeout(refresh, 500);
   } catch (e) {
     $("status").textContent = `Couldn't read the connection settings: ${e}`;
@@ -58,16 +64,12 @@ form.addEventListener("submit", async (event) => {
       },
     });
   } catch (e) {
-    $("error").textContent = String(e);
-    $("error").hidden = false;
+    showError(e);
   }
 });
 
 $("open").addEventListener("click", () => {
-  invoke("open_server").catch((e) => {
-    $("error").textContent = String(e);
-    $("error").hidden = false;
-  });
+  invoke("open_server").catch(showError);
 });
 
 refresh();

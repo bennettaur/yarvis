@@ -7,7 +7,8 @@
 //! app's keys into the file rather than rewriting it.
 //!
 //! Pairing runs `yarvis-server device add`, which needs only local access to
-//! the server's data, the same trust as reading its setup code. The token goes
+//! the server's data, the same trust as reading the one-time setup code the
+//! server prints on its first start. The token goes
 //! straight into the Keychain.
 
 use std::io::Write;
@@ -16,15 +17,17 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::sync::{watch, Notify};
 use tokio::time::{sleep, timeout};
 
-/// Every scope: the window runs the whole UI, admin screens included.
+/// Every scope: the window runs the whole UI, admin screens included. These
+/// are the scope names `yarvis-server device add --scopes` takes.
 pub const DEVICE_SCOPES: &str = "read,chat,approve,admin";
 
 /// A first start creates the database and starts the sidecar, which can take a
@@ -32,6 +35,8 @@ pub const DEVICE_SCOPES: &str = "read,chat,approve,admin";
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// Longer than any real status line; stops a garbage reply from being read forever.
+const MAX_STATUS_LINE: usize = 256;
 const HEALTH_POLL: Duration = Duration::from_millis(250);
 const FIRST_RESTART_DELAY: Duration = Duration::from_secs(1);
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
@@ -102,14 +107,36 @@ pub fn origin(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+fn loopback_origins(port: u16) -> [String; 2] {
+    [origin(port), format!("http://localhost:{port}")]
+}
+
+/// 1Password's SSH agent socket, relative to the home folder.
+const ONEPASSWORD_AGENT_SOCKET: &str =
+    "Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock";
+
+/// 1Password's SSH agent socket, when 1Password has one running.
+pub fn onepassword_agent_socket() -> Option<PathBuf> {
+    let socket = PathBuf::from(std::env::var_os("HOME")?).join(ONEPASSWORD_AGENT_SOCKET);
+    socket.exists().then_some(socket)
+}
+
 /// Merges the keys the app owns into `existing` (the current `server.toml`,
 /// or empty). A file that doesn't parse is an error, so a typo the user made
 /// is reported rather than overwritten.
+///
+/// `agent_socket` is the SSH agent workspace shells should use. An app opened
+/// from Finder inherits `SSH_AUTH_SOCK` from launchd, which is macOS's own
+/// agent rather than 1Password's, so without it git signing in a workspace
+/// would reach the wrong agent. It is only filled in when the user set none
+/// and the server's own agent is off, since the server refuses both at once.
 pub fn render_server_config(
     existing: &str,
     port: u16,
     default_data_dir: &Path,
+    previous_port: Option<u16>,
     paths: &BundledPaths,
+    agent_socket: Option<&Path>,
 ) -> Result<String, String> {
     use toml::{Table, Value};
 
@@ -125,14 +152,20 @@ pub fn render_server_config(
     server.insert("web_dir".into(), path_value(&paths.web_dir));
 
     // The window loads the server at 127.0.0.1, and a browser on this Mac is
-    // likelier to use localhost. Both are added beside any the user listed.
+    // likelier to use localhost. Both are added beside any the user listed,
+    // and the ones for the port the server had before are dropped, so a
+    // service that later takes that port isn't an allowed origin.
     let auth = section(&mut doc, "auth")?;
     let origins = auth
         .entry("origins")
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or("server.toml's auth.origins isn't a list")?;
-    for wanted in [origin(port), format!("http://localhost:{port}")] {
+    if let Some(old) = previous_port.filter(|&old| old != port) {
+        let stale = loopback_origins(old);
+        origins.retain(|o| !o.as_str().is_some_and(|o| stale.iter().any(|s| s == o)));
+    }
+    for wanted in loopback_origins(port) {
         if !origins.iter().any(|o| o.as_str() == Some(wanted.as_str())) {
             origins.push(wanted.into());
         }
@@ -147,6 +180,15 @@ pub fn render_server_config(
     }
     if sidecar.is_empty() {
         doc.remove("sidecar");
+    }
+
+    if let Some(socket) = agent_socket {
+        let ssh_agent = section(&mut doc, "ssh_agent")?;
+        if ssh_agent.get("enabled").and_then(Value::as_bool) != Some(true) {
+            ssh_agent
+                .entry("upstream_socket")
+                .or_insert_with(|| path_value(socket));
+        }
     }
 
     toml::to_string(&doc).map_err(|e| e.to_string())
@@ -164,7 +206,7 @@ fn path_value(path: &Path) -> toml::Value {
 }
 
 /// Mints a device token with `yarvis-server device add`. The token is the last
-/// non-empty line of its stdout.
+/// non-empty line of its stdout; anything before it is for a person reading.
 pub async fn pair(server_bin: &Path, config: &Path, device_name: &str) -> Result<String, String> {
     let output = Command::new(server_bin)
         .arg("--config")
@@ -216,7 +258,7 @@ pub async fn get_status(port: u16, path: &str, bearer: Option<&str>) -> Result<u
             .map_err(|e| e.to_string())?;
         let mut status_line = Vec::new();
         let mut byte = [0u8; 1];
-        while status_line.len() < 256 {
+        while status_line.len() < MAX_STATUS_LINE {
             if stream.read(&mut byte).await.map_err(|e| e.to_string())? == 0 || byte[0] == b'\n' {
                 break;
             }
@@ -267,6 +309,32 @@ pub async fn token_accepted(port: u16, token: &str) -> Result<bool, String> {
     }
 }
 
+/// The token to sign in with: `stored` when the running server accepts it,
+/// otherwise a fresh one from `pair`. Only a 401 leads to pairing again, so a
+/// server error never replaces a working pairing.
+pub async fn verified_token<F, Fut>(
+    port: u16,
+    stored: Option<String>,
+    pair: F,
+) -> Result<String, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    if let Some(token) = stored {
+        if token_accepted(port, &token).await? {
+            return Ok(token);
+        }
+        eprintln!("[server] the local server doesn't recognize this app's device; pairing again");
+    }
+    let token = pair().await?;
+    if token_accepted(port, &token).await? {
+        Ok(token)
+    } else {
+        Err("the local server refused the token it just issued".into())
+    }
+}
+
 /// "Tauri on <host name>", the name the device shows under in Settings.
 pub fn device_name() -> String {
     let mut buf = [0u8; 256];
@@ -278,6 +346,7 @@ pub fn device_name() -> String {
             let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
             String::from_utf8_lossy(&buf[..end]).into_owned()
         })
+        // macOS host names end in `.local`, which reads as noise in a device list.
         .map(|h| h.trim_end_matches(".local").to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| "this Mac".to_string());
@@ -286,73 +355,111 @@ pub fn device_name() -> String {
 
 /// Restarts the server whenever it exits, until [`Supervisor::stop`].
 pub struct Supervisor {
-    pid: Arc<Mutex<Option<u32>>>,
     stopping: Arc<AtomicBool>,
+    /// Interrupts the running server, or cuts a restart delay short.
+    wake: Arc<Notify>,
+    /// Becomes `true` once the loop has ended and no server is running.
+    stopped: watch::Receiver<bool>,
 }
 
 impl Supervisor {
-    /// Runs `command()` in a loop. A command is built per start so each run
-    /// gets a fresh `Command`. Output goes to this process's stdout/stderr and,
-    /// when `log` is set, to that file.
+    /// Runs the server in a loop, calling `command` once per start because a
+    /// `Command` can't be reused. Output goes to this process's stdout/stderr
+    /// and, when `log` is set, to that file.
     pub fn start<F>(command: F, log: Option<PathBuf>) -> Self
     where
-        F: Fn() -> Command + Send + 'static,
+        F: Fn() -> Command + Send + Sync + 'static,
     {
-        let pid = Arc::new(Mutex::new(None));
         let stopping = Arc::new(AtomicBool::new(false));
-        let (task_pid, task_stopping) = (pid.clone(), stopping.clone());
+        let wake = Arc::new(Notify::new());
+        let (stopped_tx, stopped) = watch::channel(false);
+        let (task_stopping, task_wake) = (stopping.clone(), wake.clone());
         tauri::async_runtime::spawn(async move {
+            if let Some(path) = &log {
+                restrict_log(path);
+            }
             let mut delay = FIRST_RESTART_DELAY;
             while !task_stopping.load(Ordering::SeqCst) {
-                if let Some(path) = &log {
-                    rotate_if_large(path);
-                }
-                let mut cmd = command();
-                cmd.stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .kill_on_drop(true);
                 let started = Instant::now();
-                match cmd.spawn() {
-                    Ok(mut child) => {
-                        *task_pid.lock().unwrap_or_else(|e| e.into_inner()) = child.id();
-                        if let Some(out) = child.stdout.take() {
-                            tee(out, log.clone(), false);
-                        }
-                        if let Some(err) = child.stderr.take() {
-                            tee(err, log.clone(), true);
-                        }
-                        let status = child.wait().await;
-                        *task_pid.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                        if task_stopping.load(Ordering::SeqCst) {
-                            break;
-                        }
-                        eprintln!("[server] exited ({status:?}); restarting");
-                    }
-                    Err(e) => eprintln!("[server] couldn't start: {e}; retrying"),
+                run_once(&command, &log, &task_wake).await;
+                if task_stopping.load(Ordering::SeqCst) {
+                    break;
                 }
                 if started.elapsed() >= STABLE_RUN {
                     delay = FIRST_RESTART_DELAY;
                 }
-                sleep(delay).await;
+                tokio::select! {
+                    _ = sleep(delay) => {}
+                    _ = task_wake.notified() => {}
+                }
                 delay = (delay * 2).min(MAX_RESTART_DELAY);
             }
+            let _ = stopped_tx.send(true);
         });
-        Self { pid, stopping }
-    }
-
-    /// Asks the running server to shut down and stops restarting it. SIGINT
-    /// rather than SIGKILL, so the server stops its own sidecar on the way out.
-    pub fn stop(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
-        if let Some(pid) = *self.pid.lock().unwrap_or_else(|e| e.into_inner()) {
-            // SAFETY: kill only sends a signal to the child this supervisor
-            // started and is still waiting on, so the pid can't be reused yet.
-            unsafe {
-                libc::kill(pid as libc::pid_t, libc::SIGINT);
-            }
+        Self {
+            stopping,
+            wake,
+            stopped,
         }
     }
+
+    /// Asks the running server to shut down, stops restarting it, and waits
+    /// until it has exited, so a restarted app can take the same port and data
+    /// dir.
+    pub async fn stop(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
+        // Stores a permit when nothing is waiting yet, so a server that is
+        // just starting still sees it.
+        self.wake.notify_one();
+        let mut stopped = self.stopped.clone();
+        let _ = stopped.wait_for(|done| *done).await;
+    }
+}
+
+/// Starts the server once and waits for it to exit, or interrupts it when
+/// `wake` fires.
+async fn run_once<F>(command: &F, log: &Option<PathBuf>, wake: &Notify)
+where
+    F: Fn() -> Command,
+{
+    if let Some(path) = log {
+        rotate_if_large(path);
+    }
+    let mut cmd = command();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // The safety net if the app goes away without calling `stop`.
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("[server] couldn't start: {e}; retrying");
+            return;
+        }
+    };
+    if let Some(out) = child.stdout.take() {
+        tee(out, log.clone(), false);
+    }
+    if let Some(err) = child.stderr.take() {
+        tee(err, log.clone(), true);
+    }
+    let status = tokio::select! {
+        status = child.wait() => status,
+        _ = wake.notified() => {
+            // SIGINT rather than SIGKILL, so the server stops its own sidecar
+            // on the way out.
+            if let Some(pid) = child.id() {
+                // SAFETY: kill only sends a signal, and the child hasn't been
+                // waited on yet, so its pid can't have been reused.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGINT);
+                }
+            }
+            child.wait().await
+        }
+    };
+    eprintln!("[server] exited ({status:?})");
 }
 
 /// Keeps one previous log beside the current one: the run before a restart is
@@ -364,6 +471,13 @@ fn rotate_if_large(path: &Path) {
     if too_big {
         let _ = std::fs::rename(path, path.with_extension("log.1"));
     }
+}
+
+/// `append_line`'s mode only applies to a file it creates, so tighten one
+/// that already exists.
+fn restrict_log(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
 }
 
 fn append_line(path: &Path, line: &str) {
@@ -402,6 +516,7 @@ where
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
 
     fn paths(release: bool) -> BundledPaths {
         BundledPaths {
@@ -426,7 +541,15 @@ mod tests {
 
     #[test]
     fn a_first_config_points_the_server_at_the_bundle() {
-        let text = render_server_config("", 7123, Path::new("/data/server"), &paths(true)).unwrap();
+        let text = render_server_config(
+            "",
+            7123,
+            Path::new("/data/server"),
+            None,
+            &paths(true),
+            None,
+        )
+        .unwrap();
         let doc = parse(&text);
         assert_eq!(doc["server"]["bind"].as_str(), Some("127.0.0.1:7123"));
         assert_eq!(doc["server"]["data_dir"].as_str(), Some("/data/server"));
@@ -463,8 +586,15 @@ mod tests {
             rp_id = "yarvis.example.com"
             origins = ["https://yarvis.example.com"]
         "#;
-        let text =
-            render_server_config(existing, 7123, Path::new("/data/server"), &paths(true)).unwrap();
+        let text = render_server_config(
+            existing,
+            7123,
+            Path::new("/data/server"),
+            None,
+            &paths(true),
+            None,
+        )
+        .unwrap();
         let doc = parse(&text);
         assert_eq!(doc["secrets"]["backend"].as_str(), Some("onepassword"));
         assert_eq!(doc["auth"]["rp_id"].as_str(), Some("yarvis.example.com"));
@@ -478,8 +608,10 @@ mod tests {
 
     #[test]
     fn restarting_on_the_same_port_adds_no_duplicate_origins() {
-        let once = render_server_config("", 7123, Path::new("/d"), &paths(true)).unwrap();
-        let twice = render_server_config(&once, 7123, Path::new("/d"), &paths(true)).unwrap();
+        let once =
+            render_server_config("", 7123, Path::new("/d"), None, &paths(true), None).unwrap();
+        let twice =
+            render_server_config(&once, 7123, Path::new("/d"), None, &paths(true), None).unwrap();
         assert_eq!(
             parse(&twice)["auth"]["origins"].as_array().unwrap().len(),
             2
@@ -487,16 +619,118 @@ mod tests {
     }
 
     #[test]
+    fn the_old_ports_origins_are_dropped_when_the_port_changes() {
+        let existing = r#"
+            [auth]
+            origins = ["http://127.0.0.1:7000", "http://localhost:7000", "http://localhost:1420"]
+        "#;
+        let text = render_server_config(
+            existing,
+            7123,
+            Path::new("/d"),
+            Some(7000),
+            &paths(true),
+            None,
+        )
+        .unwrap();
+        let origins: Vec<_> = parse(&text)["auth"]["origins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            origins,
+            [
+                "http://localhost:1420",
+                "http://127.0.0.1:7123",
+                "http://localhost:7123"
+            ]
+        );
+    }
+
+    #[test]
     fn a_dev_build_leaves_the_sidecar_to_the_servers_default() {
-        let text = render_server_config("", 7123, Path::new("/d"), &paths(false)).unwrap();
+        let text =
+            render_server_config("", 7123, Path::new("/d"), None, &paths(false), None).unwrap();
         assert!(!parse(&text).contains_key("sidecar"));
     }
 
     #[test]
     fn a_broken_config_is_reported_not_overwritten() {
-        let err = render_server_config("[server\nbind=", 7123, Path::new("/d"), &paths(true))
-            .unwrap_err();
+        let err = render_server_config(
+            "[server\nbind=",
+            7123,
+            Path::new("/d"),
+            None,
+            &paths(true),
+            None,
+        )
+        .unwrap_err();
         assert!(err.contains("server.toml"), "{err}");
+    }
+
+    const AGENT: &str = "/Users/me/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock";
+
+    fn upstream(text: &str) -> Option<String> {
+        parse(text)
+            .get("ssh_agent")
+            .and_then(|s| s.get("upstream_socket"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
+    #[test]
+    fn workspace_shells_get_1passwords_agent_when_it_exists() {
+        let text = render_server_config(
+            "",
+            7123,
+            Path::new("/d"),
+            None,
+            &paths(true),
+            Some(Path::new(AGENT)),
+        )
+        .unwrap();
+        assert_eq!(upstream(&text).as_deref(), Some(AGENT));
+    }
+
+    #[test]
+    fn no_agent_socket_is_written_when_1password_has_none() {
+        let text =
+            render_server_config("", 7123, Path::new("/d"), None, &paths(true), None).unwrap();
+        assert_eq!(upstream(&text), None);
+        assert!(!parse(&text).contains_key("ssh_agent"));
+    }
+
+    #[test]
+    fn the_users_own_agent_socket_wins() {
+        let existing = "[ssh_agent]\nupstream_socket = \"/tmp/my-agent.sock\"\n";
+        let text = render_server_config(
+            existing,
+            7123,
+            Path::new("/d"),
+            None,
+            &paths(true),
+            Some(Path::new(AGENT)),
+        )
+        .unwrap();
+        assert_eq!(upstream(&text).as_deref(), Some("/tmp/my-agent.sock"));
+    }
+
+    #[test]
+    fn no_agent_socket_is_written_beside_the_servers_own_agent() {
+        // The server refuses `upstream_socket` with `enabled = true`.
+        let existing = "[ssh_agent]\nenabled = true\n";
+        let text = render_server_config(
+            existing,
+            7123,
+            Path::new("/d"),
+            None,
+            &paths(true),
+            Some(Path::new(AGENT)),
+        )
+        .unwrap();
+        assert_eq!(upstream(&text), None);
     }
 
     #[test]
@@ -527,7 +761,7 @@ mod tests {
         let bin = fake_server(
             dir.path(),
             &format!(
-                "echo \"$@\" > {args}\necho 'Created device Tauri on test'\necho\necho tok123\n",
+                "printf '%s\\n' \"$@\" > {args}.tmp && mv {args}.tmp {args}\necho 'Created device Tauri on test'\necho\necho tok123\n",
                 args = args.display()
             ),
         );
@@ -536,12 +770,22 @@ mod tests {
         let token = pair(&bin, &config, "Tauri on test").await.unwrap();
 
         assert_eq!(token, "tok123");
+        let config_arg = config.display().to_string();
         assert_eq!(
-            std::fs::read_to_string(&args).unwrap().trim(),
-            format!(
-                "--config {} device add --name Tauri on test --scopes read,chat,approve,admin",
-                config.display()
-            )
+            std::fs::read_to_string(&args)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "--config",
+                config_arg.as_str(),
+                "device",
+                "add",
+                "--name",
+                "Tauri on test",
+                "--scopes",
+                "read,chat,approve,admin",
+            ]
         );
     }
 
@@ -566,11 +810,17 @@ mod tests {
 
     /// Answers every connection with `status` and records the request heads.
     async fn fake_http(status: &'static str) -> (u16, Arc<Mutex<Vec<String>>>) {
+        fake_http_seq(vec![status]).await
+    }
+
+    /// Answers with each of `statuses` in turn, repeating the last one.
+    async fn fake_http_seq(statuses: Vec<&'static str>) -> (u16, Arc<Mutex<Vec<String>>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let record = seen.clone();
         tokio::spawn(async move {
+            let mut answered = 0;
             while let Ok((mut socket, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 4096];
                 let n = socket.read(&mut buf).await.unwrap_or(0);
@@ -578,12 +828,73 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                let status = statuses[answered.min(statuses.len() - 1)];
+                answered += 1;
                 let _ = socket
                     .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes())
                     .await;
             }
         });
         (port, seen)
+    }
+
+    #[tokio::test]
+    async fn a_server_that_accepts_but_never_answers_is_an_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let err = get_status(port, "/api/health", None).await.unwrap_err();
+        assert!(err.contains("didn't answer"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_stored_token_the_server_accepts_is_kept() {
+        let (port, _) = fake_http("200 OK").await;
+        let token = verified_token(port, Some("old".into()), || async {
+            panic!("must not pair again")
+        })
+        .await;
+        assert_eq!(token, Ok("old".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_revoked_device_is_paired_again() {
+        let (port, seen) = fake_http_seq(vec!["401 Unauthorized", "200 OK"]).await;
+        let token =
+            verified_token(port, Some("old".into()), || async { Ok("new".to_string()) }).await;
+        assert_eq!(token, Ok("new".to_string()));
+        assert!(seen.lock().unwrap()[1].contains("Authorization: Bearer new\r\n"));
+    }
+
+    #[tokio::test]
+    async fn a_first_run_pairs() {
+        let (port, _) = fake_http("200 OK").await;
+        let token = verified_token(port, None, || async { Ok("new".to_string()) }).await;
+        assert_eq!(token, Ok("new".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_server_error_keeps_the_existing_pairing() {
+        let (port, _) = fake_http("500 Internal Server Error").await;
+        let result = verified_token(port, Some("old".into()), || async {
+            panic!("must not pair again")
+        })
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_token_refused_right_after_pairing_is_an_error() {
+        let (port, _) = fake_http("401 Unauthorized").await;
+        let err = verified_token(port, Some("old".into()), || async { Ok("new".to_string()) })
+            .await
+            .unwrap_err();
+        assert!(err.contains("just issued"), "{err}");
     }
 
     #[tokio::test]
@@ -651,7 +962,7 @@ mod tests {
                 .unwrap_or(0)
         };
         wait_for("a restart", || count() >= 2).await;
-        supervisor.stop();
+        supervisor.stop().await;
 
         wait_for("the log", || {
             std::fs::read_to_string(&log).is_ok_and(|s| s.contains("serving"))
@@ -682,15 +993,33 @@ mod tests {
 
         let supervisor = Supervisor::start(move || Command::new(&bin), None);
         wait_for("the server to start", || count() == 1).await;
-        supervisor.stop();
-        wait_for("the server to exit", || {
-            supervisor.pid.lock().unwrap().is_none()
-        })
-        .await;
+        supervisor.stop().await;
 
-        // Longer than the first restart delay, so a restart would have shown.
-        sleep(FIRST_RESTART_DELAY + Duration::from_millis(500)).await;
         assert_eq!(count(), 1);
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_a_slow_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let exited = dir.path().join("exited");
+        let started = dir.path().join("started");
+        // Takes a moment to shut down on SIGINT, like a server stopping its sidecar.
+        let bin = fake_server(
+            dir.path(),
+            &format!(
+                "trap 'sleep 0.3; touch {exited}.tmp; mv {exited}.tmp {exited}; exit 0' INT\n\
+                 touch {started}\n\
+                 while true; do sleep 0.05; done",
+                exited = exited.display(),
+                started = started.display()
+            ),
+        );
+
+        let supervisor = Supervisor::start(move || Command::new(&bin), None);
+        wait_for("the server to start", || started.exists()).await;
+        supervisor.stop().await;
+
+        assert!(exited.exists(), "stop returned before the server exited");
     }
 
     #[test]

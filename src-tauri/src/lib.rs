@@ -1,9 +1,12 @@
 //! The thin desktop client: the window, tray, global hotkeys, clipboard
 //! history and alarm takeovers. Everything else (settings, secrets, PTYs, the
-//! sidecar) belongs to yarvis-server, which this app either starts locally or
+//! sidecar) is yarvis-server's job, which this app either starts locally or
 //! reaches at a remote URL (`server_link.rs`).
 
 mod alarms;
+// Read by `build.rs`; the crate only needs it for the ACL tests.
+#[cfg(test)]
+mod app_commands;
 mod clipboard;
 mod connection;
 mod device_token;
@@ -171,8 +174,8 @@ pub fn run() {
             }
             Ok(())
         })
-        // Every command here must also be listed in `build.rs`, which is what
-        // lets the capabilities decide which origin may call it.
+        // Every command here must also be listed in `app_commands.rs`, which is
+        // what lets the capabilities decide which origin may call it.
         .invoke_handler(tauri::generate_handler![
             server_link::get_server_connection,
             server_link::get_connection_settings,
@@ -188,10 +191,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
+            use tauri::Manager;
             // The local server would otherwise outlive the app and keep its port.
             if let tauri::RunEvent::Exit = event {
-                use tauri::Manager;
-                app.state::<server_link::ServerLink>().stop_local_server();
+                tauri::async_runtime::block_on(
+                    app.state::<server_link::ServerLink>().stop_local_server(),
+                );
             }
         });
 }

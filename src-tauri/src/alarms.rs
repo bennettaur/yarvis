@@ -1,9 +1,9 @@
 //! Ringing alarms with a full-screen takeover.
 //!
-//! The sidecar owns the alarm list and decides when one is due
-//! (`sidecar/src/alarms/scheduler.ts`). yarvis-server sends `alarm.fire` and
-//! `alarm.release` events to every client, and the page in this window
-//! answers them with [`fire_alarm`] and [`release_alarm`]. Ringing lives here
+//! yarvis-server decides when an alarm is due (its sidecar's
+//! `sidecar/src/alarms/scheduler.ts`) and sends `alarm.fire` and
+//! `alarm.release` events to every client. The page in this window answers
+//! them with [`fire_alarm`] and [`release_alarm`]. Ringing lives here
 //! because only native code can take over the window and play sound reliably
 //! while the webview is hidden and throttled. When an alarm fires the app
 //! takes over the main window (fullscreen + always-on-top + focus), shows a
@@ -62,7 +62,8 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// Manages the ringing state. Call from `setup`, before the page can load.
+/// Manages the ringing state. Call from `setup`, before the window loads a
+/// page that can call [`fire_alarm`].
 pub fn init<R: Runtime>(app: &AppHandle<R>) {
     app.manage(AlarmState::default());
 }
@@ -205,7 +206,8 @@ pub fn release<R: Runtime>(app: &AppHandle<R>, id: &str) {
 
 // --- Commands ---
 
-/// Called by the page when an `alarm.fire` event arrives.
+/// The page forwards each `alarm.fire` event here, since only native code can
+/// take over the window and keep ringing while the webview is throttled.
 #[tauri::command]
 pub fn fire_alarm<R: Runtime>(app: AppHandle<R>, alarm: Alarm) {
     fire(&app, alarm);
