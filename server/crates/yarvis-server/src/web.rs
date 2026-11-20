@@ -32,8 +32,7 @@ async fn serve(files: ServeDir<ServeFile>, request: Request) -> Response {
     if path == "/api" || path.starts_with("/api/") {
         return ApiError::not_found().into_response();
     }
-    match files.oneshot(request).await {
-        Ok(response) => response.into_response(),
-        Err(e) => ApiError::internal(e).into_response(),
-    }
+    // `ServeDir` answers every failure with a response, so it never errs.
+    let Ok(response) = files.oneshot(request).await;
+    response.into_response()
 }
