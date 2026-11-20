@@ -99,16 +99,38 @@ export function relatedTests(
 }
 
 /**
+ * The most CPU time a single test run may use before the kernel kills it.
+ * Stryker's own timeout catches a mutant that loops forever, but only while
+ * Stryker is alive. If Stryker is killed mid-run, the looping `bun test` is
+ * orphaned and spins at full CPU until this limit ends it.
+ *
+ * It counts CPU across all of bun's threads, not wall-clock time. While
+ * Stryker is alive, its timeouts end every run within about 455s of wall
+ * time, and a legitimate run would need well over two busy cores on average
+ * to reach this limit inside that window.
+ */
+export const TEST_RUN_CPU_LIMIT_SECONDS = 1200;
+
+/**
  * Stryker's command runner hands this to a shell. Every part is a path from
  * git or the bun binary's own path, but quoting keeps a stray space or `;` in
  * a file name from being read as shell syntax.
+ *
+ * `ulimit -t` is enforced by the kernel and carries through the `exec` into
+ * bun, so it holds with no parent left to enforce it, and SIGXCPU ends a busy
+ * loop that bun's per-test `--timeout` can't interrupt.
  */
-export function testCommand(bun: string, suite: Suite, tests: string[]): string {
+export function testCommand(
+  bun: string,
+  suite: Suite,
+  tests: string[],
+  cpuLimitSeconds = TEST_RUN_CPU_LIMIT_SECONDS,
+): string {
   const quote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
   const relative = tests.map((test) =>
     quote(`./${suite === "sidecar" ? test.slice("sidecar/".length) : test}`),
   );
-  const command = `${quote(bun)} test ${relative.join(" ")}`;
+  const command = `ulimit -t ${cpuLimitSeconds} && exec ${quote(bun)} test ${relative.join(" ")}`;
   // The sidecar suite runs from sidecar/ so its own bunfig preload applies.
   return suite === "sidecar" ? `cd sidecar && ${command}` : command;
 }
