@@ -124,7 +124,7 @@ async fn no_answer_in_time_is_a_denial_and_later_answers_get_409() {
         .request("test", "push to main", json!({}), Duration::from_millis(50))
         .await
         .unwrap();
-    assert_eq!(decision, Decision::TimedOut);
+    assert_eq!(decision, Decision::Unanswered);
     assert!(h.state.approvals.pending().await.unwrap().is_empty());
 
     let requested = h.events("approval.requested").await;

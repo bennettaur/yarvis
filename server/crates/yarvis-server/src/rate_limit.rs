@@ -61,7 +61,8 @@ impl RateLimiter {
 }
 
 pub async fn limit(State(limiter): State<RateLimiter>, request: Request, next: Next) -> Response {
-    // Requests built in tests carry no peer address; they share one budget.
+    // No peer address (tests, or a server not built with connect info):
+    // every such request shares one budget.
     let ip = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -86,7 +87,7 @@ mod tests {
         assert!(limiter.allow(a) && limiter.allow(a));
         assert!(!limiter.allow(a));
         assert!(limiter.allow(b));
-        // The behavior under test is the window passing.
+        // Real time: the limiter reads the clock itself.
         std::thread::sleep(Duration::from_millis(60));
         assert!(limiter.allow(a));
     }

@@ -1,9 +1,8 @@
 //! Approvals: server code asks a question, any device with the `approve`
 //! scope answers, and the first answer wins.
 //!
-//! [`Approvals::request`] is the entry point for other modules (the ssh-agent
-//! signing gate, tool calls). It stores the approval, announces it on the
-//! event log, and waits. No answer before the timeout is a denial, and so is
+//! [`Approvals::request`] is how other server code asks. It stores the
+//! approval, announces it on the event log, and waits. No answer before the timeout is a denial, and so is
 //! an approval left pending by a restart or by a requester that stopped
 //! waiting: nothing is left to act on a late "yes".
 //!
@@ -37,8 +36,9 @@ pub enum Decision {
     Denied {
         by: String,
     },
-    /// Nobody answered in time, or the approval was abandoned. Treat as a no.
-    TimedOut,
+    /// Nobody answered in time, the requester stopped waiting, or the server
+    /// restarted. Treat as a no.
+    Unanswered,
 }
 
 impl Decision {
@@ -61,7 +61,7 @@ pub struct Pending {
 
 pub enum Answer {
     Answered(Decision),
-    /// Someone answered first, or it timed out. Carries what it ended as.
+    /// Someone answered first, or it ended unanswered. Carries what it ended as.
     AlreadySettled(Decision),
     NotFound,
 }
@@ -86,8 +86,7 @@ impl Approvals {
 
     /// Asks every device with the `approve` scope and waits for the first
     /// answer, or `timeout`. `summary` is the one line a device shows; `data`
-    /// is whatever detail the kind defines (the signing gate's key and
-    /// repo, say).
+    /// is whatever detail the kind defines.
     pub async fn request(
         &self,
         kind: &str,
@@ -270,9 +269,9 @@ impl Approvals {
             .await?;
         if changed == 1 {
             self.announce_unanswered(id, outcome).await?;
-            return Ok(Decision::TimedOut);
+            return Ok(Decision::Unanswered);
         }
-        Ok(self.settled(id).await?.unwrap_or(Decision::TimedOut))
+        Ok(self.settled(id).await?.unwrap_or(Decision::Unanswered))
     }
 
     async fn announce_unanswered(&self, id: &str, reason: &str) -> Result<(), StoreError> {
@@ -287,7 +286,7 @@ impl Approvals {
     }
 
     /// What an approval ended as. A pending row past its expiry counts as
-    /// timed out; `None` means there is no such approval.
+    /// unanswered; `None` means there is no such approval.
     async fn settled(&self, id: &str) -> Result<Option<Decision>, StoreError> {
         let id = id.to_string();
         let row = self
@@ -311,7 +310,7 @@ impl Approvals {
             |(status, outcome, by)| match (status.as_str(), outcome.as_deref(), by) {
                 ("approved", _, Some(by)) => Decision::Approved { by },
                 ("denied", Some("answered"), Some(by)) => Decision::Denied { by },
-                _ => Decision::TimedOut,
+                _ => Decision::Unanswered,
             },
         ))
     }
@@ -390,7 +389,7 @@ async fn answer(
             let detail = match decision {
                 Decision::Approved { by } => format!("approved by device {by}"),
                 Decision::Denied { by } => format!("denied by device {by}"),
-                Decision::TimedOut => "nobody answered in time, so it was denied".into(),
+                Decision::Unanswered => "nobody answered in time, so it was denied".into(),
             };
             Err(ApiError::conflict("already answered").with_detail(detail))
         }

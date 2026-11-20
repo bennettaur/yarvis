@@ -12,7 +12,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential, WebauthnError};
+use webauthn_rs::prelude::{
+    PasskeyAuthentication, PublicKeyCredential, RegisterPublicKeyCredential, WebauthnError,
+};
 
 use super::fresh::Fresh;
 use super::passkeys::Ceremony;
@@ -94,11 +96,10 @@ struct Status {
 }
 
 async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
-    // The vault module reports "unlocked" once it exists; until then a vault
-    // backend has nothing that can unlock it.
+    // Nothing in the server can unlock a vault yet, so a vault stays locked.
     let vault = match state.config.secrets.backend {
         SecretBackendKind::Vault => "locked",
-        _ => "absent",
+        SecretBackendKind::Keychain | SecretBackendKind::OnePassword => "absent",
     };
     Ok(Json(Status {
         setup_required: state.passkeys.setup_required().await?,
@@ -121,21 +122,21 @@ async fn setup_start(
     Json(body): Json<SetupStart>,
 ) -> ApiResult<Json<Started<impl Serialize>>> {
     let device_name = device_name(&body.device_name)?;
-    let code = state.passkeys.check_setup_code(&body.code).map_err(|e| {
-        let error = ApiError::new(StatusCode::UNAUTHORIZED, "wrong setup code");
-        match e {
+    let wrong_code = || ApiError::new(StatusCode::UNAUTHORIZED, "wrong setup code");
+    let code = state
+        .passkeys
+        .check_setup_code(&body.code)
+        .map_err(|e| match e {
             CodeError::NoCode => {
                 ApiError::new(StatusCode::UNAUTHORIZED, "no setup code is outstanding")
                     .with_detail("restart the server to get a new one")
             }
-            CodeError::Wrong { attempts_left: 0 } => {
-                error.with_detail("that was the last try; restart the server to get a new code")
-            }
+            CodeError::Wrong { attempts_left: 0 } => wrong_code()
+                .with_detail("that was the last try; restart the server to get a new code"),
             CodeError::Wrong { attempts_left } => {
-                error.with_detail(format!("{attempts_left} tries left"))
+                wrong_code().with_detail(format!("{attempts_left} tries left"))
             }
-        }
-    })?;
+        })?;
     let (options, reg) = state.passkeys.start_registration().await?;
     start_ceremony(
         &state,
@@ -234,7 +235,7 @@ async fn login_finish(
 async fn finish_assertion(
     state: &AppState,
     credential: &PublicKeyCredential,
-    auth: &webauthn_rs::prelude::PasskeyAuthentication,
+    auth: &PasskeyAuthentication,
 ) -> ApiResult<String> {
     let result = state
         .passkeys
@@ -262,14 +263,14 @@ async fn sign_in(
         .and_then(|v| v.to_str().ok())
         .map(|s| s.chars().take(200).collect());
     let verified_at = now_ms();
-    let (id, passkey_id_owned) = (device_id.clone(), passkey_id.to_string());
+    let (row_id, row_passkey_id) = (device_id.clone(), passkey_id.to_string());
     state
         .store
         .call(move |conn| {
             conn.execute(
                 "UPDATE devices SET passkey_id = ?1, user_agent = ?2, verified_at = ?3
                  WHERE id = ?4",
-                rusqlite::params![passkey_id_owned, user_agent, verified_at, id],
+                rusqlite::params![row_passkey_id, user_agent, verified_at, row_id],
             )
         })
         .await?;
@@ -304,8 +305,6 @@ async fn reverify_start(
     State(state): State<AppState>,
     Authed { device, .. }: Authed<Admin>,
 ) -> ApiResult<Json<Started<impl Serialize>>> {
-    // A token has no passkey behind it. Letting it pass a check would let a
-    // stolen admin token make itself fresh with anyone's passkey prompt.
     let id = device.device_id.clone();
     let kind: String = state
         .store
@@ -315,6 +314,8 @@ async fn reverify_start(
             })
         })
         .await?;
+    // A token has no passkey behind it. If it could reverify, a stolen admin
+    // token could become fresh by getting the owner to approve one prompt.
     if kind != "passkey" {
         return Err(ApiError::forbidden(
             "only a device signed in with a passkey can confirm with one",

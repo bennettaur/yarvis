@@ -390,7 +390,7 @@ async fn add_a_passkey_from_a_signed_in_device() {
     let desktop_row = devices.as_array().unwrap().last().unwrap().clone();
     assert_eq!(desktop_row["passkeyId"], passkey_id);
 
-    // Other modules (vault unlock) find a passkey by the credential id an
+    // Other modules find a passkey by the credential id an
     // assertion reports.
     let passkeys = h.state.passkeys.passkeys().await.unwrap();
     assert_eq!(passkeys.len(), 2);
