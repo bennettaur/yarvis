@@ -5,9 +5,11 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { MAX_SESSION_KEY, UUID } from "../attention/routes.ts";
 import type { Config } from "../config.ts";
-import { getDb } from "../db/client.ts";
+import { type Db, getDb } from "../db/client.ts";
 import { workspaces } from "../db/schema.ts";
 import {
+  HARNESS_TOKEN_HEADER,
+  harnessTokenMatches,
   recordAgentSessionEnd,
   recordAgentSessionStart,
   SESSION_KEY_HEADER,
@@ -15,6 +17,8 @@ import {
   sessionKeyBelongsTo,
   sessionTokenMatches,
 } from "./agentSessions.ts";
+import { harnessIdSchema } from "./harnesses.ts";
+import { checkWorkspaceIntegrity, getWorkspace } from "./service.ts";
 
 /** Claude's hook input is a few hundred bytes; this only bounds a token holder. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -27,6 +31,12 @@ const MAX_BODY_BYTES = 64 * 1024;
 const querySchema = z.object({
   workspaceId: UUID,
   pid: z.coerce.number().int().positive().max(2_147_483_647),
+  // Empty when the session's terminal carries no harness (a session started
+  // by hand in a workspace pane).
+  harness: harnessIdSchema
+    .or(z.literal(""))
+    .optional()
+    .transform((v) => v || null),
 });
 
 /**
@@ -34,7 +44,7 @@ const querySchema = z.object({
  * the chat model by `list_workspaces`, so they are held to plain identifiers
  * rather than free text.
  */
-const sessionKeySchema = z
+export const sessionKeySchema = z
   .string()
   .min(1)
   .max(MAX_SESSION_KEY)
@@ -62,6 +72,16 @@ const hookInputSchema = z.object({
  * carry its PTY's own session token, so all a caller can do is record that a
  * Claude session in its own terminal started or ended.
  */
+/** The integrity check run when a session ends; never throws into the request. */
+async function checkEndedSessionWorkspace(db: Db, workspaceId: string): Promise<void> {
+  try {
+    const detail = await getWorkspace(db, workspaceId);
+    if (detail?.status === "active") await checkWorkspaceIntegrity(db, detail);
+  } catch (e) {
+    console.error("[workspaces] git integrity check after a session ended failed:", e);
+  }
+}
+
 export function createAgentSessionIngestRoutes(config: Config): Hono {
   const router = new Hono();
 
@@ -87,7 +107,18 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
     const input = hookInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!input.success) return c.json({ error: input.error.flatten() }, 400);
 
-    const { workspaceId, pid } = query.data;
+    const { workspaceId, pid, harness } = query.data;
+    if (
+      harness !== null &&
+      !harnessTokenMatches(
+        config.token,
+        sessionKey,
+        harness,
+        c.req.header(HARNESS_TOKEN_HEADER) ?? "",
+      )
+    ) {
+      return c.json({ error: "harness token does not match the session's harness" }, 403);
+    }
     if (!sessionKeyBelongsTo(sessionKey, workspaceId)) {
       return c.json({ error: "session key does not belong to that workspace" }, 400);
     }
@@ -104,6 +135,7 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         sessionKey,
         claudeSessionId: session_id,
         pid,
+        harness,
         source: source ?? null,
       });
     } else {
@@ -112,6 +144,10 @@ export function createAgentSessionIngestRoutes(config: Config): Hono {
         claudeSessionId: session_id,
         reason: reason ?? null,
       });
+      // A session that ended is when anything it planted in the clone is
+      // complete, so look then rather than at the next push. In the background:
+      // the hook is waiting on this answer while Claude exits.
+      void checkEndedSessionWorkspace(db(), workspaceId);
     }
     return c.body(null, 204);
   });

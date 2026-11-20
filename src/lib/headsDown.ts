@@ -12,6 +12,10 @@ export interface HeadsDownRun {
   status: "active" | "stopped";
   startedAt: string;
   stoppedAt: string | null;
+  /** Set while the user has paused it: no passes run until they resume. */
+  pausedAt: string | null;
+  /** When it stops on its own, if the user set a time. */
+  stopAt: string | null;
 }
 
 export interface HeadsDownPass {
@@ -24,6 +28,13 @@ export interface HeadsDownPass {
   sleepMinutes: number | null;
   sleepReason: string | null;
   error: string | null;
+  /** How many tool calls the pass made. Only on the pass list. */
+  callCount?: number;
+  /**
+   * The calls that failed, with the start of their error, and those whose
+   * result never came back (`noResult`). Only on the pass list.
+   */
+  failedCalls?: { name: string; server: string | null; error: string | null; noResult?: boolean }[];
 }
 
 export interface HeadsDownState {
@@ -70,8 +81,107 @@ export interface HeadsDownConfig {
   idleSleepMinutes: number;
   workingHours: WorkingHours | null;
   userAwayAfterMinutes: number;
+  /** How long one pass may run before it is stopped. */
+  passTimeoutMinutes: number;
   provider: string | null;
   model: string | null;
+  /** The user's standing rules for every pass on this machine. Null for none. */
+  guidance: string | null;
+  /** The most routines one pass takes on. 0 turns them off. */
+  maxRoutinesPerPass: number;
+}
+
+export type MergeRisk = "low" | "medium" | "high" | "unknown";
+
+const MERGE_RISKS: readonly MergeRisk[] = ["low", "medium", "high", "unknown"];
+
+/** A merge a pass announced, carried on its attention item's payload. */
+export interface MergeAnnouncement {
+  /** "owner/repo", or empty when the merge call didn't name one. */
+  repo: string;
+  /** Null when a workspace's session was told to merge, and the PR isn't known. */
+  number: number | null;
+  workspaceId?: string | null;
+  /** The PR's own title, as the pass read it. */
+  title?: string | null;
+  /** The pass's own judgment; "unknown" when it merged without announcing it first. */
+  risk: MergeRisk;
+  why: string;
+}
+
+/** The merge an attention item announces, if it is a heads-down merge alert. */
+export function mergeAnnouncementOf(item: {
+  source: string;
+  sessionKey: string | null;
+  payload?: unknown;
+}): MergeAnnouncement | null {
+  if (item.source !== "system" || !item.sessionKey?.startsWith("heads-down-merge:")) return null;
+  const merge = (item.payload as { headsDownMerge?: MergeAnnouncement } | null)?.headsDownMerge;
+  if (!merge || !MERGE_RISKS.includes(merge.risk)) return null;
+  return typeof merge.number === "number" || merge.number === null ? merge : null;
+}
+
+/**
+ * An unresolved review thread on a PR heads-down mode wants to merge, as
+ * `sidecar/src/headsDown/mergeFeedback.ts` sends it. Author and body are
+ * third-party text.
+ */
+export interface FeedbackThread {
+  path: string | null;
+  line: number | null;
+  /** True when the code the thread was left on has since changed. */
+  outdated: boolean;
+  author: string;
+  body: string;
+  /** How many replies follow the first comment. */
+  replies: number;
+}
+
+export interface PrFeedback {
+  repo: string;
+  number: number;
+  title: string | null;
+  workspaceId: string | null;
+  /** True once heads-down mode told the workspace's session to address the feedback. */
+  handedOff: boolean;
+  /** The first few unresolved threads; `threadCount` counts them all. */
+  threads: FeedbackThread[];
+  threadCount: number;
+  /** True when the provider couldn't return every thread. */
+  threadsTruncated: boolean;
+  changesRequestedBy: string[];
+  /** True when some of the feedback may be from outside the repo, so it wasn't handed to the workspace. */
+  fromOutsiders: boolean;
+}
+
+/** A merge held back for open review feedback, waiting on the user's approval. */
+export interface MergeReview {
+  questionId: string;
+  prs: PrFeedback[];
+  /** Why the feedback couldn't be checked, when it couldn't. */
+  unchecked: string | null;
+}
+
+/** The held merge an attention item asks about, if it is one. */
+export function mergeReviewOf(item: {
+  source: string;
+  sessionKey: string | null;
+  kind: string;
+  payload?: unknown;
+}): MergeReview | null {
+  if (item.source !== "system" || item.kind !== "permission") return null;
+  if (!item.sessionKey?.startsWith("heads-down:")) return null;
+  const review = (item.payload as { headsDownMergeReview?: MergeReview } | null)
+    ?.headsDownMergeReview;
+  if (!review || typeof review.questionId !== "string" || !Array.isArray(review.prs)) return null;
+  const wellFormed = review.prs.every(
+    (pr) =>
+      typeof pr?.repo === "string" &&
+      typeof pr.number === "number" &&
+      Array.isArray(pr.threads) &&
+      Array.isArray(pr.changesRequestedBy),
+  );
+  return wellFormed ? review : null;
 }
 
 export type WorkStreamStatus =
@@ -114,6 +224,8 @@ export interface WorkStream {
   nextAction: string | null;
   waitingOn: string | null;
   wakeAt: string | null;
+  /** Set while the user has paused it: heads-down mode leaves it alone. */
+  pausedAt: string | null;
   updatedAt: string;
   links: WorkStreamLink[];
 }
@@ -139,13 +251,14 @@ export type PassEvent =
       result?: string;
       durationMs?: number;
     }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; transient?: boolean }
   | { type: "done"; text: string }
   | { type: "attention"; reason?: string };
 
 export type HeadsDownStreamEvent =
   | { type: "pass-started"; passId: string }
   | { type: "pass-event"; passId: string; event: PassEvent }
+  | { type: "pass-retrying"; passId: string; retryAt: string }
   | { type: "pass-finished"; passId: string; sleepMinutes: number; nextPassAt: string }
   | { type: "changed" }
   | { type: "ping" };
@@ -160,17 +273,89 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
   return res.json() as Promise<T>;
 }
 
+/**
+ * Cache keys for the Heads down page's lists. They share a prefix so a dialog
+ * that answers a question can invalidate them all at once.
+ */
+export const HEADS_DOWN_CACHE_PREFIX = "heads-down:";
+export const HEADS_DOWN_CACHE_KEYS = {
+  state: `${HEADS_DOWN_CACHE_PREFIX}state`,
+  questions: `${HEADS_DOWN_CACHE_PREFIX}questions`,
+  streams: `${HEADS_DOWN_CACHE_PREFIX}streams`,
+  passes: `${HEADS_DOWN_CACHE_PREFIX}passes`,
+  messages: `${HEADS_DOWN_CACHE_PREFIX}messages`,
+  config: `${HEADS_DOWN_CACHE_PREFIX}config`,
+  allowedTools: `${HEADS_DOWN_CACHE_PREFIX}allowed-tools`,
+  autoApprovals: `${HEADS_DOWN_CACHE_PREFIX}auto-approvals`,
+  routines: `${HEADS_DOWN_CACHE_PREFIX}routines`,
+};
+
 export const getHeadsDownState = () => request<HeadsDownState>("/api/heads-down");
 
-export const startHeadsDown = (focus: string) =>
-  request<HeadsDownRun>("/api/heads-down/start", "POST", { focus });
+/**
+ * The next time the clock reads `hhmm` ("19:00"), as an ISO timestamp: today,
+ * or tomorrow once today's has passed. The sidecar reads an "HH:MM" from the
+ * chat the same way.
+ */
+export function nextOccurrence(hhmm: string, now = new Date()): string {
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  const at = new Date(now);
+  at.setHours(hours ?? 0, minutes ?? 0, 0, 0);
+  if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1);
+  return at.toISOString();
+}
+
+/** Leaving `stopAt` out keeps the stop time of a run already going, rather than clearing it. */
+export const startHeadsDown = (focus: string, stopAt?: string) =>
+  request<HeadsDownRun>("/api/heads-down/start", "POST", stopAt ? { focus, stopAt } : { focus });
 
 export const stopHeadsDown = () => request<{ stopped: boolean }>("/api/heads-down/stop", "POST");
+
+/**
+ * Drops every open work stream, deletes the user's messages and dismisses open
+ * questions. The sidecar refuses it while a run is going and not paused.
+ */
+export const clearHeadsDown = () =>
+  request<{ droppedStreams: number; deletedMessages: number }>("/api/heads-down/clear", "POST");
+
+export const pauseHeadsDown = () => request<HeadsDownRun>("/api/heads-down/pause", "POST");
+
+export const resumeHeadsDown = () => request<HeadsDownRun>("/api/heads-down/resume", "POST");
+
+/** Sets when the run stops on its own, as an ISO timestamp, or clears it with null. */
+export const setHeadsDownStopAt = (stopAt: string | null) =>
+  request<HeadsDownRun>("/api/heads-down/stop-at", "PUT", { stopAt });
 
 export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-down/config");
 
 export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
   request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+
+/** A recurring job a pass takes on beside the work streams, read from a markdown file. */
+export interface Routine {
+  name: string;
+  description: string;
+  everyMinutes: number;
+  workingHoursOnly: boolean;
+  enabled: boolean;
+  /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
+  source: "builtin" | "user";
+  /** ISO time of the last pass that reported it done. Null if none has. */
+  lastDoneAt: string | null;
+}
+
+export interface RoutinesResponse {
+  routines: Routine[];
+  /** Files that couldn't be read as a routine, with why. */
+  problems: { path: string; message: string }[];
+  /** Where the user's own routine files go. */
+  userDir: string;
+}
+
+export const listRoutines = () => request<RoutinesResponse>("/api/heads-down/routines");
+
+export const reloadRoutines = () =>
+  request<RoutinesResponse>("/api/heads-down/routines/reload", "POST");
 
 /** An MCP tool heads-down mode may call without asking. */
 export interface AllowedTool {
@@ -212,10 +397,14 @@ export const dismissQuestion = (id: string) =>
 
 export const listWorkStreams = () => request<WorkStream[]>("/api/work-streams");
 
-export const updateWorkStream = (
-  id: string,
-  patch: { status?: WorkStreamStatus; priority?: WorkStream["priority"] },
-) => request<WorkStream>(`/api/work-streams/${id}`, "PATCH", patch);
+export interface WorkStreamPatch {
+  status?: WorkStreamStatus;
+  priority?: WorkStream["priority"];
+  paused?: boolean;
+}
+
+export const updateWorkStream = (id: string, patch: WorkStreamPatch) =>
+  request<WorkStream>(`/api/work-streams/${id}`, "PATCH", patch);
 
 /** Live updates for the page; forward only, so a reconnect re-reads the lists. */
 export async function* streamHeadsDown(signal: AbortSignal): AsyncGenerator<HeadsDownStreamEvent> {

@@ -96,6 +96,58 @@ describe("githubErrorFrom", () => {
     expect(e.reason).toBe("not_found");
     expect(e.explanation).toContain("private repository");
   });
+
+  it("keeps the reasons GitHub gives for a 422, in either entry shape", async () => {
+    const res = new Response(
+      JSON.stringify({
+        message: "Validation Failed",
+        errors: [
+          "line must be part of the diff",
+          { field: "path", message: "is invalid" },
+          { field: "body", code: "missing" },
+          { field: "side" },
+          null,
+          7,
+        ],
+      }),
+      { status: 422 },
+    );
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.details).toEqual([
+      "line must be part of the diff",
+      "path: is invalid",
+      "body missing",
+      "side",
+    ]);
+    expect(e.explanation).toBe(
+      "GitHub returned an error: Validation Failed (line must be part of the diff; path: is invalid; body missing; side)",
+    );
+  });
+
+  it("decides a refusal's reason from GitHub's own message, not its details", async () => {
+    const res = new Response(
+      JSON.stringify({ message: "Forbidden", errors: ["label rate limit exceeded"] }),
+      { status: 403 },
+    );
+    const e = await githubErrorFrom(res, "add label");
+    expect(e.reason).toBe("forbidden");
+    expect(e.explanation).toContain("label rate limit exceeded");
+  });
+
+  it("shows the details alone when a non-422 refusal has no message", async () => {
+    const res = new Response(JSON.stringify({ errors: ["upstream timeout"] }), { status: 500 });
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.explanation).toBe("GitHub returned an error: upstream timeout");
+  });
+
+  it("keeps 422 reasons short", async () => {
+    const errors = Array.from({ length: 8 }, () => "x".repeat(500));
+    const res = new Response(JSON.stringify({ errors }), { status: 422 });
+    const e = await githubErrorFrom(res, "post comment");
+    expect(e.details).toHaveLength(5);
+    expect(e.details.every((d) => d.length === 200)).toBe(true);
+    expect(e.explanation).toStartWith("GitHub returned an error: Validation Failed (");
+  });
 });
 
 describe("GitHubClient rate limiting", () => {

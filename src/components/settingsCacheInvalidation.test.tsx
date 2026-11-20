@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import { GITHUB_ISSUES_PREFIX, JIRA_ISSUES_PREFIX } from "../lib/issues/cacheKeys";
 import { PRS_PROBE_PREFIX, prsListPrefix } from "../lib/pr/cacheKeys";
 import { type Freshness, useCachedResource } from "../lib/resourceCache";
 import { nativeInvoke } from "../test/nativeInvoke";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 /**
  * A setting that changes what a cached panel may show has to drop that panel's
@@ -22,17 +23,7 @@ const json = (body: unknown, status = 200) =>
 let repos: unknown[] = [];
 const config = { reviewQuery: "is:open", reviewingLookbackDays: 7 };
 
-mock.module("../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Faithful copy of the real implementation: a naive stub here would leak into
-  // any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the actual
-  // error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    const raw = await res.text().catch(() => "");
-    throw new Error(raw ? `${context} failed (${res.status}): ${raw}` : `${context} failed`);
-  },
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -53,7 +44,7 @@ mock.module("../lib/api", () => ({
     return json([]);
   },
   streamSSE: async function* () {},
-}));
+});
 
 // Delegates for everything it doesn't answer, per `src/test/nativeInvoke.ts`:
 // this stub is live for every file that runs after it, so a command it drops
@@ -187,3 +178,5 @@ describe("settings that change what a cached panel may show", () => {
     expect(loadsOf(probe)).toBe(1);
   });
 });
+
+afterAll(resetSidecarApi);

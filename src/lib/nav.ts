@@ -108,6 +108,38 @@ export function useNewWorkspaceListener(handler: (request: NewWorkspaceRequest) 
   useEffect(() => onNewWorkspace(handler), [handler]);
 }
 
+const OPEN_REVIEW_EVENT = "yarvis:open-review";
+
+/**
+ * A request to show a review workspace on the Review tab, with one of its PRs
+ * brought forward when `prId` is set: its description opened, or its
+ * "Since last review" or verification report tab when `tab` names one.
+ */
+export interface OpenReviewRequest {
+  workspaceId: string;
+  prId?: string;
+  tab?: "since-review" | "verification";
+}
+
+interface OpenReviewEvent extends Event {
+  detail: OpenReviewRequest;
+}
+
+export function requestOpenReview(request: OpenReviewRequest): void {
+  target.dispatchEvent(new CustomEvent(OPEN_REVIEW_EVENT, { detail: request }));
+}
+
+export function onOpenReview(handler: (request: OpenReviewRequest) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenReviewEvent).detail);
+  target.addEventListener(OPEN_REVIEW_EVENT, listener);
+  return () => target.removeEventListener(OPEN_REVIEW_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenReview` for the App shell. */
+export function useOpenReviewListener(handler: (request: OpenReviewRequest) => void): void {
+  useEffect(() => onOpenReview(handler), [handler]);
+}
+
 const OPEN_PLACE_EVENT = "yarvis:open-place";
 
 interface OpenPlaceEvent extends Event {
@@ -128,4 +160,30 @@ export function onOpenPlace(handler: (place: AppPlace) => void): () => void {
 /** React-friendly hook over `onOpenPlace` for the App shell. */
 export function useOpenPlaceListener(handler: (place: AppPlace) => void): void {
   useEffect(() => onOpenPlace(handler), [handler]);
+}
+
+const OPEN_ARTIFACT_EVENT = "yarvis:open-artifact";
+
+interface OpenArtifactEvent extends Event {
+  detail: string;
+}
+
+/**
+ * A request to show an artifact beside the Chat tab's conversation. Used by an
+ * artifact link outside any chat; a link inside a chat opens the artifact in
+ * that chat's own pane instead (`ArtifactPaneContext`).
+ */
+export function requestOpenArtifact(id: string): void {
+  target.dispatchEvent(new CustomEvent(OPEN_ARTIFACT_EVENT, { detail: id }));
+}
+
+export function onOpenArtifact(handler: (id: string) => void): () => void {
+  const listener = (e: Event) => handler((e as OpenArtifactEvent).detail);
+  target.addEventListener(OPEN_ARTIFACT_EVENT, listener);
+  return () => target.removeEventListener(OPEN_ARTIFACT_EVENT, listener);
+}
+
+/** React-friendly hook over `onOpenArtifact` for the App shell. */
+export function useOpenArtifactListener(handler: (id: string) => void): void {
+  useEffect(() => onOpenArtifact(handler), [handler]);
 }

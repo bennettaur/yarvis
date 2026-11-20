@@ -4,8 +4,8 @@
  * can run beside the primary one.
  *
  * The name selects a bundle identifier, and Tauri derives the app data
- * directory and the single-instance socket from that — so `settings.json`,
- * `alarms.json` and the core control socket separate without further work. It
+ * directory and the single-instance socket from that — so `settings.json` and
+ * the core control socket separate without further work. It
  * also selects a Vite dev-server port, since the default one is taken by
  * whatever is already running.
  *

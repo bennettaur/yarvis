@@ -6,12 +6,22 @@ import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import {
+  ARCHIVED_END_REASON,
+  endWorkspaceAgentSessions,
+  findResumableAgentSessions,
+  HARNESS_TOKEN_HEADER,
+  harnessTokenMatches,
   PROCESS_GONE_END_REASON,
   pidIsAlive,
   reapAndListAgentSessions,
   SESSION_KEY_HEADER,
   SESSION_TOKEN_HEADER,
 } from "./agentSessions.ts";
+import {
+  resumeAgentSessions,
+  type StartClaudeSessionInput,
+  stopClaudeSession,
+} from "./claudeSession.ts";
 import { agentSessionHookCommand } from "./claudeSettings.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -44,6 +54,8 @@ const PANE = `ws:${WORKSPACE}/t1/p1`;
 /** The token the core puts in a PTY's environment (`session_token` in pty.rs). */
 const tokenFor = (sessionKey: string) =>
   createHmac("sha256", config.token).update(`session:${sessionKey}`).digest("hex");
+const harnessTokenFor = (sessionKey: string, harness: string) =>
+  createHmac("sha256", config.token).update(`harness:${sessionKey}:${harness}`).digest("hex");
 
 async function seedWorkspace(id: string, name: string) {
   await sql`INSERT INTO workspaces (id, name, slug, status, root_path)
@@ -63,21 +75,27 @@ function hook(
     sessionKey = AGENT_TAB,
     sessionToken = tokenFor(sessionKey ?? AGENT_TAB),
     bearer = ATTENTION_TOKEN,
+    harness,
+    harnessToken = harness ? harnessTokenFor(sessionKey ?? AGENT_TAB, harness) : "",
   }: {
     workspaceId?: string;
     pid?: string;
     sessionKey?: string | null;
     sessionToken?: string;
     bearer?: string;
+    harness?: string;
+    harnessToken?: string;
   } = {},
 ) {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${bearer}`,
     "Content-Type": "application/json",
     [SESSION_TOKEN_HEADER]: sessionToken,
+    [HARNESS_TOKEN_HEADER]: harnessToken,
   };
   if (sessionKey !== null) headers[SESSION_KEY_HEADER] = sessionKey;
-  return app.request(`/ingest/agent-session?workspaceId=${workspaceId}&pid=${pid}`, {
+  const harnessParam = harness === undefined ? "" : `&harness=${encodeURIComponent(harness)}`;
+  return app.request(`/ingest/agent-session?workspaceId=${workspaceId}&pid=${pid}${harnessParam}`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -99,6 +117,7 @@ const end = (sessionId: string, reason = "exit") => ({
 
 beforeEach(async () => {
   await sql`TRUNCATE workspaces RESTART IDENTITY CASCADE`;
+  await sql`DELETE FROM events WHERE type = 'workspace.session_started'`;
   await seedWorkspace(WORKSPACE, "ws");
   await seedWorkspace(OTHER_WORKSPACE, "other");
 });
@@ -269,5 +288,378 @@ describe("pidIsAlive", () => {
     const child = Bun.spawn(["true"]);
     await child.exited;
     expect(pidIsAlive(child.pid)).toBe(false);
+  });
+});
+
+/** Every pid but this test process's own reads as dead, as after an app restart. */
+const onlyThisProcess = (pid: number) => pid === process.pid;
+
+const OTHER_TAB = `ws-claude:${OTHER_WORKSPACE}`;
+const S1 = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
+const S2 = "1c7b4a2f-0d2e-4f66-9b6c-3a4d5e6f7a81";
+
+const resumableIn = (
+  workspaceId: string,
+  workspaceName: string,
+  claudeSessionId: string,
+  pid: number,
+  harness: string | null = null,
+) => ({
+  workspaceId,
+  workspaceName,
+  rootPath: "/tmp/ws",
+  claudeSessionId,
+  pid,
+  harness,
+});
+
+describe("findResumableAgentSessions", () => {
+  it("picks the agent tab's newest session when its process went away without ending", async () => {
+    await hook(start(S2), { pid: "999998" });
+    await hook(start(S1), { pid: "999999" });
+    await hook(start("1d8c5b3a-1e3f-4a77-8c7d-4b5e6f7a8b92"), { pid: "999997", sessionKey: PANE });
+
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999),
+    ]);
+  });
+
+  it("resumes with the harness the session was launched with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999, "claude-bedrock"),
+    ]);
+  });
+
+  it("reads an empty harness, from a terminal that carries none, as the default", async () => {
+    await hook(start(S1), { pid: "999999", harness: "" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999, null),
+    ]);
+  });
+
+  it("checks harness tokens the way the core signs them", () => {
+    // Pinned in pty.rs's tests too, so the two sides can't drift apart.
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:a",
+        "pi",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(true);
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:a",
+        "claude",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(false);
+    expect(
+      harnessTokenMatches(
+        "bearer",
+        "ws-claude:b",
+        "pi",
+        "910404caedb054b27aa5de4f10d54a8297b04f4b9806a05304fbeaf442ed8abd",
+      ),
+    ).toBe(false);
+  });
+
+  it("refuses a harness token of the wrong shape", async () => {
+    const valid = harnessTokenFor(AGENT_TAB, "pi");
+    for (const harnessToken of [`${valid}0`, `x${valid}`, valid.slice(1), valid.toUpperCase()]) {
+      const res = await hook(start(S1), { pid: "999999", harness: "pi", harnessToken });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("keeps the harness a session first registered with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    // An unsigned re-registration with no harness can't move it to the built-in.
+    await hook(start(S1, "resume"), { pid: "999998" });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_998, "claude-bedrock"),
+    ]);
+  });
+
+  it("refuses a harness the core didn't sign for that terminal", async () => {
+    // What a process in the terminal would send to be relaunched as another harness.
+    const forged = await hook(start(S1), {
+      pid: "999999",
+      harness: "claude-yolo",
+      harnessToken: harnessTokenFor(AGENT_TAB, "pi"),
+    });
+    expect(forged.status).toBe(403);
+    const unsigned = await hook(start(S1), { pid: "999999", harness: "pi", harnessToken: "" });
+    expect(unsigned.status).toBe(403);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("rejects a harness id the core could never have launched", async () => {
+    const res = await hook(start(S1), { pid: "999999", harness: "Bad Id&x=1" });
+    expect(res.status).toBe(400);
+  });
+
+  it("resumes a session whose SessionEnd says a signal stopped it, as the app quitting does", async () => {
+    // Closing the PTY sends SIGHUP, and Claude Code then reports `other`.
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([
+      resumableIn(WORKSPACE, "ws", S1, 999_999),
+    ]);
+  });
+
+  it("leaves a session the user closed, whichever of the stop and its SessionEnd lands first", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    await endWorkspaceAgentSessions(db, WORKSPACE, "stopped", AGENT_TAB);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    await endWorkspaceAgentSessions(db, OTHER_WORKSPACE, "stopped", OTHER_TAB);
+    await hook(end(S2, "other"), { workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves a session that is still running, as after a sidecar-only restart", async () => {
+    await hook(start(S1));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("doesn't fall back to an older open session when the user exited the newest one", async () => {
+    await hook(start(S2), { pid: "999998" });
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "prompt_input_exit"));
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves a stopped session, and any in an archived workspace", async () => {
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    await endWorkspaceAgentSessions(db, OTHER_WORKSPACE, "stopped", OTHER_TAB);
+    await hook(start(S1), { pid: "999999" });
+    await sql`UPDATE workspaces SET status = 'archived' WHERE id = ${WORKSPACE}`;
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves a workspace still owed a kick-off, which starts its own session", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await sql`UPDATE workspaces SET pending_issue_prompt = 'do the thing' WHERE id = ${WORKSPACE}`;
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("never resumes an id that isn't a UUID, since it goes on Claude's command line", async () => {
+    for (const id of ["--dangerously-skip-permissions", `x${S1}`, `${S1}x`]) {
+      await hook(start(id), { pid: "999999" });
+      expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    }
+  });
+});
+
+describe("stopClaudeSession", () => {
+  it("ends the agent tab's registration even when the core can't take the kill", async () => {
+    await hook(start("tab"), { pid: "999999" });
+    await hook(start("pane"), { pid: "999998", sessionKey: PANE });
+
+    // No core is listening in tests, so the kill fails after the write.
+    await expect(stopClaudeSession(db, WORKSPACE)).rejects.toThrow();
+
+    const rows = await sql`SELECT claude_session_id, end_reason FROM workspace_agent_sessions
+                           WHERE workspace_id = ${WORKSPACE} ORDER BY claude_session_id`;
+    expect(rows.map((r) => [r.claude_session_id, r.end_reason])).toEqual([
+      ["pane", null],
+      ["tab", "stopped"],
+    ]);
+  });
+});
+
+describe("endWorkspaceAgentSessions", () => {
+  it("leaves a session the user already exited with its own end", async () => {
+    await hook(start("exited"));
+    await hook(end("exited", "prompt_input_exit"));
+
+    await endWorkspaceAgentSessions(db, WORKSPACE, ARCHIVED_END_REASON);
+
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual(["prompt_input_exit"]);
+  });
+
+  it("closes every open session in the workspace and no other", async () => {
+    await hook(start("tab"));
+    await hook(start("pane"), { sessionKey: PANE });
+    await hook(start("other"), { workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+
+    await endWorkspaceAgentSessions(db, WORKSPACE, ARCHIVED_END_REASON);
+
+    expect(await live()).toEqual([]);
+    expect(await live(OTHER_WORKSPACE)).toHaveLength(1);
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual([ARCHIVED_END_REASON, ARCHIVED_END_REASON]);
+  });
+});
+
+describe("resumeAgentSessions", () => {
+  const recordingStarter =
+    (launched: StartClaudeSessionInput[]) => async (input: StartClaudeSessionInput) => {
+      launched.push(input);
+      return { sessionKey: `ws-claude:${input.workspaceId}` };
+    };
+
+  it("relaunches a cut-off session with the harness it was started with", async () => {
+    await hook(start(S1), { pid: "999999", harness: "claude-bedrock" });
+    const launched: StartClaudeSessionInput[] = [];
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+    expect(launched.map((l) => l.harness)).toEqual(["claude-bedrock"]);
+  });
+
+  it("relaunches the cut-off session with --resume and closes its old registration", async () => {
+    await hook(start(S1), { pid: "999999" });
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched).toEqual([
+      {
+        workspaceId: WORKSPACE,
+        cwd: "/tmp/ws",
+        name: "ws",
+        remoteControl: false,
+        resumeSessionId: S1,
+        // Registered before it carried a harness, so it was the built-in agent.
+        harness: "claude",
+      },
+    ]);
+    // A resume that never starts isn't retried on every restart.
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    const [closed] =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(closed?.end_reason).toBe("resumed");
+    // The resumed Claude registers under the same id, which reopens the row.
+    await hook(start(S1, "resume"));
+    expect((await live()).map((s) => s.claudeSessionId)).toEqual([S1]);
+    // The activity log says the session came back, rather than that a new one started.
+    const events =
+      await sql`SELECT type, source, payload FROM events WHERE type = 'workspace.session_started'`;
+    expect(events.map((e) => ({ ...e }))).toEqual([
+      {
+        type: "workspace.session_started",
+        source: "workspaces",
+        payload: { workspaceId: WORKSPACE, name: "ws", resumed: true, remoteControl: false },
+      },
+    ]);
+  });
+
+  it("launches every workspace's resume at once rather than one after another", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    const started: string[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const done = resumeAgentSessions(db, {
+      // Each launch waits until both have begun, so running them in turn never finishes.
+      startSession: async (input) => {
+        started.push(input.workspaceId);
+        if (started.length === 2) release();
+        await gate;
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+    const outcome = await Promise.race([
+      done.then(() => "finished"),
+      Bun.sleep(2_000).then(() => "stuck"),
+    ]);
+
+    expect(outcome).toBe("finished");
+    expect(started.sort()).toEqual([WORKSPACE, OTHER_WORKSPACE].sort());
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("closes a signalled session once it has been resumed", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(end(S1, "other"));
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: recordingStarter(launched),
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.map((l) => l.resumeSessionId)).toEqual([S1]);
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+  });
+
+  it("leaves the row open when the resumed Claude registers before the launch returns", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await resumeAgentSessions(db, {
+      startSession: async (input) => {
+        await hook(start(S1, "resume"));
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+    expect((await live()).map((s) => [s.claudeSessionId, s.pid])).toEqual([[S1, process.pid]]);
+  });
+
+  it("carries on past a failed launch, and gives that session no second attempt", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    const launched: StartClaudeSessionInput[] = [];
+
+    await resumeAgentSessions(db, {
+      startSession: async (input) => {
+        if (input.workspaceId === WORKSPACE) throw new Error("session cap reached");
+        return recordingStarter(launched)(input);
+      },
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.map((l) => l.resumeSessionId)).toEqual([S2]);
+    // A refusal like a non-Claude agent command would fail the same way on every start.
+    expect(await findResumableAgentSessions(db, onlyThisProcess)).toEqual([]);
+    const rows =
+      await sql`SELECT end_reason FROM workspace_agent_sessions WHERE workspace_id = ${WORKSPACE}`;
+    expect(rows.map((r) => r.end_reason)).toEqual(["resume-failed"]);
+    // Only the session that came back shows in the activity log.
+    const events = await sql`SELECT payload FROM events WHERE type = 'workspace.session_started'`;
+    expect(events.map((e) => e.payload.workspaceId)).toEqual([OTHER_WORKSPACE]);
+  });
+
+  it("waits for every launch even when recording a resume fails", async () => {
+    await hook(start(S1), { pid: "999999" });
+    await hook(start(S2), { pid: "999998", workspaceId: OTHER_WORKSPACE, sessionKey: OTHER_TAB });
+    // Reads work and every write fails, as with a database that drops mid-sweep.
+    const failingWrites = new Proxy(db, {
+      get: (target, prop, receiver) =>
+        prop === "update"
+          ? () => {
+              throw new Error("database went away");
+            }
+          : Reflect.get(target, prop, receiver),
+    });
+    const launched: string[] = [];
+
+    await resumeAgentSessions(failingWrites, {
+      // The other workspace's launch is still running when this one's write fails.
+      startSession: async (input) => {
+        await Bun.sleep(input.workspaceId === WORKSPACE ? 0 : 50);
+        launched.push(input.workspaceId);
+        return { sessionKey: `ws-claude:${input.workspaceId}` };
+      },
+      isAlive: onlyThisProcess,
+    });
+
+    expect(launched.sort()).toEqual([WORKSPACE, OTHER_WORKSPACE].sort());
   });
 });

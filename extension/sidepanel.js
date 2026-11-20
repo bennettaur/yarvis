@@ -86,6 +86,20 @@ function render(index) {
   empty.hidden = index.length > 0;
 }
 
+// The panel opens on the chat; the activity log is a click away.
+const views = {
+  chat: [document.getElementById("show-chat"), document.getElementById("chat-view")],
+  activity: [document.getElementById("show-activity"), document.getElementById("activity-view")],
+};
+for (const [name, [tab]] of Object.entries(views)) {
+  tab.addEventListener("click", () => {
+    for (const [other, [otherTab, view]] of Object.entries(views)) {
+      otherTab.setAttribute("aria-selected", String(other === name));
+      view.hidden = other !== name;
+    }
+  });
+}
+
 document.getElementById("clear").addEventListener("click", () => {
   clearActivity();
 });

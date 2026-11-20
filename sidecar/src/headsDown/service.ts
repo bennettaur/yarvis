@@ -9,12 +9,15 @@ import {
   inArray,
   isNotNull,
   isNull,
+  max,
   type SQL,
   sql,
 } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import {
   agentTools,
+  CUT_SHORT_RESULT,
+  chatMessages,
   type HeadsDownMessage,
   type HeadsDownPass,
   type HeadsDownQuestion,
@@ -23,9 +26,11 @@ import {
   headsDownPasses,
   headsDownQuestions,
   headsDownRuns,
+  type ToolActivity,
 } from "../db/schema.ts";
 import { type DecisionDetail, decisionContent, decisionQuery } from "../memory/decisions.ts";
 import type { MemoryService } from "../memory/index.ts";
+import { MAX_EVERY_MINUTES } from "./routines.ts";
 
 /**
  * Heads-down mode's state: whether it is running, what each pass did, what
@@ -40,20 +45,38 @@ export async function getActiveRun(db: Db): Promise<HeadsDownRun | null> {
   return row ?? null;
 }
 
-/** Turns heads-down mode on, or updates the focus of the run already going. */
-export async function startRun(db: Db, focus: string | null): Promise<HeadsDownRun> {
+export interface StartRunOptions {
+  /** When the run stops on its own. Null clears it; left out keeps the one set. */
+  stopAt?: Date | null;
+}
+
+/**
+ * Turns heads-down mode on, or updates the run already going: its focus, when
+ * one is given, and its stop time.
+ */
+export async function startRun(
+  db: Db,
+  focus: string | null,
+  { stopAt }: StartRunOptions = {},
+): Promise<HeadsDownRun> {
   const active = await getActiveRun(db);
   if (active) {
-    if (focus === null) return active;
+    if (focus === null && stopAt === undefined) return active;
     const [row] = await db
       .update(headsDownRuns)
-      .set({ focus })
+      .set({
+        ...(focus !== null ? { focus } : {}),
+        ...(stopAt !== undefined ? { stopAt } : {}),
+      })
       .where(eq(headsDownRuns.id, active.id))
       .returning();
     return row!;
   }
   try {
-    const [row] = await db.insert(headsDownRuns).values({ focus }).returning();
+    const [row] = await db
+      .insert(headsDownRuns)
+      .values({ focus, stopAt: stopAt ?? null })
+      .returning();
     return row!;
   } catch (e) {
     // Two starts at once: the one-active-run index turned the second away, so
@@ -73,6 +96,55 @@ export async function stopRun(db: Db): Promise<HeadsDownRun | null> {
   return row ?? null;
 }
 
+/** Pauses the active run, keeping when it was first paused. Null when nothing is running. */
+export async function pauseRun(db: Db): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ pausedAt: sql`coalesce(${headsDownRuns.pausedAt}, now())` })
+    .where(eq(headsDownRuns.status, "active"))
+    .returning();
+  return row ?? null;
+}
+
+/** Resumes the active run. Null when nothing is running or it wasn't paused. */
+export async function resumeRun(db: Db): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ pausedAt: null })
+    .where(and(eq(headsDownRuns.status, "active"), isNotNull(headsDownRuns.pausedAt)))
+    .returning();
+  return row ?? null;
+}
+
+/** Sets or clears when the active run stops. Null when nothing is running. */
+export async function setStopAt(db: Db, stopAt: Date | null): Promise<HeadsDownRun | null> {
+  const [row] = await db
+    .update(headsDownRuns)
+    .set({ stopAt })
+    .where(eq(headsDownRuns.status, "active"))
+    .returning();
+  return row ?? null;
+}
+
+/**
+ * How close to the stop time counts as reached. Timers can fire a little
+ * early, and a cycle that just misses it would start a whole pass.
+ */
+const STOP_TIME_TOLERANCE_MS = 1000;
+
+/** How long until the run's stop time, 0 once it has come, or Infinity when it has none. */
+export function msUntilStop(run: HeadsDownRun | null, now = Date.now()): number {
+  if (!run?.stopAt) return Infinity;
+  const ms = run.stopAt.getTime() - now;
+  return ms <= STOP_TIME_TOLERANCE_MS ? 0 : ms;
+}
+
+/** Whether a run may run passes now: still the active run, not paused, and before its stop time. */
+export async function mayRunPasses(db: Db, runId: string): Promise<boolean> {
+  const active = await getActiveRun(db);
+  return active?.id === runId && active.pausedAt === null && msUntilStop(active) > 0;
+}
+
 export async function addMessage(db: Db, body: string): Promise<HeadsDownMessage> {
   const [row] = await db.insert(headsDownMessages).values({ body: body.trim() }).returning();
   return row!;
@@ -84,6 +156,12 @@ export async function listMessages(db: Db, limit = 50): Promise<HeadsDownMessage
     .from(headsDownMessages)
     .orderBy(desc(headsDownMessages.createdAt))
     .limit(limit);
+}
+
+/** Deletes every message, read or not. Returns how many there were. */
+export async function deleteAllMessages(db: Db): Promise<number> {
+  const deleted = await db.delete(headsDownMessages).returning({ id: headsDownMessages.id });
+  return deleted.length;
 }
 
 /** The oldest messages a pass hasn't read, so a backlog reaches it in order rather than all at once. */
@@ -457,12 +535,21 @@ export async function isToolUnattended(db: Db, id: string): Promise<boolean> {
   return row?.unattended ?? false;
 }
 
+/**
+ * Records a pass as started. The routines it is given are recorded now rather
+ * than when it finishes, so a sidecar that dies mid-pass still counts as having
+ * tried them.
+ */
 export async function startPass(
   db: Db,
   runId: string,
   chatSessionId: string,
+  routinesOffered: string[] = [],
 ): Promise<HeadsDownPass> {
-  const [row] = await db.insert(headsDownPasses).values({ runId, chatSessionId }).returning();
+  const [row] = await db
+    .insert(headsDownPasses)
+    .values({ runId, chatSessionId, routinesOffered })
+    .returning();
   return row!;
 }
 
@@ -471,6 +558,8 @@ export interface FinishPassInput {
   sleepMinutes: number;
   sleepReason: string;
   error?: string | null;
+  /** Routines the pass reported done. */
+  routinesDone?: string[];
 }
 
 export async function finishPass(db: Db, id: string, input: FinishPassInput): Promise<void> {
@@ -482,12 +571,112 @@ export async function finishPass(db: Db, id: string, input: FinishPassInput): Pr
       sleepMinutes: input.sleepMinutes,
       sleepReason: input.sleepReason,
       error: input.error ?? null,
+      routinesDone: input.routinesDone ?? [],
     })
     .where(eq(headsDownPasses.id, id));
 }
 
+export interface RoutineHistory {
+  /** When the last pass to report each routine done started, by name. */
+  lastDone: Map<string, Date>;
+  /** When the last pass given each routine started, by name. */
+  lastOffered: Map<string, Date>;
+}
+
+/** The latest pass start each name appears in, for one of the routine name columns. */
+async function latestPassByName(
+  db: Db,
+  column: typeof headsDownPasses.routinesDone | typeof headsDownPasses.routinesOffered,
+): Promise<Map<string, Date>> {
+  const name = sql<string>`r.name`;
+  const rows = await db
+    .select({ name, at: max(headsDownPasses.startedAt) })
+    .from(headsDownPasses)
+    .crossJoin(sql`jsonb_array_elements_text(${column}) as r(name)`)
+    .where(
+      and(
+        gte(headsDownPasses.startedAt, new Date(Date.now() - MAX_EVERY_MINUTES * 60_000)),
+        sql`${column} <> '[]'::jsonb`,
+      ),
+    )
+    .groupBy(name);
+  return new Map(rows.flatMap((r) => (r.at ? [[r.name, r.at] as const] : [])));
+}
+
+/**
+ * When each routine was last given to a pass and last done in the longest
+ * cadence a routine can have, across every run:
+ * a routine's cadence is about the user's day, not about when heads-down mode
+ * was turned on.
+ */
+export async function routineHistory(db: Db): Promise<RoutineHistory> {
+  const [lastDone, lastOffered] = await Promise.all([
+    latestPassByName(db, headsDownPasses.routinesDone),
+    latestPassByName(db, headsDownPasses.routinesOffered),
+  ]);
+  return { lastDone, lastOffered };
+}
+
 export async function listPasses(db: Db, limit = 20): Promise<HeadsDownPass[]> {
   return db.select().from(headsDownPasses).orderBy(desc(headsDownPasses.startedAt)).limit(limit);
+}
+
+/** Every tool call a pass made, in order, from the transcript in its hidden session. */
+export async function passToolCalls(db: Db, chatSessionId: string): Promise<ToolActivity[]> {
+  const rows = await db
+    .select({ toolCalls: chatMessages.toolCalls })
+    .from(chatMessages)
+    .where(and(eq(chatMessages.sessionId, chatSessionId), eq(chatMessages.role, "assistant")))
+    .orderBy(asc(chatMessages.createdAt));
+  return rows.flatMap((r) => r.toolCalls ?? []);
+}
+
+/** Longest a failed call's error is kept in a pass's summary. */
+const FAILED_CALL_CHARS = 300;
+
+export interface PassCallSummary {
+  callCount: number;
+  /** Calls that failed, or whose result never came back (`noResult`), so may have gone through. */
+  failedCalls: { name: string; server: string | null; error: string | null; noResult: boolean }[];
+}
+
+/**
+ * How many calls each pass made and which failed, keyed by its session id.
+ * Counted in the database, since a pass's results run to megabytes and the
+ * page only needs the tally and the errors.
+ */
+export async function passCallSummaries(
+  db: Db,
+  chatSessionIds: string[],
+): Promise<Map<string, PassCallSummary>> {
+  const summaries = new Map<string, PassCallSummary>();
+  if (chatSessionIds.length === 0) return summaries;
+  const calls = sql`coalesce(${chatMessages.toolCalls}, '[]'::jsonb)`;
+  const rows = await db
+    .select({
+      sessionId: chatMessages.sessionId,
+      callCount: sql<number>`jsonb_array_length(${calls})`,
+      failed: sql<PassCallSummary["failedCalls"] | null>`(
+        select jsonb_agg(jsonb_build_object(
+          'name', c->>'name',
+          'server', c->>'server',
+          'error', left(c->>'result', ${FAILED_CALL_CHARS}),
+          'noResult', c->>'status' = 'pending' or c->>'result' = ${CUT_SHORT_RESULT}
+        ))
+        from jsonb_array_elements(${calls}) as c
+        where c->>'status' in ('error', 'pending')
+      )`,
+    })
+    .from(chatMessages)
+    .where(and(inArray(chatMessages.sessionId, chatSessionIds), eq(chatMessages.role, "assistant")))
+    .orderBy(asc(chatMessages.createdAt));
+  for (const row of rows) {
+    const summary = summaries.get(row.sessionId) ?? { callCount: 0, failedCalls: [] };
+    summary.callCount += row.callCount;
+    summary.failedCalls.push(...(row.failed ?? []));
+    summaries.set(row.sessionId, summary);
+  }
+  return summaries;
 }
 
 export async function getPass(db: Db, id: string): Promise<HeadsDownPass | null> {

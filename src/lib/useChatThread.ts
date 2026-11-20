@@ -16,6 +16,7 @@ import {
 import type { ReasoningEffort } from "./effort";
 import { type DisplayError, formatError } from "./errors";
 import { setToolSettings } from "./mcp";
+import { explainStreamDrop, isConnectionDrop } from "./streamDrop";
 
 // Shared with ChatPanel so Omni Chat defaults to the same provider/model the
 // user last picked in the main Chat tab.
@@ -32,8 +33,15 @@ function toThreadMessages(msgs: ChatMessage[]): ThreadMessage[] {
   }));
 }
 
-/** localStorage key under which the Chat tab's open session id is kept. */
-export const CHAT_TAB_SESSION_KEY = "yarvis.chat.sessionId";
+/** A message typed while a turn was running, waiting to be sent. */
+export interface QueuedMessage {
+  text: string;
+  /**
+   * The screen context when the message was queued. The user may have moved on
+   * by the time it is sent, and the message is about what they were looking at.
+   */
+  context?: string;
+}
 
 export interface UseChatThreadOptions {
   /** localStorage key under which this thread's session id is persisted. */
@@ -55,6 +63,11 @@ export interface UseChatThreadOptions {
    * to hear about those, since the hook owns when they happen.
    */
   onSessionCreated?: (session: ChatSession) => void;
+  /**
+   * Whether the surface is on screen. Coming back on screen re-reads the
+   * provider list, since it may have changed in Settings meanwhile.
+   */
+  visible?: boolean;
 }
 
 /**
@@ -65,8 +78,15 @@ export interface UseChatThreadOptions {
  * across summons.
  */
 export function useChatThread(options: UseChatThreadOptions = {}) {
-  const { sessionStorageKey, getContext, onAttention, onSessionCreated, reasoning, effort } =
-    options;
+  const {
+    sessionStorageKey,
+    getContext,
+    onAttention,
+    onSessionCreated,
+    reasoning,
+    effort,
+    visible = true,
+  } = options;
 
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
@@ -79,11 +99,20 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<DisplayError | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  // Messages typed while a turn runs, sent one per turn once it finishes.
+  const [queued, setQueued] = useState<QueuedMessage[]>([]);
+  // Set when a turn fails or is stopped, or a queued message can't be sent. The
+  // queue then waits for the user: what they queued may not make sense after a
+  // reply that never came.
+  const [held, setHeld] = useState(false);
 
   // Lets the surface end a turn early. Aborting the fetch disconnects the SSE
   // stream, which the sidecar reads as the client going away and uses to cancel
   // the upstream call, so a stopped turn stops costing tokens.
   const inFlight = useRef<AbortController | null>(null);
+  // The most recent turn, still running or not, so late async work from an
+  // earlier one can tell it has been superseded.
+  const latestTurn = useRef<AbortController | null>(null);
   // The session on screen now, for async work that must not land in a thread the
   // user has since left.
   const currentSession = useRef<string | null>(null);
@@ -139,7 +168,14 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     setActivity([]);
     setApprovals([]);
     setError(null);
+    // Queued messages were written for the thread being left.
+    setQueued([]);
+    setHeld(false);
   }, []);
+
+  // Bumped on each load, so a slow fetch for a session the user has already
+  // left can't paint its messages under the one they are now in.
+  const loadSeq = useRef(0);
 
   const loadSession = useCallback(
     async (id: string) => {
@@ -147,39 +183,58 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       // append its reply here, into a conversation it was never part of.
       abandonTurn();
       setSessionId(id);
+      const seq = ++loadSeq.current;
       try {
         const msgs = await getMessages(id);
-        setMessages(toThreadMessages(msgs));
+        if (seq === loadSeq.current) setMessages(toThreadMessages(msgs));
       } catch (e) {
-        setError(formatError(e));
+        if (seq === loadSeq.current) setError(formatError(e));
       }
     },
     [abandonTurn],
   );
 
-  // Load providers and restore the last-used provider/model.
+  // Read through refs so a provider reload keeps the thread's own pick without
+  // re-running whenever the user changes it.
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  const modelRef = useRef(model);
+  modelRef.current = model;
+  const providersLoaded = useRef(false);
+  const providersSeq = useRef(0);
+
+  // Loads providers on mount and again each time the surface comes back on
+  // screen. Both surfaces stay mounted while hidden, so a provider added or a
+  // key saved in Settings would otherwise never reach the picker.
   useEffect(() => {
+    if (!visible && providersLoaded.current) return;
+    providersLoaded.current = true;
+    const seq = ++providersSeq.current;
     void (async () => {
       try {
         const provs = await listProviders();
+        if (seq !== providersSeq.current) return;
         setProviders(provs);
-        const savedProvider = localStorage.getItem(PROVIDER_KEY) as ProviderId | null;
-        const savedModel = localStorage.getItem(MODEL_KEY);
+        // The thread's current pick wins over the saved one, which the other
+        // chat surface may have changed since.
+        const wantedProvider =
+          providerRef.current || (localStorage.getItem(PROVIDER_KEY) as ProviderId | null);
+        const wantedModel = modelRef.current || localStorage.getItem(MODEL_KEY);
         const chosen =
-          provs.find((p) => p.id === savedProvider) ?? provs.find((p) => p.available) ?? provs[0];
+          provs.find((p) => p.id === wantedProvider) ?? provs.find((p) => p.available) ?? provs[0];
         if (chosen) {
           setProvider(chosen.id);
           setModel(
-            savedModel && chosen.models.some((m) => m.id === savedModel)
-              ? savedModel
+            wantedModel && chosen.models.some((m) => m.id === wantedModel)
+              ? wantedModel
               : (chosen.models[0]?.id ?? ""),
           );
         }
       } catch (e) {
-        setError(formatError(e));
+        if (seq === providersSeq.current) setError(formatError(e));
       }
     })();
-  }, []);
+  }, [visible]);
 
   // Resume the persisted session once on mount.
   const restored = useRef(false);
@@ -210,6 +265,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     const session = await createSession();
     setSessionId(session.id);
     setMessages([]);
+    // Anything queued while the session was being created was typed into the
+    // chat being left; sent now, it would go there.
+    setQueued([]);
     onSessionCreated?.(session);
     return session;
   }, [onSessionCreated, abandonTurn]);
@@ -247,7 +305,16 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
   const send = useCallback(
     async (
       text: string,
-      sendOptions: { source?: "voice"; resend?: boolean; rewindTo?: string } = {},
+      sendOptions: {
+        source?: "voice";
+        resend?: boolean;
+        rewindTo?: string;
+        /**
+         * Used instead of reading the screen context now. Present but
+         * undefined means "no context", not "read it now".
+         */
+        context?: string;
+      } = {},
     ) => {
       const trimmed = text.trim();
       // Nothing to send, nothing to send it with, or a turn already running.
@@ -282,16 +349,20 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         return [...prev, turn];
       });
       setBusy(true);
+      setHeld(false);
       setError(null);
       setThinking("");
       setActivity([]);
-      const context = getContext?.();
+      const context = "context" in sendOptions ? sendOptions.context : getContext?.();
       const controller = new AbortController();
       inFlight.current = controller;
+      latestTurn.current = controller;
       let acc = "";
       let failed = false;
       let thought = "";
       const ran: ToolActivity[] = [];
+      const startedAt = Date.now();
+      let lastEvent = { type: "none", at: startedAt };
       try {
         for await (const evt of streamChat(
           {
@@ -309,6 +380,9 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           },
           { signal: controller.signal },
         )) {
+          // A heartbeat says the connection was alive, not what the turn was
+          // doing, and the drop explanation needs the latter.
+          if (evt.type !== "ping") lastEvent = { type: evt.type, at: Date.now() };
           if (evt.type === "delta" && evt.text) {
             acc += evt.text;
             setStreaming(acc);
@@ -367,6 +441,16 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
           setError({ message: "Turn stopped. Nothing was saved for it.", tone: "notice" });
         } else {
           setError(formatError(e));
+          if (isConnectionDrop(e)) {
+            // The explanation waits on a health check, so it lands after the
+            // turn ends. It replaces the bare error unless a newer turn has
+            // started or the user has switched sessions.
+            void explainStreamDrop({ error: e, startedAt, lastEvent }).then((explained) => {
+              if (latestTurn.current === controller && currentSession.current === activeId) {
+                setError(explained);
+              }
+            });
+          }
         }
       } finally {
         inFlight.current = null;
@@ -390,6 +474,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
         }
         setStreaming("");
         setBusy(false);
+        if (failed) setHeld(true);
         // A rewind that failed may have left the screen and the transcript
         // disagreeing about what was dropped; the sidecar's copy is the truth.
         if (sendOptions.rewindTo && failed) void reloadMessages(activeId);
@@ -413,6 +498,45 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       reloadMessages,
     ],
   );
+
+  /** Holds a message until the turn in flight finishes. */
+  const enqueue = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      // Read now: the updater runs later, when the screen may have changed.
+      const context = getContext?.();
+      setQueued((prev) => [...prev, { text: trimmed, context }]);
+      return true;
+    },
+    [getContext],
+  );
+
+  const removeQueued = useCallback((index: number) => {
+    setQueued((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  /** Sends the oldest queued message: on its own after a clean turn, or by hand when the queue is held. */
+  const sendNextQueued = useCallback(() => {
+    const [next, ...rest] = queued;
+    if (next === undefined || busy) return;
+    setQueued(rest);
+    void send(next.text, { context: next.context })
+      .catch(() => false)
+      .then((sent) => {
+        if (sent) return;
+        // Held rather than retried: the drain below would otherwise pick it
+        // straight back up and loop.
+        setQueued((prev) => [next, ...prev]);
+        setHeld(true);
+      });
+  }, [queued, busy, send]);
+
+  const queueHeld = held && !busy && queued.length > 0;
+  useEffect(() => {
+    if (busy || held || queued.length === 0) return;
+    sendNextQueued();
+  }, [busy, held, queued, sendNextQueued]);
 
   /**
    * Runs the last user message again. Used after a failure, where the reply is
@@ -463,6 +587,11 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     respondApproval,
     alwaysAllow,
     send,
+    queued,
+    queueHeld,
+    enqueue,
+    removeQueued,
+    sendNextQueued,
     retry,
     rewind,
     stop,

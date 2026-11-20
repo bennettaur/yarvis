@@ -3,7 +3,9 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { fence, untrustedWarning } from "../lib/fencing.ts";
-import { listSpecialists, searchSpecialists } from "./catalog.ts";
+import { listSpecialists, type SpecialistDefinition, searchSpecialists } from "./catalog.ts";
+import { consultDecisionSpecialist } from "./decide.ts";
+import { MAX_OPTIONS } from "./decisionLimits.ts";
 import { runSpecialist } from "./run.ts";
 
 /**
@@ -27,10 +29,57 @@ const DELEGATE_TIMEOUT_MS = 120_000;
  */
 const MAX_DELEGATIONS_PER_TURN = 3;
 
-export function buildDelegationTools(db: Db, config: Config) {
-  // Per-toolset, and a toolset is built once per turn, so this counts
-  // delegations within the turn that owns it.
+/** Picks one turn may ask for, so a model that keeps leaving the name out can't call the decision model without end. */
+const MAX_PICKS_PER_TURN = 3;
+
+/**
+ * The picker's answer when no specialist fits. `NAME_PATTERN` in `catalog.ts`
+ * forbids a leading `_`, so it can't collide with a specialist's name.
+ */
+const NO_SPECIALIST = "_none";
+
+/**
+ * Asks `specialist-picker` which specialist fits the task, or answers null so
+ * the orchestrator picks for itself. Never throws.
+ *
+ * Specialists with `unattended` grants are never offered: one acts where others
+ * can see it with nobody approving each call, so it runs only when named.
+ */
+export async function pickSpecialist(
+  config: Config,
+  task: string,
+  options: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {},
+): Promise<string | null> {
+  let candidates: SpecialistDefinition[];
+  try {
+    candidates = (await listSpecialists({ enabledOnly: true, kind: "task" })).filter(
+      (s) => s.unattended.length === 0,
+    );
+  } catch (e) {
+    console.warn("[decision] specialist-picker: catalogue unavailable, falling back:", e);
+    return null;
+  }
+  // Each specialist is an option and one more is "none", so past MAX_OPTIONS - 1
+  // specialists picking is skipped and the orchestrator names one itself.
+  if (candidates.length === 0 || candidates.length > MAX_OPTIONS - 1) return null;
+  const answer = await consultDecisionSpecialist(config, "pickSpecialists", "specialist-picker", {
+    input: task,
+    options: [
+      ...candidates.map((s) => ({ value: s.name, description: s.description })),
+      { value: NO_SPECIALIST, description: "No specialist clearly fits this task." },
+    ],
+    ...options,
+  });
+  if (!answer || answer.choice === NO_SPECIALIST) return null;
+  return answer.choice;
+}
+
+/** @param fetchImpl Injected by tests in place of the decision model's network. */
+export function buildDelegationTools(db: Db, config: Config, fetchImpl?: typeof fetch) {
+  // Per-toolset, and a toolset is built once per turn, so these count within
+  // the turn that owns it.
   let delegations = 0;
+  let picks = 0;
 
   return {
     list_specialists: tool({
@@ -46,7 +95,7 @@ export function buildDelegationTools(db: Db, config: Config) {
       execute: async ({ about }) => {
         const matches = about?.trim()
           ? (await searchSpecialists(about)).map((m) => m.specialist)
-          : await listSpecialists({ enabledOnly: true });
+          : await listSpecialists({ enabledOnly: true, kind: "task" });
         return {
           specialists: matches.map((s) => ({
             name: s.name,
@@ -67,7 +116,10 @@ export function buildDelegationTools(db: Db, config: Config) {
           .string()
           .min(1)
           .max(64)
-          .describe("Name of the specialist (from list_specialists)"),
+          .optional()
+          .describe(
+            "Name of the specialist (from list_specialists). Leave it out to have one suggested for the task instead of running anything; then delegate again with that name. One that acts unattended is never suggested.",
+          ),
         task: z
           .string()
           .min(1)
@@ -79,7 +131,29 @@ export function buildDelegationTools(db: Db, config: Config) {
           .optional()
           .describe("Reference text it should work from, if any"),
       }),
-      execute: async ({ specialist, task, material }) => {
+      execute: async ({ specialist, task, material }, { abortSignal }) => {
+        // A call with no name only suggests one. Running it takes a second call
+        // that names it, so an approval prompt on this tool always shows which
+        // specialist will run.
+        if (!specialist) {
+          if (picks >= MAX_PICKS_PER_TURN) {
+            return {
+              error: `already asked for ${picks} suggestions this turn; call list_specialists and delegate with a specialist name`,
+            };
+          }
+          picks += 1;
+          const picked = await pickSpecialist(config, task, { signal: abortSignal, fetchImpl });
+          if (!picked) {
+            return {
+              error:
+                "No specialist was picked for this task. Call list_specialists and delegate again with a specialist name.",
+            };
+          }
+          return {
+            suggested: picked,
+            note: `Nothing has run yet. To run it, call delegate again with specialist "${picked}" and the same task.`,
+          };
+        }
         if (delegations >= MAX_DELEGATIONS_PER_TURN) {
           return {
             error: `already delegated ${delegations} times this turn; work with what you have or ask the user`,

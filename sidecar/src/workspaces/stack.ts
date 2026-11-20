@@ -16,13 +16,16 @@
 import { and, eq } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { repos, workspaceRepoPr, workspaceRepos } from "../db/schema.ts";
+import { repos, workspaceRepoPr, workspaceRepos, workspaces } from "../db/schema.ts";
 import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { redactSecrets } from "../llm/errors.ts";
 import { type MergeMethod, NO_PULL_REQUEST, type PrStack, type StackEntry } from "../pr/types.ts";
 import { type RunResult, run } from "./exec.ts";
-import { defaultGitRunner, type GitRunner } from "./git.ts";
-import { parseRepoRemote } from "./service.ts";
+import { defaultGitRunner, type GitRunner, hardenedGitEnv, refusedResult } from "./git.ts";
+import { checkBeforeWrite, describeFindings } from "./integrity.ts";
+import { branchPr } from "./prs.ts";
+import { parseRepoRemote, raiseIntegrityAlert } from "./service.ts";
+import { symlinkRefusal } from "./symlinkScan.ts";
 import { resolveWorktree } from "./worktrees.ts";
 
 /** Runs `gh <args>` in a worktree. Injectable so tests never shell out. */
@@ -55,12 +58,17 @@ const MERGE_TIMEOUT_MS = 5 * 60_000;
  * prompt when it is not attached to a terminal.
  */
 export function ghRunner(token: string | undefined): GhRunner {
-  return (args, opts) =>
-    run(["gh", ...args], {
+  return async (args, opts) => {
+    // `gh stack` drives git in the worktree, so it gets the same symlink scan
+    // and hardening as the sidecar's own git.
+    const refusal = symlinkRefusal(opts.cwd);
+    if (refusal) return refusedResult(refusal);
+    return run(["gh", ...args], {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs,
-      env: { GH_TOKEN: token, GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" },
+      env: { ...hardenedGitEnv(), GH_TOKEN: token, GH_NO_UPDATE_NOTIFIER: "1", NO_COLOR: "1" },
     });
+  };
 }
 
 /** One branch as `gh stack view --json` reports it. */
@@ -324,21 +332,26 @@ async function stackContext(
   git: GitRunner,
 ): Promise<{
   worktreePath: string;
+  /** The repo's primary clone, whose git data every worktree shares. */
+  clonePath: string;
   owner: string;
   repo: string;
   branch: string | null;
-  /** The PR the poller last found, which it only looks for on the primary branch. */
+  /** The main PR the poller found on the primary branch. */
   polledPrNumber: number | null;
 }> {
   const [row] = await db
-    .select({ wr: workspaceRepos, repo: repos, pr: workspaceRepoPr })
+    .select({ wr: workspaceRepos, repo: repos })
     .from(workspaceRepos)
     .innerJoin(repos, eq(workspaceRepos.repoId, repos.id))
-    .leftJoin(workspaceRepoPr, eq(workspaceRepoPr.workspaceRepoId, workspaceRepos.id))
     .where(
       and(eq(workspaceRepos.id, workspaceRepoId), eq(workspaceRepos.workspaceId, workspaceId)),
     );
   if (!row) throw new Error("workspace repo not found");
+  const prs = await db
+    .select()
+    .from(workspaceRepoPr)
+    .where(eq(workspaceRepoPr.workspaceRepoId, workspaceRepoId));
 
   const remote = parseRepoRemote(row.repo.cloneUrl);
   if (remote && remote.provider !== "github") {
@@ -347,12 +360,13 @@ async function stackContext(
   const target = await resolveWorktree(db, workspaceRepoId, worktree, git);
   return {
     worktreePath: target.path,
+    clonePath: row.repo.primaryClonePath,
     // The clone URL is the source of truth for a repo that has one; the
     // registration columns are the fallback, as in the poller.
     owner: remote?.provider === "github" ? remote.owner : row.repo.owner,
     repo: remote?.provider === "github" ? remote.repo : row.repo.repo,
     branch: target.branch,
-    polledPrNumber: target.primary ? (row.pr?.prNumber ?? null) : null,
+    polledPrNumber: target.primary ? (branchPr(prs, row.wr.branch)?.prNumber ?? null) : null,
   };
 }
 
@@ -365,8 +379,8 @@ async function readStack(
   worktree: string | undefined,
   gh: GhRunner,
   git: GitRunner,
-): Promise<WorkspaceStack & { worktreePath: string }> {
-  const { polledPrNumber, branch, ...context } = await stackContext(
+): Promise<WorkspaceStack & { worktreePath: string; clonePath: string }> {
+  const { polledPrNumber, branch, clonePath, ...context } = await stackContext(
     db,
     workspaceId,
     workspaceRepoId,
@@ -394,6 +408,7 @@ async function readStack(
     ...loaded,
     prStackError: loaded.prStackError ?? lookupError,
     worktreePath: context.worktreePath,
+    clonePath,
   };
 }
 
@@ -457,7 +472,7 @@ export async function mergeWorkspaceRepoStack(
     git = defaultGitRunner,
   }: StackOptions & { method?: MergeMethod } = {},
 ): Promise<StackMergeResult> {
-  const { stack, ghStackError, worktreePath } = await readStack(
+  const { stack, ghStackError, worktreePath, clonePath } = await readStack(
     db,
     config,
     workspaceId,
@@ -474,6 +489,18 @@ export async function mergeWorkspaceRepoStack(
   if (plan.join(",") !== expected.join(",")) {
     const would = plan.map((n) => `#${n}`).join(", ") || "nothing";
     throw new Error(`the stack changed since you looked — it would now merge ${would}`);
+  }
+  // `gh stack merge` runs git in this worktree, so it is checked like a sync.
+  const findings = await checkBeforeWrite(git, clonePath, worktreePath);
+  if (findings.length > 0) {
+    const [workspace] = await db
+      .select({ id: workspaces.id, name: workspaces.name })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId));
+    if (workspace) await raiseIntegrityAlert(db, workspace, findings);
+    throw new Error(
+      `the clone's git data has been changed in a way that could run code or alter what is merged: ${describeFindings(findings)}`,
+    );
   }
   return mergeStack(gh, worktreePath, upToPrNumber, method);
 }

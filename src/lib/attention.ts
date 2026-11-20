@@ -1,4 +1,5 @@
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
+import type { QuestionItem } from "./questions";
 
 /**
  * Client for the sidecar's attention stream (`/api/attention`). The store in
@@ -16,12 +17,15 @@ export type AttentionNavTarget =
   | { type: "workspace"; workspaceId: string }
   /** A specific terminal tab/pane, addressed by its PTY session id. */
   | { type: "terminal"; sessionKey: string; workspaceId?: string }
-  | { type: "chat" }
+  /** A specific chat in the Chat tab, or Omni Chat when there is no session. */
+  | { type: "chat"; sessionId?: string }
   | { type: "pr"; owner: string; repo: string; number: number }
   | { type: "azure-pr"; org: string; project: string; repo: string; prId: number }
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string }
-  | { type: "heads-down" };
+  | { type: "heads-down" }
+  /** A PR in a review workspace, opened on one of its tabs. */
+  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
 
 export interface AttentionItem {
   id: string;
@@ -42,6 +46,39 @@ export interface AttentionItem {
 
 /** A frame on the live stream: a changed item, or a keep-alive ping. */
 export type AttentionStreamEvent = { type: "item"; item: AttentionItem } | { type: "ping" };
+
+/**
+ * Session key prefix of the bell items heads-down mode raises for its questions
+ * and approvals (`sessionKeyFor` in the sidecar's `headsDown/attention.ts`).
+ */
+const HEADS_DOWN_QUESTION_PREFIX = "heads-down:";
+
+/**
+ * The heads-down question an item stands for, or null for any other item.
+ * A coding agent's `ask_user` can pick its own session key, so its `question`
+ * items never count, however their key reads.
+ */
+export function headsDownQuestionId(item: AttentionItem): string | null {
+  if (
+    item.source !== "system" ||
+    item.kind === "question" ||
+    !item.sessionKey?.startsWith(HEADS_DOWN_QUESTION_PREFIX)
+  ) {
+    return null;
+  }
+  return item.sessionKey.slice(HEADS_DOWN_QUESTION_PREFIX.length) || null;
+}
+
+/**
+ * Whether the item is answered in a dialog over the current page rather than by
+ * navigating to it: a Claude Code permission prompt for a known session, a
+ * coding agent's question, or a heads-down question or approval.
+ */
+export function hasAnswerDialog(item: AttentionItem): boolean {
+  if (item.kind === "question") return true;
+  if (headsDownQuestionId(item)) return true;
+  return item.kind === "permission" && item.source === "claude-hook" && Boolean(item.sessionKey);
+}
 
 /** Lists attention items, optionally filtered by status. Newest-first. */
 export async function getAttention(status?: AttentionStatus): Promise<AttentionItem[]> {
@@ -124,11 +161,33 @@ export interface PermissionRequest {
   createdAt: string;
 }
 
-/** `terminal` leaves the prompt to Claude Code's own dialog in the session. */
+/**
+ * `terminal` leaves the prompt to Claude Code's own dialog in the session.
+ * `answer` replies to an AskUserQuestion prompt, keyed by each question's text.
+ */
 export type PermissionDecision =
   | { behavior: "allow" }
+  | { behavior: "answer"; answers: Record<string, string> }
   | { behavior: "deny"; message?: string }
   | { behavior: "terminal" };
+
+/**
+ * The questions in a Claude Code AskUserQuestion prompt, or null for any other
+ * tool, or an input not shaped the way the question view expects.
+ */
+export function askedQuestions(request: PermissionRequest): QuestionItem[] | null {
+  if (request.toolName !== "AskUserQuestion") return null;
+  const { questions } = request.toolInput;
+  if (!Array.isArray(questions) || questions.length === 0) return null;
+  const isOption = (o: unknown) =>
+    typeof o === "object" && o !== null && typeof (o as { label?: unknown }).label === "string";
+  const valid = questions.every(
+    (q) =>
+      typeof q?.question === "string" &&
+      (q.options === undefined || (Array.isArray(q.options) && q.options.every(isOption))),
+  );
+  return valid ? (questions as QuestionItem[]) : null;
+}
 
 /** The permission prompts still waiting, oldest first, optionally for one session. */
 export async function getPermissionRequests(sessionKey?: string): Promise<PermissionRequest[]> {

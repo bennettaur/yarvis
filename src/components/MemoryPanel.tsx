@@ -1,23 +1,26 @@
 import { useState } from "react";
+import ArtifactsTab from "./memory/ArtifactsTab";
 import EventsTab from "./memory/EventsTab";
 import MemoryLibrary from "./memory/MemoryLibrary";
 import ProjectsTab from "./memory/ProjectsTab";
 import TodosTab from "./memory/TodosTab";
 
 /**
- * The memory screen: four views of what the assistant knows and is doing.
+ * The memory screen: views of what the assistant knows and is doing.
  *
- * They sit together because they are one loop rather than four features — raw
- * events are consolidated into memories, projects say what the work is for, and
- * the assistant's todos are what it has taken on off the back of both. Seeing
- * them side by side is what makes it possible to tell "it never recorded that"
- * from "it recorded it and hasn't summarized it yet".
+ * They sit together because they are one loop rather than separate features —
+ * raw events are consolidated into memories, projects say what the work is for,
+ * the assistant's todos are what it has taken on off the back of both, and its
+ * artifacts are what it has written. Seeing them side by side is what makes it
+ * possible to tell "it never recorded that" from "it recorded it and hasn't
+ * summarized it yet".
  */
 
 const TABS = [
   { key: "memories", label: "Memories" },
   { key: "events", label: "Activity" },
   { key: "todos", label: "Agent todos" },
+  { key: "artifacts", label: "Artifacts" },
   { key: "projects", label: "Projects" },
 ] as const;
 
@@ -48,6 +51,7 @@ export default function MemoryPanel() {
       {tab === "memories" && <MemoryLibrary />}
       {tab === "events" && <EventsTab />}
       {tab === "todos" && <TodosTab />}
+      {tab === "artifacts" && <ArtifactsTab />}
       {tab === "projects" && <ProjectsTab />}
     </div>
   );

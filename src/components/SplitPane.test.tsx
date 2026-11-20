@@ -19,6 +19,21 @@ describe("SplitPane", () => {
     expect(html).toContain("cursor-col-resize");
   });
 
+  it("fills the container with the first pane, and no divider, when there is no second", async () => {
+    const html = await renderToHtml(
+      h(SplitPane, {
+        orientation: "horizontal",
+        ratio: 0.3,
+        onRatioChange: () => {},
+        first: h("div", null, "only pane"),
+        second: null,
+      }),
+    );
+    expect(html).toContain("only pane");
+    expect(html).toContain("flex-basis: 100%");
+    expect(html).not.toContain("cursor-col-resize");
+  });
+
   it("sizes the first pane from the ratio", async () => {
     const html = await renderToHtml(
       h(SplitPane, {

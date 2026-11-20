@@ -21,11 +21,29 @@ Three processes, each with a clean ownership boundary:
   session: both the Terminal tab's shells and each workspace's agent session
   live in `pty.rs`, independent of the webview that renders them. The sidecar
   reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
-  method list (`claude.spawn`, `claude.kill`, `claude.send`, `mcp.saveOAuth`,
-  `github.saveToken`)
+  method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
+  `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
+  `github.saveToken`, `alarm.fire`, `alarm.release`, `harness.runEnv`)
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
-  a PTY.
+  a PTY. `harness.runEnv` is the one method that hands a secret back to the
+  sidecar: one Claude Code harness's program and environment, its secret
+  variables included, for a verification run. The harness is the one the user
+  set in Settings or picked for a run on the Verification tab; the
+  assistant's tools take none, though the runs it starts use the Settings one.
+  The values go only into the run's environment, never a log or a row, and a
+  harness setting a variable that would move what the run may not read
+  (`HOME`, `CLAUDE_CONFIG_DIR`) is refused. Like every method it trusts any
+  process running as the user, so such a process can read those secrets
+  through the socket; that was accepted rather than tying the socket to the
+  sidecar's pid.
+  `claude.spawn` can name a saved agent harness by id, never a command,
+  and the core refuses one the user hasn't let the assistant start
+  (`harness::check_assistant_may_launch`): the id comes from a model that may
+  have read it in an issue. A spawn with a resume id skips that check for a
+  Claude Code harness, so the sidecar's restart sweep can bring back a session
+  the user started. That makes `resume` something only the sweep may set, from
+  a hook-verified session row. Never expose it to an agent tool.
 - **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
   Rust core via `invoke` (native + secrets) and to the sidecar over
   authenticated loopback HTTP (data + AI).
@@ -69,6 +87,9 @@ bun run sidecar:test               # sidecar tests — needs a Postgres+pgvector
                                     #   test DB; set TEST_DATABASE_URL (and
                                     #   DATABASE_URL for migrations)
 bun run --cwd sidecar db:migrate   # apply sidecar DB migrations
+bun run verify:collect             # facts for a PR's verification report;
+                                    #   the /verify-pr skill runs it and
+                                    #   verify:report, which posts the report
 
 bun run typecheck                  # frontend tsc --noEmit
 bun run sidecar:typecheck          # sidecar tsc --noEmit
@@ -93,7 +114,12 @@ sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
 trailing comment. `nightly.yml`
-and `codeql.yml` follow neither convention yet. A pre-commit
+and `codeql.yml` follow neither convention yet. `verify.yml` is the one
+workflow that writes: it runs on PR comments, as the default branch's copy,
+checks out no PR code, and acts through the yarvis GitHub App to set the
+verification status, approve and turn on auto-merge. Keep it that way, since
+it holds write access on a public repo; see `docs/development.md` ("Verifying a
+PR for merge"). A pre-commit
 hook (lefthook, installed via the `prepare` script) mirrors the biome and Rust
 checks on staged files — `cargo clippy` blocks the commit if it fails since it
 has no safe autofix.
@@ -107,6 +133,47 @@ present. A `codesign --verify` step blocks the macOS artifact upload when the
 bundle is unsigned or its seal is broken, and `spctl --assess` additionally
 fails the build when a Developer ID was expected but the signature silently fell
 back to ad-hoc.
+
+## Finishing a pull request
+
+A feature isn't done when the code is written. It's done when its PR has
+green CI and a verification report with no unaddressed major findings. On a
+PR you opened from this workspace, carry it that far without waiting to be
+asked. On anyone else's PR, run `/verify-pr` only when asked; it posts a
+report there and leaves the fixes to the author.
+
+1. Before pushing, run the checks for what you touched: `bun run check`,
+   `bun run typecheck` and `bun run sidecar:typecheck`, and the frontend
+   and/or sidecar tests (the sidecar ones need `TEST_DATABASE_URL`; see
+   Commands).
+2. Push and open the PR, then wait for CI with `gh pr checks <N> --watch`.
+3. If a check fails, read the failure before changing anything:
+   `gh run view <run-id> --log-failed`. Then work out whose failure it is:
+   - Caused by the PR: fix it, push, and go back to step 2.
+   - A test unrelated to the PR's change: check whether it also fails on
+     `main` (`gh run list --workflow ci.yml --branch main`) and run that file
+     locally, both on its own and in the file order the CI log shows. A test
+     that passes locally but fails on CI is usually a stub leaking from an
+     earlier file or a fixed delay (see the testing conventions below). Fix it in
+     its own commit, so a reviewer can tell it apart from the feature. The
+     fix keeps the test checking what it checked: never skip it, delete or
+     loosen an assertion, raise a timeout to cover it, or edit CI config. If
+     that seems to be the only way, ask. If you can't find the cause, re-run
+     the job once with `gh run rerun <run-id> --failed`, and say in the PR's
+     description which test failed and that it passed on a re-run.
+   - `bun audit` or `cargo audit` reporting a newly published advisory: these
+     fail every open PR at once, not only yours. Tell the user which advisory
+     and package, and ask before bumping it. The bump belongs in a PR of its
+     own unless the feature already touches that dependency.
+4. Once every check is green on your own PR, mark it ready with
+   `gh pr ready <N>`, then run `/verify-pr <N>`. Ready comes first because
+   the CI gate never auto-merges a draft on a report alone. The skill's
+   step 10 fixes what it found and rechecks, up to two rounds. Those fixes
+   are new commits, so CI runs again, and `/verify-pr` only stops on a
+   check that has already failed, not one still running. Watch the checks on
+   the final head too, and go back to step 3 if one fails.
+5. Ask wherever `/verify-pr` says to ask; nothing here overrides it.
+   Otherwise report the PR link, the CI state and the report's verdict.
 
 ## Conventions
 
@@ -132,7 +199,23 @@ back to ad-hoc.
 - Frontend tests use `bun test` with a happy-dom environment; the preload in
   `src/test/setup.ts` registers the DOM, pins the timezone, and stubs Tauri
   runtime APIs. Component tests stub the sidecar API client
-  (`src/lib/api`) and render with `src/test/render.tsx`'s `renderToHtml`.
+  (`src/lib/api`) through `src/test/sidecarApi.ts`'s `stubSidecarApi`, and
+  clear it with `resetSidecarApi` in `afterAll`, never with their own
+  `mock.module` of it: that replaces the module for the whole run, so a
+  partial stub breaks whichever file loads next. Every module more than one
+  suite stubs works the same way, registered once in `src/test/` with
+  `passThrough.ts`: `lib/pr/api` (`prApi.ts`), `lib/pr/cache` (`prFiles.ts`),
+  `lib/workspaces` (`workspacesApi.ts`), `lib/pty` (`ptyApi.ts`), `lib/repos`
+  (`reposApi.ts`) and `lib/alarms` (`alarmFixture.ts`). Each has a `stub…`
+  function and a `reset…` for the suite's `afterAll`, and
+  `src/test/passThrough.test.ts` fails when a suite mocks one of them itself or
+  never resets. A module a second suite starts stubbing gets the same
+  treatment. A `spyOn` restored in `afterAll` is fine too, since it ends with
+  the file. This is the most common cause of a test that fails on
+  CI and passes locally: CI lists the test files in a different order than a
+  Mac does, so a leaked stub reaches different files there. To reproduce, run
+  `bun test` with the files in the order the CI log's groups show. They render with
+  `src/test/render.tsx`'s `renderToHtml`.
 - Sidecar tests that touch storage hit a real Postgres — see `sidecar/src/workspaces/routes.test.ts`
   for the pattern (temp workspaces root via `mkdtempSync`, `TRUNCATE` between
   tests, injected fake git runners to avoid real network/filesystem git ops).
@@ -141,6 +224,18 @@ back to ad-hoc.
   `sidecar/src/customProviders/routes.test.ts`). The preload in
   `sidecar/src/test/setup.ts` points the whole suite at a temp file, so a test
   that forgets never writes the user's real one.
+- Tests wait on the thing they assert, never on a fixed delay. CI runners are
+  slower than a dev Mac, so a delay that is long enough locally can be too
+  short there. After a click or a fetch, use `waitFor` from
+  `src/test/render.tsx` (frontend) or an `until` polling loop like the one in
+  `sidecar/src/reviewWorkspaces/routes.test.ts` (sidecar), with a condition
+  naming what should have happened. Before a test ends, also wait for any
+  request it started, such as the refetch after a mutation: one that lands
+  after `afterAll` restores a spy reaches the real client and fails a test
+  that has nothing to do with it.
+- A fake process writes any file a test polls for under a temp name, then
+  `mv`s it into place. The shell creates the file before writing to it, so a
+  test that waits only for the file to exist can read it empty.
 - Secrets (provider API keys, tokens, DB URL) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
@@ -232,28 +327,55 @@ back to ad-hoc.
   providers keep the `custom:<id>` namespace. Gemini is the odd one: it has no
   audio endpoints, so `GeminiSpeech` drives both halves through
   `generateContent` and wraps the headerless PCM it gets back in a WAV header.
-- Voice is a capability of the chat surfaces, not a surface of its own:
+- Spoken chat is a capability of the chat surfaces, not a surface of its own:
   `src/lib/useVoice.ts` wraps speech around a thread the caller already owns,
   taking that surface's `send` and watching the reply text it is already
   accumulating. A spoken turn therefore uses whatever provider/model that chat
   is set to. Which speech backends to use lives in `~/.yarvis/settings.json`
   (`sidecar/src/voice/config.ts`), not in the frontend, because the Telegram bot
   runs in the sidecar and needs the same settings (#226).
-- Outbound speech and Ollama decision calls go through `guardedFetch` in
-  `sidecar/src/lib/guardedFetch.ts`, never a bare `fetch`: it re-runs the SSRF guard on every redirect hop rather than only
-  the first (`redirect: "manual"`, mirroring `memory/ingest.ts`) and puts a
-  deadline on the whole chain. `fetch` strips `Authorization` across origins but
-  not a custom provider's own auth headers, so following a redirect unchecked
-  would hand those to whatever host it named. A call whose body is private (the
-  decision model's review carries the conversation) also sets `sameOriginOnly`,
-  since a redirect replays the body too.
+  The Voice page (`src/components/voice/`) is for setting voice up, not for
+  talking: it runs the local mlx-audio server, keeps saved voices and their
+  cloning clips, and has a studio for hearing text in several voices. The
+  sidecar owns the server process (`voice/server.ts`). Only one server can
+  listen on a port, so only the instance that started it may stop it; who
+  started it is recorded per instance beside `settings.json`, with the
+  process's start time so a reused pid isn't adopted. Continuous mode's turn
+  detector (`voice/turnDetector.ts`) is different: Silero VAD plus smart-turn
+  in a Python script embedded in the sidecar and run with `uv run --script`.
+  Each sidecar starts its own on a port the OS picks, so there is nothing to
+  share or adopt. It exits when its stdin closes, which covers a sidecar killed
+  without warning. The webview streams 16 kHz PCM straight to it over a
+  loopback websocket, gated by a per-start token the sidecar hands out. A
+  saved voice's clip is sent as a file path only to a provider on loopback;
+  anywhere else gets the audio, since the path names the user's home folder.
+- Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
+  Ollama decision calls, URL ingest, `read_web_page` — go through
+  `lib/guardedFetch.ts`, never a bare `fetch`. It re-runs the SSRF guard on every
+  redirect hop rather than only the first (`redirect: "manual"`): `fetch` strips
+  `Authorization` across origins but not a custom provider's own auth headers, so
+  following a redirect unchecked would hand those to whatever host it named. Its
+  default transport, `createPinnedFetch`, goes through `node:http(s)` with
+  `createSafeLookup` from `lib/urlSafety.ts` as the connection's own DNS lookup,
+  so the address checked is the address connected to; checking first and letting
+  `fetch` resolve again leaves a DNS-rebinding host room to answer differently.
+  Bun's `fetch` offers no such hook. The cost is that these calls skip an HTTP
+  proxy set in the environment. `timeoutMs` puts a deadline on the whole chain
+  and `signal` covers the body read. A call whose body is private (the decision
+  model's review carries the conversation) also sets `sameOriginOnly`, since a
+  redirect replays the body too. A user-configured provider also sets
+  `staticCheckOnly` (and passes its own `fetchImpl`), so it is held to the same
+  check its base URL got when saved rather than a stricter one.
 - What a surface can do without asking depends on whether the user proof-read
   the turn. `ChatMessageMetadata.source` records where it came from, and
   `runAgentTurn` uses it: a `voice` turn puts the tools in
   `chat/destructiveTools.ts` behind the same approval prompt MCP tools use,
-  because a transcript can be misheard or picked up from the room. A surface
+  because a transcript can be misheard or picked up from the room. A `browser`
+  turn (the Chrome side panel) does the same: it was typed, but it carries the
+  open tab's page-written title and selection on every turn. A surface
   that can't prompt gets those tools dropped rather than run unattended —
-  silently doing the irreversible thing is the one unacceptable outcome.
+  silently doing the irreversible thing is the one unacceptable outcome. A
+  `scheduled-task` turn (below) is unreviewed in the same way.
 - Secrets flow one way — the webview writes them to the Keychain, the core
   injects them into the sidecar at spawn. MCP OAuth tokens are the main
   exception, because an authorization server refreshes them on its own schedule
@@ -273,10 +395,25 @@ back to ad-hoc.
   `YARVIS_MCP_TOKEN`, so it must be one that token is meant to grant — the
   endpoint deliberately sits outside the main bearer wall, like attention-ingest.
   It grants the memory tools and, for a session whose `.mcp.json` names its
-  workspace, listing and resolving that workspace's review comments. Review
-  comment bodies go out unfenced, the one exception to the rule below, because
-  the user is their only author; a feature that writes them from anywhere else
-  has to fence them first.
+  workspace, listing and resolving that workspace's review comments and
+  `link_pull_request`. The header is not a boundary, so `add_worktree` also
+  needs one of that workspace's terminals' session tokens (`questionOrigin`).
+  Even then it may only check out a branch not yet in the clone, inside that
+  workspace's folder, and widen the sandbox to that one branch
+  (`addExtraWorktree`), since the token is no boundary against a same-user
+  process. `link_pull_request` asks for no token because what it can do is
+  narrow: add an existing, non-fork PR of one of that workspace's own repos,
+  up to `MAX_AGENT_LINKED_PRS` per repo. A linked PR shows in the workspace,
+  holds its merges for heads-down feedback, is re-read on the user's provider
+  rate limit, and can make the workspace the one **Start workspace** opens for
+  that PR when no workspace has it on its own branch. It can't remove a PR,
+  bring back one the user unlinked (`relink` is the user route's alone), or
+  make a PR count as on the workspace's branch, which archive's branch
+  deletion and routing trust. Bodies
+  with `source = 'user'` go out unfenced, the one exception to the rule below,
+  because the user wrote them. Any other source (a verification finding the
+  user chose to add) is fenced there and kept out of the event log; a new
+  writer gets a source of its own rather than `user`.
 - Anything an outside party can influence — file contents, diffs, PR titles,
   recalled memories — enters a prompt as data, not instruction: fenced in
   per-request nonce tags (see `sidecar/src/pr/ask.ts`) with the system prompt
@@ -302,23 +439,76 @@ back to ad-hoc.
   is used only after `resolveWorktree` in `workspaces/worktrees.ts` matches it
   against a fresh `git worktree list` of that repo's clone, and what is used is
   git's path, not the caller's.
+- A workspace session's sandbox can write part of its repo's shared clone, so
+  the clone's git data is not trusted either. `sandboxPaths.ts` grants only
+  what that workspace's own commits need and denies what decides which program
+  git runs or what other workspaces see (config, hooks, submodule git folders,
+  `commondir`, replace refs, packed refs, tags). Claude Code's sandbox also
+  refuses writes to a worktree's existing `.git` file, which is what keeps a
+  session from pointing the worktree at a git folder of its own; nothing in
+  Yarvis enforces that. Three rules follow:
+  - Every git the sidecar starts, `gh` included, runs with `hardenedGitEnv`
+    from `git.ts`. It switches off a short, named list of settings (the
+    fsmonitor and submodule recursion a staged fake submodule would use, and
+    replace refs), and command-scope config reaches the git processes started
+    for submodules. It is not a general barrier: a repo whose config an
+    attacker could write would still get its other settings honoured. Anything
+    new that spawns git outside `defaultGitRunner` owes the same env, and
+    status and diff calls also pass `--ignore-submodules=all`.
+  - A remote-tracking ref is always named in full (`remoteRef`), because a
+    short `origin/main` resolves a tag or a local branch of that name first.
+  - Yarvis never runs git on a clone or worktree whose git data holds a
+    symlink: `defaultGitRunner` and `ghRunner` call `symlinkRefusal` first,
+    because the sidecar's git runs outside the sandbox and would write through
+    a link a session planted (moving another workspace's branch, or
+    overwriting one of the user's files). Anything new that spawns git owes the
+    same call. It is checked right before each command, so a session that is
+    still running can still plant one in between; the narrow grants in
+    `sandboxPaths.ts` (only the leaves of the refs of the workspace's own and
+    added worktrees, never a folder in `refs`) are what keep it from making
+    directory links there at all.
+  - The object store is the accepted gap. A session has to write it to commit,
+    so it can also overwrite an object every workspace on the repo shares, and
+    git doesn't re-hash an object when it checks it out. Nothing here detects
+    that short of `git fsck`, and `docs/features/workspaces.md` says so.
+  - `integrity.ts` is best-effort detection of the traces such a session
+    leaves, for the user's own terminal, which nothing in Yarvis hardens.
+    Yarvis refuses to merge or push for a workspace while any are there, and
+    the check run right before (`checkBeforeWrite`) fails closed. It is not
+    what protects Yarvis's own git: a running session can act between a check
+    and the command that follows it.
 - Text a *model* composes that will be typed into another agent's prompt is the
   sharpest form of that, since the receiving agent acts on it with its own
-  permissions. `claude.send` is the only such path and it is guarded on both
-  sides: `pty.rs`'s `prepare_instruction` turns the control characters that would
-  submit early into spaces and rejects an instruction opening with a character
-  the agent reads as a command (`!` is bash mode, `/` a slash command, `#` a
-  memory write), `foreground_is_agent` refuses to type at all unless the
-  configured agent is what's reading the prompt, and the chat agent's system
-  prompt forbids relaying third-party text as an instruction. What no layer can
-  establish is *what the agent is showing*, so a send is reported as delivered,
-  never as done. Anything new that forwards text into a session owes the same
-  three. Which process is the agent comes from the pids Claude Code's
-  SessionStart hook registered (`workspaces/agentSessions.ts`), with the
-  executable's file name as the fallback for an agent that registers nothing.
+  permissions. `claude.send` and `claude.slash` are the typed paths, and the
+  channel below is the only other.
+  `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
+  turns the control characters that would submit early into spaces and rejects
+  an instruction opening with a character the agent reads as a command (`!` is
+  bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
+  `foreground_is_agent` refuses to type at all unless the agent the session was
+  launched with (its harness, `harness.rs`) is what's reading the prompt, and
+  the chat agent's system prompt forbids relaying third-party text as an
+  instruction. Text the core would refuse that way is never sent over the
+  channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
+  same refusal applies. `claude.slash` is the one way a line opening with `/`
+  gets in: the core types it only when the command is on an allowlist no sidecar
+  route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
+  `allowedSlashCommands` in `settings.json`, saved from the webview like the
+  agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
+  foreground check, and cleans its arguments like an instruction. A command
+  that changes what the session may do never belongs in the defaults. The list
+  bounds what Yarvis types as a slash command, not which skills a session can be
+  asked in words to run. What no layer can establish is *what the agent is
+  showing*, so a send is reported as delivered, never as done. Anything new that
+  forwards text into a session owes the same three. Which process is the agent
+  comes from the pids Claude Code's SessionStart hook registered
+  (`workspaces/agentSessions.ts`), with the executable's file name as the
+  fallback for an agent that registers nothing.
   A registered pid counts only while it leads the PTY's foreground process
   group, so a stale one matches nothing. Every PTY holds the same ingest token,
-  so registration (and a permission prompt sent to `/ingest/permission`) also
+  so registration (and a permission prompt sent to `/ingest/permission`, or the
+  hook that settles one at `/ingest/permission/settled`, and an `ask_user`
+  question's session key on the MCP endpoint) also
   needs the PTY's own `YARVIS_SESSION_TOKEN`, an HMAC of
   its session key under the sidecar's full-access bearer, which no PTY holds.
   The sidecar recomputes it, so a process can't mint a token for a terminal it
@@ -326,6 +516,38 @@ back to ad-hoc.
   terminal. Signing with the ingest token instead would let any terminal mint
   any other's. This is not a boundary against a determined process running as
   the same user, which can read another process's environment.
+- The channel (`sidecar/src/channel/`) is the other way text reaches a
+  session, and `sendToWorkspaceAgent` tries it first. It is off unless the
+  user ticks the experimental `channelMessaging` setting, which the core owns
+  like `allowedSlashCommands` so the assistant can't turn it on. Without it no
+  relay is written to `.mcp.json`, a relay that starts stays idle, and every
+  send is typed. With it on, the channel meets the same three guards in its
+  own way:
+  - The message reaches Claude Code as a channel event, not keystrokes, so
+    there is no prompt line to submit early and no command prefix to read.
+  - The listener is checked rather than assumed. A relay polls with its
+    terminal's `YARVIS_SESSION_TOKEN` and its parent's pid, and only after
+    deciding, once at startup, that its parent Claude Code was launched with
+    the channel flag: the parent's command line has to begin with the
+    configured agent command, word for word, and that command has to carry
+    the flag. Otherwise it stays idle. `ps` joins argv with spaces, so a flag found anywhere else could
+    be text the core adds after the command, such as a workspace name taken
+    from an issue title (`agent_launch_command` in `pty.rs`).
+    A send goes over the channel only when a relay is polling and its pid is
+    one the workspace's SessionStart hook registered. Otherwise it is typed,
+    since a session without the flag drops channel events. The first
+    live relay owns the channel and a second gets 409, so a nested
+    `claude -p` started from the terminal can't take the session's messages.
+    A process in that terminal can still claim a registered pid. That is the
+    same-user limit registration already accepts.
+  - The chat agent's rule on third-party text still applies.
+
+  What a session answers through the relay's `reply` tool is model-written.
+  A reply must name a message the hub sent to that terminal. It goes back to
+  the chat agent fenced, and reading one makes the destructive tools ask for
+  the rest of the turn, as reading a web page does. The relay is the sidecar binary run
+  with `channel-relay` (`sidecar/src/main.ts`), since a packaged build ships
+  one executable.
 - A workspace root's `.claude` directory is jointly owned. Provisioning copies
   each repo's skills and agents up into it (`workspaces/claudeAssets.ts`) because
   Claude Code discovers them only under the directory it starts in and the
@@ -526,6 +748,165 @@ back to ad-hoc.
     delegation. Output goes through `redactSecrets` (credential *shapes*, not
     general scrubbing) and is truncated before it is stored — it is
     model-composed text that is kept and displayed.
+- A scheduled task (`sidecar/src/scheduledTasks/`) is a prompt the chat agent
+  schedules for itself, run later by the `scheduled-tasks` job as a turn in the
+  chat it came from, ringing the attention bell when the run has something to
+  report. It is how "check on my PRs in an hour" or "tell me when CI goes
+  green" works without a shell.
+  The prompt is model-composed, often just after reading a CI log or a PR
+  comment, so three things hold it down. The turn gets only
+  `SCHEDULED_TASK_TOOLS` (`chat/destructiveTools.ts`), a read-only allowlist,
+  because anything it writes would be read back later as if the user had
+  agreed. Its stored row has the user role so the thread reads in order, but it
+  reaches the model fenced as the assistant's own note
+  (`scheduledTasks/message.ts`), on its own turn and every later one, since a
+  typed turn runs the destructive tools without asking. And a chain is bounded
+  by an attempt counter that comes from the row, never from the model. Unlike
+  the memory jobs, a row is marked fired *before* its turn runs: a sidecar that
+  dies mid-turn loses one run rather than replaying it into the chat on every
+  restart. A run that only schedules its next one (`parentId` points back at
+  it) stays quiet. The bell item's title is always ours, naming the task; the
+  model's words go in the body, so injected text can't pose as an app alert.
+  A heads-down pass runs in a hidden chat, so a task it schedules carries
+  `origin: "heads-down"` and its bell item opens the Heads down page.
+- A feature that needs Claude Code to work *while the user watches* (a
+  verification report, mutation testing) starts it with `startClaudeRun` in
+  `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
+  program lookup, directory check and built environment (`lib/claudeCli.ts`),
+  streams `--output-format stream-json` into typed events any number of viewers
+  follow over `/api/agent-runs/:id/events`, and ends in an `agent_runs` row.
+  These runs are pointed at a pull request's checkout, which its author
+  controls, so they read no settings files at all (`--setting-sources ""`):
+  the checkout's can declare hooks, which are shell commands Claude Code runs
+  itself, and the user's were written for sessions the user drives — their
+  allow rules, hooks, plugins and `CLAUDE.md` (which may say to push and open
+  PRs) don't belong in an unattended run. `lockedDownSettings` applies instead:
+  no hooks or auto-memory, a deny list for publishing and the network, and Bash
+  in a network-less sandbox that refuses to run when the sandbox can't start.
+  The home directory's credentials (`SECRET_HOME_PATHS`: SSH and cloud keys,
+  `~/.yarvis`, Claude Code's own) are denied twice — `Read(…)` rules for the
+  Read tool, `sandbox.filesystem.denyRead` for whatever Bash runs, since a test
+  suite's own file reads never pass through the rules. The plugins compiled
+  into Claude Code (`cc-plugin-*@builtin`) load with no settings file at all,
+  so `enabledPlugins` turns them off — except `cc-plugin-sec-default`, the
+  security default managed settings seat. Claude Code's core agents and skills
+  aren't plugins and stay.
+  The permission mode is always set and never one that approves on its own,
+  the prompt goes on stdin, a fixed guardrail says the
+  checkout is material rather than instructions (`spotlight` fences PR text a
+  caller interpolates), and no session is saved, so the transcript never
+  reaches the nightly session digest and from there memory.
+  `agentRuns/canary.ts` checks all of that against the real CLI. A spend cap
+  (`maxBudgetUsd`) is optional. The review runs leave it out: their budget
+  setting only warns, and a run cut off at a cap ends with nothing to show
+  for what it spent. The timeout still bounds a runaway; `maxTurns` limits
+  only the main thread.
+  Cancelling kills the process group, since the tools a run starts outlive a
+  kill aimed only at Claude Code; so does the sidecar exiting, and the startup
+  sweep kills what a crashed sidecar left, matched by pid and start time. The
+  agents and skills these runs load ship as a plugin under
+  `sidecar/claude-plugins/`, embedded like the agent definitions and written
+  to a fresh private temp directory for each run, so nothing between runs can
+  edit it; a file reaches a run only once it is listed in `agentRuns/plugins.ts`.
+  Mutation testing splits the work: a run like that only *plans* the mutants,
+  read-only, and the sidecar applies them and runs the tests itself
+  (`reviewWorkspaces/mutationExecutor.ts`), so what ran and how it scored is
+  never a model's say. Claude Code's sandbox only wraps the commands Claude
+  Code runs, so those tests run under `reviewWorkspaces/testSandbox.ts`
+  instead: a deny-by-default `sandbox-exec` profile with no network or DNS,
+  loopback only to the ephemeral port range, writes only to the scratch copy
+  and a temp folder (which holds a fake `HOME`), no reads of the home folder
+  beyond the toolchains or of other checkouts, no setsid, and no launchd,
+  LaunchServices or keychain. One helper per pass runs every command, so the
+  profile compiles once.
+  A probe script checks it holds before any test runs, and where it can't
+  apply (anything but macOS) the tests don't run. The user already agreed to
+  run the PR's code and its setup runs unsandboxed, so this is defence in
+  depth, not the trust boundary; the sidecar's own writes into the copy still
+  assume the tests may have planted links (`reviewWorkspaces/mutants.ts`).
+  The review workspace's **Ask Claude** tab is the interactive counterpart:
+  one PTY session per review workspace that the user drives, started through
+  `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`, then
+  `spawn_review_claude_session` in `pty.rs`).
+  - **Settings.** The user drives the session, so their own config loads
+    (`--setting-sources user`, no `--strict-mcp-config`): skills, plugins,
+    hooks, allow rules, MCP servers. The repos' project config (skills from
+    the checkouts) and their `CLAUDE.md` load only when the user ticks the
+    workspace's `askClaudeRepoConfig` option in the tab, which a start's body
+    saves and restarting applies. On top of that the sidecar sends
+    `lockedDownSettings`, minus what only an unattended run needs (no hooks,
+    no auto-memory, the built-in plugins off), plus a deny on the edit tools
+    and a sandbox `denyWrite` on every checkout, on
+    the clones they share a `.git` with, on the session's own folder and on
+    the review workspace's folder, where its settings are written. One
+    PR's code must not be able to rewrite another's, whose setup would then
+    run it unsandboxed, nor plant a hook or config in a clone, which the
+    sidecar's git would run. The core adds the checkouts as
+    `permissions.additionalDirectories` and writes the settings, and the
+    guardrail prompt with the sidecar's context line, to
+    `<workspacesRoot>/.review/<workspaceId>/.ask-claude/`. That folder is
+    outside everything the sandbox can write, and isn't emptied on a start
+    the way the session folder is, so a running session's files stay put.
+  - **Launch line.** The core types a short line into the user's login shell:
+    the agent command's program, minus its own flags, under `exec` (so no
+    shell outlives it, and `|| exit` covers an `exec` that fails), with
+    `--setting-sources user` (or `user,project,local` with the option on),
+    `--settings <file>`, `--no-chrome` (Claude in Chrome acts in the user's signed-in browser,
+    outside the sandbox), `--permission-mode default` and
+    `--append-system-prompt-file <file>`. Everything long goes in the files:
+    a line typed before the shell's line editor starts is read in canonical
+    mode, where macOS drops whatever passes 1024 bytes, and the core refuses
+    a line over `MAX_LAUNCH_LINE_BYTES`. Leaving `project` out of the
+    sources keeps an added folder's skills out, but
+    `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD=1` loads its `CLAUDE.md`
+    regardless, so the core sets it to 0, or 1 with the option on, after the
+    user's own assignments. `env -u`
+    drops common credential variables the login shell may export (`GH_TOKEN`
+    and the AWS keys; the full list is `REVIEW_SESSION_UNSET_ENV`) and
+    Yarvis's session tokens. That is a denylist, and a command's shell may
+    get them back from the user's rc files; the sandbox keeping commands off
+    the network, unless the user approves a host, is what stops them leaving.
+  - **Where the shell opens.** The login shell's hooks (mise, direnv) act on
+    the folder it opens in and that folder's parents, so it never opens in a
+    checkout: it opens in `<workspacesRoot>/.review-sessions/<workspaceId>/`,
+    which the session can't write to and which is emptied before each start.
+    The core checks, on real paths, that the folder is
+    `.review-sessions/<workspaceId>` and overlaps no checkout, and refuses
+    control characters in what it types. The PTY id (`review-claude:`) is not
+    attention addressable, so it gets no sidecar tokens, and
+    `spawn_into_state` refuses to put a plain shell under it. A start while a
+    session runs leaves it alone without spawning anything.
+  - **Teardown.** Removing a PR or archiving the workspace ends the session
+    first, through `claude.killReview`, under a per-workspace lock
+    (`withReviewWorkspaceLock`) that a start also takes, so no start lands
+    between the kill and the removal. A refresh, and a clone resumed after a
+    restart, start under that lock too, and a removal reads the PR and checks
+    it isn't being updated under it, so neither starts on a PR being removed.
+    `claude.spawnReview` and `claude.killReview` time out after 5s, since
+    removals wait on them; a spawn that timed out is ended, since it may
+    still land, but one the core refused isn't, so a running session
+    survives it. The lock is per sidecar: a second app instance sharing the
+    database can start a session the first one's removal doesn't end. That
+    is accepted, since the session is read-only and only loses its folders.
+    An archive that couldn't end the session keeps its folders and says so,
+    since a running session may still read its settings file.
+  The assistant's `start_claude_code_task` (`claudeTasks/`) is the one caller
+  not pointed at a checkout: it runs in a fresh empty folder under
+  `<workspacesRoot>/.claude-tasks/`, on a task the chat model wrote. Its
+  permission mode is `acceptEdits`, the one exception to "never approves on
+  its own", because the run's whole job is writing files. `startClaudeRun`
+  refuses that mode unless the run is also `restricted` (`--restricted
+  --permission-prompts none`), which keeps every file tool inside the working
+  folder and refuses writes to settings and tool-configuration files there.
+  `--tools` leaves the run only the file tools: no Bash, since the sandbox's
+  read deny list was written for PR checkouts and leaves most of the home
+  folder readable. The canary checks the run can't read, list, search or
+  write outside its folder. Its prompt leads with `TASK_RUN_GUARDRAIL` rather
+  than the checkout guardrail, since there is no code to analyse; it still
+  treats quoted material as data and publishes nothing. What the run writes
+  back is fenced
+  before the chat model reads it, and the file list is the model's claim, so
+  `filesInFolder` keeps only files that really are inside the folder.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`), optional effort and step budget, body as its system prompt.
@@ -536,6 +917,20 @@ back to ad-hoc.
   improves with the app while a user's definition stays theirs, with no
   seed-once rule and nothing to reset. Adding a specialist is writing a file,
   which is what "let the agent reach for one it needs" requires.
+  - A file with `kind: decision` is a decision specialist: no tools, no model
+    of its own, and one call to the decision model that picks one of a set of
+    options (`agents/decide.ts`). Callers go through
+    `consultDecisionSpecialist`, which answers null when the feature's toggle
+    is off or the call fails, and the caller then does what it did before. Same
+    rule as auto mode: a failed or unsure decision model means the old
+    behavior, never a guessed answer. `runSpecialistDefinition` refuses one, so
+    it can't be delegated to or scheduled. A task specialist with `unattended`
+    grants is kept out of both shipped uses: the picker never offers it and
+    complexity routing never changes its model, because the task text it is
+    judged on can be shaped by what other people wrote. The picker only
+    suggests: `delegate` with no name returns the pick and runs nothing, so a
+    run always takes a call that names its specialist, which is what an
+    approval prompt on `delegate` shows.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to
@@ -554,8 +949,27 @@ back to ad-hoc.
     itself. A tool that writes where other people can see it sits between those
     two cases: available, but only to a definition that also names it under
     `unattended:`, which Settings flags on the row as "acts unattended".
-    `project-manager` filing tickets is the one shipped grant — turning a
-    discussion into tickets is the job.
+    Two shipped definitions have a grant, each because the action is the job:
+    `project-manager` files tickets, and `merge-reviewer` posts a signed
+    approval a repo's CI can merge on. The second is narrowed again at the
+    tool: `post_merge_review` re-reads the PR and its report itself, and posts
+    only for a current report whose verdict asked for an agent.
+- Heads-down routines (`sidecar/src/headsDown/routines.ts`) follow the same
+  files-not-rows shape: shipped ones in `headsDown/routines/`, embedded, and
+  `~/.yarvis/routines/*.md` beside them, winning on a name. The body goes into
+  an unattended pass's prompt unfenced, as the user's own words, which is why
+  they are never read from a repo either. Which ones a pass gets is decided in
+  code, not by the model: `dueRoutines` offers those whose cadence has passed
+  since a pass last reported them done (`heads_down_passes.routines_done`), most
+  overdue first, capped by `maxRoutinesPerPass`. One a pass was given
+  (`routines_offered`, written when the pass starts) and didn't finish waits
+  before it is given again, so a routine that keeps failing can't take a slot
+  on every pass. `finish_pass` records only names it was offered, so a pass
+  can't push back a routine it never saw. Both directories are read by
+  `readMarkdownDir` in `agents/frontmatter.ts`, which opens without blocking
+  and reads only regular files, since a FIFO named `x.md` would hang every load.
+  It refuses a symlinked folder or file, which could point into a repo, and a
+  file past a size cap.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a
@@ -605,6 +1019,29 @@ back to ad-hoc.
   inspected one, a CSS selector the model wrote — ends in its one set of
   screens, applied to what the click actually lands on. Per-site behaviour goes
   in `extension/adapters/` and may change what a tool returns, never what it may
-  do.
+  do. The side panel's chat runs the other way through the same host: it maps
+  each panel request onto a fixed `/browser/chat` route (`scripts/browser/chat.ts`),
+  so the browser token also runs agent turns and reads recent chats from every
+  surface (the panel picks from them). Approval requests travel back on the
+  turn's stream and answers on `/browser/chat/approvals/:id`, which only decides
+  calls a panel turn asked about. That leaves the token able to approve its own
+  turn's calls, so anything that can read the discovery file can use every tool
+  the panel can; it is as scoped as the user's own account, not narrower. The
+  tab it sends as context is fenced like any
+  screen context.
+- `read_web_page` (`sidecar/src/web/`) reads a public page as an anonymous
+  visitor: no cookies, the SSRF guard on every redirect hop, and the deadline
+  covering the body read. Before the model sees a page, `web/extract.ts` drops
+  what a browser wouldn't show and strips invisible Unicode, `detectInjection`
+  flags instruction-like text, and the result is nonce-fenced. Extraction runs
+  synchronously on up to 5MB, so its regexes must stay linear and nesting is
+  tracked with counters rather than stack scans. A page is also a way in and a
+  URL a way out, so two approvals hang off it, both decided at call time by
+  `conditionalConfirmations` in `chat/destructiveTools.ts`: a URL the user didn't
+  type in the conversation (`web/provenance.ts`) asks before it is fetched, and
+  once a turn has read a page the destructive set and auto-approved MCP tools ask
+  for the rest of it, as on a spoken turn. A surface with no approval channel
+  gets those calls refused (`wrapToolWithConditionalApproval`), and an unattended
+  run needs an explicit grant in `agents/run.ts` to have the tool at all.
 - Follow the repo's existing comment style: comments explain *why*, not
   *what* — no restating what a well-named function already says.

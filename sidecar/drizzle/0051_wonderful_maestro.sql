@@ -1,0 +1,1 @@
+ALTER TYPE "public"."artifact_format" ADD VALUE 'excalidraw';

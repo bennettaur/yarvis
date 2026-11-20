@@ -1,0 +1,1009 @@
+import { useState } from "react";
+import type { CommentPlacement } from "../../../lib/pr/types";
+import {
+  APPROACH_LABEL,
+  CHECK_LABEL,
+  type ChangeKind,
+  type ClaimStatus,
+  changedUpstack,
+  coverageKnown,
+  type ImpactBand,
+  type Severity,
+  type ThemeCohesion,
+  VERIFICATION_CHECKS,
+  type VerificationApproach,
+  type VerificationChange,
+  type VerificationChangeMap,
+  type VerificationCheck,
+  type VerificationClaims,
+  type VerificationCoverage,
+  type VerificationFinding,
+  type VerificationImpact,
+  type VerificationMustRead,
+  type VerificationReport,
+  type VerificationTripwire,
+  type VerificationUpstack,
+} from "../../../lib/reviewWorkspaces/verification";
+import { openExternal } from "../../../lib/url";
+
+/** What a must-read's flags are called, in the report and on the diff. */
+export const FLAG_LABEL = "Looks off";
+
+const SEVERITY_CLASS: Record<Severity, string> = {
+  high: "border-red-800 text-red-300",
+  medium: "border-amber-800 text-amber-300",
+  low: "border-zinc-700 text-zinc-400",
+};
+
+type VerificationRiskLevel = NonNullable<VerificationReport["risk"]>["level"];
+
+const RISK_CLASS: Record<VerificationRiskLevel, string> = {
+  high: "border-red-700 bg-red-950/40 text-red-300",
+  medium: "border-amber-700 bg-amber-950/40 text-amber-300",
+  low: "border-emerald-800 bg-emerald-950/30 text-emerald-300",
+};
+
+const COHESION_LABEL: Record<ThemeCohesion, string> = {
+  core: "Core",
+  supporting: "Supporting",
+  outlier: "Outlier",
+};
+
+const COHESION_CLASS: Record<ThemeCohesion, string> = {
+  core: "border-sky-800 text-sky-300",
+  supporting: "border-zinc-700 text-zinc-400",
+  outlier: "border-amber-700 text-amber-300",
+};
+
+export const CLAIM_LABEL: Record<ClaimStatus, string> = {
+  verified: "Verified",
+  partial: "Partial",
+  missing: "Missing",
+  contradicted: "Contradicted",
+  unverifiable: "Can't tell",
+};
+
+const CLAIM_CLASS: Record<ClaimStatus, string> = {
+  verified: "border-emerald-800 text-emerald-300",
+  partial: "border-amber-700 text-amber-300",
+  missing: "border-red-700 text-red-300",
+  contradicted: "border-red-700 text-red-300",
+  unverifiable: "border-zinc-700 text-zinc-400",
+};
+
+/** Claims a reviewer may want to raise with the author: the code doesn't do what was said. */
+export const isUnmetClaim = (status: ClaimStatus) =>
+  status === "partial" || status === "missing" || status === "contradicted";
+
+// The band labels, kind names and attention band copy `sidecar/src/verify/impact.ts`, the
+// evidence text copies `scripts/verify/report.ts`, and `LEVEL_FOR_BAND` copies the sidecar's
+// `reviewWorkspaces/verification.ts`. The frontend can't import them, so change both together.
+const IMPACT_LABEL: Record<ImpactBand, string> = {
+  1: "minimal",
+  2: "low",
+  3: "moderate",
+  4: "high",
+  5: "very high",
+};
+
+const IMPACT_CLASS: Record<ImpactBand, string> = {
+  1: RISK_CLASS.low,
+  2: RISK_CLASS.low,
+  3: RISK_CLASS.medium,
+  4: RISK_CLASS.high,
+  5: RISK_CLASS.high,
+};
+
+/** Changes at or above this band are listed for attention; the sidecar's `ATTENTION_BAND`. */
+const ATTENTION_BAND = 4;
+
+/** The risk level a band alone implies. */
+const LEVEL_FOR_BAND: Record<ImpactBand, VerificationRiskLevel> = {
+  1: "low",
+  2: "low",
+  3: "medium",
+  4: "high",
+  5: "high",
+};
+
+const KIND_NAMES: [ChangeKind, string, string][] = [
+  ["passive", "passive", "passive"],
+  ["reorganization", "reorganization", "reorganizations"],
+  ["addition", "addition", "additions"],
+  ["removal", "removal", "removals"],
+  ["interface", "interface change", "interface changes"],
+  ["logic", "logic change", "logic changes"],
+];
+
+const EVIDENCE_TEXT: Record<VerificationChange["evidence"], string> = {
+  proven: "proven by tests",
+  partial: "partly tested",
+  unproven: "untested",
+};
+
+function countsText(counts: VerificationImpact["counts"]): string {
+  return KIND_NAMES.filter(([kind]) => counts[kind] > 0)
+    .map(([kind, one, many]) => `${counts[kind]} ${counts[kind] === 1 ? one : many}`)
+    .join(", ");
+}
+
+function describeChange(change: VerificationChange): string {
+  const parts = [change.kind, change.reach, EVIDENCE_TEXT[change.evidence]];
+  if (change.sensitive) parts.push("sensitive");
+  else if (change.internal) parts.push("internal only");
+  if (change.count > 1) parts.push(`${change.count} like it`);
+  return parts.join(" · ");
+}
+
+const APPROACH_CLASS: Record<VerificationApproach["rating"], string> = {
+  "much-simpler": RISK_CLASS.high,
+  simpler: RISK_CLASS.medium,
+  "no-simpler": RISK_CLASS.low,
+  unrated: "border-zinc-700 text-zinc-400",
+};
+
+/**
+ * Opens a file of the PR at a line; the report's every location goes through
+ * it. `canOpen` says whether a path is one of the PR's files: the report is
+ * model-written, so a path it names is only a link when the PR has that file.
+ */
+export interface OpenLocation {
+  open: (path: string, line?: number) => void;
+  canOpen: (path: string) => boolean;
+}
+
+export function Location({
+  path,
+  line,
+  onOpen,
+  className = "text-[11px]",
+  label,
+}: {
+  path?: string;
+  line?: number;
+  onOpen: OpenLocation;
+  className?: string;
+  /** What to show after the path; `:line` by default. */
+  label?: string;
+}) {
+  if (!path) return null;
+  const text = `${path}${label ?? (line ? `:${line}` : "")}`;
+  if (!onOpen.canOpen(path)) {
+    return <span className={`break-all font-mono text-zinc-400 ${className}`}>{text}</span>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen.open(path, line)}
+      className={`break-all font-mono text-sky-400 hover:text-sky-300 ${className}`}
+    >
+      {text}
+    </button>
+  );
+}
+
+/**
+ * Where a finding can be sent once the reviewer has read it. Each takes the
+ * finding and the label of the section it came from, and only findings with a
+ * path and line get the buttons, since both targets anchor to a line.
+ */
+export interface FindingPoster {
+  /** "file" when GitHub put the comment on the whole file instead of its line. */
+  toPr: (finding: Located, section: string) => Promise<CommentPlacement | undefined>;
+  /** Present when the PR was raised from a Yarvis workspace. */
+  toWorkspace?: { name: string; add: (finding: Located, section: string) => Promise<void> };
+}
+
+/** A finding or concern with the location both comment targets need. */
+export type Located = Pick<VerificationFinding, "title" | "detail"> &
+  Partial<Pick<VerificationFinding, "severity">> & { path: string; line: number };
+
+type PostState = "posting" | "posted" | "posted-to-file" | { error: string };
+
+/** The post buttons for one finding, each remembering it was sent so a second click can't repeat it. */
+function PostFinding({
+  finding,
+  section,
+  poster,
+}: {
+  finding: Partial<Located> & Pick<Located, "title" | "detail">;
+  section: string;
+  poster?: FindingPoster;
+}) {
+  const [toPr, setToPr] = useState<PostState | null>(null);
+  const [toWorkspace, setToWorkspace] = useState<PostState | null>(null);
+  const { path, line } = finding;
+  if (!poster || !path || !line) return null;
+  const located: Located = { ...finding, path, line };
+  const send = async (fn: () => Promise<unknown>, set: (s: PostState) => void) => {
+    set("posting");
+    try {
+      set((await fn()) === "file" ? "posted-to-file" : "posted");
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => {
+    const sent = state === "posted" || state === "posted-to-file";
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={state === "posting" || sent}
+        className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
+      >
+        {state === "posting" ? "Posting…" : sent ? done : idle}
+      </button>
+    );
+  };
+  const errors = [toPr, toWorkspace].flatMap((s) => (s && typeof s === "object" ? [s.error] : []));
+  const workspace = poster.toWorkspace;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {button(
+        toPr,
+        "Post to PR",
+        "Posted to PR",
+        () => void send(() => poster.toPr(located, section), setToPr),
+      )}
+      {workspace &&
+        button(
+          toWorkspace,
+          `Add to ${workspace.name}`,
+          `Added to ${workspace.name}`,
+          () => void send(() => workspace.add(located, section), setToWorkspace),
+        )}
+      {toPr === "posted-to-file" && (
+        <span role="status" className="text-[10px] text-amber-300">
+          Posted on the whole file instead: GitHub only takes line comments on lines inside the
+          diff.
+        </span>
+      )}
+      {errors.map((e) => (
+        <span key={e} role="alert" className="text-[10px] text-red-400">
+          {e}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+/** Paths the reviewer has marked viewed. */
+type Viewed = ReadonlySet<string>;
+
+const NONE_VIEWED: Viewed = new Set();
+
+const isViewed = (viewed: Viewed, path?: string) => !!path && viewed.has(path);
+
+/** Struck through and dimmed once its file is viewed. */
+const viewedClass = (done: boolean) => (done ? "line-through opacity-50" : "");
+
+/** Says a layer stacked on this PR changes the finding's line, so it may be fixed there. */
+function UpstackNote({
+  upstack,
+  path,
+  line,
+}: {
+  upstack: VerificationUpstack | null;
+  path?: string;
+  line?: number;
+}) {
+  const layer = changedUpstack(upstack, path, line);
+  if (!layer) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => openExternal(layer.url)}
+      title="A PR stacked on this one changes this line; it may already be fixed there."
+      className="rounded border border-sky-800 px-1 py-0.5 text-[10px] text-sky-300 hover:bg-sky-950"
+    >
+      changed in #{layer.number} above
+    </button>
+  );
+}
+
+/**
+ * A check passing is one line and nothing more: the reader's time goes to the
+ * checks that found something, which open with their findings showing.
+ */
+function CheckRow({
+  label,
+  check,
+  onOpen,
+  viewed,
+  poster,
+  upstack = null,
+}: {
+  label: string;
+  check: VerificationCheck;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+  /** What the layers above change; only for a result at the PR's head, whose lines match theirs. */
+  upstack?: VerificationUpstack | null;
+}) {
+  if (check.status === "pass" || check.findings.length === 0) {
+    return (
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-4 text-center text-emerald-400" aria-hidden="true">
+          ✓
+        </span>
+        <span className="text-zinc-300">{label}</span>
+        <span className="text-zinc-500">passes</span>
+      </div>
+    );
+  }
+  return (
+    <details open className="group text-sm">
+      <summary className="flex cursor-pointer items-center gap-2">
+        <span className="w-4 text-center text-amber-400" aria-hidden="true">
+          !
+        </span>
+        <span className="text-zinc-200">{label}</span>
+        <span className="text-zinc-500">
+          {check.findings.length} {check.findings.length === 1 ? "finding" : "findings"}
+        </span>
+      </summary>
+      <ul className="mt-1 space-y-2 pl-5">
+        {check.findings.map((f) => (
+          <li
+            key={`${f.title}:${f.path}:${f.line}`}
+            className={`space-y-0.5 ${viewedClass(isViewed(viewed, f.path))}`}
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded border px-1 py-0.5 text-[10px] uppercase ${SEVERITY_CLASS[f.severity]}`}
+              >
+                {f.severity}
+              </span>
+              <span className="font-medium text-zinc-200">{f.title}</span>
+              <Location path={f.path} line={f.line} onOpen={onOpen} />
+              <UpstackNote upstack={upstack} path={f.path} line={f.line} />
+            </div>
+            <p className="text-xs text-zinc-400">{f.detail}</p>
+            <PostFinding finding={f} section={label} poster={poster} />
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+const TRIPWIRE_LABEL: Record<VerificationTripwire["kind"], string> = {
+  build: "Runs code or sets rules",
+  binary: "Binary",
+  "hidden-text": "Hidden text",
+  "opaque-blob": "Encoded string",
+  "test-tampering": "Tests",
+};
+
+/**
+ * The places Yarvis's fixed rules flagged for the malicious-intent check.
+ * Shown whatever the check made of them, since the point is that a model's
+ * reading can't make one disappear.
+ */
+function Tripwires({
+  tripwires,
+  omitted,
+  onOpen,
+}: {
+  tripwires: VerificationTripwire[];
+  omitted: number;
+  onOpen: OpenLocation;
+}) {
+  if (tripwires.length === 0) return null;
+  return (
+    <details className="pl-6 text-xs">
+      <summary className="cursor-pointer text-zinc-400">
+        {tripwires.length + omitted} {tripwires.length + omitted === 1 ? "tripwire" : "tripwires"}{" "}
+        to confirm
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {tripwires.map((t, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: two tripwires can share a kind, path and line
+          <li key={i} className="flex flex-wrap items-center gap-2">
+            <span className="text-zinc-500">{TRIPWIRE_LABEL[t.kind]}</span>
+            <Location path={t.path} line={t.line} onOpen={onOpen} />
+            <span className="text-zinc-400">{t.note}</span>
+          </li>
+        ))}
+        {omitted > 0 && <li className="text-zinc-500">{omitted} more not listed.</li>}
+      </ul>
+    </details>
+  );
+}
+
+/**
+ * The change by theme, core first. An outlier carries the question for its
+ * author, which can go to the PR like a finding, anchored at its first file.
+ */
+function ChangeMap({
+  map,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  map: VerificationChangeMap;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  return (
+    <div className="space-y-2 text-sm">
+      <p className="text-zinc-200">{map.intent}</p>
+      <ul className="space-y-2.5">
+        {map.themes.map((theme) => {
+          const first = theme.files[0];
+          const done = theme.files.every((f) => isViewed(viewed, f.path));
+          return (
+            <li key={`${theme.title}:${first?.path}`} className="space-y-1">
+              <div className={`flex flex-wrap items-center gap-2 ${viewedClass(done)}`}>
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] uppercase ${COHESION_CLASS[theme.cohesion]}`}
+                >
+                  {COHESION_LABEL[theme.cohesion]}
+                </span>
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] ${RISK_CLASS[theme.risk]}`}
+                >
+                  {theme.risk} risk
+                </span>
+                <span className="font-medium text-zinc-200">{theme.title}</span>
+              </div>
+              <p className="text-xs text-zinc-400">{theme.description}</p>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {theme.files.map((f) => (
+                  <Location
+                    key={f.path}
+                    path={f.path}
+                    line={f.lines?.start}
+                    label={f.lines ? `:${f.lines.start}-${f.lines.end}` : ""}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </div>
+              {/* The server keeps a question only on an outlier. */}
+              {theme.question && first && (
+                <div className="space-y-1 rounded border border-amber-900/60 bg-amber-950/20 p-2 text-xs">
+                  <p className="text-amber-100">
+                    <span className="text-amber-400">Ask the author: </span>
+                    {theme.question}
+                  </p>
+                  <PostFinding
+                    finding={{
+                      title: theme.title,
+                      detail: theme.question,
+                      path: first.path,
+                      line: first.lines?.start ?? 1,
+                    }}
+                    section="Change map"
+                    poster={poster}
+                  />
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {map.unmapped.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-zinc-500">
+          <span>In no theme:</span>
+          {map.unmapped.map((path) => (
+            <Location key={path} path={path} onOpen={onOpen} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Each claim with its verdict and the code behind it, then the unfinished work no claim covers. */
+function Claims({
+  claims,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  claims: VerificationClaims;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  const { tickets } = claims;
+  return (
+    <div className="space-y-2 text-sm">
+      {tickets && (
+        <p className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-500">
+          {tickets.length === 0 ? (
+            "Checked against the title and description; no tickets were read."
+          ) : (
+            <>
+              Checked against the title, description and
+              {tickets.map((t, i) => (
+                <span key={t.key}>
+                  <button
+                    type="button"
+                    title={t.title}
+                    onClick={() => openExternal(t.url)}
+                    className="text-sky-400 hover:text-sky-300"
+                  >
+                    {t.key}
+                  </button>
+                  {i < tickets.length - 1 && ","}
+                </span>
+              ))}
+            </>
+          )}
+        </p>
+      )}
+      {claims.ticketNotes?.map((note) => (
+        <p key={note} className="text-[11px] text-amber-300">
+          {note}
+        </p>
+      ))}
+      {claims.items.length === 0 ? (
+        <p className="text-zinc-500">No claims to check.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {claims.items.map((c) => (
+            <li
+              key={`${c.source}:${c.claim}:${c.path}:${c.line}`}
+              className={`space-y-0.5 ${viewedClass(isViewed(viewed, c.path))}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded border px-1 py-0.5 text-[10px] uppercase ${CLAIM_CLASS[c.status]}`}
+                >
+                  {CLAIM_LABEL[c.status]}
+                </span>
+                <span className="text-zinc-200">{c.claim}</span>
+                <span className="text-[11px] text-zinc-500">{c.source}</span>
+                <Location path={c.path} line={c.line} onOpen={onOpen} />
+              </div>
+              <p className="text-xs text-zinc-400">{c.evidence}</p>
+              {isUnmetClaim(c.status) && (
+                <PostFinding
+                  finding={{ title: c.claim, detail: c.evidence, path: c.path, line: c.line }}
+                  section={`Claims: ${CLAIM_LABEL[c.status].toLowerCase()}`}
+                  poster={poster}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {claims.gaps.length > 0 && (
+        <CheckRow
+          label="Unfinished work"
+          check={{ status: "issues", findings: claims.gaps }}
+          onOpen={onOpen}
+          viewed={viewed}
+          poster={poster}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The whole-PR rating: whether there is a simpler way, why, and what it is. */
+function Approach({ approach, onOpen }: { approach: VerificationApproach; onOpen: OpenLocation }) {
+  return (
+    <div className="space-y-1.5 text-sm">
+      <div className="flex items-start gap-2">
+        <span
+          className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${APPROACH_CLASS[approach.rating]}`}
+        >
+          {APPROACH_LABEL[approach.rating]}
+        </span>
+        <span className="text-zinc-300">{approach.reason}</span>
+      </div>
+      {approach.alternative && (
+        <div className="text-xs text-zinc-400">
+          <span className="text-zinc-500">Simpler way: </span>
+          {approach.alternative}{" "}
+          <Location path={approach.path} line={approach.line} onOpen={onOpen} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Not-examined files shown before the rest fold away. */
+const NOT_EXAMINED_SHOWN = 6;
+
+/**
+ * Which changed files the checks didn't read, first and hard to miss: nothing
+ * below says anything about them. A report from before coverage was counted
+ * says it can't tell, rather than implying it read everything.
+ */
+function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: OpenLocation }) {
+  const { coverage } = report;
+  if (!coverage) {
+    return (
+      <p className="text-xs text-zinc-500">
+        This report doesn't record which files its checks read. Re-run it to find out.
+      </p>
+    );
+  }
+  if (!coverageKnown(coverage)) {
+    return (
+      <p className="text-xs text-amber-300">
+        Yarvis couldn't count which files the checks read, so this report may not cover every
+        changed file.
+      </p>
+    );
+  }
+  const item = (entry: VerificationCoverage["notExamined"][number]) => (
+    <li key={entry.path} className="text-sm">
+      <Location path={entry.path} label="" className="text-xs" onOpen={onOpen} />
+      <p className="text-xs text-amber-200/70">{entry.reason}</p>
+    </li>
+  );
+  const shown = coverage.notExamined.slice(0, NOT_EXAMINED_SHOWN);
+  const rest = coverage.notExamined.slice(NOT_EXAMINED_SHOWN);
+  const skimmed = coverage.skimmed.length > 0 && (
+    <details className="text-xs text-zinc-400">
+      <summary className="cursor-pointer">
+        Generated, skimmed: {files(coverage.skimmed.length)}
+      </summary>
+      <p className="mt-1 text-zinc-500">
+        Lockfiles and generated, vendored or minified files. The checks read only their first page.
+      </p>
+      <ul className="mt-1 space-y-1">
+        {coverage.skimmed.map((s) => (
+          <li key={s.path}>
+            <Location path={s.path} label="" className="text-xs" onOpen={onOpen} />{" "}
+            <span className="text-zinc-500">({s.kind})</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+  const gaps = coverage.laneGaps.length > 0 && (
+    <ul className="space-y-1 text-xs text-zinc-400">
+      {coverage.laneGaps.map((gap) => (
+        <li key={gap.check}>
+          Not examined by {gap.check}:{" "}
+          {gap.paths.map((path, i) => (
+            <span key={path}>
+              {i > 0 && ", "}
+              <Location path={path} label="" className="text-xs" onOpen={onOpen} />
+            </span>
+          ))}
+        </li>
+      ))}
+    </ul>
+  );
+  if (coverage.notExamined.length === 0) {
+    return (
+      <div className="space-y-1">
+        <p className="text-xs text-zinc-500">
+          At least one check read each of the {files(coverage.examined)} to read
+          {coverage.skimmed.length > 0 ? `, and skimmed ${files(coverage.skimmed.length)}` : ""}.
+        </p>
+        {gaps}
+        {skimmed}
+      </div>
+    );
+  }
+  return (
+    <section
+      aria-label="Not examined"
+      className="space-y-2 rounded-lg border border-amber-800 bg-amber-950/30 p-3"
+    >
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-300">Not examined</h3>
+      <p className="text-xs text-amber-200">
+        No check read {coverage.notExamined.length} of the {files(coverage.total)} changed. Nothing
+        in this report covers them; review them yourself.
+      </p>
+      <ul className="space-y-1.5">{shown.map(item)}</ul>
+      {rest.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-amber-300">{rest.length} more</summary>
+          <ul className="mt-1.5 space-y-1.5">{rest.map(item)}</ul>
+        </details>
+      )}
+      {gaps}
+      {skimmed}
+    </section>
+  );
+}
+
+const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
+
+/** A must-read and what already looks off or unclear in it. */
+function MustReadItem({
+  entry,
+  onOpen,
+  viewed,
+}: {
+  entry: VerificationMustRead;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+}) {
+  const flags = entry.flags ?? [];
+  return (
+    <li className={`text-sm ${viewedClass(isViewed(viewed, entry.path))}`}>
+      <Location
+        path={entry.path}
+        line={entry.lines?.start}
+        label={entry.lines ? `:${entry.lines.start}–${entry.lines.end}` : ""}
+        className="text-xs"
+        onOpen={onOpen}
+      />
+      <p className="text-xs text-zinc-400">{entry.reason}</p>
+      {flags.length > 0 && (
+        <ul aria-label={FLAG_LABEL} className="mt-0.5 space-y-0.5">
+          {flags.map((flag, i) => (
+            // The agent can repeat a note, so its position keeps the key unique.
+            <li key={`${i}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
+              <span aria-hidden="true">?</span>
+              <span className="min-w-0">
+                {flag.note}
+                {flag.line && (
+                  <>
+                    {" "}
+                    <Location path={entry.path} line={flag.line} onOpen={onOpen} />
+                  </>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+/**
+ * What the impact score rests on: the kinds of change, the ones a reviewer
+ * should check, and every change behind a fold for anyone who wants the rest.
+ */
+function ImpactDetail({
+  impact,
+  onOpen,
+  viewed,
+  poster,
+}: {
+  impact: VerificationImpact;
+  onOpen: OpenLocation;
+  viewed: Viewed;
+  poster?: FindingPoster;
+}) {
+  const attention = impact.changes.filter((c) => c.band >= ATTENTION_BAND);
+  return (
+    <>
+      <div className="text-xs text-zinc-400">
+        {countsText(impact.counts)}
+        {impact.raisedByVolume > 0 &&
+          ` · raised from ${IMPACT_LABEL[impact.highestChangeBand]} by the number of changes, so splitting the PR would lower it`}
+      </div>
+      {attention.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-xs text-zinc-500">Needs attention</div>
+          <ul className="space-y-1.5">
+            {attention.map((c, i) => (
+              <li
+                // Folded entries can share a title and have no location, so the position keeps keys unique.
+                key={`${i}:${c.title}`}
+                className={viewedClass(isViewed(viewed, c.path))}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium text-zinc-200">{c.title}</span>
+                  <Location path={c.path} line={c.line} onOpen={onOpen} />
+                  <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+                </div>
+                <p className="text-xs text-zinc-400">{c.check}</p>
+                <PostFinding
+                  finding={{ title: c.title, detail: c.check, path: c.path, line: c.line }}
+                  section="Impact"
+                  poster={poster}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <details className="text-xs">
+        <summary className="cursor-pointer text-zinc-500">
+          Every change ({impact.changes.length})
+        </summary>
+        <ul className="mt-1.5 space-y-1">
+          {impact.changes.map((c, i) => (
+            <li key={`${i}:${c.title}`} className="flex flex-wrap items-center gap-2">
+              <span className="text-zinc-500">{c.band}/5</span>
+              <span className="text-zinc-300">{c.title}</span>
+              <Location path={c.path} line={c.line} onOpen={onOpen} />
+              <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </>
+  );
+}
+
+/**
+ * The report in the order a reviewer uses it: which files it didn't cover,
+ * what the change is, which files to read first, how risky it is, then the
+ * checks.
+ */
+export default function VerificationReportView({
+  report,
+  onOpen,
+  viewed = NONE_VIEWED,
+  poster,
+  currentSections,
+  upstack = null,
+}: {
+  report: VerificationReport;
+  onOpen: OpenLocation;
+  viewed?: Viewed;
+  /** What the PRs stacked on this one change in it, read at the PR's head. */
+  upstack?: VerificationUpstack | null;
+  /** Absent where findings can't be sent anywhere. */
+  poster?: FindingPoster;
+  /**
+   * The sections whose result is for the PR's head now; absent when they all
+   * are. The others are marked, and their findings can't be posted, since
+   * their line numbers may point at different code now.
+   */
+  currentSections?: ReadonlySet<string>;
+}) {
+  const { risk } = report;
+  const isCurrent = (section: string) => !currentSections || currentSections.has(section);
+  const posterFor = (section: string) => (isCurrent(section) ? poster : undefined);
+  const titled = (title: string, section: string) =>
+    isCurrent(section) ? title : `${title} · older head`;
+  const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
+  return (
+    <div className="space-y-5">
+      <Coverage report={report} onOpen={onOpen} />
+
+      {report.summary !== undefined && (
+        <Section title={titled("Summary", "summary")}>
+          <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
+        </Section>
+      )}
+
+      {report.mustRead.length > 0 && (
+        <Section
+          title={titled(
+            `Must read · ${mustReadViewed} of ${report.mustRead.length} viewed`,
+            "summary",
+          )}
+        >
+          <ul className="space-y-1.5">
+            {report.mustRead.map((entry) => (
+              <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
+            ))}
+          </ul>
+        </Section>
+      )}
+
+      {report.changeMap && (
+        <Section title={titled("Change map", "changeMap")}>
+          <ChangeMap
+            map={report.changeMap}
+            onOpen={onOpen}
+            viewed={viewed}
+            poster={posterFor("changeMap")}
+          />
+        </Section>
+      )}
+
+      {report.claims && (
+        <Section title={titled("Claims", "claims")}>
+          <Claims
+            claims={report.claims}
+            onOpen={onOpen}
+            viewed={viewed}
+            poster={posterFor("claims")}
+          />
+        </Section>
+      )}
+
+      {risk && (
+        <Section title={titled("Risk", "risk")}>
+          <div className="space-y-2 text-sm">
+            <div className="flex items-start gap-2">
+              {risk.impact && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${IMPACT_CLASS[risk.impact.band]}`}
+                >
+                  {IMPACT_LABEL[risk.impact.band]} impact · {risk.impact.band}/5
+                </span>
+              )}
+              {/* The level shows beside the band only when the agent judged it stricter. */}
+              {(!risk.impact || risk.level !== LEVEL_FOR_BAND[risk.impact.band]) && (
+                <span
+                  className={`shrink-0 rounded border px-1.5 py-0.5 text-xs ${RISK_CLASS[risk.level]}`}
+                >
+                  {risk.level} risk
+                </span>
+              )}
+              <span className="text-zinc-300">{risk.clientImpact}</span>
+            </div>
+            {risk.impact && (
+              <ImpactDetail
+                impact={risk.impact}
+                onOpen={onOpen}
+                viewed={viewed}
+                poster={posterFor("risk")}
+              />
+            )}
+            {risk.mitigations.length > 0 && (
+              <div className="text-xs text-zinc-400">
+                <span className="text-zinc-500">Mitigations: </span>
+                {risk.mitigations.join(" · ")}
+              </div>
+            )}
+            {risk.concerns.length > 0 && (
+              <ul className="space-y-1.5">
+                {risk.concerns.map((c) => (
+                  <li
+                    key={`${c.title}:${c.path}:${c.line}`}
+                    className={viewedClass(isViewed(viewed, c.path))}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-zinc-200">{c.title}</span>
+                      <Location path={c.path} line={c.line} onOpen={onOpen} />
+                    </div>
+                    <p className="text-xs text-zinc-400">{c.detail}</p>
+                    <PostFinding finding={c} section="Risk" poster={posterFor("risk")} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {report.approach && (
+        <Section title={titled("Simpler approach", "approach")}>
+          <Approach approach={report.approach} onOpen={onOpen} />
+        </Section>
+      )}
+
+      {VERIFICATION_CHECKS.some((key) => report[key]) && (
+        <Section title="Checks">
+          <div className="space-y-2">
+            {VERIFICATION_CHECKS.map((key) => {
+              const check = report[key];
+              // Absent when the run wasn't asked for it, or was made before the check existed.
+              if (!check) return null;
+              return (
+                <div key={key} className="space-y-1">
+                  <CheckRow
+                    label={titled(CHECK_LABEL[key], key)}
+                    check={check}
+                    onOpen={onOpen}
+                    viewed={viewed}
+                    poster={posterFor(key)}
+                    upstack={isCurrent(key) ? upstack : null}
+                  />
+                  {key === "malice" && report.malice?.tripwires && (
+                    <Tripwires
+                      tripwires={report.malice.tripwires}
+                      omitted={report.malice.tripwiresOmitted ?? 0}
+                      onOpen={onOpen}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Section>
+      )}
+    </div>
+  );
+}

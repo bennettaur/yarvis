@@ -59,6 +59,22 @@ describe("saveGuide", () => {
     expect((await getGuide(db, ref))!.currentStep).toBe(0);
   });
 
+  // A regenerated guide whose agent recorded no graph must not keep drawing
+  // the previous run's diagram beside its new steps.
+  it("replaces the graph along with the steps", async () => {
+    const graph = {
+      nodes: [
+        { id: "route", kind: "endpoint", file: "a.ts", changed: true },
+        { id: "store", kind: "function" },
+      ],
+      edges: [{ from: "route", to: "store", kind: "calls" }],
+    };
+    await saveGuide(db, { ref, headSha: "a".repeat(40), steps: [step("a.ts")], graph });
+    expect((await getGuide(db, ref))!.graph).toEqual(graph);
+    await saveGuide(db, { ref, headSha: "b".repeat(40), steps: [step("a.ts")] });
+    expect((await getGuide(db, ref))!.graph).toBeNull();
+  });
+
   it("keeps guides for different pull requests apart", async () => {
     await saveGuide(db, { ref, headSha: "a".repeat(40), steps: [step("a.ts")] });
     await saveGuide(db, { ref: other, headSha: "b".repeat(40), steps: [step("b.ts")] });

@@ -21,7 +21,9 @@
   "decisionModel": {
     "model": null,
     "autoApproveTools": false,
-    "autoApproveHeadsDown": false
+    "autoApproveHeadsDown": false,
+    "routeComplexity": false,
+    "pickSpecialists": false
   },
   "githubPrConfig": {
     "reviewQuery": "is:open is:pr review-requested:@me",
@@ -30,6 +32,13 @@
   "prModels": {
     "guide": null,
     "ask": null
+  },
+  "prVerification": {
+    "maxBudgetUsd": 2,
+    "sections": {
+      "risk": { "model": "sonnet" },
+      "comments": { "effort": "medium" }
+    }
   },
   "wipConfig": {
     "sources": {
@@ -52,7 +61,9 @@
     "workingHours": { "days": [1, 2, 3, 4, 5], "start": "09:00", "end": "17:00" },
     "userAwayAfterMinutes": 120,
     "provider": null,
-    "model": null
+    "model": null,
+    "guidance": null,
+    "maxRoutinesPerPass": 2
   },
   "voiceConfig": {
     "sttProvider": "",
@@ -64,6 +75,12 @@
     "ttsRefAudio": "",
     "ttsExtras": {},
     "speakReplies": true,
-    "handsFree": false
+    "continuous": false,
+    "activeVoiceId": "",
+    "translationProvider": "",
+    "translationModel": ""
+  },
+  "speechServer": {
+    "port": 8000
   }
 }

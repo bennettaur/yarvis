@@ -1,16 +1,27 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
 import postgres from "postgres";
-import { listSessions } from "../chat/service.ts";
+import { getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
 import { saveHeadsDownConfig } from "./config.ts";
-import { runPass, STOPPED_BY_USER } from "./pass.ts";
-import { addMessage, listPasses, startRun, unseenMessages } from "./service.ts";
+import { setHeadsDownStopTime } from "./control.ts";
+import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
+import { reloadRoutines } from "./routines.ts";
+import {
+  addMessage,
+  listPasses,
+  passCallSummaries,
+  pauseRun,
+  routineHistory,
+  startRun,
+  unseenMessages,
+} from "./service.ts";
+import { abortHeadsDownPass } from "./wake.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -59,11 +70,39 @@ function streamingModel(...steps: StreamPart[][]): MockLanguageModelV3 {
   });
 }
 
+/**
+ * A model that streams nothing until the pass aborts it, or until `closeAfterMs`
+ * when it ends the turn without finishing the pass.
+ */
+function hangingModel(closeAfterMs = 5_000): MockLanguageModelV3 {
+  return new MockLanguageModelV3({
+    doStream: async ({ abortSignal }) => ({
+      stream: new ReadableStream<StreamPart>({
+        start(controller) {
+          const timer = setTimeout(() => {
+            controller.enqueue(finish("stop"));
+            controller.close();
+          }, closeAfterMs);
+          abortSignal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            controller.error(abortSignal.reason);
+          });
+        },
+      }),
+    }),
+  });
+}
+
+const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const toolCall = (id: string, name: string, input: unknown): StreamPart =>
   ({ type: "tool-call", toolCallId: id, toolName: name, input: JSON.stringify(input) }) as never;
 
 const finish = (reason: "stop" | "tool-calls"): StreamPart =>
   ({ type: "finish", finishReason: { unified: reason, raw: undefined }, usage }) as never;
+
+/** The provider failing inside an open stream, where the AI SDK doesn't retry. */
+const providerError = (error: unknown): StreamPart[] => [{ type: "error", error } as never];
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 
@@ -71,7 +110,7 @@ let settingsDir: string;
 const originalSettingsPath = process.env.YARVIS_SETTINGS_PATH;
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, chat_sessions, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, chat_sessions, attention_items, memories, events RESTART IDENTITY CASCADE`;
   settingsDir = mkdtempSync(join(tmpdir(), "heads-down-pass-"));
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
   // Any time counts as working hours, so the sleep doesn't depend on when the test runs.
@@ -81,8 +120,11 @@ beforeEach(async () => {
     idleSleepMinutes: 60,
     workingHours: null,
     userAwayAfterMinutes: 120,
+    passTimeoutMinutes: 20,
     provider: null,
     model: null,
+    guidance: null,
+    maxRoutinesPerPass: 0,
   });
 });
 
@@ -147,6 +189,272 @@ describe("a heads-down pass", () => {
     expect(result.sleepMinutes).toBe(60);
   });
 
+  it("stops a pass that runs past its timeout and records it as out of time", async () => {
+    const run = await startRun(db, null);
+
+    await runPass(config, db, run, { model: hangingModel(), timeoutMs: 50 });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toContain("ran out of time");
+  });
+
+  it("keeps what a pass did when the provider fails it part-way", async () => {
+    const run = await startRun(db, null);
+    const stream = await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      [
+        toolCall("c1", "ask_user", {
+          question: "Which channel?",
+          situation: "The billing PR is ready",
+          streamId: stream.id,
+        }),
+        toolCall("c2", "get_work_stream", { streamId: "not-a-uuid" }),
+        finish("tool-calls"),
+      ],
+      providerError(Object.assign(new Error("invalid request"), { statusCode: 400 })),
+    );
+
+    await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toContain("invalid request");
+    const transcript = await getMessages(db, pass!.chatSessionId!);
+    const kept = transcript.find((m) => m.role === "assistant");
+    expect(kept?.content).toContain("Failed here: invalid request");
+    expect(kept?.toolCalls?.map((c) => [c.name, c.status])).toEqual([
+      ["ask_user", "ok"],
+      ["get_work_stream", "error"],
+    ]);
+    // Not a provider hiccup, so it isn't tried again.
+    expect(model.doStreamCalls).toHaveLength(2);
+
+    const summary = (await passCallSummaries(db, [pass!.chatSessionId!])).get(pass!.chatSessionId!);
+    expect(summary?.callCount).toBe(2);
+    expect(summary?.failedCalls.map((c) => c.name)).toEqual(["get_work_stream"]);
+  });
+
+  it("picks a pass up again after a transient provider error, telling it which calls went through", async () => {
+    const run = await startRun(db, null);
+    const stream = await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      [
+        toolCall("c1", "ask_user", {
+          question: "Which channel?",
+          situation: "The billing PR is ready",
+          streamId: stream.id,
+        }),
+        finish("tool-calls"),
+      ],
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+      [
+        toolCall("c2", "finish_pass", { notes: "Asked.", sleepMinutes: 10, reason: "waiting" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    const [pass] = await listPasses(db);
+    expect(pass).toMatchObject({ notes: "Asked.", error: null });
+    const transcript = await getMessages(db, pass!.chatSessionId!);
+    const retryPrompt = transcript.filter((m) => m.role === "user")[1]?.content;
+    expect(retryPrompt).toContain("Overloaded");
+    expect(retryPrompt).toContain("done: ask_user");
+    // The first attempt's calls are kept, then the retry's own.
+    const replies = transcript.filter((m) => m.role === "assistant");
+    expect(replies[0]?.content).toContain("Failed here: Overloaded");
+    expect(replies[0]?.toolCalls?.map((c) => c.name)).toEqual(["ask_user"]);
+    // The retry's first model call is the one that sees the list.
+    expect(JSON.stringify(model.doStreamCalls[2]?.prompt)).toContain("done: ask_user");
+    const summary = (await passCallSummaries(db, [pass!.chatSessionId!])).get(pass!.chatSessionId!);
+    expect(summary).toEqual({ callCount: 2, failedCalls: [] });
+  });
+
+  it("records the failure once its retries run out", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+
+    const result = await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    expect(model.doStreamCalls).toHaveLength(3);
+    const passes = await listPasses(db);
+    expect(passes).toHaveLength(1);
+    expect(passes[0]?.error).toContain("Overloaded");
+    expect(result.sleepMinutes).toBe(60);
+  });
+
+  it("doesn't retry or count as failed when the provider fails after finish_pass", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      [
+        toolCall("c1", "finish_pass", { notes: "All waiting.", sleepMinutes: 30, reason: "idle" }),
+        finish("tool-calls"),
+      ],
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+
+    await runPass(config, db, run, { model, retryDelaysMs: [0, 0] });
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    const [pass] = await listPasses(db);
+    expect(pass).toMatchObject({ notes: "All waiting.", error: null });
+  });
+
+  it("stops at once when the user stops it while it waits to retry", async () => {
+    const run = await startRun(db, null);
+    await createStream(db, { title: "ship billing" });
+    const model = streamingModel(
+      providerError({ type: "overloaded_error", message: "Overloaded" }),
+    );
+    const stop = setTimeout(abortHeadsDownPass, 200);
+
+    const started = Date.now();
+    const result = await runPass(config, db, run, { model, retryDelaysMs: [60_000] });
+    clearTimeout(stop);
+
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(result.sleepReason).toBe(STOPPED_BY_USER);
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    const transcript = await getMessages(db, pass!.chatSessionId!);
+    expect(transcript.filter((m) => m.role === "user")).toHaveLength(1);
+  });
+
+  it("tells the next pass what a failed one got through", async () => {
+    const run = await startRun(db, null);
+    const stream = await createStream(db, { title: "ship billing" });
+    await runPass(config, db, run, {
+      model: streamingModel(
+        [
+          toolCall("c1", "ask_user", {
+            question: "Which channel?",
+            situation: "The billing PR is ready",
+            streamId: stream.id,
+          }),
+          finish("tool-calls"),
+        ],
+        providerError(Object.assign(new Error("invalid request"), { statusCode: 400 })),
+      ),
+      retryDelaysMs: [0, 0],
+    });
+
+    const next = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: next });
+
+    const prompt = JSON.stringify(next.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("The last pass failed before it finished");
+    expect(prompt).toContain("Error: invalid request");
+    expect(prompt).toContain("done: ask_user");
+  });
+
+  it("hands the pass the user's guidance, and shows the merge it announces", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
+      provider: null,
+      model: null,
+      guidance: "Merging docs PRs in acme/docs is fine any time.",
+      maxRoutinesPerPass: 0,
+    });
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("m1", "announce_merge", {
+          repo: "acme/docs",
+          number: 4,
+          risk: "low",
+          why: "Docs only",
+        }),
+        toolCall("m2", "finish_pass", { sleepMinutes: 30, reason: "merged" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async () => ({ prs: [], unchecked: null }),
+    });
+
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain(
+      "Merging docs PRs in acme/docs is fine any time.",
+    );
+    const [item] = await sql`SELECT title, payload FROM attention_items WHERE kind = 'info'`;
+    expect(item).toMatchObject({
+      title: "Heads down is merging acme/docs#4",
+      payload: { headsDownMerge: { risk: "low", number: 4 } },
+    });
+  });
+
+  it("checks a merge it announces for open review feedback, and holds it", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("m1", "announce_merge", {
+          repo: "acme/docs",
+          number: 4,
+          risk: "low",
+          why: "Docs only",
+        }),
+        toolCall("m2", "finish_pass", { sleepMinutes: 30, reason: "held" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ repo: "acme/docs", number: 4, githubOnly: false }]);
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain("Not announced");
+    expect(await sql`SELECT 1 FROM attention_items WHERE kind = 'info'`).toHaveLength(0);
+  });
+
+  it("checks a merge the pass tells a session to make, and holds it for the user", async () => {
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("s1", "send_workspace_instruction", {
+          workspaceId,
+          instruction: "Merge the PR now.",
+          callReason: "it is approved",
+        }),
+        toolCall("s2", "finish_pass", { sleepMinutes: 30, reason: "merging" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    const asked: unknown[] = [];
+
+    await runPass(config, db, run, {
+      model,
+      mergeFeedback: async (subject) => {
+        asked.push(subject);
+        return { prs: [], unchecked: "no token" };
+      },
+    });
+
+    expect(asked).toEqual([{ workspaceId }]);
+    const [item] = await sql`SELECT payload FROM attention_items WHERE kind = 'permission'`;
+    expect(item?.payload.headsDownMergeReview.unchecked).toBe("no token");
+  });
+
   it("records a pass for a run already stopped as stopped by the user, not failed", async () => {
     const run = await startRun(db, null);
     await sql`UPDATE heads_down_runs SET status = 'stopped', stopped_at = now()`;
@@ -156,5 +464,201 @@ describe("a heads-down pass", () => {
     const [pass] = await listPasses(db);
     expect(pass?.error).toBeNull();
     expect(result.sleepReason).toBe(STOPPED_BY_USER);
+  });
+
+  it("records a pass for a paused run as stopped by the user, not failed", async () => {
+    const run = await startRun(db, null);
+    await pauseRun(db);
+
+    const result = await runPass(config, db, run, { model: streamingModel([finish("stop")]) });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    expect(result.sleepReason).toBe(STOPPED_BY_USER);
+  });
+
+  it("doesn't start a pass a moment before the run's stop time", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 500) });
+
+    const result = await runPass(config, db, run, { model: hangingModel() });
+
+    expect(result.sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("ends a pass at the run's stop time, as reaching it rather than failing", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 1_500) });
+
+    const result = await runPass(config, db, run, { model: hangingModel() });
+
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeNull();
+    expect(result.sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("ends a pass at a stop time set while it runs", async () => {
+    const run = await startRun(db, null);
+    const passing = runPass(config, db, run, { model: hangingModel() });
+    await sleepMs(200);
+
+    await setHeadsDownStopTime(db, new Date(Date.now() + 1_200));
+
+    expect((await passing).sleepReason).toBe(REACHED_STOP_TIME);
+  });
+
+  it("lets a pass run on when its stop time is cleared while it runs", async () => {
+    const run = await startRun(db, null, { stopAt: new Date(Date.now() + 1_500) });
+    const passing = runPass(config, db, run, { model: hangingModel(2_500) });
+    await sleepMs(200);
+
+    await setHeadsDownStopTime(db, null);
+
+    // It went on until the model ended the turn, past the old stop time.
+    const result = await passing;
+    expect(result.sleepReason).not.toBe(REACHED_STOP_TIME);
+    const [pass] = await listPasses(db);
+    expect(pass?.error).toBeString();
+  });
+
+  it("hands the pass the routines that are due, and records the ones it reports done", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
+      provider: null,
+      model: null,
+      guidance: null,
+      maxRoutinesPerPass: 2,
+    });
+    await reloadRoutines();
+    const run = await startRun(db, null);
+    const model = streamingModel(
+      [
+        toolCall("f1", "finish_pass", {
+          sleepMinutes: 30,
+          reason: "routines done",
+          // meeting-notes ships turned off, so it was never offered.
+          routinesDone: ["meeting-alarms", "meeting-alarms", "meeting-notes"],
+        }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("### meeting-alarms (not done in the last 30 days)");
+    expect(prompt).not.toContain("### meeting-notes");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      "Pass recorded. Not recorded as done, since this pass wasn't given them: meeting-notes. Stop here.",
+    );
+    const [pass] = await listPasses(db);
+    expect(pass?.routinesOffered).toEqual(["meeting-alarms"]);
+    expect(pass?.routinesDone).toEqual(["meeting-alarms"]);
+    const { lastDone } = await routineHistory(db);
+    expect([...lastDone.keys()]).toEqual(["meeting-alarms"]);
+    expect(lastDone.get("meeting-alarms")?.getTime()).toBe(pass?.startedAt.getTime());
+
+    // Done just now and due every 3 hours, so the next pass isn't given it again.
+    const next = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: next });
+    expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### meeting-alarms");
+
+    // History only reaches back as far as the longest cadence.
+    await sql`UPDATE heads_down_passes SET started_at = started_at - interval '30 days 1 minute'`;
+    expect((await routineHistory(db)).lastDone.size).toBe(0);
+  });
+
+  it("gives a pass only as many routines as the setting allows, and none at 0", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "a-check.md"),
+      "---\nname: a-check\ndescription: x\nevery: 1h\n---\n\nCheck.\n",
+    );
+    try {
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const passWith = async (maxRoutinesPerPass: number) => {
+        await saveHeadsDownConfig({
+          minSleepMinutes: 5,
+          maxSleepMinutes: 120,
+          idleSleepMinutes: 60,
+          workingHours: null,
+          userAwayAfterMinutes: 120,
+          passTimeoutMinutes: 20,
+          provider: null,
+          model: null,
+          guidance: null,
+          maxRoutinesPerPass,
+        });
+        const model = streamingModel([finish("stop")]);
+        await runPass(config, db, run, { model });
+        const [latest] = await listPasses(db);
+        return { prompt: JSON.stringify(model.doStreamCalls[0]?.prompt), latest };
+      };
+
+      const none = await passWith(0);
+      expect(none.prompt).not.toContain("Routines due this pass");
+      expect(none.latest?.routinesOffered).toEqual([]);
+
+      // Both are due and never done, so the name decides which one gets the only slot.
+      const one = await passWith(1);
+      expect(one.latest?.routinesOffered).toEqual(["a-check"]);
+      expect(one.prompt).toContain("### a-check");
+      expect(one.prompt).not.toContain("### meeting-alarms");
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
+  it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
+    await saveHeadsDownConfig({
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      passTimeoutMinutes: 20,
+      provider: null,
+      model: null,
+      guidance: null,
+      maxRoutinesPerPass: 2,
+    });
+    await reloadRoutines();
+    const run = await startRun(db, null);
+    const offered = (model: MockLanguageModelV3) =>
+      JSON.stringify(model.doStreamCalls[0]?.prompt).includes("### meeting-alarms");
+
+    const first = streamingModel(
+      [
+        toolCall("f1", "finish_pass", { sleepMinutes: 30, reason: "ran out of time" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+    await runPass(config, db, run, { model: first });
+    expect(offered(first)).toBe(true);
+    expect(JSON.stringify(first.doStreamCalls[1]?.prompt)).toContain(
+      "Not reported done, so a later pass gets them again: meeting-alarms.",
+    );
+    const [pass] = await listPasses(db);
+    expect(pass?.routinesOffered).toEqual(["meeting-alarms"]);
+    expect(pass?.routinesDone).toEqual([]);
+
+    const soon = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: soon });
+    expect(offered(soon)).toBe(false);
+
+    await sql`UPDATE heads_down_passes SET started_at = started_at - interval '61 minutes'`;
+    const later = streamingModel([finish("stop")]);
+    await runPass(config, db, run, { model: later });
+    expect(offered(later)).toBe(true);
   });
 });

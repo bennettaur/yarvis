@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_review_comments" ADD COLUMN "source" text DEFAULT 'user' NOT NULL;

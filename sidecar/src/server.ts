@@ -1,4 +1,7 @@
+import { failInterruptedAgentRuns, pruneAgentRunEvents } from "./agentRuns/service.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
+import { importLegacyAlarmsOnStart } from "./alarms/legacyImport.ts";
+import { startAlarmScheduler } from "./alarms/scheduler.ts";
 import { createApp } from "./app.ts";
 import { browserBridge } from "./browser/bridge.ts";
 import { removeDiscoveryOnExit, writeDiscovery } from "./browser/discovery.ts";
@@ -14,10 +17,25 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
+import { sweepContextDirs } from "./reviewWorkspaces/agentContext.ts";
+import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
+import {
+  failInterruptedMutationRuns,
+  mutantCopiesInUse,
+} from "./reviewWorkspaces/mutationTesting.ts";
+import {
+  REREVIEW_CONTEXT_DIR_PREFIX,
+  REREVIEW_RUN_TIMEOUT_MS,
+} from "./reviewWorkspaces/rereview.ts";
+import {
+  VERIFICATION_CONTEXT_DIR_PREFIX,
+  VERIFICATION_RUN_TIMEOUT_MS,
+} from "./reviewWorkspaces/verification.ts";
 import { migrateStructuralConfig } from "./settings/migrateStructuralConfig.ts";
 import { startTelegramBot } from "./telegram/index.ts";
+import { resumeAgentSessions } from "./workspaces/claudeSession.ts";
 import { startWorkspacePoller } from "./workspaces/poller.ts";
-import { resumeKickOffs } from "./workspaces/service.ts";
+import { registerSymlinkAlerts, resumeKickOffs } from "./workspaces/service.ts";
 
 // Before anything else logs: the buffer this fills is what the app's
 // Diagnostics view reads, and a line written during boot is exactly the one
@@ -26,6 +44,9 @@ installLogCapture();
 
 const config = loadConfig();
 const instance = loadInstanceConfig();
+// Agent runs this instance recorded before this moment belong to a previous
+// process; see `failInterruptedAgentRuns`.
+const bootedAt = new Date();
 
 // When launched by the Rust core (host-supplied token), exit if that parent
 // dies, so a crash/force-quit can't leave an orphaned sidecar polling Telegram
@@ -50,7 +71,9 @@ const _server = Bun.serve({
   // idle timer. Without this the socket is closed mid-generation and the client
   // sees a timeout with no output. 255s is Bun's maximum.
   // `ANSWER_WAIT_MS` in `questions/contract.ts` stays under this, since an
-  // `ask_user` call sends nothing while it waits.
+  // `ask_user` call sends nothing while it waits. A route that must wait longer
+  // opts out for its own request with `lib/idleTimeout.ts`, as the permission
+  // ingest route does.
   idleTimeout: 255,
 });
 if (config.tokenGenerated) {
@@ -78,9 +101,55 @@ writeDiscovery({
   .then(removeDiscoveryOnExit)
   .catch((e) => console.error("[browser] could not write the discovery file:", e));
 
+try {
+  const removed =
+    sweepContextDirs({
+      prefix: VERIFICATION_CONTEXT_DIR_PREFIX,
+      maxAgeMs: VERIFICATION_RUN_TIMEOUT_MS,
+    }) +
+    sweepContextDirs({ prefix: REREVIEW_CONTEXT_DIR_PREFIX, maxAgeMs: REREVIEW_RUN_TIMEOUT_MS });
+  if (removed > 0) console.log(`[agent-context] removed ${removed} leftover context folders`);
+} catch (e) {
+  console.error("[agent-context] could not sweep leftover context folders:", e);
+}
+
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
+      await importLegacyAlarmsOnStart(config);
+      // Yarvis's git refuses a clone with a symlink in its git data either way;
+      // this raises the workspace alert when it does, on every instance.
+      registerSymlinkAlerts(getDb(config.databaseUrl as string).db);
+      // Every instance sweeps its own agent runs, secondaries included: only the
+      // instance that started a run can know its process is gone.
+      failInterruptedAgentRuns(getDb(config.databaseUrl as string).db, instance.name, bootedAt)
+        .then((failed) => {
+          if (failed > 0) console.log(`[agent-runs] marked ${failed} interrupted runs as failed`);
+        })
+        .catch((e) => console.error("[agent-runs] could not sweep interrupted runs:", e))
+        // After the runs are marked, so this instance's crashed passes read as
+        // finished and their scratch copies go.
+        .then(() =>
+          failInterruptedMutationRuns(
+            getDb(config.databaseUrl as string).db,
+            instance.name,
+            bootedAt,
+          ).then(
+            (failed) => {
+              if (failed > 0) {
+                console.log(`[mutation-testing] marked ${failed} interrupted runs as failed`);
+              }
+            },
+            (e) => console.error("[mutation-testing] could not sweep interrupted runs:", e),
+          ),
+        )
+        .then(() =>
+          sweepMutantCopies(getDb(config.databaseUrl as string).db, config, mutantCopiesInUse),
+        )
+        .then((removed) => {
+          if (removed > 0) console.log(`[mutation-testing] removed ${removed} leftover copies`);
+        })
+        .catch((e) => console.error("[mutation-testing] could not sweep leftover copies:", e));
       // A secondary instance serves its window and nothing else: the work below
       // reaches out to providers and writes rows on a schedule, and running it
       // from two processes against one database duplicates both.
@@ -88,6 +157,15 @@ if (config.databaseUrl) {
         readiness.set("ready");
         console.log(`[sidecar] instance '${instance.name}' is not running background workers`);
         return;
+      }
+      // The agent tabs live in the core's PTYs, so restarting the app ends every
+      // session in them; relaunch the ones it cut off. Before readiness, so it
+      // reads the cut-off rows before anything reaps them and takes each tab
+      // before the frontend can start a fresh session there.
+      try {
+        await resumeAgentSessions(getDb(config.databaseUrl as string).db);
+      } catch (e) {
+        console.error("[sidecar] could not resume workspace agent sessions:", e);
       }
       // One-time copy of the small structural config tables (custom providers,
       // MCP servers, voice/embeddings/wip/github-pr/job config) into the shared
@@ -133,6 +211,9 @@ if (config.databaseUrl) {
       // The heads-down loop runs passes only while the user has it turned on;
       // otherwise it just checks once a minute whether they have.
       startHeadsDownLoop(config);
+      // Rings alarms as they come due, through this instance's window. A
+      // secondary instance sharing the database would only race it for each alarm.
+      startAlarmScheduler(config);
       // A workspace still holding a "Start work" prompt is one whose session was
       // never launched, which only a restart mid-kick-off can leave behind — the
       // sequence otherwise runs to completion here regardless of the UI. Pick
@@ -149,6 +230,13 @@ if (config.databaseUrl) {
           if (removed > 0) console.log(`[sidecar] swept ${removed} stale PR review guides`);
         })
         .catch((e) => console.error("[sidecar] guide sweep failed:", e));
+      // Same cadence for trimming old agent runs' transcripts: the rows only
+      // grow when a run finishes, and nothing reads a month-old run's text.
+      pruneAgentRunEvents(getDb(config.databaseUrl as string).db)
+        .then((pruned) => {
+          if (pruned > 0) console.log(`[agent-runs] trimmed the text of ${pruned} old runs`);
+        })
+        .catch((e) => console.error("[agent-runs] could not trim old runs:", e));
     })
     .catch((e) => {
       // Redact before storing the message because `/health` (unauthenticated)

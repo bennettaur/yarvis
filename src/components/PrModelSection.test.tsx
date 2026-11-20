@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction, renderToHtml, textOf } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import PrModelSection from "./PrModelSection";
 
 const PROVIDERS = [
@@ -13,25 +14,50 @@ const PROVIDERS = [
 ];
 
 let config: Record<string, unknown> = { guide: null, ask: null };
+const VERIFICATION_DEFAULTS = {
+  maxBudgetUsd: 2,
+  sections: {},
+  harnesses: [{ id: "claude", name: "Claude" }],
+  sectionDefaults: [
+    { section: "risk", label: "Risk", model: "opus", effort: "high" },
+    { section: "comments", label: "Comment quality", model: "haiku", effort: "low" },
+  ],
+};
+let verification: Record<string, unknown> = { ...VERIFICATION_DEFAULTS };
+const REREVIEW_DEFAULTS = { model: "sonnet", maxBudgetUsd: 1, autoStart: false };
+let rereview: Record<string, unknown> = { ...REREVIEW_DEFAULTS };
 /** Requests the section made, so a test can assert what it wrote. */
-const calls: { method: string; body?: string }[] = [];
+const calls: { url: string; method: string; body?: string }[] = [];
 /** When set, the next PATCH answers with this status instead of succeeding. */
 let nextPatchStatus: number | null = null;
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that redefines `ensureOk` silently
- * replaces what `api.test.ts` is asserting about (see `SpecialistSection.test.tsx`).
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   sidecarFetch: async (url: string, init: RequestInit = {}) => {
     const method = init.method ?? "GET";
-    calls.push({ method, body: init.body as string | undefined });
+    calls.push({ url, method, body: init.body as string | undefined });
     if (url.startsWith("/api/chat/providers")) {
       return new Response(JSON.stringify(PROVIDERS), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/api/pr-models/verification") {
+      if (method === "PATCH") {
+        const patch = JSON.parse(init.body as string);
+        verification = {
+          ...verification,
+          ...patch,
+          sections: { ...(verification.sections as object), ...patch.sections },
+        };
+      }
+      return new Response(JSON.stringify(verification), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "/api/pr-models/rereview") {
+      if (method === "PATCH") rereview = { ...rereview, ...JSON.parse(init.body as string) };
+      return new Response(JSON.stringify(rereview), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -49,7 +75,7 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
 
 let unmount: (() => void) | null = null;
 
@@ -59,7 +85,18 @@ afterEach(() => {
   calls.length = 0;
   nextPatchStatus = null;
   config = { guide: null, ask: null };
+  verification = { ...VERIFICATION_DEFAULTS };
+  rereview = { ...REREVIEW_DEFAULTS };
 });
+
+/** Sets a form control's value the way React notices, then fires `event`. */
+function enter(el: HTMLInputElement | HTMLSelectElement, value: string, event: string) {
+  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement : HTMLInputElement;
+  Object.getOwnPropertyDescriptor(proto.prototype, "value")?.set?.call(el, value);
+  el.dispatchEvent(new Event(event, { bubbles: true }));
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 describe("PrModelSection", () => {
   it("shows every feature defaulting to the chat model", async () => {
@@ -104,4 +141,144 @@ describe("PrModelSection", () => {
     // Reverted to unset rather than showing the picked provider as if it saved.
     expect((mounted.host.querySelectorAll("select")[0] as HTMLSelectElement).value).toBe("");
   });
+
+  it("saves a verification check's model and effort, and the report's budget", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).toContain("Verification report");
+    // One model for the whole report is gone: each check has its own.
+    expect(mounted.host.querySelector('[aria-label="Verification report model"]')).toBeNull();
+
+    const model = mounted.host.querySelector('[aria-label="Risk model"]') as HTMLSelectElement;
+    expect(model.value).toBe("");
+    expect(model.textContent).toContain("Default (Claude Opus)");
+    enter(model, "sonnet", "change");
+    await settle();
+    const effort = mounted.host.querySelector('[aria-label="Risk effort"]') as HTMLSelectElement;
+    enter(effort, "max", "change");
+    await settle();
+    // Back to the default model, keeping the effort.
+    enter(
+      mounted.host.querySelector('[aria-label="Risk model"]') as HTMLSelectElement,
+      "",
+      "change",
+    );
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      '[aria-label="Verification report budget in US dollars"]',
+    ) as HTMLInputElement;
+    // No upper limit: the budget only warns.
+    enter(budget, "50", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([
+      { sections: { risk: { model: "sonnet" } } },
+      { sections: { risk: { model: "sonnet", effort: "max" } } },
+      { sections: { risk: { effort: "max" } } },
+      { maxBudgetUsd: 50 },
+    ]);
+  });
+
+  it("offers a harness only when there is more than the built-in agent, and saves the pick", async () => {
+    const harnessSelect = (host: HTMLElement) =>
+      host.querySelector('[aria-label="Verification harness"]') as HTMLSelectElement | null;
+    let mounted = await mountForInteraction(createElement(PrModelSection));
+    await settle();
+    expect(harnessSelect(mounted.host)).toBeNull();
+    mounted.unmount();
+
+    verification = {
+      ...VERIFICATION_DEFAULTS,
+      harnesses: [
+        { id: "claude", name: "Claude" },
+        { id: "bedrock", name: "Bedrock" },
+      ],
+    };
+    mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    const select = harnessSelect(mounted.host) as HTMLSelectElement;
+    expect(select.value).toBe("claude");
+    enter(select, "bedrock", "change");
+    await settle();
+    enter(harnessSelect(mounted.host) as HTMLSelectElement, "claude", "change");
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    // The built-in agent is saved as no harness at all.
+    expect(saves).toEqual([{ harness: "bedrock" }, { harness: null }]);
+  });
+
+  it("shows a saved harness that is gone, so it can be changed", async () => {
+    verification = { ...VERIFICATION_DEFAULTS, harness: "deleted" };
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    const select = mounted.host.querySelector(
+      '[aria-label="Verification harness"]',
+    ) as HTMLSelectElement;
+    // Shown even with only the built-in agent left, and not as if it were that.
+    expect(select.value).toBe("deleted");
+    expect(select.textContent).toContain("deleted (no longer saved; checks fail)");
+    enter(select, "claude", "change");
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ harness: null }]);
+  });
+
+  it("saves the What's changed summary's own budget and auto-start", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      `[aria-label="What's changed budget in US dollars"]`,
+    ) as HTMLInputElement;
+    expect(budget.value).toBe("1");
+    enter(budget, "0.5", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const auto = mounted.host.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(auto.checked).toBe(false);
+    auto.click();
+    await settle();
+
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/rereview" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([{ maxBudgetUsd: 0.5 }, { autoStart: true }]);
+    expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
+      false,
+    );
+  });
+
+  it("refuses a budget below the minimum without saving it", async () => {
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+
+    const budget = mounted.host.querySelector(
+      '[aria-label="Verification report budget in US dollars"]',
+    ) as HTMLInputElement;
+    enter(budget, "0.1", "input");
+    budget.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+
+    expect(mounted.host.textContent).toContain("The budget must be at least $0.25.");
+    expect(budget.value).toBe("2");
+    expect(calls.some((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")).toBe(
+      false,
+    );
+  });
 });
+
+afterAll(resetSidecarApi);

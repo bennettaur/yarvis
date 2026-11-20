@@ -151,7 +151,9 @@ them, and comment. You can say things like:
 
 On GitHub it works only in repos registered under **Settings → Repositories**.
 On Azure Boards it can assign a work item to you or unassign it, but not
-assign it to someone else. Ticket text the assistant reads is marked as
+assign it to someone else. When you don't say which work item type to file
+(Task, Bug, User Story and so on), it picks one from the types the project
+offers and tells you which it used. Ticket text the assistant reads is marked as
 untrusted, so it treats it as data rather than instructions. Each change it
 makes asks you first when the request was spoken. See
 [The assistant](assistant.md).

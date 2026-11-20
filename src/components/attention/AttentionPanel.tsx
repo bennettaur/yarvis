@@ -17,7 +17,7 @@ import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
  * fixed, z-50 layer that stays mounted while hidden so the store subscription
  * persists, with a click-away backdrop and Esc-to-close.
  *
- * Alarms live in the Rust core rather than the sidecar's attention table, so
+ * Alarms have their own table rather than living in the attention table, so
  * they get their own section fed by the alarm store — the same shape the WIP
  * roll-up already uses.
  */

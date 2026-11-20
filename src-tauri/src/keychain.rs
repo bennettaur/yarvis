@@ -72,6 +72,7 @@ pub const SECRET_KEYS: &[&str] = &[
     "jira_api_token",
     "database_url",
     "google_client_secret",
+    "verify_agent_signing_key",
     "telegram_bot_token",
     "telegram_allowed_chat_ids",
     "telegram_otp_secret",
@@ -252,6 +253,17 @@ pub fn update_subtree(
     edit: impl FnOnce(&mut Value) -> Result<bool, String>,
 ) -> Result<(), String> {
     update_root(|root| edit_subtree(root, key, edit))
+}
+
+/// [`update_subtree`] in `store`, for a caller that already holds the write
+/// lock because it has more to do under the same lock.
+pub fn update_subtree_locked(
+    guard: &WriteGuard,
+    store: &Store,
+    key: &str,
+    edit: impl FnOnce(&mut Value) -> Result<bool, String>,
+) -> Result<(), String> {
+    update_root_locked(guard, store, |root| edit_subtree(root, key, edit))
 }
 
 fn edit_subtree(

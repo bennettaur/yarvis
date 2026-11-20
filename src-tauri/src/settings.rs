@@ -54,6 +54,16 @@ pub struct Settings {
     /// Base command a workspace's agent session is launched from; see
     /// `pty::agent_command`.
     pub agent_command: Option<String>,
+    /// Agent harnesses beyond the built-in one; see `harness.rs`.
+    #[serde(default, deserialize_with = "crate::harness::deserialize_lenient")]
+    pub agent_harnesses: Option<Vec<crate::harness::AgentHarness>>,
+    /// Id of the harness a launch gets when it names none. Unset means the
+    /// built-in one.
+    #[serde(
+        default,
+        deserialize_with = "crate::harness::deserialize_default_lenient"
+    )]
+    pub default_agent_harness: Option<String>,
     /// Azure DevOps organization base URL for the PR dashboard; see
     /// `sidecar::build_command`.
     pub azure_devops_org_url: Option<String>,
@@ -87,6 +97,22 @@ pub struct Settings {
     /// it supports on read (`lib/terminalFont.ts`), so a hand edit can't push
     /// it out of bounds.
     pub terminal_font_size: Option<u32>,
+    /// Whether the top bar animates while the attention bell has something
+    /// pending: an amber band sweeps across it and the bell shakes. Unset means
+    /// on; only `false` turns it off.
+    pub attention_animation: Option<bool>,
+    /// Slash commands, beyond `pty::DEFAULT_ALLOWED_SLASH_COMMANDS`, that the
+    /// sidecar may send to a workspace's agent session (`claude.slash`). Names
+    /// only, without the leading `/`. Kept with the core's settings rather than
+    /// the sidecar's because no sidecar route or tool writes these, so the
+    /// assistant can't widen its own allowlist.
+    pub allowed_slash_commands: Option<Vec<String>>,
+    /// Whether the assistant may message workspace sessions over a Claude Code
+    /// channel and read their replies (`sidecar/src/channel`). Experimental, so
+    /// unset means off. Kept with the core's settings for the same reason as
+    /// `allowed_slash_commands`: no sidecar route or tool writes it, so the
+    /// assistant can't switch on its own way into a session.
+    pub channel_messaging: Option<bool>,
     /// Set once [`migrate_keychain_settings`] has run, so steady-state startup
     /// never re-reads the Keychain to check for values that can no longer be
     /// there — the whole point of the migration is one Keychain access, not
@@ -246,10 +272,10 @@ impl SettingsState {
         }
     }
 
-    /// Persists the current settings, reporting failure to the caller — unlike
-    /// the alarm store this mirrors, every write here is one the user asked for
-    /// and is told about, so a silent failure would report a change as saved
-    /// that then reverts on the next launch.
+    /// Persists the current settings, reporting failure to the caller. Every
+    /// write here is one the user asked for and is told about, so a silent
+    /// failure would report a change as saved that then reverts on the next
+    /// launch.
     ///
     /// The sidecar keeps its own top-level sections in this file
     /// (`sidecar/src/settings/store.ts`), which `Settings` doesn't model, so the
@@ -352,6 +378,102 @@ impl SettingsState {
         self.save()
     }
 
+    /// Replaces the stored harness list and default. Rejected as a whole when
+    /// any entry is invalid (see `harness::validate`), so a save never keeps
+    /// half of what the user submitted. Clears the stored values of any secret
+    /// variable the save drops, and saves nothing if that fails.
+    fn set_agent_harnesses(
+        &self,
+        harnesses: Vec<crate::harness::AgentHarness>,
+        default_id: Option<String>,
+    ) -> Result<(), String> {
+        // The secret-store lock is held from reading the old list until the new
+        // one is saved. `set_agent_harness_secret` checks the list under the
+        // same lock, so it can't store a value for a variable this save drops.
+        // The store is looked up once the lock is held, so a switch to another
+        // store that finished while this waited is honored. Validated first
+        // too, so a bad submission isn't held up behind another window's save.
+        crate::harness::validate(&harnesses, non_blank(default_id.clone()).as_deref())?;
+        let secrets_guard = keychain::lock_for_write()?;
+        self.set_agent_harnesses_in(
+            &secrets_guard,
+            &secret_store::active(),
+            harnesses,
+            default_id,
+        )
+    }
+
+    /// [`Self::set_agent_harnesses`] against `store`, under a lock the caller holds.
+    fn set_agent_harnesses_in(
+        &self,
+        secrets_guard: &keychain::WriteGuard,
+        store: &Store,
+        harnesses: Vec<crate::harness::AgentHarness>,
+        default_id: Option<String>,
+    ) -> Result<(), String> {
+        let default_id = non_blank(default_id);
+        crate::harness::validate(&harnesses, default_id.as_deref())?;
+        let before = Self::read_from_disk(&self.path)
+            .agent_harnesses
+            .unwrap_or_default();
+        let dropped = crate::harness::dropped_secrets(&before, &harnesses);
+        // Cleared before the list is saved: once it no longer declares them, no
+        // later save would see them as dropped, and a harness reusing the id
+        // and variable would inherit a key meant for the old one. Done outside
+        // the settings lock, since 1Password can take a while to answer, and
+        // only when something was dropped, so an ordinary save never prompts.
+        if !dropped.is_empty() {
+            keychain::update_subtree_locked(
+                secrets_guard,
+                store,
+                crate::harness::SECRET_ENV_SUBTREE,
+                |subtree| Ok(crate::harness::prune_secrets(subtree, &dropped)),
+            )
+            .map_err(|e| {
+                format!("the removed secret values could not be cleared, so nothing was saved: {e}")
+            })?;
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.agent_harnesses = (!harnesses.is_empty()).then_some(harnesses);
+            settings.default_agent_harness =
+                default_id.filter(|id| id != crate::harness::BUILTIN_HARNESS_ID);
+        }
+        self.save()
+    }
+
+    /// Stores the user's extra allowed slash commands, or clears them with an
+    /// empty list. Names are stored lower-case without a leading `/`, and one
+    /// that isn't shaped like a command name is rejected rather than dropped,
+    /// so the user sees why it didn't save.
+    fn set_allowed_slash_commands(&self, commands: Vec<String>) -> Result<(), String> {
+        let mut names: Vec<String> = Vec::new();
+        for raw in commands {
+            let name = crate::pty::normalize_slash_command_name(&raw);
+            if name.is_empty() {
+                continue;
+            }
+            if !crate::pty::is_valid_slash_command_name(&name) {
+                return Err(format!("\"{}\" is not a slash command name", raw.trim()));
+            }
+            if crate::pty::is_refused_slash_command(&name) {
+                return Err(format!(
+                    "/{name} changes what the session may do, so it can't be allowed"
+                ));
+            }
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.allowed_slash_commands = (!names.is_empty()).then_some(names);
+        }
+        self.save()
+    }
+
     /// Stores a plain-text field, or clears it back to unset on a blank value.
     /// Shared by the integration settings below, none of which need more than
     /// trimming — unlike `agent_command`, none of these are typed into a shell.
@@ -379,6 +501,27 @@ impl SettingsState {
             let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
             *settings = Self::read_from_disk(&self.path);
             settings.telegram_otp_window_minutes = value;
+        }
+        self.save()
+    }
+
+    /// Turns channel messaging on, or clears it back to the default (off).
+    fn set_channel_messaging(&self, enabled: bool) -> Result<(), String> {
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.channel_messaging = enabled.then_some(true);
+        }
+        self.save()
+    }
+
+    /// Stores whether the top bar's attention animation runs, or clears it back to
+    /// the default (on) with `None`.
+    fn set_attention_animation(&self, value: Option<bool>) -> Result<(), String> {
+        {
+            let mut settings = self.settings.lock().map_err(|e| e.to_string())?;
+            *settings = Self::read_from_disk(&self.path);
+            settings.attention_animation = value;
         }
         self.save()
     }
@@ -615,6 +758,9 @@ pub struct SettingsView {
     /// Default Telegram OTP re-auth window applied when unset; mirrors
     /// `DEFAULT_OTP_WINDOW_MINUTES` in `sidecar/src/config.ts`.
     default_telegram_otp_window_minutes: u32,
+    /// Slash commands always allowed, so the UI can list them beside the
+    /// user's own without repeating `pty::DEFAULT_ALLOWED_SLASH_COMMANDS`.
+    default_allowed_slash_commands: &'static [&'static str],
 }
 
 /// Mirrors `DEFAULT_OTP_WINDOW_MINUTES` in `sidecar/src/config.ts`.
@@ -630,6 +776,7 @@ impl From<Settings> for SettingsView {
             default_agent_command: crate::pty::DEFAULT_AGENT_COMMAND,
             agent_command_overridden_by_env: crate::pty::agent_command_env().is_some(),
             default_telegram_otp_window_minutes: DEFAULT_TELEGRAM_OTP_WINDOW_MINUTES,
+            default_allowed_slash_commands: crate::pty::DEFAULT_ALLOWED_SLASH_COMMANDS,
         }
     }
 }
@@ -660,6 +807,144 @@ pub fn set_agent(
     command: Option<String>,
 ) -> Result<SettingsView, String> {
     state.set_agent(name, command)?;
+    Ok(state.snapshot().into())
+}
+
+/// Replaces the configured agent harnesses and the default one, clearing the
+/// stored values of any secret variable the save drops. See
+/// `SettingsState::set_agent_harnesses`.
+#[tauri::command(async)]
+pub fn set_agent_harnesses(
+    state: tauri::State<'_, SettingsState>,
+    harnesses: Vec<crate::harness::AgentHarness>,
+    default_harness: Option<String>,
+) -> Result<SettingsView, String> {
+    state.set_agent_harnesses(harnesses, default_harness)?;
+    Ok(state.snapshot().into())
+}
+
+/// Whether each secret variable a harness declares has a value stored.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessSecretStatus {
+    harness_id: String,
+    key: String,
+    present: bool,
+}
+
+/// Lists which declared harness secrets are stored, in one secret-store read.
+/// Values are never returned: the webview writes secrets and never reads them.
+#[tauri::command(async)]
+pub fn list_agent_harness_secret_status() -> Result<Vec<HarnessSecretStatus>, String> {
+    // From disk, like the launch and the secret write, so a harness another
+    // instance saved shows its secrets here too.
+    let harnesses = from_disk().agent_harnesses.unwrap_or_default();
+    if harnesses.iter().all(|h| h.secret_env.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let root = keychain::read_root()?;
+    let stored = root.get(crate::harness::SECRET_ENV_SUBTREE);
+    Ok(harnesses
+        .iter()
+        .flat_map(|harness| {
+            harness
+                .secret_env
+                .iter()
+                .map(move |key| HarnessSecretStatus {
+                    harness_id: harness.id.clone(),
+                    key: key.clone(),
+                    present: stored
+                        .and_then(|s| s.get(&harness.id))
+                        .and_then(|values| values.get(key))
+                        .and_then(Value::as_str)
+                        .is_some_and(|v| !v.is_empty()),
+                })
+        })
+        .collect())
+}
+
+/// Stores, or with `None` removes, one secret variable's value for a harness.
+/// Only a variable the saved harness declares in `secretEnv` can be written,
+/// so the webview can't use this to put arbitrary data in the secret store.
+/// Removing works for any name, so a variable dropped from a harness can still
+/// have its old value cleared.
+#[tauri::command(async)]
+pub fn set_agent_harness_secret(
+    harness_id: String,
+    key: String,
+    value: Option<String>,
+) -> Result<(), String> {
+    keychain::update_subtree(crate::harness::SECRET_ENV_SUBTREE, |subtree| {
+        // Checked under the secret-store lock, against the file: a harness
+        // save that drops this variable prunes under the same lock, so the
+        // two can't interleave and leave a value behind. From disk also
+        // counts a harness another instance saved.
+        let declared = || {
+            from_disk()
+                .agent_harnesses
+                .unwrap_or_default()
+                .iter()
+                .any(|h| h.id == harness_id && h.secret_env.contains(&key))
+        };
+        write_harness_secret(subtree, &harness_id, &key, value, declared)
+    })
+}
+
+/// The edit [`set_agent_harness_secret`] makes to the harness-secrets subtree.
+/// A value is written only when `declared` says the saved harness lists the
+/// variable. `declared` is called only for a non-empty value: removing, which
+/// an empty value also does, works for any name. Returns whether anything
+/// changed.
+fn write_harness_secret(
+    subtree: &mut Value,
+    harness_id: &str,
+    key: &str,
+    value: Option<String>,
+    declared: impl FnOnce() -> bool,
+) -> Result<bool, String> {
+    let obj = subtree
+        .as_object_mut()
+        .expect("update_subtree passes an object");
+    match value.filter(|v| !v.is_empty()) {
+        Some(value) => {
+            if !declared() {
+                return Err(format!(
+                    "harness \"{harness_id}\" declares no secret variable {key}; save the harness first"
+                ));
+            }
+            let values = obj
+                .entry(harness_id.to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !values.is_object() {
+                *values = Value::Object(serde_json::Map::new());
+            }
+            values
+                .as_object_mut()
+                .expect("made an object above")
+                .insert(key.to_string(), Value::String(value));
+            Ok(true)
+        }
+        None => {
+            let Some(values) = obj.get_mut(harness_id).and_then(Value::as_object_mut) else {
+                return Ok(false);
+            };
+            let removed = values.remove(key).is_some();
+            if values.is_empty() {
+                obj.remove(harness_id);
+            }
+            Ok(removed)
+        }
+    }
+}
+
+/// Sets the extra slash commands workspace sessions may be sent, replacing the
+/// stored list. See `SettingsState::set_allowed_slash_commands`.
+#[tauri::command]
+pub fn set_allowed_slash_commands(
+    state: tauri::State<'_, SettingsState>,
+    commands: Vec<String>,
+) -> Result<SettingsView, String> {
+    state.set_allowed_slash_commands(commands)?;
     Ok(state.snapshot().into())
 }
 
@@ -740,6 +1025,30 @@ pub fn set_terminal_font_size(
     Ok(state.snapshot().into())
 }
 
+/// Turns channel messaging to workspace sessions on or off. The sidecar reads
+/// it on each send, each relay start and each workspace provision, so no
+/// restart is needed.
+#[tauri::command]
+pub fn set_channel_messaging(
+    state: tauri::State<'_, SettingsState>,
+    enabled: bool,
+) -> Result<SettingsView, String> {
+    state.set_channel_messaging(enabled)?;
+    Ok(state.snapshot().into())
+}
+
+/// Turns the top bar's attention animation on or off, or clears it back to the
+/// default (on) with `None`. Applied by the webview as it is toggled; this only
+/// makes it survive a restart.
+#[tauri::command]
+pub fn set_attention_animation(
+    state: tauri::State<'_, SettingsState>,
+    value: Option<bool>,
+) -> Result<SettingsView, String> {
+    state.set_attention_animation(value)?;
+    Ok(state.snapshot().into())
+}
+
 /// Points the app at the macOS Keychain or at a 1Password item, copying the
 /// stored secrets into the new store first. See
 /// `SettingsState::set_secret_backend` for the ordering and what is rejected.
@@ -774,9 +1083,10 @@ pub struct BackendSwitch {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_legacy_migration, copy_secrets, secrets_lock_beside, Copied, Settings, SettingsState,
-        SettingsView,
+        apply_legacy_migration, copy_secrets, secrets_lock_beside, write_harness_secret, Copied,
+        Settings, SettingsState, SettingsView,
     };
+    use crate::harness::{AgentHarness, HarnessKind};
     use crate::keychain;
     use crate::secret_store::{MemoryStore, Store};
     use serde_json::json;
@@ -891,6 +1201,48 @@ mod tests {
         assert!(json["onePasswordItem"].is_null());
         assert!(json["colorTheme"].is_null());
         assert!(json["terminalFontSize"].is_null());
+        assert!(json["attentionAnimation"].is_null());
+        assert!(json["allowedSlashCommands"].is_null());
+        assert!(json["channelMessaging"].is_null());
+        assert_eq!(json["defaultAllowedSlashCommands"][0], "compact");
+    }
+
+    #[test]
+    fn allowed_slash_commands_are_normalized_and_survive_a_reload() {
+        let store = temp_store("slash-commands");
+        store
+            .set_allowed_slash_commands(vec![
+                "/Do-Code-Review".to_string(),
+                " ".to_string(),
+                "do-code-review".to_string(),
+                "code-review-team-core:do-code-review".to_string(),
+            ])
+            .unwrap();
+        let reloaded = SettingsState::load(store.path.clone());
+        assert_eq!(
+            reloaded.snapshot().allowed_slash_commands,
+            Some(vec![
+                "do-code-review".to_string(),
+                "code-review-team-core:do-code-review".to_string(),
+            ])
+        );
+        store.set_allowed_slash_commands(vec![]).unwrap();
+        assert_eq!(store.snapshot().allowed_slash_commands, None);
+    }
+
+    #[test]
+    fn a_slash_command_with_arguments_is_rejected_and_nothing_is_stored() {
+        let store = temp_store("slash-commands-rejected");
+        assert!(store
+            .set_allowed_slash_commands(vec!["compact focus on tests".to_string()])
+            .is_err());
+        assert!(store
+            .set_allowed_slash_commands(vec!["review\n/login".to_string()])
+            .is_err());
+        assert!(store
+            .set_allowed_slash_commands(vec!["/permissions".to_string()])
+            .is_err());
+        assert_eq!(store.snapshot().allowed_slash_commands, None);
     }
 
     #[test]
@@ -939,6 +1291,177 @@ mod tests {
         }
     }
 
+    fn harness(id: &str, secret_env: &[&str]) -> AgentHarness {
+        AgentHarness {
+            id: id.to_string(),
+            name: id.to_string(),
+            kind: HarnessKind::Custom,
+            command: "cloudbox run".to_string(),
+            secret_env: secret_env.iter().map(|k| k.to_string()).collect(),
+            ..AgentHarness::default()
+        }
+    }
+
+    /// Saves `harnesses` against `secrets`, as the Tauri command does against
+    /// the configured store.
+    fn save_harnesses(
+        settings: &SettingsState,
+        secrets: &Store,
+        harnesses: Vec<AgentHarness>,
+        default_id: Option<&str>,
+    ) -> Result<(), String> {
+        settings.set_agent_harnesses_in(
+            &keychain::lock_for_write().unwrap(),
+            secrets,
+            harnesses,
+            default_id.map(str::to_string),
+        )
+    }
+
+    fn reloaded_harness_ids(settings: &SettingsState) -> Option<Vec<String>> {
+        SettingsState::load(settings.path.clone())
+            .snapshot()
+            .agent_harnesses
+            .map(|list| list.into_iter().map(|h| h.id).collect())
+    }
+
+    #[test]
+    fn a_harness_list_and_default_survive_a_reload() {
+        let settings = temp_store("harness-round-trip");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
+
+        let reloaded = SettingsState::load(settings.path.clone()).snapshot();
+        let ids: Option<Vec<String>> = reloaded
+            .agent_harnesses
+            .map(|list| list.into_iter().map(|h| h.id).collect());
+        assert_eq!(ids, Some(vec!["box".to_string()]));
+        assert_eq!(reloaded.default_agent_harness.as_deref(), Some("box"));
+    }
+
+    /// The built-in default and an empty list are stored as absent, so a
+    /// settings file never names the built-in id.
+    #[test]
+    fn the_built_in_default_and_an_empty_list_are_stored_as_absent() {
+        let settings = temp_store("harness-absent");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], Some("box")).unwrap();
+        save_harnesses(&settings, &secrets, vec![], Some("claude")).unwrap();
+
+        let reloaded = SettingsState::load(settings.path.clone()).snapshot();
+        assert_eq!(reloaded.agent_harnesses, None);
+        assert_eq!(reloaded.default_agent_harness, None);
+        let raw = std::fs::read_to_string(&settings.path).unwrap();
+        assert!(!raw.contains(r#""claude""#), "{raw}");
+    }
+
+    #[test]
+    fn an_invalid_harness_list_is_rejected_and_nothing_is_stored() {
+        let settings = temp_store("harness-invalid");
+        let secrets = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &secrets, vec![harness("box", &[])], None).unwrap();
+
+        for (list, default_id) in [
+            (vec![harness("Not An Id", &[])], None),
+            (vec![harness("box", &[]), harness("box", &[])], None),
+            (vec![harness("box", &[])], Some("missing")),
+        ] {
+            assert!(save_harnesses(&settings, &secrets, list, default_id).is_err());
+            assert_eq!(
+                reloaded_harness_ids(&settings),
+                Some(vec!["box".to_string()])
+            );
+        }
+    }
+
+    /// A harness that reused the id and variable would otherwise be launched
+    /// with a value stored for the one it replaced.
+    #[test]
+    fn a_dropped_secret_variable_loses_its_stored_value() {
+        let settings = temp_store("harness-prune");
+        let empty = Store::Memory(MemoryStore::empty());
+        save_harnesses(
+            &settings,
+            &empty,
+            vec![harness("box", &["TOKEN", "KEEP"])],
+            None,
+        )
+        .unwrap();
+        let held = MemoryStore::holding(
+            r#"{"agent_harness_env":{"box":{"TOKEN":"t","KEEP":"k"}},"github_token":"g"}"#,
+        );
+
+        save_harnesses(
+            &settings,
+            &Store::Memory(held.clone()),
+            vec![harness("box", &["KEEP"])],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&held.contents().unwrap()).unwrap(),
+            json!({ "agent_harness_env": { "box": { "KEEP": "k" } }, "github_token": "g" })
+        );
+    }
+
+    /// Saving the list first would leave a value no later save can see as
+    /// dropped, so a failed clear must stop the save.
+    #[test]
+    fn a_save_whose_dropped_secrets_cannot_be_cleared_stores_nothing() {
+        let settings = temp_store("harness-prune-fails");
+        let empty = Store::Memory(MemoryStore::empty());
+        save_harnesses(&settings, &empty, vec![harness("box", &["TOKEN"])], None).unwrap();
+
+        let unreadable = Store::Memory(MemoryStore::unreadable());
+        assert!(save_harnesses(&settings, &unreadable, vec![], None).is_err());
+        assert_eq!(
+            reloaded_harness_ids(&settings),
+            Some(vec!["box".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_harness_secret_is_written_only_for_a_declared_variable() {
+        let mut subtree = json!({});
+        let refused =
+            write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || false);
+        assert!(refused.is_err());
+        assert_eq!(subtree, json!({}));
+
+        let written = write_harness_secret(&mut subtree, "box", "TOKEN", Some("t".into()), || true);
+        assert_eq!(written, Ok(true));
+        assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
+    }
+
+    /// Removing skips the declared check, so a variable already dropped from
+    /// its harness can still be cleared.
+    #[test]
+    fn removing_a_harness_secret_works_for_any_name_and_drops_an_emptied_entry() {
+        let mut subtree = json!({ "box": { "OLD": "o", "TOKEN": "t" } });
+        let not_checked = || unreachable!("removal must not need a declared variable");
+
+        assert_eq!(
+            write_harness_secret(&mut subtree, "box", "OLD", None, not_checked),
+            Ok(true)
+        );
+        assert_eq!(subtree, json!({ "box": { "TOKEN": "t" } }));
+        // An empty value removes too, rather than storing an empty secret.
+        let emptied = write_harness_secret(
+            &mut subtree,
+            "box",
+            "TOKEN",
+            Some(String::new()),
+            not_checked,
+        );
+        assert_eq!(emptied, Ok(true));
+        assert_eq!(subtree, json!({}));
+        assert_eq!(
+            write_harness_secret(&mut subtree, "box", "TOKEN", None, not_checked),
+            Ok(false)
+        );
+    }
+
     #[test]
     fn a_stored_integration_setting_survives_a_reload() {
         let store = temp_store("integration-round-trip");
@@ -971,16 +1494,30 @@ mod tests {
     }
 
     #[test]
+    fn channel_messaging_is_stored_only_while_on() {
+        let store = temp_store("channel-messaging");
+        store.set_channel_messaging(true).unwrap();
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.channel_messaging, Some(true));
+
+        store.set_channel_messaging(false).unwrap();
+        let reloaded = SettingsState::load(store.path.clone()).snapshot();
+        assert_eq!(reloaded.channel_messaging, None);
+    }
+
+    #[test]
     fn a_stored_appearance_survives_a_reload() {
         let store = temp_store("appearance-round-trip");
         store
             .set_text_field(Some("palenight".to_string()), |s| &mut s.color_theme)
             .unwrap();
         store.set_terminal_font_size(Some(18)).unwrap();
+        store.set_attention_animation(Some(false)).unwrap();
 
         let reloaded = SettingsState::load(store.path.clone()).snapshot();
         assert_eq!(reloaded.color_theme.as_deref(), Some("palenight"));
         assert_eq!(reloaded.terminal_font_size, Some(18));
+        assert_eq!(reloaded.attention_animation, Some(false));
     }
 
     #[test]

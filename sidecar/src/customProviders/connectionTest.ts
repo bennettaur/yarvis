@@ -130,7 +130,7 @@ export async function testProviderConnection(
   const httpFailure = (message: string, status: number, responseBody: string) =>
     failure(config, row, "connection test", started, { message, status, url, responseBody });
   try {
-    const res = await guardedFetch(
+    const { response: res } = await guardedFetch(
       url,
       // This signal also bounds reading the body, which outlives guardedFetch's own deadline.
       { method: "GET", headers, signal: AbortSignal.timeout(LIST_TIMEOUT_MS) },
@@ -141,6 +141,8 @@ export async function testProviderConnection(
         allowLoopback: true,
         // The request is nothing but credentials, so it never follows a redirect to another host.
         sameOriginOnly: true,
+        // The same check the provider's base URL gets everywhere else.
+        staticCheckOnly: true,
       },
     );
     const text = await res.text();

@@ -13,10 +13,12 @@ import { dirname, join } from "node:path";
  * read-modify-write, so a save on either side carries the other's keys (and
  * another section's) across even though they live in one file.
  *
- * One core-owned key is *read* through here and never written: `agentCommand`,
- * so a scheduled Claude Code job launches the same build as the core's PTY
- * sessions (`jobs/runners.ts`). A read cannot clobber anything, which is what
- * keeps the rule above intact.
+ * A few core-owned keys are *read* through here and never written:
+ * `agentCommand`, so a scheduled Claude Code job launches the same build as the
+ * core's PTY sessions (`jobs/runners.ts`) and the channel relay can recognise
+ * its session's command line (`channel/relay.ts`), and `channelMessaging`, the
+ * switch for messaging sessions over a channel (`channel/send.ts`). A read
+ * cannot clobber anything, which is what keeps the rule above intact.
  *
  * This is a straight port of the read-modify-write discipline
  * `src-tauri/src/settings.rs` uses for this file and
@@ -101,6 +103,26 @@ export function withSection<T, R>(
     () => undefined,
   );
   return task;
+}
+
+/**
+ * Whether the settings file can be read as a document. A missing file counts,
+ * since that is just nothing saved yet; one that exists but can't be read or
+ * parsed doesn't, so a caller can tell it apart from settings that are empty.
+ */
+export async function settingsAreReadable(): Promise<boolean> {
+  let raw: string;
+  try {
+    raw = await readFile(settingsPath(), "utf8");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed) && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
 }
 
 /** Point-in-time read of one section, outside the write queue. */

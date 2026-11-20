@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../../lib/resourceCache";
 import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import type { LivePass } from "./useLivePass";
 
 const RUN = {
@@ -10,14 +11,18 @@ const RUN = {
   status: "active",
   startedAt: "2026-10-19T09:00:00.000Z",
   stoppedAt: null,
+  pausedAt: null as string | null,
+  stopAt: null as string | null,
 };
+
+const WORKSPACE_ID = "0b8f3c1e-2d4a-4e6b-9c7d-1a2b3c4d5e6f";
 
 const QUESTION = {
   id: "q1",
   kind: "question",
   streamId: "s1",
   question: "Where should I ask for review?",
-  situation: "The billing PR is ready",
+  situation: `The billing PR in ${WORKSPACE_ID} is ready`,
   options: ["#billing-reviews", "Ask Sam"],
   action: null,
   toolArgs: null,
@@ -44,9 +49,10 @@ const STREAM = {
   summary: null,
   status: "waiting-on-user",
   priority: "high",
-  nextAction: "Ask for review",
+  nextAction: `Ask for review of ${WORKSPACE_ID.toUpperCase()}`,
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
+  pausedAt: null,
   updatedAt: "2026-10-19T10:00:00.000Z",
   links: [
     {
@@ -55,6 +61,14 @@ const STREAM = {
       ref: { kind: "pr", provider: "github", url: "https://github.com/acme/api/pull/12" },
       title: "Add invoices",
       state: "CI passing",
+      observedAt: "2026-10-19T10:00:00.000Z",
+    },
+    {
+      id: "l2",
+      kind: "workspace",
+      ref: { kind: "workspace", workspaceId: WORKSPACE_ID },
+      title: null,
+      state: "session idle",
       observedAt: "2026-10-19T10:00:00.000Z",
     },
   ],
@@ -66,10 +80,30 @@ const PASS = {
   chatSessionId: "c1",
   startedAt: "2026-10-19T10:00:00.000Z",
   finishedAt: "2026-10-19T10:02:00.000Z",
-  notes: "Asked where to request review.",
+  notes: `Asked where to request review. Workspace \`${WORKSPACE_ID}\` is idle.`,
   sleepMinutes: 60,
   sleepReason: "every stream is waiting",
   error: null,
+};
+
+const FAILED_PASS = {
+  ...PASS,
+  id: "p0",
+  chatSessionId: "c0",
+  startedAt: "2026-10-19T09:00:00.000Z",
+  finishedAt: "2026-10-19T09:05:00.000Z",
+  notes: null,
+  error: "Overloaded (status 529)",
+  callCount: 5,
+  failedCalls: [
+    { name: "post_message", server: "Slack", error: "channel_not_found", noResult: false },
+    {
+      name: "send_workspace_instruction",
+      server: null,
+      error: "The turn ended before this finished.",
+      noResult: true,
+    },
+  ],
 };
 
 const CONFIG = {
@@ -78,9 +112,80 @@ const CONFIG = {
   idleSleepMinutes: 60,
   workingHours: { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" },
   userAwayAfterMinutes: 120,
+  passTimeoutMinutes: 20,
   provider: null,
   model: null,
+  guidance: null,
+  maxRoutinesPerPass: 2,
 };
+
+const ROUTINES = {
+  routines: [
+    {
+      name: "meeting-alarms",
+      description: "Sets an alarm for each meeting",
+      everyMinutes: 180,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "builtin",
+      lastDoneAt: null,
+    },
+    {
+      name: "standup",
+      description: "Drafts my standup",
+      everyMinutes: 24 * 60,
+      workingHoursOnly: true,
+      enabled: true,
+      source: "user",
+      lastDoneAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    },
+    {
+      name: "triage",
+      description: "Triages my inbox",
+      everyMinutes: 45,
+      workingHoursOnly: false,
+      enabled: true,
+      source: "user",
+      lastDoneAt: null,
+    },
+    {
+      name: "meeting-notes",
+      description: "Reads meeting notes",
+      everyMinutes: 240,
+      workingHoursOnly: true,
+      enabled: false,
+      source: "builtin",
+      lastDoneAt: null,
+    },
+  ],
+  problems: [{ path: "/home/me/.yarvis/routines/x.md", message: "x.md: 'every' is required" }],
+  userDir: "/home/me/.yarvis/routines",
+};
+
+/** What the routines list and its reload answer; null makes that call fail, "hang" never answers. */
+let routinesAnswer: unknown = ROUTINES;
+let reloadAnswer: unknown = ROUTINES;
+
+const PROVIDERS = [
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    available: true,
+    models: [
+      { id: "claude-opus-5-5", capabilities: ["chat"] },
+      { id: "claude-haiku-5-5", capabilities: ["chat"] },
+    ],
+  },
+];
+
+/** The saved heads-down config the page loads; a test may replace it. */
+let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
+  provider: string | null;
+  model: string | null;
+} = CONFIG;
+
+/** The run the page loads; a test may replace it. */
+let currentRun: typeof RUN | null = RUN;
 
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
@@ -97,14 +202,9 @@ async function* frameStream(signal?: AbortSignal | null): AsyncGenerator<string>
   });
 }
 
-// Only the transport is stubbed; see ScheduledJobsPanel.test.tsx for why the
-// rest of the module is kept.
-const actualApi = await import("../../lib/api");
-mock.module("../../lib/api", () => ({
-  ...actualApi,
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Stubbed directly: another file's mock of this module may be the one the
-  // real streamSSE ends up calling, depending on test order.
+stubSidecarApi({
+  // Stubbed directly: the real streamSSE calls the real sidecarFetch, not the
+  // stub below.
   streamSSE: (path: string, init?: RequestInit) => {
     if (path === "/api/heads-down/stream" && streamFrames.length > 0) {
       return frameStream(init?.signal);
@@ -122,13 +222,17 @@ mock.module("../../lib/api", () => ({
     if (method !== "GET") {
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       writes.push({ method, path, body });
+      if (path === "/api/heads-down/routines/reload") {
+        if (reloadAnswer === "hang") return new Promise<Response>(() => {});
+        return reloadAnswer ? json(reloadAnswer) : json({ error: "disk on fire" }, 500);
+      }
       if (path === "/api/heads-down/config") return json(body);
       if (path.startsWith("/api/heads-down/allowed-tools/")) return json({ ok: true });
       return json({ ...QUESTION, status: "answered" });
     }
     if (path === "/api/heads-down") {
       return json({
-        run: RUN,
+        run: currentRun,
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
@@ -136,9 +240,11 @@ mock.module("../../lib/api", () => ({
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM]);
-    if (path === "/api/heads-down/passes") return json([PASS]);
+    if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
+    if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
-    if (path === "/api/heads-down/config") return json(CONFIG);
+    if (path === "/api/heads-down/config") return json(savedConfig);
+    if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
     if (path === "/api/heads-down/auto-approvals") {
       return json([
         {
@@ -152,19 +258,25 @@ mock.module("../../lib/api", () => ({
         },
       ]);
     }
+    if (path === "/api/heads-down/routines") {
+      if (routinesAnswer === "hang") return new Promise<Response>(() => {});
+      return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
+    }
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
-    // The live stream, and anything a later file asks for: fail rather than
-    // hand a caller the wrong shape. The page reconnects later, which the test
+    // The live stream, and anything else: fail rather than hand a caller the
+    // wrong shape. The page reconnects later, which the test
     // ends before.
     return json({ error: `unexpected path: ${path}` }, 404);
   },
-}));
+});
 
-const HeadsDownPanel = (await import("./HeadsDownPanel")).default;
-const { applyPassEvent } = await import("./useLivePass");
+const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
+const { nextOccurrence } = await import("../../lib/headsDown");
+const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel } = await import("./StreamList");
+const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
 const mounted: (() => void)[] = [];
@@ -180,6 +292,10 @@ afterEach(() => {
   clearResourceCache();
   writes.length = 0;
   streamFrames = [];
+  savedConfig = CONFIG;
+  currentRun = RUN;
+  routinesAnswer = ROUTINES;
+  reloadAnswer = ROUTINES;
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -211,6 +327,133 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Posts the review request the user asked for");
   });
 
+  it("lists the routines, and a file that failed to load", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+    const routine = (name: string) =>
+      [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))
+        ?.textContent ?? "";
+
+    expect(
+      [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
+    ).toEqual(["every 3h", "every 1d, working hours", "every 45m", "off"]);
+    expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
+    expect(routine("meeting-alarms")).not.toContain("(yours)");
+    expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
+    expect(routine("standup")).toContain("Last done");
+    expect(routine("triage")).toContain("every 45m");
+    expect(routine("meeting-notes")).toContain("off");
+    expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
+    expect(host.textContent).toContain("x.md: 'every' is required");
+    expect(host.textContent).toContain("/home/me/.yarvis/routines");
+  });
+
+  it("reloads the routine files, and says when that fails", async () => {
+    reloadAnswer = {
+      ...ROUTINES,
+      routines: [...ROUTINES.routines, { ...ROUTINES.routines[1], name: "focus-time" }],
+    };
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "focus-time");
+    expect(host.textContent).toContain("focus-time");
+    expect(writes).toContainEqual({
+      method: "POST",
+      path: "/api/heads-down/routines/reload",
+      body: null,
+    });
+
+    reloadAnswer = null;
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "disk on fire");
+    expect(host.textContent).toContain("disk on fire");
+
+    // A reload that works clears the last one's error.
+    reloadAnswer = ROUTINES;
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(host.textContent).not.toContain("disk on fire");
+
+    // One reload at a time: the button waits for the one running.
+    reloadAnswer = "hang";
+    buttonNamed(host, "Reload files").click();
+    await settle(20);
+    expect(buttonNamed(host, "Reload files").disabled).toBe(true);
+  });
+
+  it("says the routines are loading until they arrive", async () => {
+    routinesAnswer = "hang";
+    const host = await mount();
+    await waitForText(host, "Heads down since");
+    const section = [...host.querySelectorAll("section")].find((s) =>
+      s.textContent?.startsWith("Routines"),
+    );
+    expect(section?.textContent).toContain("Loading…");
+    expect(section?.textContent).not.toContain("Couldn't load");
+  });
+
+  it("says when the routines couldn't load, and retries from the reload button", async () => {
+    routinesAnswer = null;
+    const host = await mount();
+    await waitForText(host, "Couldn't load the routines");
+    expect(host.textContent).toContain("Couldn't load the routines");
+    expect(host.textContent).not.toContain("Loading…");
+
+    buttonNamed(host, "Reload files").click();
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).not.toContain("Couldn't load the routines");
+  });
+
+  it("names the workspaces it mentions by id and opens them on click", async () => {
+    const opened: string[] = [];
+    const stop = onOpenWorkspace((request) => opened.push(request.id));
+    try {
+      const host = await mount();
+      await waitForText(host, "workspace: Billing invoices");
+
+      expect(host.textContent).toContain("workspace: Billing invoices · session idle");
+      expect(host.textContent).toContain("Workspace Billing invoices is idle.");
+      expect(host.textContent).not.toContain(WORKSPACE_ID);
+
+      expect(host.textContent).toContain("The billing PR in Billing invoices is ready");
+      expect(host.textContent).toContain("Next: Ask for review of Billing invoices");
+
+      buttonNamed(host, "workspace: Billing invoices · session idle").click();
+      const noteLink = [...host.querySelectorAll("a")].find(
+        (a) => a.textContent === "Billing invoices",
+      );
+      expect(noteLink).toBeDefined();
+      noteLink?.click();
+      // The question's situation and the stream's next step.
+      const mentions = [...host.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Billing invoices",
+      );
+      expect(mentions).toHaveLength(2);
+      for (const mention of mentions) mention.click();
+      expect(opened).toEqual([WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID, WORKSPACE_ID]);
+    } finally {
+      stop();
+    }
+  });
+
+  it("shows it is sleeping between passes", async () => {
+    const host = await mount();
+
+    expect(host.textContent).toContain("Sleeping until");
+    expect(host.querySelector('[data-state="sleeping"]')).not.toBeNull();
+  });
+
+  it("shows what a failed pass did and which calls failed", async () => {
+    const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
+
+    expect(text).toContain("Overloaded (status 529)");
+    expect(text).toContain("5 tool calls · 1 failed · 1 with no result");
+    expect(text).toContain("Slack/post_message: channel_not_found");
+    expect(text).toContain("send_workspace_instruction: no result");
+  });
+
   it("sends the option the user picked", async () => {
     const host = await mount();
     buttonNamed(host, "#billing-reviews").click();
@@ -240,6 +483,98 @@ describe("HeadsDownPanel", () => {
   });
 });
 
+describe("HeadsDownPanel pausing", () => {
+  it("pauses the run, and shows a paused one with the way to resume it", async () => {
+    const host = await mount();
+    buttonNamed(host, "Pause").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/pause", body: null });
+
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    currentRun = { ...RUN, pausedAt: "2026-10-19T12:00:00.000Z" };
+    const text = textOf(await renderToHtml(createElement(HeadsDownPanel)));
+    expect(text).toContain("Paused since");
+    expect(text).toContain("Resume");
+    expect(text).not.toContain("Sleeping until");
+  });
+
+  it("clears old work from a paused run once the user confirms", async () => {
+    const running = await mount();
+    expect([...running.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+      "Clear old work",
+    );
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+
+    currentRun = { ...RUN, pausedAt: "2026-10-19T12:00:00.000Z" };
+    const host = await mount();
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    expect(writes).toEqual([]);
+    buttonNamed(host, "Yes, clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/clear", body: null });
+  });
+
+  it("keeps the focus the user typed when they clear old work with heads-down off", async () => {
+    currentRun = null;
+    const host = await mount();
+    const focus = host.querySelector<HTMLInputElement>('[aria-label="Focus"]');
+    if (!focus) throw new Error("no focus input");
+    // React tracks the value itself, so set it through the native setter for onChange to fire.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      focus,
+      "Ship billing",
+    );
+    focus.dispatchEvent(new Event("input", { bubbles: true }));
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    buttonNamed(host, "Cancel").click();
+    await settle(20);
+    expect(writes).toEqual([]);
+
+    buttonNamed(host, "Clear old work").click();
+    await settle(20);
+    buttonNamed(host, "Yes, clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({ method: "POST", path: "/api/heads-down/clear", body: null });
+    expect(focus.value).toBe("Ship billing");
+  });
+
+  it("shows when the run stops, and clears it", async () => {
+    currentRun = { ...RUN, stopAt: "2026-10-19T23:00:00.000Z" };
+    const host = await mount();
+    expect(host.textContent).toContain("Stops at");
+    buttonNamed(host, "Clear").click();
+    await settle(50);
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/stop-at",
+      body: { stopAt: null },
+    });
+  });
+
+  it("pauses a single work stream", async () => {
+    const host = await mount();
+    const pause = host.querySelector<HTMLButtonElement>('[aria-label="Pause Ship the billing PR"]');
+    if (!pause) throw new Error("no pause button on the stream");
+    pause.click();
+    await settle(50);
+    expect(writes).toContainEqual({
+      method: "PATCH",
+      path: "/api/work-streams/s1",
+      body: { paused: true },
+    });
+  });
+
+  it("picks the next time the clock reads the stop time", () => {
+    const now = new Date(2026, 9, 19, 18, 0);
+    expect(new Date(nextOccurrence("19:00", now))).toEqual(new Date(2026, 9, 19, 19, 0));
+    expect(new Date(nextOccurrence("08:30", now))).toEqual(new Date(2026, 9, 20, 8, 30));
+  });
+});
+
 describe("HeadsDownPanel live", () => {
   it("shows the pass in flight as it works", async () => {
     streamFrames = [
@@ -255,6 +590,39 @@ describe("HeadsDownPanel live", () => {
 
     expect(host.textContent).toContain("Working now");
     expect(host.textContent).toContain("list_work_streams");
+    expect(host.querySelector('[data-state="working"]')).not.toBeNull();
+  });
+
+  it("shows its latest thought folded to a line", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "reasoning", text: "Check the billing PR first.\nThen the docs." },
+      },
+    ];
+    const host = await mount();
+    await waitForText(host, "Thinking:");
+
+    expect(host.querySelector("details")?.open).toBe(false);
+    expect(host.textContent).toContain("Check the billing PR first.");
+  });
+
+  it("says it will try again only when the sidecar says it is retrying", async () => {
+    streamFrames = [
+      { type: "pass-started", passId: "p2" },
+      {
+        type: "pass-event",
+        passId: "p2",
+        event: { type: "error", message: "Overloaded", transient: true },
+      },
+      { type: "pass-retrying", passId: "p2", retryAt: "2026-10-19T10:00:30.000Z" },
+    ];
+    const host = await mount();
+    await waitForText(host, "Trying again shortly.");
+
+    expect(host.textContent).toContain("Overloaded Trying again shortly.");
   });
 });
 
@@ -273,11 +641,170 @@ describe("HeadsDownSettings", () => {
       body: { allowed: false },
     });
   });
+
+  it("saves the model passes run on", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("");
+    expect(model.disabled).toBe(true);
+
+    provider.value = "anthropic";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    expect(model.value).toBe("claude-opus-5-5");
+    model.value = "claude-haiku-5-5";
+    model.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+    });
+  });
+
+  it("saves the standing guidance every pass follows", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = host.querySelector<HTMLTextAreaElement>('[aria-label="Standing guidance"]');
+    if (!field) throw new Error("no guidance field");
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+      field,
+      "Don't merge during market hours",
+    );
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, guidance: "Don't merge during market hours" },
+    });
+  });
+
+  it("saves how long a pass may run", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Longest a pass may run"))
+      ?.querySelector("input");
+    if (!field) throw new Error("no pass timeout field");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, "90");
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    // A field with no most allowed takes any number at or above its least.
+    const longestSleep = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Longest sleep"))
+      ?.querySelector("input");
+    if (!longestSleep) throw new Error("no longest sleep field");
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      longestSleep,
+      "600",
+    );
+    longestSleep.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
+    });
+  });
+
+  it("saves 0 routines per pass, and ignores a number past the most allowed", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const field = [...host.querySelectorAll("label")]
+      .find((l) => l.textContent?.startsWith("Routines per pass"))
+      ?.querySelector("input");
+    if (!field) throw new Error("no routines per pass field");
+    const type = async (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle(20);
+    };
+    const saved = async () => {
+      buttonNamed(host, "Save").click();
+      await settle();
+      return writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    };
+    await type("0");
+    await type("-1");
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    await type("10");
+    await type("11");
+    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
+  });
+
+  it("goes back to the default chat model", async () => {
+    savedConfig = { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("anthropic");
+    expect(model.value).toBe("claude-haiku-5-5");
+    expect(host.textContent).not.toContain("passes will fail");
+
+    provider.value = "";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: { ...CONFIG, provider: null, model: null },
+    });
+  });
+
+  it("keeps showing a saved model that left the catalogue", async () => {
+    savedConfig = { ...CONFIG, provider: "openai", model: "gpt-x" };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+
+    const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
+    const model = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down model"]');
+    if (!provider || !model) throw new Error("no model picker");
+    expect(provider.value).toBe("openai");
+    expect(provider.selectedOptions[0]?.textContent).toBe("openai (unavailable)");
+    expect(model.value).toBe("gpt-x");
+    expect(host.textContent).toContain("passes will fail until you pick another");
+
+    buttonNamed(host, "Save").click();
+    await settle();
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: savedConfig,
+    });
+  });
 });
 
 describe("applyPassEvent", () => {
   it("builds the live pass from its tool calls and results", () => {
-    let live: LivePass = { passId: "p", activity: [], thinking: "", text: "" };
+    let live: LivePass = newLivePass("p");
     live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
     live = applyPassEvent(live, { type: "tool_result", id: "c1", status: "ok", result: "[]" });
     live = applyPassEvent(live, { type: "delta", text: "Done." });
@@ -295,25 +822,66 @@ describe("applyPassEvent", () => {
     ]);
     expect(live.text).toBe("Done.");
   });
+
+  it("keeps only the latest stretch of reasoning", () => {
+    let live: LivePass = newLivePass("p");
+    live = applyPassEvent(live, { type: "reasoning", text: "First " });
+    live = applyPassEvent(live, { type: "reasoning", text: "idea." });
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ thought: "First idea.", isThinking: false });
+
+    live = applyPassEvent(live, { type: "reasoning", text: "Second." });
+    expect(live).toMatchObject({ thought: "Second.", isThinking: true });
+  });
+
+  it("shows an error without promising a retry, and clears it once work carries on", () => {
+    let live: LivePass = { ...newLivePass("p"), retrying: true };
+    live = applyPassEvent(live, { type: "error", message: "Overloaded", transient: true });
+    expect(live).toMatchObject({ error: "Overloaded", retrying: false });
+
+    live = { ...live, retrying: true };
+    live = applyPassEvent(live, { type: "tool_call", id: "c1", name: "list_work_streams" });
+    expect(live).toMatchObject({ error: null, retrying: false });
+  });
 });
 
 describe("linkLabel", () => {
-  it("says when a review request was sent", () => {
-    const label = linkLabel({
+  it("names a workspace by its current name, and says only what it is when unknown", () => {
+    const link = {
       id: "l",
-      kind: "review-request",
-      ref: {
-        kind: "review-request",
-        channel: "slack",
-        conversation: "#billing-reviews",
-        messageRef: "1712345678.0001",
-        sentAt: "2026-10-19T14:00:00.000Z",
-      },
+      kind: "workspace" as const,
+      ref: { kind: "workspace" as const, workspaceId: WORKSPACE_ID },
       title: null,
-      state: "no reply yet",
+      state: null,
       observedAt: null,
-    });
+    };
+    expect(linkLabel(link, new Map([[WORKSPACE_ID, "Billing invoices"]]))).toBe(
+      "workspace: Billing invoices",
+    );
+    expect(linkLabel(link, new Map())).toBe("workspace");
+  });
+
+  it("says when a review request was sent", () => {
+    const label = linkLabel(
+      {
+        id: "l",
+        kind: "review-request",
+        ref: {
+          kind: "review-request",
+          channel: "slack",
+          conversation: "#billing-reviews",
+          messageRef: "1712345678.0001",
+          sentAt: "2026-10-19T14:00:00.000Z",
+        },
+        title: null,
+        state: "no reply yet",
+        observedAt: null,
+      },
+      new Map(),
+    );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
   });
 });
+
+afterAll(resetSidecarApi);

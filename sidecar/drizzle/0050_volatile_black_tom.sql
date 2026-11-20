@@ -1,0 +1,1 @@
+ALTER TABLE "pr_guides" ADD COLUMN "graph" jsonb;

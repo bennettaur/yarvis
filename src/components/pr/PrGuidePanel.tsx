@@ -166,7 +166,14 @@ function CoveredFiles({ step, onOpen }: { step: PrGuideStep; onOpen: (path: stri
  * scrolled away with the content would leave the reader with no way forward
  * without scrolling back to find it.
  */
-export default function PrGuidePanel({ guide: controller }: { guide: GuideController }) {
+export default function PrGuidePanel({
+  guide: controller,
+  inline = false,
+}: {
+  guide: GuideController;
+  /** In its own pane (a review workspace tab) rather than floating over the diff. */
+  inline?: boolean;
+}) {
   const { guide, step } = controller;
   if (!guide || !step) return null;
 
@@ -177,8 +184,14 @@ export default function PrGuidePanel({ guide: controller }: { guide: GuideContro
   const kindLabel = KIND_LABEL[step.kind ?? "walkthrough"];
 
   return (
-    <div className="pointer-events-none sticky bottom-0 z-20 flex justify-end pb-4">
-      <div className="pointer-events-auto w-[420px] max-w-full rounded-lg border border-sky-800 bg-zinc-900 shadow-xl">
+    <div
+      className={inline ? "flex" : "pointer-events-none sticky bottom-0 z-20 flex justify-end pb-4"}
+    >
+      <div
+        className={`pointer-events-auto max-w-full rounded-lg border border-sky-800 bg-zinc-900 ${
+          inline ? "w-full" : "w-[420px] shadow-xl"
+        }`}
+      >
         <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-xs">
           <span className="font-medium text-sky-300">Guided review</span>
           <span className="text-zinc-500">

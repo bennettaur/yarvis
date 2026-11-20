@@ -16,6 +16,13 @@ test("github", async ({ demo, page }) => {
   await expect(page.getByText("Saved cards now load before the new-card form")).toBeVisible();
   await demo.shot("pr detail");
 
+  // A PR that conflicts with its base leads with that, and the way to resolve it.
+  await demo.click(page.getByRole("button", { name: /Back/ }));
+  await demo.click(page.getByRole("button", { name: /^My PRs/ }));
+  await demo.click(page.getByText("Keep the shipping address between checkout steps"));
+  await expect(page.getByText("Conflicts with main")).toBeVisible();
+  await demo.shot("pr conflicts");
+
   await demo.openTab("Issues");
   await expect(page.getByText("Apple Pay sheet opens twice on iOS 18")).toBeVisible();
   await demo.shot("issues");

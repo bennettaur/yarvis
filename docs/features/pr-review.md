@@ -7,6 +7,10 @@ out the order to read the change in, and **line questions** where you ask about
 a piece of code and keep the answer as a private note. The assistant can search
 those notes later.
 
+For a faster, editor-like review of one or several PRs checked out locally,
+with tabs and a side-by-side view, see [Review workspaces](review-workspaces.md).
+A PR's header here has **Open in review workspace** to move it there.
+
 ## Set up
 
 1. Sign in with GitHub, or save a **GitHub token** or an **Azure DevOps token**,
@@ -17,7 +21,13 @@ those notes later.
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. A model tagged `reasoning` also
-   gets an effort level there.
+   gets an effort level there. The same section sets the
+   Claude Code harness the verification report runs with, the
+   Claude model and effort for each of its checks, and
+   the most one report may spend ($2 by default). Each check starts on a model
+   matched to its job: Opus at high effort for risk and malicious intent,
+   which feed the merge gate; Haiku at low effort for comment quality and
+   observability; Sonnet at medium effort for the rest.
 3. To start a workspace from a PR, register its repo under **Settings →
    Repositories**. See [Workspaces](workspaces.md).
 
@@ -81,6 +91,51 @@ as two. If the branch lookup fails or is slow, the list loads without nesting.
 - A file with review comments shows a speech bubble with the count. That count
   includes replies and resolved threads.
 
+### Comment on a PR
+
+Review comments are posted to the PR straight away, on GitHub and Azure DevOps
+alike. There is no pending review to submit.
+
+1. Hover a line and press the **+** beside it. In **Split**, the left gutter's
+   **+** comments on the old file and the right one on the new file. In
+   **Unified**, a deleted line takes its comment on the old file and every
+   other line on the new file.
+2. To comment on a range, shift-click the **+** on a second line on the same
+   side. The composer then says which lines it covers. A range stays on one
+   side: shift-clicking a **+** on the other side starts a new comment there.
+3. Type the comment and press **Comment**.
+
+GitHub only takes a line comment on a line inside the diff. A comment on a
+line you expanded into view goes on the whole file instead, opening with the
+lines it is about, and a note under the line says so.
+
+Existing threads appear under the line they belong to, including threads on
+the old file. Each thread has two controls:
+
+- **Reply** adds a comment to the thread.
+- **Resolve** marks the thread resolved, and **Unresolve** opens it again.
+
+A comment, reply or resolve shows at once and stays shown while the provider
+catches up. If the provider refuses, the error appears beside the control you
+used, your text is kept, and nothing changes. A control is hidden when GitHub says you may not use it.
+
+Some differences between the providers:
+
+- **Azure DevOps**: resolving sets the thread to *Fixed*, and unresolving sets
+  it back to *Active*. A thread marked *Won't fix*, *By design* or *Closed*
+  counts as resolved too.
+- **GitHub** tags a thread **outdated** when a push moves the code out from
+  under it. An outdated thread can't be placed on a line any more, so it is
+  listed under **Comments** in the PR's description instead. A range someone
+  made on github.com can start in the old file and end in the new one; its
+  label names both.
+- A PR with more than 50 threads loads the rest in further pages, up to 550 in
+  all. Each thread shows its first 100 comments. When some threads couldn't be
+  loaded, a note under **Comments** says so.
+
+Each thread has an **open on GitHub** (or **Azure DevOps**) link to the same
+thread on the provider's site.
+
 ### Take a guided review
 
 A guided review has an agent read the change and give you an order to review
@@ -124,6 +179,101 @@ A guide is made once per PR. It is kept until you approve, request changes, or
 merge. Pushing new commits marks it out of date rather than deleting it. A
 guide nobody has touched for 30 days is deleted.
 
+### Start a review or report from the assistant
+
+You can ask the assistant for a guided review or a verification report
+instead of pressing the button, from chat, voice or Telegram ("walk me
+through bennettaur/yarvis#612", "verify bennettaur/yarvis#612"). Both run in
+the background, and the attention bell tells you when they're done.
+
+- **Guided review**: the agent writes the guide as if you had pressed
+  **Guided review**, with the model set for guided reviews under **Settings →
+  PR review**. Open the bell item to read it in the PRs tab. If the PR already
+  has a guide, the assistant tells you how far you got and whether the PR has
+  moved on since. It writes a new one only if you ask, and asks you to approve
+  that, because a new guide replaces the old one and your place in it.
+- **Verification report**: the report needs a local checkout, so the assistant
+  uses the [review workspace](review-workspaces.md) already holding the PR,
+  or creates one named after it. It waits for the clone, then starts the
+  report's checks, the defaults unless you name others, each as its own run.
+  The setup script never runs: that still needs your answer in the review
+  workspace. A check that already has a result for the PR's current commit,
+  or is already running, isn't started again unless you ask for a fresh one.
+  The bell rings once every check it started has finished. Name a model or
+  effort ("verify #612 on Haiku") and every check it starts runs on that
+  instead of its own setting. The cost it quotes is for the model you named;
+  effort isn't priced.
+
+- **Several PRs, or a stack**: ask the assistant to verify a list of PRs
+  ("verify #610, #611 and #612") or a whole stack ("verify the stack #612 is
+  in"; GitHub only), up to ten at a time. It queues them and verifies one PR
+  after another, starting the next only when the last one's checks have
+  ended, so a dozen agent runs per PR don't all start at once. You can name a
+  preset: **quick** (summary, change map and risk), **security** (claims,
+  risk, malicious intent and tests), **standard** (the default: every check
+  but the flow diagram) or **full** (everything), and a model or effort that
+  every check in the queue runs on. The bell rings once when the
+  queue finishes, naming each PR and how it went, and you can ask the
+  assistant how the queue is going, or to stop it, in the meantime. One queue
+  runs at a time, and the assistant asks you to approve each one, since it
+  spends money on every PR in it. A PR that would need your
+  go-ahead (below) is skipped and named at the end, since agreeing to a queue
+  isn't agreeing to any one PR's cost; ask for that PR on its own to start
+  it. The queue lives in the running app, so restarting it drops the rest of
+  the queue.
+
+The assistant asks before it starts a report in four cases: the PR is large,
+its estimate is over your budget, its size couldn't be worked out, or its repo
+isn't one you registered under **Settings → Repositories** (the name may have
+come from text someone else wrote). It tells you why, and when you agree, an
+approval prompt confirms it. Agreeing to an unregistered repo doesn't cover
+the cost, which nobody has seen until the clone finishes: if the clone
+finishes after the assistant has replied, the bell asks for the go-ahead
+instead. The bell item opens the
+report's tab in the review workspace.
+
+Each one is a paid agent run, so a spoken request asks you to approve it
+first. Nothing is posted to the PR: the guide and the report stay on your
+machine. To post the verification report the repo's CI reads, use the
+`/verify-pr` skill in a workspace session.
+
+### See the flow diagram
+
+While it builds a guide, the agent writes down how the code fits together:
+which handler calls which function, which function writes which table. That
+record is kept with the guide and drawn as a **Flow diagram** section above
+**Files**, and below the current step in a review workspace's guided review
+tab. A review workspace's verification checklist can draw a different one, of
+the whole flow, in its own tab (see
+[Flow diagram](review-workspaces.md#flow-diagram)).
+
+1. Generate a guided review, as above. The section appears once the guide is
+   ready. It costs nothing extra: the diagram comes from the same agent run.
+2. Open the section. The diagram loads in [Excalidraw](https://excalidraw.com),
+   reading left to right from the outermost entry point inward.
+3. Pan and zoom to read it, or save it as an image from the menu. The diagram
+   is read-only: you can't move boxes, add text, or paste or drop anything onto it.
+
+Solid blue boxes are code this PR changes. Dashed grey boxes are the code
+around it that the agent followed, such as the caller of a changed function or
+the table it writes to. So the diagram shows where the change sits in the
+flow, not only the files it touches.
+
+Some limits:
+
+- The diagram shows at most 60 pieces of code, the changed ones first.
+- A box counts as changed only when the file and lines it names overlap lines
+  the PR adds or removes. Naming a changed file is not enough, so a box with no
+  file or no line is always shown as surrounding code. The lines are still the
+  agent's reading, so a highlighted box sits on a real change but its name may
+  not describe it. Each box shows its file and lines under the name, so you
+  can check one against the other.
+- The agent draws the diagram from the PR's own code, which its author wrote.
+  Treat the box names and labels as the agent's reading, not as fact.
+- If the agent recorded no connections, there is no diagram. Regenerating the
+  guide may give one.
+- The diagram goes out of date with its guide when new commits are pushed.
+
 ### Ask about a line
 
 1. Hover a line in the diff and press the **?** beside it.
@@ -131,7 +281,10 @@ guide nobody has touched for 30 days is deleted.
    line you picked in step 1 to the one you shift-click.
 3. Type your question. The answer appears inline, under those lines.
 4. To share an answer with the author, press **Post**. That turns it into a
-   real line comment on the PR.
+   real line comment on the PR. On GitHub, an answer about a line outside the
+   diff goes on the whole file instead, opening with the line it is about, and
+   the answer says so until its list next reloads. An answer can't be posted once
+   a force-push has removed the commit it was asked on.
 
 Until you press **Post**, answers are your own notes. Nothing reaches the
 author. They are stored against those lines and kept indefinitely.
@@ -144,8 +297,14 @@ out about that file?" or "where did I leave off?" in chat. See
 
 Both are agent runs against your configured LLM provider, and neither is
 cheap. A guided review gives the agent up to 60 tool-calling steps to explore
-the change. A line question gets up to 16. Each step carries diffs and file
-contents.
+the change. If it never hands in a guide, it is asked for one up to twice
+more; if the guide it hands in is malformed, it is asked once to fix it. Each
+ask resends the whole exploration, and a change whose exploration is too large
+for the model's context window is reported as such instead. A line question
+gets up to 16 steps. Each step carries diffs and file contents.
+
+A guide that runs long is trimmed rather than refused: past 15 steps, and past
+a length limit on each explanation, note and background, the extra is cut off.
 
 On Azure DevOps, the agent's code search needs the **Code Search** extension
 installed in your organization. Without it, guided reviews and line questions
@@ -177,9 +336,71 @@ Some rules that follow from how it works:
   the screen. The workspace shows its log while it runs.
 - Pressing **Start workspace** twice reuses the first workspace instead of
   creating a second worktree on the branch.
-- Once the workspace is created, the button changes to a link back to it. For
-  a workspace created some other way, the link appears after the next PR poll
-  (within a minute).
+- Once the workspace is created, the button changes to a link back to it,
+  because the workspace is linked to the PR as it is created. For a workspace
+  created some other way, the link appears after the next PR poll (within a
+  minute), or as soon as you link the PR there yourself. See
+  [Linking a pull request](workspaces.md#linking-a-pull-request).
+
+### Resolve merge conflicts
+
+When a PR conflicts with its base branch, a red **Conflicts with <base>** banner
+appears under the header. GitHub's `CONFLICTING` and `DIRTY` and Azure
+DevOps's `conflicts` all count; an Azure merge a branch policy rejected does
+not, since there is nothing to resolve. GitHub works mergeability out lazily,
+so when it hasn't decided yet the page asks once more after a few seconds and
+shows nothing in the meantime.
+
+**Resolve conflicts** in the banner hands the job to a coding agent:
+
+- **The PR's workspace has an agent running:** the instructions are typed at
+  its prompt. If the agent looks busy (its transcript moved on since it last
+  finished a turn), you're asked first: "The agent is working on something.
+  Send anyway?" If it is waiting on a permission prompt, nothing is sent: answer
+  the prompt in the workspace, then try again.
+- **The workspace has no agent running:** the instructions are written to
+  `.yarvis/resolve-conflicts.md` (the workspace's `.yarvis/brief.md` is left
+  alone) and an agent is started on them.
+- **The PR has no workspace:** one is created on the PR's branch, as
+  **Start workspace** does, and its first session starts on the instructions.
+  The app switches to it.
+- **The PR comes from a fork:** the button is disabled, for the same reason
+  Start workspace is.
+- **Something other than the agent holds the workspace's agent tab:** nothing
+  is sent. If it's an agent Yarvis doesn't recognise, restart it there.
+
+After a send, **Open workspace** jumps to it, and **Send again** asks before
+sending a second time. A second click while a send is running does nothing.
+Progress and errors show in the banner.
+
+The busy check is a guess, not a guard. It can't see the other dialogs an agent
+shows (approving a plan, answering a question, a menu), so if one is open the
+typed instructions answer it instead. It can also say "busy" for an agent that
+was killed mid-turn, or when another Claude session ran at the workspace root.
+
+Branch names are quoted into the instructions, so a branch with characters
+other than letters, digits, `.`, `_`, `/` and `-` is refused rather than
+handed over.
+
+The agent is told to merge `origin/<base>` into the PR's branch (a merge, not
+a rebase, so nothing needs a force-push), using a `merge-default-branch` skill
+if one is available. For a stacked PR it merges the PR's actual base, not the
+default branch. It resolves each conflict by working out what both sides
+meant, runs the repo's checks and tests, commits a normal merge commit, pushes
+to the PR's branch, and reports what it resolved and anything it's unsure of.
+The PR's title and branch names are quoted to it as data, not instructions. As with any send,
+Yarvis confirms delivery, not that the work is done.
+
+### See what changed since your review
+
+Yarvis remembers where you last reviewed each PR: the commit you were looking
+at when you approved, requested changes or posted a comment here, or when you
+reviewed it on GitHub (or voted on it in Azure DevOps). When the PR has moved
+on since, a note under the header says so — **3 new commits since your
+review**, or that it was force-pushed — with **See what changed in a review
+workspace**. That opens the PR in a [review workspace](review-workspaces.md) on
+its **Since last review** tab, which shows what the author changed since,
+leaving out what came in from the base branch.
 
 ### See where a PR sits in its stack
 
@@ -190,6 +411,8 @@ it.
 - It is worked out from base and head branch names through the API, not from
   `gh stack`. That means it works for anyone's PR, and finds stacks built by
   hand as well as by the CLI.
+- Only PRs from branches in the same repo count as layers. A fork's PR whose
+  branch happens to share a layer's name is left out.
 - A layer whose branch no longer contains the tip of the one below it is
   flagged **needs restack**.
 - The walk stops after ten layers in each direction. A `+` on the count says
@@ -198,6 +421,32 @@ it.
 
 Merging a stack needs the `gh stack` CLI, so it lives in the workspace's Stack
 tab. See [Workspaces](workspaces.md).
+
+### Let the merge reviewer decide
+
+In a repo that uses Yarvis's verification layer, a PR's verification report
+can say it needs an agent's review rather than a person's. Ask the assistant
+to have the merge reviewer look at it ("have the merge reviewer check
+bennettaur/yarvis#123"). The reviewer reads the PR, the report and the code
+the report points at, then posts its decision on the PR: approve, which lets
+the repo's CI merge it, or reject, which leaves it for you.
+
+- It only decides PRs whose latest report, posted from your GitHub account,
+  is for the current commit and asked for an agent. Anything else it reports
+  back without posting.
+- Its decision is signed with the **Merge reviewer signing key** in Settings →
+  Credentials, so the repo can tell it from a comment anyone with your token
+  could post. Make the key with `bun run verify:agent-key` in the Yarvis repo,
+  which writes it to a file for you to paste in, and add the line it prints
+  to the repo's `VERIFY_ALLOWED_SIGNERS` variable.
+- The repo's CI still decides: it won't merge a high-risk change on the
+  reviewer's word, or a PR with a blocking finding.
+- A review works on one PR. Once it has read a PR it can't read or post on
+  any other, so text in one PR can't send it off to read another repo, and
+  it posts once.
+- As the specialist, it posts without asking first, like `project-manager`
+  filing a ticket: that grant is on the `merge-reviewer` definition. Anywhere
+  else, such as the chat itself, posting a merge review asks you first.
 
 ## Reference
 

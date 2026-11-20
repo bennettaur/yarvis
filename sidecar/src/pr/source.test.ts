@@ -87,6 +87,40 @@ describe("githubPrSource", () => {
     expect(listings).toBe(1);
   });
 
+  it("takes the layers above from the open PRs that target this one's head branch", async () => {
+    const entry = (number: number, baseRef: string, state = "open") => ({
+      ref: { ...ghRef, number },
+      number,
+      url: `u${number}`,
+      baseRef,
+      headRef: `b${number}`,
+      state,
+      needsUpdate: number === 5,
+    });
+    const asked: number[] = [];
+    const client = {
+      prDetail: async () => ({ headRef: "feature", headSha: "h" }),
+      prStack: async () => ({
+        entries: [
+          entry(1, "main"),
+          entry(5, "feature"),
+          entry(6, "feature", "closed"),
+          entry(0, "feature"),
+          entry(7, "b5"),
+        ],
+      }),
+      allPrFiles: async (_o: string, _r: string, n: number) => {
+        asked.push(n);
+        return { files: [], incomplete: false };
+      },
+    } as unknown as GitHubClient;
+    expect(await githubPrSource(client, ghRef).upstackLayers()).toEqual({
+      headSha: "h",
+      layers: [{ number: 5, url: "u5", files: [], incomplete: false, stale: true }],
+    });
+    expect(asked).toEqual([5]);
+  });
+
   it("says so when asked for a file the pull request does not change", async () => {
     const client = { prFiles: async () => [] } as unknown as GitHubClient;
     expect(githubPrSource(client, ghRef).fileDiff("a.ts")).rejects.toThrow("is not changed");

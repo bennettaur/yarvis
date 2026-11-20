@@ -2,7 +2,7 @@
 
 There are two ways to type to [the assistant](assistant.md):
 
-- the **Chat** tab, a full-page chat with a session list,
+- the **Chat** tab, a full-page chat with tabs and a list of past chats,
 - **Omni Chat**, a chat overlay you can summon over any screen. It sees
   what you're looking at.
 
@@ -39,9 +39,29 @@ Other tabs only say which tab you're on.
 
 ## The Chat tab
 
-Open it with **Cmd+1**. At the top:
+Open it with **Cmd+1**. You can keep several chats open at once, each in its
+own tab along the top:
 
-- **New chat**, and a **session** dropdown to go back to an earlier chat.
+- **+** at the end of the tab strip opens a new, empty chat. **×** on a tab
+  closes it. Closing the last tab leaves an empty one in its place.
+- Each chat is named after the first line of the first message you send in
+  it, cut to 60 characters. A new tab says "New chat" until then.
+- A tab whose reply is still running shows a pulsing green dot. One waiting on
+  you to approve a tool call shows an amber dot.
+- Every tab keeps running while you look at another one, so a long reply
+  keeps streaming. Closing a tab mid-reply stops that reply.
+
+The **Chats** sidebar on the left lists every chat, newest first. Click one to
+open it. If a tab already has it, that tab comes forward. If the current tab is
+still empty, the chat opens there. Otherwise it opens in a new tab. The button
+at the top of the sidebar hides it, and the button at the start of the tab
+strip brings it back. Your open tabs and whether the sidebar is showing are
+remembered across restarts. Chats from before tabs existed are named the same
+way, from their first message. Chat names also show in Telegram's `/chats`
+list.
+
+The toolbar under the message box holds the rest:
+
 - **Thinking** shows the model's reasoning, for providers that return it.
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
@@ -49,15 +69,32 @@ Open it with **Cmd+1**. At the top:
   model thinks before answering. Omni Chat shares the same choice. See
   [Effort level](../configuration.md#effort-level).
 
-The Chat tab stays loaded when you switch tabs, so a long answer keeps
-streaming while you do something else.
+The Chat tab stays loaded when you switch to another page, so a long answer keeps
+streaming while you do something else. The thread follows a reply as it
+arrives. Scroll up and it stops following; the arrow button at the bottom of
+the thread jumps back to the newest message.
 
 ### Sending
 
 - **Enter** sends. **Shift+Enter** adds a new line.
 - While a reply is running, **Send** becomes **Stop**. Stopping discards the
   partial reply and saves nothing for that turn.
+- You can keep typing while a reply is running. **Queue** appears beside
+  **Stop**, and **Enter** (or **Queue**) puts the message in a queue above the
+  message box. When the reply finishes, the queued messages go out one per
+  turn, in order. Click **×** to drop one.
+- If the reply fails or you stop it, the queue waits. **Send next** sends the
+  next queued message. On the Chat tab each tab keeps its own
+  queue. In Omni Chat, starting a new chat or switching chats clears it.
 - If a turn fails, **Retry** sends the same message again.
+- Hover over one of your messages for **Resend** and **Edit**. Either restarts
+  the chat from that message and discards the replies after it.
+- If the connection to the sidecar drops mid-turn, the error says which of three
+  things happened: the sidecar restarted during the turn (saving API keys in
+  Settings restarts it), it isn't answering at all, or the connection dropped
+  while it kept running. The detail shows how long the turn ran and the last
+  thing it received. `sidecar.log`, whose path Settings → Diagnostics shows,
+  keeps what the sidecar logged across a crash or restart.
 
 There is no file attachment yet. Paste text, or ingest a document under
 **Memory → Ingest document**.
@@ -68,10 +105,24 @@ Above each reply is a list of the tools the assistant called: the tool name,
 which MCP server it came from, whether it worked, and how long it took. Click a
 row to see the arguments and the result. When the reply starts, the list folds
 into one line, for example "Used 4 tool calls". Reasoning, when the provider
-returns it, shows as a "Thinking…" block you can expand.
+returns it, stays open while it streams in and folds a second after it ends.
+Click it to read it again.
+
+On later turns the assistant still sees those calls and their results, so a
+follow-up like "same message, but shorter" reuses the channel or user it
+already looked up instead of searching again. It sees the shortened result
+shown in the list, not the whole one (and at most 1,000 characters of it), and
+calls the tool again when it needs the current state. Those shortened results
+are sent to the model again with every later message in the chat. When a long
+chat is summarized, the calls go into the summary. Pages are the exception: for
+a web page or a page in your browser, later turns see which page it was, but
+not its text. Reading a web page makes the rest of that turn ask before risky
+tools run, and later turns don't carry that over. Other calls made in that same
+turn are still replayed, and their arguments may quote the page.
 
 Messages you spoke are labeled `spoken`. Messages relayed from Telegram are
-labeled with the Telegram user.
+labeled with the Telegram user. Messages sent from the Chrome extension's side
+panel are labeled `Chrome`.
 
 ### Approving tool calls
 

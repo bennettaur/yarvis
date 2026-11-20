@@ -1,5 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
+import { HARNESS_TOKEN_HEADER, SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
+import {
+  ensureBranchRefDirs,
+  isOurSandboxEntry,
+  resolveAdminName,
+  type SandboxRepo,
+  sandboxAllowWrite,
+  sandboxDenyWrite,
+} from "./sandboxPaths.ts";
 
 /**
  * Generates the `.claude/settings.json` hook config that makes a Yarvis-launched
@@ -10,14 +18,20 @@ import { SESSION_KEY_HEADER, SESSION_TOKEN_HEADER } from "./agentSessions.ts";
  */
 
 /** Marks our hook commands so re-provision can replace them without duplicating. */
-const INGEST_MARKERS = ["/ingest/attention", "/ingest/permission", "/ingest/agent-session"];
+const INGEST_MARKERS = [
+  "/ingest/attention",
+  "/ingest/permission",
+  "/ingest/agent-session",
+  "/ingest/activity",
+];
 
 /**
- * Seconds Claude Code lets the permission hook run. Just above how long the
- * sidecar holds the request (`PERMISSION_HOLD_MS`), so the sidecar's own
- * "no decision" reply arrives before Claude Code kills the hook.
+ * Seconds Claude Code lets the permission hook run: a day, so a prompt waits in
+ * the app for as long as the user is away. The sidecar's hold
+ * (`PERMISSION_HOLD_MS`) ends a little before, so its own "no decision" reply
+ * arrives before Claude Code kills the hook.
  */
-export const PERMISSION_HOOK_TIMEOUT_S = 250;
+export const PERMISSION_HOOK_TIMEOUT_S = 86_400;
 
 export type AttentionHookKind = "idle" | "completed";
 
@@ -111,6 +125,31 @@ export function permissionHookCommand(workspaceId: string): string {
 }
 
 /**
+ * The shell command that tells the sidecar a session has moved past its held
+ * permission prompts, so the app stops offering ones the user already answered
+ * in the terminal. Claude Code leaves the permission hook running after that,
+ * so its connection can't say so. It runs on PostToolUse, where the call that
+ * ran was approved, and on Stop and UserPromptSubmit, where the turn is over.
+ *
+ * It sends the same session headers as the permission hook and prints nothing,
+ * since UserPromptSubmit's output would be added to Claude's context.
+ */
+export function permissionSettledHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
+  return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/permission/settled" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H 'X-Yarvis-Workspace-Id: ${workspaceId}' ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `--data-binary @- >/dev/null 2>&1 || true`
+  );
+}
+
+/**
  * The shell command the SessionStart and SessionEnd hooks run to register the
  * session with its workspace (see `agentSessions.ts`). Claude Code's hook input
  * goes to the sidecar unchanged as the body, since it already carries the
@@ -136,19 +175,41 @@ export function agentSessionHookCommand(workspaceId: string): string {
   }
   return (
     `if [ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; then ` +
-    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}" ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/agent-session?workspaceId=${workspaceId}&pid=\${PPID}&harness=\${YARVIS_AGENT_HARNESS}" ` +
     `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
     `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
     `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `-H "${HARNESS_TOKEN_HEADER}: \${YARVIS_AGENT_HARNESS_TOKEN}" ` +
     `-H "Content-Type: application/json" ` +
     `--data-binary @- >/dev/null 2>&1; ` +
     `else cat >/dev/null 2>&1; fi; true`
   );
 }
 
+/**
+ * The shell command that reports what the session is doing to the Agent Field
+ * page (`activity/routes.ts`). Claude Code's hook input is forwarded unchanged,
+ * with the same session headers as the permission hooks. It prints nothing and
+ * runs async, so it never holds Claude up or adds to its context; outside a
+ * Yarvis terminal it drains stdin and does nothing.
+ */
+export function activityHookCommand(workspaceId: string): string {
+  assertShellSafe(workspaceId);
+  return (
+    `{ [ -n "\${YARVIS_SIDECAR_PORT}" ] && [ -n "\${YARVIS_ATTENTION_TOKEN}" ] && ` +
+    `[ -n "\${YARVIS_SESSION_KEY}" ] && [ -n "\${YARVIS_SESSION_TOKEN}" ]; } || { cat >/dev/null; exit 0; }; ` +
+    `curl -sf -m 5 -X POST "http://127.0.0.1:\${YARVIS_SIDECAR_PORT}/ingest/activity?workspaceId=${workspaceId}" ` +
+    `-H "Authorization: Bearer \${YARVIS_ATTENTION_TOKEN}" ` +
+    `-H "Content-Type: application/json" ` +
+    `-H "${SESSION_KEY_HEADER}: \${YARVIS_SESSION_KEY}" ` +
+    `-H "${SESSION_TOKEN_HEADER}: \${YARVIS_SESSION_TOKEN}" ` +
+    `--data-binary @- >/dev/null 2>&1 || true`
+  );
+}
+
 interface HookEntry {
   matcher?: string;
-  hooks: { type: "command"; command: string; timeout?: number }[];
+  hooks: { type: "command"; command: string; timeout?: number; async?: boolean }[];
 }
 
 /** True if an existing hook entry is one we wrote (so re-provision replaces it). */
@@ -178,16 +239,59 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
   else settings[key] = rest;
 }
 
+/** Our entries replace any we wrote before; everything else in the list is the user's. */
+function replaceOurEntries(existingEntries: unknown, ourEntries: string[]): unknown[] {
+  const usersOwn = (Array.isArray(existingEntries) ? existingEntries : []).filter(
+    (entry) => !isOurSandboxEntry(entry),
+  );
+  return [...usersOwn, ...ourEntries];
+}
+
 /**
- * Merges our hooks into any existing settings: the three attention hooks, which
- * include the permission hook, and the SessionStart/SessionEnd pair that
- * registers the session. Unrelated
- * top-level keys and the user's own hooks for these events are preserved — our
- * entry is *appended* alongside them, not substituted for the array. Idempotent:
- * a prior Yarvis entry for an event is dropped before ours is re-added, so
- * re-provisioning never stacks duplicates.
+ * The settings' `sandbox` key with this workspace's clone paths in it (see
+ * `sandboxPaths.ts`), or undefined when there is nothing to write. Entries are
+ * recognised by shape, so a repo that left the workspace, including its last
+ * one, takes its paths with it.
+ */
+function sandboxWithClonePaths(
+  existing: Record<string, unknown>,
+  repos: readonly SandboxRepo[],
+): Record<string, unknown> | undefined {
+  const sandbox =
+    existing.sandbox && typeof existing.sandbox === "object" && !Array.isArray(existing.sandbox)
+      ? (existing.sandbox as Record<string, unknown>)
+      : undefined;
+  if (!sandbox && repos.length === 0) return undefined;
+  const filesystem =
+    sandbox?.filesystem &&
+    typeof sandbox.filesystem === "object" &&
+    !Array.isArray(sandbox.filesystem)
+      ? { ...(sandbox.filesystem as Record<string, unknown>) }
+      : {};
+  for (const [key, ours] of [
+    ["allowWrite", sandboxAllowWrite(repos)],
+    ["denyWrite", sandboxDenyWrite(repos)],
+  ] as const) {
+    const entries = replaceOurEntries(filesystem[key], ours);
+    if (entries.length > 0 || key in filesystem) filesystem[key] = entries;
+  }
+  return { ...sandbox, filesystem };
+}
+
+/**
+ * Merges our hooks into any existing settings:
+ * - the three attention hooks, which include the permission hook;
+ * - the hooks that settle held permission prompts;
+ * - the SessionStart/SessionEnd pair that registers the session;
+ * - the activity hooks that feed the Agent Field page.
  *
- * Also strips the `skills.paths`/`agents.paths` an earlier version wrote to
+ * Unrelated top-level keys and the user's own hooks for these events are
+ * preserved — our entries are *appended* alongside them, not substituted for
+ * the array. Idempotent: prior Yarvis entries for an event are dropped before
+ * ours are re-added, so re-provisioning never stacks duplicates.
+ *
+ * Also lets the sandbox commit to each repo's clone, while keeping its git
+ * config, hooks and shared refs out of reach (`sandboxPaths.ts`), and strips the `skills.paths`/`agents.paths` an earlier version wrote to
  * register each repo's `.claude` dirs. Claude Code ignores those keys, so the
  * repos' skills and agents are copied into the workspace root instead (see
  * `claudeAssets.ts`); left behind, the paths would only mislead a reader.
@@ -195,6 +299,7 @@ function dropPathsKey(settings: Record<string, unknown>, key: string): void {
 export function buildClaudeSettings(
   workspaceId: string,
   existing: Record<string, unknown> = {},
+  repos: readonly SandboxRepo[] = [],
 ): Record<string, unknown> {
   const fallbackSessionKey = `ws-claude:${workspaceId}`;
   const command = (kind: AttentionHookKind) => ({
@@ -202,22 +307,33 @@ export function buildClaudeSettings(
     command: attentionHookCommand(workspaceId, fallbackSessionKey, kind),
   });
   const registration = { type: "command" as const, command: agentSessionHookCommand(workspaceId) };
+  // Async, so the post that runs after every tool call never holds Claude up.
+  const settled = {
+    type: "command" as const,
+    command: permissionSettledHookCommand(workspaceId),
+    async: true,
+  };
+  const activity = {
+    type: "command" as const,
+    command: activityHookCommand(workspaceId),
+    async: true,
+  };
 
   const existingHooks =
     existing.hooks && typeof existing.hooks === "object"
       ? (existing.hooks as Record<string, unknown>)
       : {};
 
-  const withOurEntry = (event: string, entry: HookEntry): HookEntry[] => {
+  const withOurEntries = (event: string, ...entries: HookEntry[]): HookEntry[] => {
     const prior = Array.isArray(existingHooks[event]) ? (existingHooks[event] as HookEntry[]) : [];
-    return [...prior.filter((e) => !isOurEntry(e)), entry];
+    return [...prior.filter((e) => !isOurEntry(e)), ...entries];
   };
 
   const settings: Record<string, unknown> = {
     ...existing,
     hooks: {
       ...existingHooks,
-      PermissionRequest: withOurEntry("PermissionRequest", {
+      PermissionRequest: withOurEntries("PermissionRequest", {
         hooks: [
           {
             type: "command",
@@ -226,32 +342,81 @@ export function buildClaudeSettings(
           },
         ],
       }),
-      Notification: withOurEntry("Notification", {
-        matcher: "idle_prompt",
-        hooks: [command("idle")],
-      }),
-      Stop: withOurEntry("Stop", { hooks: [command("completed")] }),
-      SessionStart: withOurEntry("SessionStart", { hooks: [registration] }),
-      SessionEnd: withOurEntry("SessionEnd", { hooks: [registration] }),
+      Notification: withOurEntries(
+        "Notification",
+        { matcher: "idle_prompt", hooks: [command("idle")] },
+        { hooks: [activity] },
+      ),
+      Stop: withOurEntries("Stop", { hooks: [command("completed"), settled, activity] }),
+      PostToolUse: withOurEntries("PostToolUse", { hooks: [settled] }),
+      UserPromptSubmit: withOurEntries("UserPromptSubmit", { hooks: [settled, activity] }),
+      SessionStart: withOurEntries("SessionStart", { hooks: [registration, activity] }),
+      SessionEnd: withOurEntries("SessionEnd", { hooks: [registration] }),
+      PreToolUse: withOurEntries("PreToolUse", { hooks: [activity] }),
+      PostToolUseFailure: withOurEntries("PostToolUseFailure", { hooks: [activity] }),
+      SubagentStop: withOurEntries("SubagentStop", { hooks: [activity] }),
+      PreCompact: withOurEntries("PreCompact", { hooks: [activity] }),
     },
   };
+
+  const sandbox = sandboxWithClonePaths(existing, repos);
+  if (sandbox) settings.sandbox = sandbox;
 
   for (const key of ["skills", "agents"]) dropPathsKey(settings, key);
 
   return settings;
 }
 
+/** What `writeClaudeSettings` needs from a workspace. */
+export interface WorkspaceForSettings {
+  id: string;
+  rootPath: string;
+  repos: readonly {
+    status: string;
+    branch: string;
+    worktreePath: string;
+    repo: { primaryClonePath: string };
+    /** Worktrees Yarvis added beside this one, each on its own branch. */
+    extraWorktrees: readonly { branch: string; worktreePath: string }[];
+  }[];
+}
+
+/**
+ * The workspace's worktrees as the sandbox needs them, one entry each. A
+ * worktree's admin directory is looked up in its clone, since git may have
+ * suffixed the name. An added worktree that is gone gets no grant at all, not
+ * even its branch, since nothing in the workspace commits to it any more.
+ */
+function sandboxReposOf(detail: WorkspaceForSettings): SandboxRepo[] {
+  return detail.repos
+    .filter((wr) => wr.status !== "removed")
+    .flatMap((wr) => {
+      const clonePath = wr.repo.primaryClonePath;
+      const own: SandboxRepo = {
+        clonePath,
+        branch: wr.branch,
+        adminName: resolveAdminName(clonePath, wr.worktreePath),
+      };
+      const extras = wr.extraWorktrees.flatMap(({ branch, worktreePath }) => {
+        const adminName = resolveAdminName(clonePath, worktreePath);
+        return adminName ? [{ clonePath, branch, adminName }] : [];
+      });
+      return [own, ...extras];
+    });
+}
+
 /**
  * (Re)writes `.claude/settings.json` at the workspace root so a Claude Code
  * session launched there registers itself with Yarvis and signals when it
  * needs the user (blocked on a permission, idle waiting for input, or
- * finished). Both launch flows start Claude with cwd = the workspace root, so
- * a project settings file here covers them. Best-effort: a corrupt existing file is overwritten and any failure is
- * logged, never fatal to provisioning.
+ * finished), and so its sandbox can commit to the workspace's branches. Both
+ * launch flows start Claude with cwd = the workspace root, so a project
+ * settings file here covers them. Best-effort: a corrupt existing file is
+ * overwritten and any failure is logged, never fatal to provisioning.
  */
-export function writeClaudeSettings(rootPath: string, workspaceId: string): void {
+export function writeClaudeSettings(detail: WorkspaceForSettings): void {
   try {
-    const dir = `${rootPath}/.claude`;
+    const dir = `${detail.rootPath}/.claude`;
     const file = `${dir}/settings.json`;
     let existing: Record<string, unknown> = {};
     // Read-and-catch rather than existsSync-then-read: a separate existence check
@@ -268,8 +433,13 @@ export function writeClaudeSettings(rootPath: string, workspaceId: string): void
       }
     }
 
+    const repos = sandboxReposOf(detail);
+    for (const repo of repos) ensureBranchRefDirs(repo);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(file, `${JSON.stringify(buildClaudeSettings(workspaceId, existing), null, 2)}\n`);
+    writeFileSync(
+      file,
+      `${JSON.stringify(buildClaudeSettings(detail.id, existing, repos), null, 2)}\n`,
+    );
   } catch (e) {
     console.error("[workspaces] failed to write .claude/settings.json:", e);
   }

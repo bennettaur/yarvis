@@ -88,11 +88,17 @@ function builtInProviders(config: Config, rows: ProviderModelRow[]): ProviderInf
 
 /**
  * A custom provider's own tagged model list is its default catalogue, which
- * saved catalogue entries take over as they do a built-in's.
+ * saved catalogue entries take over as they do a built-in's. A System One model
+ * can only answer decision questions, so whatever it was saved with, it is
+ * tagged `decision`.
  */
 function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): ProviderInfo {
   const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
-  const models = catalogFor(id, rows, row.models);
+  const own =
+    row.apiKind === "systemone"
+      ? row.models.map((m) => ({ id: m.id, capabilities: ["decision" as const] }))
+      : row.models;
+  const models = catalogFor(id, rows, own);
   return {
     id,
     label: row.name,
@@ -187,6 +193,61 @@ export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat" | "/api/tag
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
+/**
+ * Where to reach a model through an Ollama server's native `/api/chat`, which
+ * unlike its OpenAI-compatible endpoint can hold the output to a JSON schema.
+ */
+export interface OllamaChatTarget {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+}
+
+/** Where to reach a model through the System One API, at `<base URL>/v1/systemone`. */
+export interface SystemOneTarget {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+}
+
+function customProviderHeaders(config: Config, row: CustomProviderRow): Record<string, string> {
+  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...secrets.headers,
+  };
+  if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
+  return headers;
+}
+
+function ollamaChatTargetFor(
+  config: Config,
+  row: CustomProviderRow,
+  modelId: string,
+): OllamaChatTarget | null {
+  if (row.apiKind !== "ollama") return null;
+  return {
+    url: ollamaUrl(row.baseUrl, "/api/chat"),
+    headers: customProviderHeaders(config, row),
+    model: modelId,
+  };
+}
+
+/** Where to reach a model served by a System One provider, or null for any other provider. */
+export async function systemOneTargetFor(
+  config: Config,
+  providerId: ProviderId,
+  modelId: string,
+): Promise<SystemOneTarget | null> {
+  const row = await findCustomProvider(providerId);
+  if (row?.apiKind !== "systemone") return null;
+  return {
+    url: `${row.baseUrl.replace(/\/+$/, "")}/v1/systemone`,
+    headers: customProviderHeaders(config, row),
+    model: modelId,
+  };
+}
+
 /** The saved row behind a `custom:<id>` provider id, or null for a built-in or unknown id. */
 export async function findCustomProvider(
   providerId: ProviderId,
@@ -242,6 +303,8 @@ function resolveCustom(
         model: createOpenAI({ ...options, baseURL: ollamaUrl(row.baseUrl, "/v1") }).chat(modelId),
         viaOpenAI: true,
       };
+    case "systemone":
+      throw new Error("a System One model answers decision questions only, not chat");
     default:
       throw new Error(`unsupported apiKind: ${row.apiKind}`);
   }
@@ -262,6 +325,19 @@ export async function resolveModel(
   modelId: string,
   { effort }: { effort?: ReasoningEffort } = {},
 ): Promise<LanguageModel> {
+  return (await resolveModelWithOllama(config, providerId, modelId, { effort })).model;
+}
+
+/**
+ * `resolveModel`, plus the model's native Ollama chat target when an Ollama
+ * custom provider serves it — from the one lookup of the saved provider.
+ */
+export async function resolveModelWithOllama(
+  config: Config,
+  providerId: ProviderId,
+  modelId: string,
+  { effort }: { effort?: ReasoningEffort } = {},
+): Promise<{ model: LanguageModel; ollama: OllamaChatTarget | null }> {
   const custom = await findCustomProvider(providerId);
   if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX) && !custom) {
     throw new Error(`unknown custom provider: ${providerId.slice(CUSTOM_PROVIDER_PREFIX.length)}`);
@@ -275,8 +351,10 @@ export async function resolveModel(
   const { model, viaOpenAI } = custom
     ? resolveCustom(custom, config, modelId, { reasoning })
     : resolveBuiltIn(config, providerId, modelId);
-  if (!effort || !reasoning) return model;
-  return withEffort(model, effort, { viaOpenAI });
+  return {
+    model: effort && reasoning ? withEffort(model, effort, { viaOpenAI }) : model,
+    ollama: custom ? ollamaChatTargetFor(config, custom, modelId) : null,
+  };
 }
 
 function resolveBuiltIn(config: Config, providerId: ProviderId, modelId: string): BuiltModel {

@@ -108,6 +108,33 @@ function isLoopbackAddress(addr: string): boolean {
   return false;
 }
 
+/** Names that always resolve to this machine. */
+function isLoopbackHostname(host: string): boolean {
+  return (
+    host === "localhost" ||
+    host === "ip6-localhost" ||
+    host === "ip6-loopback" ||
+    // `.localhost` is guaranteed to resolve to loopback (RFC 6761).
+    host.endsWith(".localhost")
+  );
+}
+
+/**
+ * True when a URL's host is this machine, judged without DNS: a loopback
+ * literal or a name that always resolves to one. Any other name counts as
+ * remote, even one that happens to resolve to 127.0.0.1.
+ */
+export function isLoopbackUrl(input: string): boolean {
+  let host: string;
+  try {
+    host = new URL(input).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  const bareHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  return isLoopbackAddress(bareHost) || isLoopbackHostname(host);
+}
+
 export interface OutboundUrlOptions {
   /**
    * Permit loopback destinations (127.0.0.0/8, ::1, localhost, *.localhost).
@@ -154,13 +181,7 @@ export function validateOutboundUrl(input: string, options: OutboundUrlOptions =
   }
 
   // Hostname denylist for the common non-IP forms that resolve to loopback.
-  const loopbackHost =
-    host === "localhost" ||
-    host === "ip6-localhost" ||
-    host === "ip6-loopback" ||
-    // `.localhost` is guaranteed to resolve to loopback (RFC 6761).
-    host.endsWith(".localhost");
-  if (loopbackHost && !allowLoopback) {
+  if (isLoopbackHostname(host) && !allowLoopback) {
     throw new UrlSafetyError("refusing to reach a private address");
   }
   // `.local` is mDNS / link-local discovery — another machine, not loopback —
@@ -170,6 +191,51 @@ export function validateOutboundUrl(input: string, options: OutboundUrlOptions =
   }
 
   return parsed;
+}
+
+/** Resolves a hostname to every address it has, the way `dns.lookup(host, { all: true })` does. */
+export type Resolver = (hostname: string) => Promise<LookupAddress[]>;
+
+const resolveAll: Resolver = (hostname) => dns.lookup(hostname, { all: true });
+
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | LookupAddress[],
+  family?: number,
+) => void;
+
+/**
+ * A `lookup` for `node:http(s)` that refuses a host when any of its addresses is
+ * private, and otherwise hands back exactly the addresses it checked.
+ *
+ * This is what closes DNS rebinding. `assertResolvableOutbound` resolves the
+ * host, and then `fetch` resolves it again on its own, so a host with a zero TTL
+ * can answer the check with a public address and the connection with a private
+ * one. Checking inside the lookup the connection itself uses leaves no second
+ * resolution to race.
+ */
+export function createSafeLookup(options: OutboundUrlOptions & { resolve?: Resolver } = {}) {
+  const resolve = options.resolve ?? resolveAll;
+  const allowLoopback = options.allowLoopback === true;
+  return (hostname: string, lookupOptions: { all?: boolean }, callback: LookupCallback): void => {
+    resolve(hostname).then(
+      (records) => {
+        if (records.length === 0) {
+          callback(new UrlSafetyError(`dns lookup returned no addresses for ${hostname}`), []);
+          return;
+        }
+        for (const r of records) {
+          if (isPrivateAddress(r.address) && !(allowLoopback && isLoopbackAddress(r.address))) {
+            callback(new UrlSafetyError("refusing to reach a private address"), []);
+            return;
+          }
+        }
+        if (lookupOptions?.all) callback(null, records);
+        else callback(null, records[0]!.address, records[0]!.family);
+      },
+      () => callback(new UrlSafetyError(`dns lookup failed for ${hostname}`), []),
+    );
+  };
 }
 
 /**

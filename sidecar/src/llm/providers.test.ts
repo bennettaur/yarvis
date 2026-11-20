@@ -18,6 +18,7 @@ import {
   ollamaUrl,
   reasoningOptions,
   resolveModel,
+  resolveModelWithOllama,
 } from "./providers.ts";
 
 function configWithSecrets(secrets: Config["customProviderSecrets"] = {}): Config {
@@ -103,6 +104,24 @@ describe("availableProviders", () => {
     ).toEqual(["gpt-4o", "claude-via-proxy"]);
     expect(custom?.custom).toBe(true);
     expect(custom?.available).toBe(true);
+  });
+
+  // A System One model can't hold a conversation, so it must never be offered for chat.
+  it("tags a System One provider's models for decisions only", async () => {
+    const row = await createCustomProvider({
+      name: "system one",
+      baseUrl: "http://localhost:11434",
+      apiKind: "systemone",
+      models: [{ id: "nimble", capabilities: ["chat"] }],
+      headerNames: [],
+    });
+    const providers = await availableProviders(configWithSecrets());
+    expect(providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.models).toEqual([
+      { id: "nimble", capabilities: ["decision"] },
+    ]);
+    await expect(
+      resolveModel(configWithSecrets(), `${CUSTOM_PROVIDER_PREFIX}${row.id}`, "nimble"),
+    ).rejects.toThrow("not chat");
   });
 
   it("marks a custom provider unavailable when it has no models", async () => {
@@ -347,6 +366,58 @@ describe("resolveModel for custom providers", () => {
     await expect(
       resolveModel(configWithSecrets(), `${CUSTOM_PROVIDER_PREFIX}does-not-exist`, "x"),
     ).rejects.toThrow();
+  });
+});
+
+describe("resolveModelWithOllama", () => {
+  it("names the native chat target of an Ollama provider, with its key and headers", async () => {
+    const row = await createCustomProvider({
+      name: "ollama",
+      baseUrl: "http://localhost:11434/",
+      apiKind: "ollama",
+      models: [{ id: "llama3.2", capabilities: ["chat"] }],
+      headerNames: ["X-Team"],
+    });
+    const config = configWithSecrets({
+      [row.id]: { apiKey: "sk-test", headers: { "X-Team": "core" } },
+    });
+    const { model, ollama } = await resolveModelWithOllama(
+      config,
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "llama3.2",
+    );
+    expect((model as { modelId?: string }).modelId).toBe("llama3.2");
+    expect(ollama).toEqual({
+      url: "http://localhost:11434/api/chat",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Team": "core",
+        Authorization: "Bearer sk-test",
+      },
+      model: "llama3.2",
+    });
+  });
+
+  it("has no target for any other provider", async () => {
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: "https://litellm.example.com/v1",
+      apiKind: "openai",
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
+      headerNames: [],
+    });
+    const custom = await resolveModelWithOllama(
+      configWithSecrets(),
+      `${CUSTOM_PROVIDER_PREFIX}${row.id}`,
+      "gpt-4o",
+    );
+    expect(custom.ollama).toBeNull();
+    const builtIn = await resolveModelWithOllama(
+      { ...configWithSecrets(), secrets: { anthropicApiKey: "sk-ant" } },
+      "anthropic",
+      "claude-sonnet-4-6",
+    );
+    expect(builtIn.ollama).toBeNull();
   });
 });
 

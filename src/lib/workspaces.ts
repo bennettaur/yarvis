@@ -3,6 +3,7 @@ import type { IssueLink } from "./issues/types";
 import type { MergeMethod, PrRef, PrStack } from "./pr/types";
 import type { Repo } from "./repos";
 import type { Task } from "./tasks";
+import { userIsLooking } from "./userIsLooking";
 
 export type WorkspaceStatus = "creating" | "active" | "archiving" | "archived" | "error";
 export type WorkspaceRepoStatus = "pending" | "provisioning" | "ready" | "removed" | "error";
@@ -24,11 +25,13 @@ export interface Workspace {
   archivedAt: string | null;
 }
 
-/** Poller cache of the PR + checks for a workspace repo (populated in PR3). */
+/** One PR linked to a workspace repo, with its status as the poller last read it. */
 export interface WorkspaceRepoPr {
   prNumber: number | null;
   prUrl: string | null;
   prState: string | null;
+  /** The branch the PR merges from; null until it is first read. */
+  headBranch?: string | null;
   isDraft: boolean | null;
   mergeable: string | null;
   checkRollup: CheckRollup;
@@ -65,7 +68,13 @@ export interface WorkspaceRepoDetail {
   error: string | null;
   createdAt: string;
   repo: Repo;
+  /** The repo's main PR: the newest open one on its own branch, else the most relevant. */
   pr: WorkspaceRepoPr | null;
+  /** Every PR linked to the repo, the main one first. */
+  prs: WorkspaceRepoPr[];
+  /** When the poller last searched the repo's branches for PRs; null if never. */
+  prsPolledAt?: string | null;
+  prsPollError?: string | null;
 }
 
 export interface WorkspaceDetail extends Workspace {
@@ -80,6 +89,20 @@ export interface WorkspaceSummary extends Workspace {
   repoNames: string[];
   /** One entry per repo that has a PR; empty until the poller finds one. */
   prs: WorkspaceSummaryPr[];
+  /** Last time it was opened or its agent wrote to its transcript, else its creation; null when archived. */
+  lastActiveAt: string | null;
+}
+
+/** How long an active workspace can sit untouched before the list marks it idle. */
+export const IDLE_AFTER_DAYS = 7;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Whole days an active workspace has gone untouched, or null when it isn't active or was used within `IDLE_AFTER_DAYS`. */
+export function idleDays(ws: WorkspaceSummary, now: number = Date.now()): number | null {
+  if (ws.status !== "active" || !ws.lastActiveAt) return null;
+  const days = Math.floor((now - Date.parse(ws.lastActiveAt)) / DAY_MS);
+  return days >= IDLE_AFTER_DAYS ? days : null;
 }
 
 export interface ChangedFile {
@@ -109,6 +132,8 @@ export interface WorkspaceForPr {
   name: string;
   slug: string;
   status: WorkspaceStatus;
+  /** The workspace's repo the PR is on. */
+  workspaceRepoId: string;
 }
 
 export interface CreateWorkspaceInput {
@@ -134,6 +159,8 @@ export interface ArchiveWorkspaceInput {
   summary?: string | null;
   mergedPrUrl?: string | null;
   force?: boolean;
+  /** Linked issues to close on their tracker once the archive finishes. */
+  closeIssueIds?: string[];
 }
 
 export interface ArchiveResult {
@@ -159,14 +186,25 @@ async function readError(res: Response, action: string): Promise<never> {
   );
 }
 
-export async function listWorkspaces(): Promise<WorkspaceSummary[]> {
-  const res = await sidecarFetch("/api/workspaces");
+/** The cache key the workspace list is read under, shared by every view that shows it. */
+export const WORKSPACES_KEY = "workspaces:list";
+
+/**
+ * `showingBadges` is for the Workspaces list, whose rows show each PR's status.
+ * The sidecar polls faster for what a read says is in front of the user, so a
+ * read made while the window is in the background doesn't say so.
+ */
+export async function listWorkspaces({ showingBadges = false } = {}): Promise<WorkspaceSummary[]> {
+  const badges = showingBadges && userIsLooking() ? "?badges=1" : "";
+  const res = await sidecarFetch(`/api/workspaces${badges}`);
   if (!res.ok) return readError(res, "list workspaces");
   return res.json();
 }
 
-export async function getWorkspace(id: string): Promise<WorkspaceDetail> {
-  const res = await sidecarFetch(`/api/workspaces/${id}`);
+/** `viewing` is for the open workspace, whose header shows its PR's status. */
+export async function getWorkspace(id: string, { viewing = false } = {}): Promise<WorkspaceDetail> {
+  const query = viewing && userIsLooking() ? "?viewing=1" : "";
+  const res = await sidecarFetch(`/api/workspaces/${id}${query}`);
   if (!res.ok) return readError(res, "get workspace");
   return res.json();
 }
@@ -377,6 +415,46 @@ export async function workspaceRepoSync(
   return res.json();
 }
 
+/** What a detection search found on one repo's branches. */
+export interface DetectedPrs {
+  workspaceRepoId: string;
+  prs: { number: number; url: string | null; branch: string | null }[];
+}
+
+/** Searches every branch of the workspace's repos for PRs now, adding what it finds. */
+export async function detectWorkspacePrs(workspaceId: string): Promise<DetectedPrs[]> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/prs/detect`, { method: "POST" });
+  if (!res.ok) return readError(res, "detect pull requests");
+  return (await res.json()).repos;
+}
+
+/** Links one of a workspace repo's PRs by number, beside the ones it has. */
+export async function linkWorkspacePr(
+  workspaceId: string,
+  workspaceRepoId: string,
+  number: number,
+): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/prs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ number }),
+  });
+  if (!res.ok) return readError(res, "link pull request");
+}
+
+/** Unlinks one of a workspace repo's PRs; detection won't add it back. */
+export async function unlinkWorkspacePr(
+  workspaceId: string,
+  workspaceRepoId: string,
+  number: number,
+): Promise<void> {
+  const res = await sidecarFetch(
+    `/api/workspaces/${workspaceId}/repos/${workspaceRepoId}/prs/${number}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) return readError(res, "unlink pull request");
+}
+
 export interface WorkspaceStack {
   stack: PrStack | null;
   /** Why `gh stack` didn't contribute, when it didn't. Null when it did. */
@@ -547,6 +625,15 @@ export async function unlinkWorkspaceIssue(
     method: "DELETE",
   });
   if (!res.ok) return readError(res, "unlink issue");
+}
+
+/**
+ * Tells the sidecar the user closed the workspace's agent tab, so its session
+ * is marked ended and not resumed on the next start.
+ */
+export async function stopWorkspaceAgent(id: string): Promise<void> {
+  const res = await sidecarFetch(`/api/workspaces/${id}/agent/stop`, { method: "POST" });
+  if (!res.ok) return readError(res, "stop agent session");
 }
 
 export async function archiveWorkspace(

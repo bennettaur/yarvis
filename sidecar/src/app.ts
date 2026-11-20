@@ -1,12 +1,20 @@
 import { Hono } from "hono";
 import { bearerAuth } from "hono/bearer-auth";
 import { cors } from "hono/cors";
+import { createActivityIngestRoutes, createActivityRoutes } from "./activity/routes.ts";
+import { createAgentRunRoutes } from "./agentRuns/routes.ts";
+import { createDecisionPlaygroundRoutes } from "./agents/decisionPlaygroundRoutes.ts";
 import { createSpecialistRoutes } from "./agents/routes.ts";
+import { createAlarmRoutes } from "./alarms/routes.ts";
+import { createArtifactRoutes } from "./artifacts/routes.ts";
 import { createAttentionIngestRoutes, createAttentionRoutes } from "./attention/routes.ts";
 import { createAzureRoutes } from "./azure/routes.ts";
 import { createAzureBoardsRoutes } from "./azureBoards/routes.ts";
+import { browserBridge } from "./browser/bridge.ts";
+import { createBrowserChatRoutes } from "./browser/chat.ts";
 import { createBrowserRoutes } from "./browser/routes.ts";
 import { createCcRoutes } from "./cc/routes.ts";
+import { createChannelRoutes } from "./channel/routes.ts";
 import { createChatRoutes } from "./chat/routes.ts";
 import { createClipboardRoutes } from "./clipboard/routes.ts";
 import type { Config } from "./config.ts";
@@ -35,6 +43,8 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createMutationTestingConfigRoutes } from "./reviewWorkspaces/mutationConfig.ts";
+import { createReviewWorkspaceRoutes } from "./reviewWorkspaces/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
 import { createTelegramRoutes } from "./telegram/routes.ts";
 import { createTodoRoutes } from "./todos/routes.ts";
@@ -110,10 +120,19 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   // its workspace. The attention router's `/ingest/*` middleware also runs for
   // it; this router checks the token itself rather than relying on that.
   app.route("/ingest/agent-session", createAgentSessionIngestRoutes(config));
+  // Same token and shape again: a session's channel relay collects the
+  // messages addressed to its terminal and posts the session's replies.
+  app.route("/ingest/channel", createChannelRoutes(config));
+  // The hooks that feed the Agent Field page, on the same token and session check.
+  app.route("/ingest/activity", createActivityIngestRoutes(config));
 
   // The browser bridge is the same shape: the extension's native host holds only
   // this scoped token, checked inside the router, never the full-access bearer.
-  app.route("/browser", createBrowserRoutes(config));
+  // It also carries the side panel's chat, so that token can run agent turns.
+  app.route(
+    "/browser",
+    createBrowserRoutes(config, browserBridge, createBrowserChatRoutes(config)),
+  );
 
   // The MCP endpoint sits outside the bearer wall for the same reason and with
   // the same shape: its own scoped token, checked inside the router, so an MCP
@@ -152,6 +171,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/model-catalog", createModelCatalogRoutes(config));
   app.route("/api/complexity-models", createComplexityModelRoutes(config));
   app.route("/api/decision-model", createDecisionModelRoutes());
+  app.route("/api/decision-playground", createDecisionPlaygroundRoutes(config));
   app.route("/api/mcp", createMcpRoutes(config));
   app.route("/api/mcp-endpoint", createMcpEndpointInfoRoutes(config));
   app.route("/api/cc", createCcRoutes());
@@ -165,15 +185,19 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/events", createEventRoutes(config));
   app.route("/api/projects", createProjectRoutes(config));
   app.route("/api/todos", createTodoRoutes(config));
+  app.route("/api/artifacts", createArtifactRoutes(config));
   app.route("/api/work-streams", createWorkStreamRoutes(config));
   app.route("/api/heads-down", createHeadsDownRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
+  app.route("/api/agent-runs", createAgentRunRoutes(config));
   app.route("/api/logs", createLogRoutes());
   app.route("/api/attention", createAttentionRoutes(config));
+  app.route("/api/activity", createActivityRoutes());
   app.route("/api/questions", createQuestionRoutes(config));
   app.route("/api/wip", createWipRoutes(config));
   app.route("/api/calendar", createCalendarRoutes(config));
+  app.route("/api/alarms", createAlarmRoutes(config));
   app.route("/api/omni", createOmniRoutes(config));
   app.route("/api/pr", createPrRoutes(config));
   app.route("/api/pr-models", createPrModelRoutes(config));
@@ -181,6 +205,8 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/voice", createVoiceRoutes(config));
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
+  app.route("/api/review-workspaces", createReviewWorkspaceRoutes(config));
+  app.route("/api/mutation-testing-config", createMutationTestingConfigRoutes());
 
   return app;
 }

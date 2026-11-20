@@ -79,6 +79,9 @@ and can't be a custom header on either kind.
 
 ### Use it
 
+The Tool manager groups tools by where they come from: built-in, then one
+group per MCP server. Each group starts collapsed; click its name to open it. A
+group's header shows how many of its tools are set to auto-approve.
 The Tool manager sets two things per tool.
 
 How the tool is offered:
@@ -95,8 +98,8 @@ Whether it needs approval:
   waiting. **Approve** (`A`) and **Deny** (`D`) answer it, and **Arguments**
   shows what the tool was called with.
 - **Auto.** Runs without asking. **Always allow** on the approval bar sets
-  this for that tool. A group-level button auto-approves, or asks for, every
-  tool on a server.
+  this for that tool. A button at the top of each open MCP server group
+  auto-approves, or asks for, every tool on that server.
 
 A denied call is not retried or worked around.
 
@@ -112,6 +115,16 @@ your network is refused like any other private address. A decision model tagged
 one runs before each MCP tool call it judges. An Ollama decision model ignores
 it.
 
+System One models (such as `nimble` on Ollama) work too: pick the **System
+One** protocol instead, with the server's root URL (Yarvis adds
+`/v1/systemone`), for example `http://localhost:11434` for a local Ollama or
+`https://ollama.com` with your API key for a cloud model. These models are
+tagged `decision` for you and are never offered for chat. A System One model
+answers each of the three questions below with how likely the answer is yes,
+and a call runs without a prompt only when it is at least 80% sure the call
+matches your request and is neither risky nor destructive. It gives no written
+reason, so it is a weaker check than a model that explains itself.
+
 Before any tool set to **Ask** raises the approval bar, the decision model reads
 your message this turn, the recent conversation (tool results included, and
 the assistant's reasoning from earlier steps where the provider returns it),
@@ -125,6 +138,12 @@ answer within 20 seconds raises the approval bar as usual, and so do arguments
 too long for it to read in full. Each verdict is logged under `[auto-approve]`
 in **Settings → Diagnostics**. Everything it reads is sent to the decision
 model's provider, so a local model keeps your conversation on this machine.
+
+The same decision model can also pick a specialist and a model tier for
+delegated work, with **Pick specialists for delegated work** and **Pick a model
+tier for specialists**. **Try a decision**, under the same setting, asks it one
+question so you can see how it answers. See
+[Decision specialists](assistant.md#decision-specialists).
 
 Your consent is for the tool as it was described. If a resync finds a tool's
 description or schema changed, its approval resets to **Ask**.
@@ -167,8 +186,9 @@ Memory tools:
 | `list_memories` | Lists memories, newest first, optionally by `kind` (`fact`, `note`, `session-summary`, …), with the same validity fields |
 | `forget` | Deletes a memory |
 
-A session that Yarvis launched in a workspace gets two more tools. See
-[Workspace review comments](#workspace-review-comments).
+A session that Yarvis launched in a workspace gets three more tools. See
+[Workspace review comments](#workspace-review-comments) and
+[Adding a worktree](#adding-a-worktree).
 
 Confirming or correcting a memory is in-app only for now, so a coding session
 can see that a memory has expired but can't re-validate it. It can tell you, or
@@ -191,21 +211,30 @@ Not exposed, on purpose:
 | `wait_for_answer` | Keeps waiting on an `ask_user` call that came back `pending` |
 
 A question rings the attention bell. Its row opens a dialog over whatever page
-you are on, so you can answer without switching to the session. See
+you are on, so you can answer without switching to the session. A question
+from the workspace you have open opens that dialog by itself. See
 [Workspaces](workspaces.md#the-attention-bell). The in-app assistant has the
 same two tools, and its questions show as coming from **Yarvis** (see
 [The assistant](assistant.md#tools)).
 
-One call waits up to four minutes. The sidecar closes a connection that sends
-nothing for longer than that, so past it the tool returns `pending` with a
-`questionId`, and the agent calls `wait_for_answer` to keep waiting. An answer
-given in between is kept and returned straight away.
+One call waits until you answer, for up to a day. While it waits, Yarvis sends
+the client a progress update every 30 seconds, which keeps Claude Code from
+dropping the quiet call. Claude Code moves a call that runs past two minutes
+into the background, so the agent can keep working while it waits. A client
+that doesn't ask for progress updates waits four minutes instead; past that the
+tool returns `pending` with a `questionId`, and the agent calls
+`wait_for_answer` to keep waiting. An answer given in between is kept and
+returned straight away.
 
 The question is shown against the workspace and terminal it came from. The
 session tells Yarvis which ones through the `X-Yarvis-Workspace` and
-`X-Yarvis-Session-Key` headers in the workspace's `.mcp.json`. A client Yarvis
-didn't launch sends neither, so its questions show as "Claude session" with no
-workspace.
+`X-Yarvis-Session-Key` headers in the workspace's `.mcp.json`. The session key
+counts only alongside that terminal's own `X-Yarvis-Session-Token`, so a
+question can't pose as another terminal's. A client Yarvis didn't launch sends
+neither, so its questions show as "Claude session" with no workspace. A
+workspace whose `.mcp.json` predates the token header gets it the next time
+Yarvis provisions it, such as when a repo is added. Until then its questions
+show without a terminal, and don't open on their own.
 
 ### Workspace review comments
 
@@ -223,12 +252,70 @@ So "address the feedback left in Yarvis" is enough for the session to fetch the
 comments, work through them, and resolve each one.
 
 The tools only see the workspace the header names. That is a convenience, not
-a boundary: the same token can name any workspace. Comment bodies are returned
-as written, without the untrusted-data fencing memory gets, because only you
-write them and acting on them is the point.
+a boundary: the same token can name any workspace. Comments you wrote are
+returned as written, without the untrusted-data fencing memory gets, because
+acting on them is the point. A verification report finding you added to the
+workspace has `source: "verification"` and its body is fenced: a model wrote
+it while reading the PR's code, so the session is told to treat it as a
+problem to check, not as instructions. **Copy review** marks and fences
+findings the same way in the text it copies.
 
 A workspace provisioned before this header existed gets it the next time it
 is provisioned.
+
+### Adding a worktree
+
+A workspace session also gets `add_worktree`, for working on another branch in
+a worktree of its own (one per layer of a stack, say). The session's sandbox
+can't run `git worktree add`, because that writes to the repo's shared clone.
+So Yarvis runs it, at `<workspace>/<repo folder>-<branch>` (a `/` in the
+branch becomes `-`), and then lets the sandbox commit, rebase and push in that
+worktree. See [Workspaces](workspaces.md#other-worktrees-in-the-workspace).
+
+| Argument | What it is |
+| --- | --- |
+| `repo` | The repo's folder in the workspace, or its name |
+| `branch` | The branch to check out. It must not be in the local clone yet, in any letter case |
+| `base` | Optional. The remote branch a new branch starts from. Leave it out to check out a branch that is already on the remote. Without it, a new branch is cut from the workspace's base branch |
+
+It answers with the worktree's `path`, its `branch`, and `startedFrom`, the
+remote branch it came from. It refuses, with a reason the agent can act on, a
+name git would read as something else (`origin/main`, `HEAD`), a branch an
+active workspace on the repo works on or stacks on, and a path something
+already holds.
+
+Unlike the review comment tools, it isn't offered on the workspace header
+alone. The caller also has to send the session key and token of one of that
+workspace's own terminals, so a client holding only the MCP token, or a session
+in another workspace, doesn't get it. A session started from a terminal Yarvis
+didn't open has no session token, so it doesn't get the tool either.
+
+### Linking a pull request
+
+A workspace session also gets `link_pull_request`, for telling Yarvis about a
+pull request it opened for a repo. Yarvis also finds PRs by searching the
+workspace's branches, but only on its next poll, and never on a branch with no
+worktree in the workspace. After the call, the workspace shows the PR's state
+and checks straight away. See
+[Workspaces](workspaces.md#linking-a-pull-request).
+
+| Argument | What it is |
+| --- | --- |
+| `repo` | The repo's folder in the workspace, or its name |
+| `number` | The pull request's number (its id on Azure DevOps) |
+
+It answers with the PR's `url` and `state`. It refuses a repo that isn't in
+the workspace and a number the repo has no PR for. A repo can have any number
+of linked PRs, so each call adds one. It refuses a PR you unlinked (only you
+can link it again), a PR from a fork, and a PR past the 20th for one repo. You
+can link either of the last two from the workspace's status line.
+
+Like the other workspace tools, it acts on the workspace the header names. A
+caller can use it to add a repo's PRs to a workspace. A linked PR is polled,
+holds the workspace's merges in heads-down mode while it has feedback, and can
+change which workspace **Start workspace** on that PR opens when no workspace
+has it on its own branch. It can't reach a PR in a repo the workspace doesn't
+have, and it can't remove one.
 
 ### Sessions Yarvis launches need no setup
 
@@ -238,8 +325,9 @@ root. That file points at `${YARVIS_SIDECAR_PORT}` with an
 variables into the session's shell, so the file on disk holds no secret. It
 also sends an `X-Yarvis-Workspace` header with the workspace id, which isn't a
 secret and is written as-is, and an `X-Yarvis-Session-Key` header filled in
-from the terminal's `YARVIS_SESSION_KEY`, so a question shows up against the
-right terminal.
+from the terminal's `YARVIS_SESSION_KEY`, with an `X-Yarvis-Session-Token` from
+`YARVIS_SESSION_TOKEN` to prove it, so a question shows up against the right
+terminal.
 
 Claude Code asks you to approve the project's MCP server the first time it sees
 it.
@@ -268,8 +356,10 @@ pointing by hand.
 3. Run it in your terminal.
 
 The command puts the token in your shell history, and Claude Code saves it in
-`~/.claude.json`. That exposure is limited: the token only grants the memory
-and review comment and question tools, and it changes every time Yarvis relaunches.
+`~/.claude.json`. That exposure is limited: the token only grants the memory,
+review comment, question, `add_worktree` and `link_pull_request` tools, and it
+changes every time
+Yarvis relaunches.
 
 The port and token are made once per app launch. Restarting the sidecar (which
 saving a secret does) keeps them. Relaunching Yarvis picks new ones, so copy
@@ -281,9 +371,9 @@ and never printed. Set `YARVIS_MCP_TOKEN` yourself to point a client at one.
 ### Security
 
 - The endpoint is `POST http://127.0.0.1:<sidecar port>/mcp`.
-- It uses a **scoped token** that grants the memory, review comment and
-  question tools and nothing else. The rest of the sidecar API keeps its own
-  bearer token.
+- It uses a **scoped token** that grants the memory, review comment, question,
+  `add_worktree` and `link_pull_request` tools and nothing else. The rest of the sidecar API keeps
+  its own bearer token.
 - The session and workspace headers are the caller's claim, the same trust
   attention hooks get. They decide where a question is shown, and
   `wait_for_answer` only returns a question to the session that asked it. A
