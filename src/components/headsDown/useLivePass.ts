@@ -6,20 +6,52 @@ import { type PassEvent, streamHeadsDown } from "../../lib/headsDown";
 export interface LivePass {
   passId: string;
   activity: ToolActivity[];
-  thinking: string;
+  /** The latest stretch of reasoning: what it thought before its last call or reply. */
+  thought: string;
+  /** Reasoning is still streaming into `thought`; the next stretch replaces it. */
+  isThinking: boolean;
   text: string;
+  /** The error the turn just ended on. */
+  error: string | null;
+  /** The sidecar said it will try the pass again after `error`. */
+  retrying: boolean;
 }
+
+export function newLivePass(passId: string): LivePass {
+  return {
+    passId,
+    activity: [],
+    thought: "",
+    isThinking: false,
+    text: "",
+    error: null,
+    retrying: false,
+  };
+}
+
+/** Work has carried on, so the last error and its retry are behind it. */
+const NO_ERROR = { error: null, retrying: false } as const;
 
 /** Folds one streamed event into the live pass. */
 export function applyPassEvent(live: LivePass, event: PassEvent): LivePass {
   switch (event.type) {
     case "delta":
-      return { ...live, text: live.text + event.text };
+      return { ...live, ...NO_ERROR, text: live.text + event.text, isThinking: false };
     case "reasoning":
-      return { ...live, thinking: live.thinking + event.text };
+      return {
+        ...live,
+        ...NO_ERROR,
+        thought: live.isThinking ? live.thought + event.text : event.text,
+        isThinking: true,
+      };
+    case "error":
+      // Whether it tries again is the sidecar's call; it says so with pass-retrying.
+      return { ...live, isThinking: false, error: event.message, retrying: false };
     case "tool_call":
       return {
         ...live,
+        ...NO_ERROR,
+        isThinking: false,
         activity: [
           ...live.activity,
           {
@@ -70,12 +102,16 @@ export function useLivePass(onChanged: () => void): LivePass | null {
         onChangedRef.current();
         for await (const event of streamHeadsDown(controller.signal)) {
           if (event.type === "pass-started") {
-            setLive({ passId: event.passId, activity: [], thinking: "", text: "" });
+            setLive(newLivePass(event.passId));
           } else if (event.type === "pass-event") {
             setLive((current) =>
               current && current.passId === event.passId
                 ? applyPassEvent(current, event.event)
                 : current,
+            );
+          } else if (event.type === "pass-retrying") {
+            setLive((current) =>
+              current && current.passId === event.passId ? { ...current, retrying: true } : current,
             );
           } else if (event.type === "pass-finished") {
             setLive(null);

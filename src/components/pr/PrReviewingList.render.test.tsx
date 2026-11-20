@@ -1,16 +1,21 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { PrInvolvement, ReviewerState } from "../../lib/pr/types";
+import { resetPrCache, stubPrCache } from "../../test/prFiles";
 import { renderToHtml } from "../../test/render";
 
-// Rows read CI state through usePrStatus; stub the cache so the list renders
-// without a transport. mock.module is process-global in bun, so keep the
-// module's other exports intact.
-const actualCache = await import("../../lib/pr/cache");
-mock.module("../../lib/pr/cache", () => ({
-  ...actualCache,
-  usePrStatus: () => ({ data: null, error: null, loading: false }),
-}));
+// Each row reads CI state through usePrStatus (a sidecar-backed resource).
+// Stub it so the list renders without a transport.
+stubPrCache({
+  usePrStatus: () => ({
+    data: null,
+    error: null,
+    loading: false,
+    refreshing: false,
+    refresh: async () => {},
+  }),
+});
+afterAll(resetPrCache);
 
 const { default: PrReviewingList } = await import("./PrReviewingList");
 

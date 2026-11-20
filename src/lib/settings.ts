@@ -26,6 +26,11 @@ export interface Settings {
   defaultAgentCommand: string;
   /** True while `YARVIS_CLAUDE_COMMAND` is set, which outranks `agentCommand`. */
   agentCommandOverriddenByEnv: boolean;
+  /** Agent harnesses beyond the built-in one; null means none added. */
+  agentHarnesses: AgentHarness[] | null;
+  /** Id of the harness a launch gets when it names none; null means the
+   *  built-in one (`BUILTIN_HARNESS_ID`). */
+  defaultAgentHarness: string | null;
   /** Azure DevOps organization base URL for the PR dashboard. */
   azureDevopsOrgUrl: string | null;
   /** Atlassian Cloud site base URL for the Issues dashboard. */
@@ -53,7 +58,66 @@ export interface Settings {
   /** Font size every terminal renders at (`lib/terminalFont`); null means the
    *  default size. */
   terminalFontSize: number | null;
+  /** Whether the top bar's sweep and the bell's shake run while the bell has
+   *  something pending (`lib/attentionAnimation`); null means on. */
+  attentionAnimation: boolean | null;
+  /** Slash commands, beyond the defaults, that Yarvis may send to a workspace's
+   *  agent session. Names without the `/`; null means none added. */
+  allowedSlashCommands: string[] | null;
+  /** Slash commands always allowed, whatever `allowedSlashCommands` holds. */
+  defaultAllowedSlashCommands: string[];
+  /** Experimental: whether the assistant may message workspace sessions over a
+   *  Claude Code channel and read their replies; null means off. */
+  channelMessaging: boolean | null;
 }
+
+/** The agent programs a harness can run; mirrors `HarnessKind` in `harness.rs`.
+ *  `claude-code` is the only kind that takes `--resume` and Remote Control. */
+export type HarnessKind = "claude-code" | "pi" | "opencode" | "custom";
+
+/** Id of the harness built from `agentName`/`agentCommand`. */
+export const BUILTIN_HARNESS_ID = "claude";
+
+/** One configured harness, as the core stores it (`src-tauri/src/harness.rs`). */
+export interface AgentHarness {
+  /** Lower-case letters, digits and dashes. */
+  id: string;
+  name: string;
+  kind: HarnessKind;
+  /** Typed into a shell at the workspace root, like `agentCommand`. */
+  command: string;
+  /** How an instruction is passed, with `{prompt}` where it goes, e.g.
+   *  `--prompt {prompt}`. Null or blank means the kind's default. */
+  promptArgs: string | null;
+  /** Plain environment variables, stored in `settings.json`. */
+  env: Record<string, string>;
+  /** Names of variables whose values are kept in the secret store. */
+  secretEnv: string[];
+  /** Whether the assistant may start this harness by name. The core refuses
+   *  one it names otherwise, unless it is the default. */
+  assistantMayUse: boolean;
+}
+
+/** Whether one declared secret variable has a value stored. */
+export interface HarnessSecretStatus {
+  harnessId: string;
+  key: string;
+  present: boolean;
+}
+
+/** Replaces the configured harnesses and the default. Rejected as a whole when
+ * any entry is invalid. Takes effect on the next session started. */
+export const setAgentHarnesses = (harnesses: AgentHarness[], defaultHarness: string | null) =>
+  invoke<Settings>("set_agent_harnesses", { harnesses, defaultHarness });
+
+/** Which declared harness secrets have a stored value. Never returns values. */
+export const listAgentHarnessSecretStatus = () =>
+  invoke<HarnessSecretStatus[]>("list_agent_harness_secret_status");
+
+/** Stores one harness secret, or removes it with `null`. Only a variable the
+ * saved harness declares in `secretEnv` can be written. */
+export const setAgentHarnessSecret = (harnessId: string, key: string, value: string | null) =>
+  invoke<void>("set_agent_harness_secret", { harnessId, key, value });
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
 export type SecretBackend = "keychain" | "onepassword";
@@ -71,6 +135,18 @@ export const setMaxPtySessions = (value: number | null) =>
 export const setAgent = (name: string | null, command: string | null) =>
   invoke<Settings>("set_agent", { name, command });
 
+/** Replaces the extra slash commands Yarvis may send to workspace sessions; an
+ * empty list clears them. Takes effect on the next send. Rejects a name with
+ * spaces or punctuation, since arguments are never part of the allowlist. */
+export const setAllowedSlashCommands = (commands: string[]) =>
+  invoke<Settings>("set_allowed_slash_commands", { commands });
+
+/** Turns channel messaging to workspace sessions on or off. The sidecar reads it
+ * on each send, each relay start and each workspace provision, so no restart is
+ * needed. */
+export const setChannelMessaging = (enabled: boolean) =>
+  invoke<Settings>("set_channel_messaging", { enabled });
+
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */
 export const saveColorTheme = (value: string | null) =>
@@ -80,6 +156,11 @@ export const saveColorTheme = (value: string | null) =>
  * the theme, it is already applied by the time this is called. */
 export const saveTerminalFontSize = (value: number | null) =>
   invoke<Settings>("set_terminal_font_size", { value });
+
+/** Stores whether the top bar's attention animation runs; `null` clears it back to
+ * the default (on). Like the theme, it is already applied when this is called. */
+export const saveAttentionAnimation = (value: boolean | null) =>
+  invoke<Settings>("set_attention_animation", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn

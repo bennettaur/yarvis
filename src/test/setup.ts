@@ -13,7 +13,7 @@ import { nativeInvoke } from "./nativeInvoke";
  * bunfig.toml). It registers a happy-dom global environment so React can render
  * into a real DOM, and stubs the Tauri runtime APIs — which only exist inside
  * the desktop shell — with inert defaults. Tests that need specific sidecar
- * data mock `src/lib/api` (sidecarFetch) themselves.
+ * data stub `src/lib/api` through `stubSidecarApi` in `./sidecarApi`.
  */
 
 // `lib/resourceCache` outlives the components reading it on purpose, which in a
@@ -35,6 +35,7 @@ mock.module("@tauri-apps/api/event", () => ({
 
 mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async () => {},
+  revealItemInDir: async () => {},
 }));
 
 mock.module("@tauri-apps/plugin-notification", () => ({

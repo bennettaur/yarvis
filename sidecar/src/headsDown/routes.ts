@@ -6,9 +6,25 @@ import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
-import { dismissOpenQuestions, settleQuestionAttention } from "./attention.ts";
-import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
+import { settleQuestionAttention } from "./attention.ts";
+import {
+  getHeadsDownConfig,
+  MAX_PASS_TIMEOUT_MINUTES,
+  MAX_ROUTINES_PER_PASS,
+  saveHeadsDownConfig,
+} from "./config.ts";
+import {
+  clearHeadsDown,
+  NOT_RUNNING,
+  parseStopTime,
+  pauseHeadsDown,
+  resumeHeadsDown,
+  setHeadsDownStopTime,
+  startHeadsDown,
+  stopHeadsDown,
+} from "./control.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
+import { type RoutineCatalog, reloadRoutines, routineCatalog } from "./routines.ts";
 import {
   addMessage,
   answerQuestion,
@@ -21,11 +37,11 @@ import {
   listPasses,
   listQuestions,
   listUnattendedTools,
+  passCallSummaries,
+  routineHistory,
   setToolUnattended,
-  startRun,
-  stopRun,
 } from "./service.ts";
-import { abortHeadsDownPass, wakeHeadsDown } from "./wake.ts";
+import { wakeHeadsDown } from "./wake.ts";
 
 /**
  * Routes for the Heads down page, mounted under /api/heads-down: turn the
@@ -39,6 +55,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A stalled page can't grow the stream's queue without limit. */
 const MAX_STREAM_QUEUE = 500;
 const HEARTBEAT_MS = 25_000;
+
+/** A page of rules at most: every pass carries the guidance in its prompt. */
+const MAX_GUIDANCE_CHARS = 4000;
 
 const configSchema = z
   .object({
@@ -69,13 +88,35 @@ const configSchema = z
       .int()
       .min(1)
       .max(7 * 24 * 60),
+    // Optional so a client that doesn't know about it can still save the rest
+    // without resetting it.
+    passTimeoutMinutes: z.number().int().min(1).max(MAX_PASS_TIMEOUT_MINUTES).optional(),
     provider: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
+    // Optional so a client that doesn't know about it can still save the rest.
+    guidance: z
+      .string()
+      .trim()
+      .max(MAX_GUIDANCE_CHARS)
+      .transform((g) => g || null)
+      .nullable()
+      .default(null),
+    maxRoutinesPerPass: z.number().int().min(0).max(MAX_ROUTINES_PER_PASS).optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
 
-const startSchema = z.object({ focus: z.string().trim().max(2000).optional() });
+/** A stop time as an ISO timestamp with an offset, or a local "HH:MM" (see `parseStopTime`). */
+const stopAtSchema = z.string().transform((s, ctx) => {
+  const at = parseStopTime(s);
+  if (!at) ctx.addIssue({ code: "custom", message: "give an ISO timestamp or HH:MM" });
+  return at ?? z.NEVER;
+});
+
+const startSchema = z.object({
+  focus: z.string().trim().max(2000).optional(),
+  stopAt: stopAtSchema.nullable().optional(),
+});
 
 const answerSchema = z
   .object({
@@ -99,28 +140,57 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const [run, questions] = await Promise.all([getActiveRun(db()), listQuestions(db())]);
     // This run's last pass: a pass from an earlier run says nothing about when this one looks next.
     const last = run ? await lastFinishedPass(db(), run.id) : null;
-    const nextPassAt =
-      last?.finishedAt && last.sleepMinutes !== null
-        ? new Date(last.finishedAt.getTime() + last.sleepMinutes * 60_000).toISOString()
+    const nextPass =
+      run && run.pausedAt === null && last?.finishedAt && last.sleepMinutes !== null
+        ? new Date(last.finishedAt.getTime() + last.sleepMinutes * 60_000)
         : null;
+    // A pass due after the stop time never runs: the run stops first.
+    const nextPassAt =
+      nextPass && !(run?.stopAt && run.stopAt <= nextPass) ? nextPass.toISOString() : null;
     return c.json({ run, lastPass: last, nextPassAt, openQuestionCount: questions.length });
   });
 
   router.post("/start", async (c) => {
     const parsed = startSchema.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const run = await startRun(db(), parsed.data.focus || null);
-    changed();
-    wakeHeadsDown();
+    const run = await startHeadsDown(db(), parsed.data.focus || null, {
+      stopAt: parsed.data.stopAt,
+    });
+    if ("error" in run) return c.json({ error: run.error }, 400);
     return c.json(run);
   });
 
   router.post("/stop", async (c) => {
-    const run = await stopRun(db());
-    abortHeadsDownPass();
-    await dismissOpenQuestions(db());
-    changed();
+    const run = await stopHeadsDown(db());
     return c.json({ stopped: run !== null });
+  });
+
+  router.post("/pause", async (c) => {
+    const run = await pauseHeadsDown(db());
+    if (!run) return c.json({ error: NOT_RUNNING }, 409);
+    return c.json(run);
+  });
+
+  router.post("/resume", async (c) => {
+    const run = await resumeHeadsDown(db());
+    if (!run) return c.json({ error: "heads-down mode isn't paused" }, 409);
+    return c.json(run);
+  });
+
+  router.put("/stop-at", async (c) => {
+    const parsed = z
+      .object({ stopAt: stopAtSchema.nullable() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const run = await setHeadsDownStopTime(db(), parsed.data.stopAt);
+    if ("error" in run) return c.json({ error: run.error }, run.error === NOT_RUNNING ? 409 : 400);
+    return c.json(run);
+  });
+
+  router.post("/clear", async (c) => {
+    const result = await clearHeadsDown(db());
+    if ("error" in result) return c.json(result, 409);
+    return c.json(result);
   });
 
   router.get("/config", async (c) => c.json(await getHeadsDownConfig()));
@@ -128,8 +198,41 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.put("/config", async (c) => {
     const parsed = configSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    return c.json(await saveHeadsDownConfig(parsed.data));
+    // A client that doesn't send these keeps what is stored rather than resetting it.
+    const stored = await getHeadsDownConfig();
+    return c.json(
+      await saveHeadsDownConfig({
+        ...parsed.data,
+        passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
+        maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
+      }),
+    );
   });
+
+  // Read-only, like the specialists: the files are the source of truth, so the
+  // page lists what loaded, names the directory, and shows files that failed.
+  const routinesResponse = async (load: () => Promise<RoutineCatalog>) => {
+    const [{ routines, problems, userDir }, { lastDone }] = await Promise.all([
+      load(),
+      routineHistory(db()),
+    ]);
+    return {
+      // Not the body: the page doesn't show it, and it is the user's file to read.
+      routines: routines.map((r) => ({
+        name: r.name,
+        description: r.description,
+        everyMinutes: r.everyMinutes,
+        workingHoursOnly: r.workingHoursOnly,
+        enabled: r.enabled,
+        source: r.source,
+        lastDoneAt: lastDone.get(r.name)?.toISOString() ?? null,
+      })),
+      problems,
+      userDir,
+    };
+  };
+  router.get("/routines", async (c) => c.json(await routinesResponse(routineCatalog)));
+  router.post("/routines/reload", async (c) => c.json(await routinesResponse(reloadRoutines)));
 
   // MCP tools heads-down mode may call without asking. Kept with the tool's
   // other consent in Postgres, and reset with it when the tool changes.
@@ -148,7 +251,23 @@ export function createHeadsDownRoutes(config: Config): Hono {
   // Calls the decision model approved on the user's behalf, so they can see what ran without them.
   router.get("/auto-approvals", async (c) => c.json(await listAutoApprovals(db())));
 
-  router.get("/passes", async (c) => c.json(await listPasses(db(), 50)));
+  // Each pass with how many calls it made and which failed, so a failure reads without opening it.
+  router.get("/passes", async (c) => {
+    const passes = await listPasses(db(), 50);
+    const summaries = await passCallSummaries(
+      db(),
+      passes.flatMap((p) => (p.chatSessionId ? [p.chatSessionId] : [])),
+    );
+    return c.json(
+      passes.map((p) => ({
+        ...p,
+        ...((p.chatSessionId && summaries.get(p.chatSessionId)) || {
+          callCount: 0,
+          failedCalls: [],
+        }),
+      })),
+    );
+  });
 
   // A pass with its transcript: the hidden chat session it ran in.
   router.get("/passes/:id", async (c) => {

@@ -1,7 +1,10 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { IssueSummary } from "../../lib/issues/types";
+import { waitFor } from "../../test/render";
+import { resetReposApi, stubReposApi } from "../../test/reposApi";
+import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 
 const issue: IssueSummary = {
   provider: "jira",
@@ -43,6 +46,8 @@ let failing: string | null = null;
 /** When set, the detail fetch hangs until this resolves, so the window between
  *  clicking a row's Start work and the picker opening can be acted on. */
 let holdDetail: Promise<void> | null = null;
+/** Detail fetches parked on `holdDetail` right now. */
+let detailsHeld = 0;
 
 /** What the fake sidecar answers each route with. */
 function responseFor(path: string): unknown {
@@ -56,8 +61,7 @@ function responseFor(path: string): unknown {
 
 // Stubbing the transport (rather than lib/jira/api) keeps the request paths the
 // api client builds under test, matching the GitHub issues render test.
-mock.module("../../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -76,53 +80,21 @@ mock.module("../../lib/api", () => ({
     fetched.push(path);
     if (init.method && init.method !== "GET")
       sent.push({ path, body: init.body ? JSON.parse(String(init.body)) : null });
-    if (holdDetail && path.startsWith("/api/jira/issue/")) await holdDetail;
+    if (holdDetail && path.startsWith("/api/jira/issue/")) {
+      detailsHeld += 1;
+      await holdDetail;
+      detailsHeld -= 1;
+    }
     if (failing && path.startsWith(failing)) return new Response("nope", { status: 500 });
     return new Response(JSON.stringify(responseFor(path)), { status: 200 });
   },
-  // Faithful copy of the real implementation: a naive stub here would leak
-  // into any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the
-  // actual error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
-  streamSSE: () => () => {},
-}));
+  streamSSE: async function* () {},
+});
 
 // The repo picker lists the registered repos; none are needed for a scratch
 // workspace, which is what this test starts.
-mock.module("../../lib/repos", () => ({ listRepos: async () => [] }));
+stubReposApi({ listRepos: async () => [] });
+afterAll(resetReposApi);
 
 const { default: JiraIssuesView } = await import("./JiraIssuesView");
 
@@ -158,6 +130,7 @@ beforeEach(() => {
   sent.length = 0;
   failing = null;
   holdDetail = null;
+  detailsHeld = 0;
 });
 
 describe("JiraIssuesView", () => {
@@ -210,18 +183,21 @@ describe("JiraIssuesView", () => {
       release = () => resolve();
     });
     const { host, cleanup } = await mount();
+    await waitFor(() => startButton(host) !== null, "the assigned list to load");
     startButton(host)?.click();
+    await waitFor(() => detailsHeld === 1, "the start's detail fetch");
     // Open the ticket while its detail is still in flight, then come back.
     host.querySelector("li")?.click();
-    await settle();
-    expect(button(host, "← Back")).toBeDefined();
+    await waitFor(() => button(host, "← Back") !== undefined, "the ticket to open");
     release();
-    await settle();
+    await waitFor(() => detailsHeld === 0, "the held detail fetches to answer");
     holdDetail = null;
     button(host, "← Back")?.click();
-    await settle();
+    await waitFor(() => startButton(host) !== null, "the list to come back");
     // The abandoned start must not spring its picker open on the way back.
     expect(modal(host)).toBeNull();
     cleanup();
   });
 });
+
+afterAll(resetSidecarApi);

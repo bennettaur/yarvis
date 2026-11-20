@@ -1,0 +1,347 @@
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { chmodSync, statSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { TurnDetector, type TurnDetectorDeps, writeTurnServerScript } from "./turnDetector.ts";
+
+/** A child process that only exits or prints when the test says so. */
+let nextPid = 100;
+function fakeChild(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    pid: nextPid++,
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+  });
+  return child;
+}
+
+let originalToken: string | undefined;
+/** What the detector wrote to the sidecar log, kept out of the test output. */
+let warnings: unknown[][];
+let warnSpy: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+  originalToken = process.env.YARVIS_SIDECAR_TOKEN;
+  process.env.YARVIS_SIDECAR_TOKEN = "sidecar-secret";
+  warnings = [];
+  warnSpy = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    warnings.push(args);
+  });
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+  if (originalToken === undefined) delete process.env.YARVIS_SIDECAR_TOKEN;
+  else process.env.YARVIS_SIDECAR_TOKEN = originalToken;
+});
+
+async function until(check: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await Bun.sleep(10);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+function detector(overrides: Partial<TurnDetectorDeps> = {}) {
+  const killed: number[] = [];
+  const spawned: {
+    program: string;
+    args: string[];
+    env: NodeJS.ProcessEnv;
+    child: ChildProcess;
+  }[] = [];
+  const deps: TurnDetectorDeps = {
+    spawn: (program, args, env) => {
+      const child = fakeChild();
+      spawned.push({ program, args, env, child });
+      return child;
+    },
+    writeScript: () => "/tmp/turn_server.py",
+    newToken: () => "tok en",
+    kill: (pid) => killed.push(pid),
+    startTimeoutMs: 60_000,
+    ...overrides,
+  };
+  return { detector: new TurnDetector(deps), spawned, killed };
+}
+
+describe("TurnDetector", () => {
+  it("runs the embedded script with uv and hands the server its token, and nothing else secret", () => {
+    const { detector: turns, spawned } = detector();
+    expect(turns.start().state).toBe("starting");
+
+    expect(spawned[0]?.program).toBe("uv");
+    expect(spawned[0]?.args).toEqual(["run", "--quiet", "--script", "/tmp/turn_server.py"]);
+    expect(spawned[0]?.env.YARVIS_TURN_TOKEN).toBe("tok en");
+    // The sidecar's own bearer would open the whole loopback API to the child.
+    expect(spawned[0]?.env.YARVIS_SIDECAR_TOKEN).toBeUndefined();
+    expect(spawned[0]?.env.HF_HUB_DISABLE_TELEMETRY).toBe("1");
+  });
+
+  it("reports the websocket URL once the server says it is listening", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stdout = spawned[0]?.child.stdout as EventEmitter;
+
+    stdout.emit("data", "Installed 22 packages\nYARVIS_TURN_");
+    expect(turns.status().state).toBe("starting");
+    // The ready line can arrive split across chunks.
+    stdout.emit("data", "READY 5123\n");
+
+    const status = turns.status();
+    expect(status.state).toBe("running");
+    expect(status.url).toBe("ws://127.0.0.1:5123/?token=tok%20en");
+    expect(status.log).toEqual(["Installed 22 packages"]);
+  });
+
+  it("starts one server however many chats ask", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    turns.start();
+    expect(spawned).toHaveLength(1);
+  });
+
+  it("reports a server that exits, and starts a fresh one on the next request", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("close", 1, null);
+
+    const failed = turns.status();
+    expect(failed.state).toBe("failed");
+    expect(failed.error).toMatch(/exited \(code 1\)/);
+    expect(failed.url).toBeNull();
+
+    turns.start();
+    expect(spawned).toHaveLength(2);
+  });
+
+  it("says how to install uv when it is missing", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit(
+      "error",
+      Object.assign(new Error("spawn uv ENOENT"), { code: "ENOENT" }),
+    );
+
+    expect(turns.status().error).toMatch(/brew install uv/);
+  });
+
+  it("passes on any other spawn error as it is", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit(
+      "error",
+      Object.assign(new Error("spawn uv EACCES"), { code: "EACCES" }),
+    );
+
+    expect(turns.status().error).toBe("spawn uv EACCES");
+  });
+
+  it("ignores an error from a replaced server", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("close", 1, null);
+    turns.start();
+
+    spawned[0]?.child.emit("error", new Error("late failure"));
+    expect(turns.status().state).toBe("starting");
+    expect(turns.status().error).toBeNull();
+  });
+
+  it("writes why the server stopped to the sidecar log, with its last lines", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]!.child.stderr as EventEmitter;
+    for (let i = 1; i <= 7; i++) stderr.emit("data", `line ${i}\n`);
+    spawned[0]?.child.emit("close", 1, null);
+
+    expect(warnings).toEqual([
+      [
+        "[voice] the turn detector exited (code 1); see its log",
+        ["line 3", "line 4", "line 5", "line 6", "line 7"],
+      ],
+    ]);
+  });
+
+  it("waits for the server's output to end before writing why it stopped", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("exit", 1, null);
+    (spawned[0]!.child.stderr as EventEmitter).emit("data", "RuntimeError: model load failed\n");
+    spawned[0]?.child.emit("close", 1, null);
+
+    expect(warnings).toEqual([
+      [
+        "[voice] the turn detector exited (code 1); see its log",
+        ["RuntimeError: model load failed"],
+      ],
+    ]);
+  });
+
+  it("only takes a whole line as the ready signal", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stdout = spawned[0]!.child.stdout as EventEmitter;
+    stdout.emit("data", "echo YARVIS_TURN_READY 1\nYARVIS_TURN_READY 2 done\n");
+
+    expect(turns.status().state).toBe("starting");
+    expect(turns.status().log).toEqual(["echo YARVIS_TURN_READY 1", "YARVIS_TURN_READY 2 done"]);
+  });
+
+  describe("when the sidecar exits", () => {
+    let before: ReturnType<typeof process.listeners>;
+    beforeEach(() => {
+      before = process.listeners("exit");
+    });
+    afterEach(() => {
+      for (const listener of process.listeners("exit")) {
+        if (!before.includes(listener)) process.off("exit", listener as () => void);
+      }
+    });
+    const addedHooks = () => process.listeners("exit").filter((l) => !before.includes(l));
+
+    it("kills a running server, with one hook however often it restarts", () => {
+      const { detector: turns, spawned, killed } = detector();
+      turns.start();
+      spawned[0]?.child.emit("close", 1, null);
+      turns.start();
+
+      const hooks = addedHooks();
+      expect(hooks).toHaveLength(1);
+      hooks[0]?.(0);
+      expect(killed).toEqual([spawned[1]?.child.pid as number]);
+    });
+
+    it("kills nothing once the server has stopped", () => {
+      const { detector: turns, spawned, killed } = detector();
+      turns.start();
+      spawned[0]?.child.emit("close", 0, null);
+
+      const hooks = addedHooks();
+      expect(hooks).toHaveLength(1);
+      hooks[0]?.(0);
+      expect(killed).toHaveLength(0);
+    });
+  });
+
+  it("uses a new token for each server", () => {
+    let n = 0;
+    const { detector: turns, spawned } = detector({ newToken: () => `token-${++n}` });
+    turns.start();
+    spawned[0]?.child.emit("close", 1, null);
+    turns.start();
+    expect(spawned.map((s) => s.env.YARVIS_TURN_TOKEN)).toEqual(["token-1", "token-2"]);
+  });
+
+  it("ignores a replaced server's exit and ready line", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    spawned[0]?.child.emit("close", 1, null);
+    turns.start();
+
+    spawned[0]?.child.emit("close", 0, null);
+    const replaced = spawned[0]?.child.stdout as EventEmitter;
+    replaced.emit("data", "YARVIS_TURN_READY 9999\n");
+
+    expect(turns.status().state).toBe("starting");
+  });
+
+  it("reports a script it couldn't write without starting anything", () => {
+    const { detector: turns, spawned } = detector({
+      writeScript: () => {
+        throw new Error("read-only file system");
+      },
+    });
+    const status = turns.start();
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/read-only file system/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("keeps stderr lines whole when they arrive in pieces", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]?.child.stderr as EventEmitter;
+    stderr.emit("data", "Traceback (most re");
+    stderr.emit("data", "cent call last):\n");
+    expect(turns.status().log).toEqual(["Traceback (most recent call last):"]);
+  });
+
+  it("keeps the last 200 lines and skips blank ones", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const stderr = spawned[0]?.child.stderr as EventEmitter;
+    stderr.emit("data", "\n  \n");
+    expect(turns.status().log).toEqual([]);
+
+    for (let i = 1; i <= 250; i++) stderr.emit("data", `line ${i}\n`);
+    const log = turns.status().log;
+    expect(log).toHaveLength(200);
+    expect(log[0]).toBe("line 51");
+    expect(log.at(-1)).toBe("line 250");
+  });
+
+  it("keeps an exited server's last lines, but not a replaced one's", () => {
+    const { detector: turns, spawned } = detector();
+    turns.start();
+    const first = spawned[0]?.child.stderr as EventEmitter;
+    spawned[0]?.child.emit("close", 1, null);
+    first.emit("data", "ModuleNotFoundError: onnxruntime\n");
+    expect(turns.status().log).toEqual(["ModuleNotFoundError: onnxruntime"]);
+
+    turns.start();
+    first.emit("data", "late line\n");
+    (spawned[0]!.child.stdout as EventEmitter).emit("data", "late stdout\n");
+    (spawned[1]!.child.stderr as EventEmitter).emit("data", "Downloading model\n");
+    expect(turns.status().log).toEqual(["Downloading model"]);
+  });
+
+  it("kills a start that never becomes ready and lets the next request retry", async () => {
+    const { detector: turns, spawned, killed } = detector({ startTimeoutMs: 20 });
+    turns.start();
+    await until(() => turns.status().state === "failed", "the start to time out");
+
+    const status = turns.status();
+    expect(status.state).toBe("failed");
+    expect(status.error).toMatch(/didn't start in time/);
+    expect(killed).toEqual([spawned[0]?.child.pid as number]);
+
+    turns.start();
+    expect(spawned).toHaveLength(2);
+  });
+});
+
+describe("writeTurnServerScript", () => {
+  it("names the file for its contents, so builds never share one", async () => {
+    const one = writeTurnServerScript("print('one')\n");
+    const two = writeTurnServerScript("print('two')\n");
+
+    expect(basename(one)).toMatch(/^turn_server\.[0-9a-f]{12}\.py$/);
+    expect(two).not.toBe(one);
+    expect(writeTurnServerScript("print('one')\n")).toBe(one);
+    expect(await readFile(one, "utf8")).toBe("print('one')\n");
+  });
+
+  it("keeps the script private to the user, even in a folder made too open", () => {
+    const dir = dirname(writeTurnServerScript("print('mode')\n"));
+    expect(basename(dir)).toBe("voice");
+    chmodSync(dir, 0o755);
+
+    const file = writeTurnServerScript("print('mode')\n");
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("the embedded server script", () => {
+  it("is the turn server, pinned to fixed model revisions", async () => {
+    const script = await readFile(new URL("./turn_server.py", import.meta.url), "utf8");
+    expect(script).toContain("YARVIS_TURN_READY");
+    expect(script).toMatch(/SILERO_REVISION = "[0-9a-f]{40}"/);
+    expect(script).toMatch(/SMART_TURN_REVISION = "[0-9a-f]{40}"/);
+  });
+});

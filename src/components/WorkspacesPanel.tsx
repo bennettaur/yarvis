@@ -3,19 +3,29 @@ import { setViewedWorkspace } from "../lib/attentionScope";
 import { useAttentionWorkspaceIds } from "../lib/attentionStore";
 import { clearDraft, draftKey, fileKey, useWorkspaceDraftKeys } from "../lib/fileDrafts";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
-import { type AgentConfig, getAgentConfig, ptyExists, startClaudeSession } from "../lib/pty";
+import {
+  type AgentConfig,
+  getAgentConfig,
+  getSessionHarness,
+  ptyExists,
+  startClaudeSession,
+} from "../lib/pty";
 import { createRepo, listRepoBranches, listRepos, type Repo } from "../lib/repos";
 import { primeCache, useCachedResource } from "../lib/resourceCache";
+import { BUILTIN_HARNESS_ID } from "../lib/settings";
 import { listTasks, type Task } from "../lib/tasks";
 import { openExternal } from "../lib/url";
 import {
   createWorkspace,
   getWorkspace,
+  idleDays,
   ignoreWorkspaceError,
   listWorkspaces,
   renameWorkspace,
+  stopWorkspaceAgent,
   unlinkWorkspaceIssue,
   unlinkWorkspaceTask,
+  WORKSPACES_KEY,
   type WorkspaceDetail,
   type WorkspaceRepoDetail,
   type WorkspaceRepoStatus,
@@ -49,7 +59,7 @@ import { consumeProvision } from "./workspaces/provisionStream";
 import WorkspaceFileDiff from "./workspaces/WorkspaceFileDiff";
 import WorkspaceNameHeading from "./workspaces/WorkspaceNameHeading";
 import WorkspacePrBadges from "./workspaces/WorkspacePrBadges";
-import WorkspacePrStatus from "./workspaces/WorkspacePrStatus";
+import WorkspacePrStatus, { DetectPrsButton } from "./workspaces/WorkspacePrStatus";
 import WorkspaceSetupLog from "./workspaces/WorkspaceSetupLog";
 import WorkspaceViewRecorder from "./workspaces/WorkspaceViewRecorder";
 
@@ -160,7 +170,8 @@ const SHOW_ARCHIVED_KEY = "yarvis.workspaces.showArchived";
  *  poll lands per refresh while still being cheap (one local SQL read). */
 const CACHE_REFRESH_INTERVAL_MS = 20_000;
 
-const WORKSPACES_KEY = "workspaces:list";
+const listWithBadges = () => listWorkspaces({ showingBadges: true });
+
 const REPOS_KEY = "workspaces:repos";
 
 /** Stable identities so an unloaded resource doesn't re-render the list. */
@@ -209,7 +220,7 @@ export default function WorkspacesPanel({
     () => localStorage.getItem(SHOW_ARCHIVED_KEY) === "1",
   );
 
-  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWorkspaces);
+  const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWithBadges);
   const reposRes = useCachedResource<Repo[]>(REPOS_KEY, listRepos);
   const items = listRes.data ?? NO_WORKSPACES;
   const repos = reposRes.data ?? NO_REPOS;
@@ -290,7 +301,7 @@ export default function WorkspacesPanel({
     const tick = async () => {
       timer = null;
       try {
-        const ws = await listWorkspaces();
+        const ws = await listWithBadges();
         // Written into the cache rather than into local state so the badges the
         // poller earned survive the next tab switch along with the list itself.
         if (live) primeCache(WORKSPACES_KEY, ws);
@@ -404,6 +415,7 @@ export default function WorkspacesPanel({
             <ul>
               {group.items.map((ws) => {
                 const needsAttention = workspacesNeedingAttention.has(ws.id);
+                const idleForDays = idleDays(ws);
                 return (
                   <li key={ws.id}>
                     <button
@@ -431,9 +443,19 @@ export default function WorkspacesPanel({
                             className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400"
                           />
                         )}
-                        <span className="truncate">{ws.name}</span>
+                        <span className={`truncate ${idleForDays !== null ? "opacity-60" : ""}`}>
+                          {ws.name}
+                        </span>
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
+                        {idleForDays !== null && (
+                          <span
+                            title={`Not opened and no agent activity for ${idleForDays} days — archive it if the work is done`}
+                            className="text-xs text-zinc-500"
+                          >
+                            idle {idleForDays}d
+                          </span>
+                        )}
                         <WorkspacePrBadges prs={ws.prs} />
                         <StatusBadge status={ws.status} />
                       </span>
@@ -854,7 +876,17 @@ function WorkspaceDetailView({
   const [agent, setAgent] = useState<AgentConfig>({
     name: DEFAULT_AGENT_NAME,
     command: DEFAULT_AGENT_COMMAND,
+    harnesses: [],
+    defaultHarness: BUILTIN_HARNESS_ID,
   });
+  // The harness the next "Start session" launches; null means the default.
+  const [pickedHarness, setPickedHarness] = useState<string | null>(null);
+  // The name of the harness the live agent session runs, which titles its tab.
+  // Null until the core answers, or when it couldn't say.
+  const [sessionHarnessName, setSessionHarnessName] = useState<string | null>(null);
+  // Bumped after each launch from here, so the title is read again even when
+  // the session stayed "active" throughout (one replaced between polls).
+  const [launchCount, setLaunchCount] = useState(0);
   // A changed file the side panel asked to open in a diff tab; consumed by
   // TerminalTabs, which either opens a new tab or re-focuses the existing one.
   const [diffRequest, setDiffRequest] = useState<OpenFileDiff | null>(null);
@@ -906,7 +938,7 @@ function WorkspaceDetailView({
   const load = useCallback(async () => {
     const gen = generationRef.current;
     try {
-      const next = await getWorkspace(id);
+      const next = await getWorkspace(id, { viewing: true });
       if (gen !== generationRef.current) return;
       setDetail(next);
       setError(null);
@@ -922,6 +954,12 @@ function WorkspaceDetailView({
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [id, onChanged]);
+
+  // A PR linked or detected changes this view's status line and the list's badges.
+  const prsChanged = useCallback(() => {
+    void load();
+    onChanged();
+  }, [load, onChanged]);
 
   // Initial fetch + polling combined: chained setTimeout in `finally` ensures a
   // slow load doesn't overlap the next tick (the setInterval shape did). Each
@@ -1082,19 +1120,45 @@ function WorkspaceDetailView({
   // rather than as the view's `error`, which replaces the whole workspace. Now
   // that every workspace launches an agent on open, a fatal one would make the
   // workspace unusable over a session that isn't essential to reading it.
-  const startAgent = useCallback(async () => {
-    if (!detail) return;
-    setAgentError(null);
-    try {
-      // No Remote Control: this session opens in a tab right here. Enable it
-      // from inside the session if the work has to continue away from the machine.
-      await startClaudeSession(id, agentCwdForWorkspace(detail), detail.name, false);
-      // The session now exists; reflect it immediately (the poll would catch up).
-      setAgentActive(true);
-    } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
+  const startAgent = useCallback(
+    async (harness?: string) => {
+      if (!detail) return;
+      setAgentError(null);
+      try {
+        // No Remote Control: this session opens in a tab right here. Enable it
+        // from inside the session if the work has to continue away from the machine.
+        await startClaudeSession(id, agentCwdForWorkspace(detail), detail.name, false, harness);
+        // The session now exists; reflect it immediately (the poll would catch up).
+        setAgentActive(true);
+        setLaunchCount((n) => n + 1);
+      } catch (e) {
+        setAgentError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [id, detail],
+  );
+
+  // Titles the agent tab after the harness the live session runs, which can
+  // differ from the default: it may have been started with another one here,
+  // by the assistant, or before the default changed.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: launchCount only triggers the re-read
+  useEffect(() => {
+    if (!agentActive) {
+      setSessionHarnessName(null);
+      return;
     }
-  }, [id, detail]);
+    let cancelled = false;
+    getSessionHarness(agentSessionId(id))
+      .then((harness) => {
+        if (!cancelled) setSessionHarnessName(harness?.name ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSessionHarnessName(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentActive, id, launchCount]);
 
   // Every provisioned workspace surfaces an agent session, so opening one is
   // enough to get a tab you can drive. The pinned tab that appears is
@@ -1120,16 +1184,29 @@ function WorkspaceDetailView({
   const dismissAgent = useCallback(() => {
     setAgentDismissed(true);
     setAgentActive(false);
-  }, []);
+    // Killing the PTY doesn't tell the sidecar, so without this it would resume
+    // the session on the next start.
+    stopWorkspaceAgent(id).catch((e) => {
+      setAgentError(
+        `Couldn't record that the session was closed, so it may come back after a restart: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
+  }, [id]);
 
   // Bring the agent tab back. When a session is already live — something else
   // started one in this workspace — this only un-hides the tab. Otherwise
   // start first: showing the tab before the session exists would let it attach to
   // a bare shell of its own, and re-run the prompt in the issue flow.
   const showAgent = useCallback(async () => {
-    if (!agentActive) await startAgent();
+    // A pick removed in Settings since this view loaded falls back to the
+    // default, as the picker itself shows.
+    const pick =
+      pickedHarness && agent.harnesses.some((h) => h.id === pickedHarness)
+        ? pickedHarness
+        : undefined;
+    if (!agentActive) await startAgent(pick);
     setAgentDismissed(false);
-  }, [agentActive, startAgent]);
+  }, [agentActive, startAgent, pickedHarness, agent.harnesses]);
 
   if (error) return <p className="p-6 text-sm text-red-400">{error}</p>;
   if (!detail) return <LoadingIndicator className="p-6 text-sm text-zinc-500" />;
@@ -1137,6 +1214,16 @@ function WorkspaceDetailView({
   const provisioned = detail.status === "active";
   const actions = provisionActions(detail);
   const agentCwd = agentCwdForWorkspace(detail);
+  const launchHarnessId =
+    pickedHarness && agent.harnesses.some((h) => h.id === pickedHarness)
+      ? pickedHarness
+      : agent.defaultHarness;
+  const launchHarnessName =
+    agent.harnesses.find((h) => h.id === launchHarnessId)?.name ?? agent.name;
+  const liveHarnessName = sessionHarnessName ?? agent.name;
+  // A live but hidden session is shown again rather than replaced, so the
+  // button names what is running there.
+  const startButtonHarnessName = agentActive ? liveHarnessName : launchHarnessName;
   // A background teardown that couldn't remove a worktree parks the workspace
   // in `archiving` with the failure recorded, so the button becomes the retry.
   const archiveBlocked = detail.status === "archiving" && detail.error !== null;
@@ -1157,13 +1244,27 @@ function WorkspaceDetailView({
           </span>
           <CopyPathButton path={detail.rootPath} />
           {agentError && <span className="shrink-0 text-xs text-red-400">{agentError}</span>}
+          {provisioned && !agentActive && agent.harnesses.length > 1 && (
+            <select
+              aria-label="Agent harness"
+              value={launchHarnessId}
+              onChange={(e) => setPickedHarness(e.target.value)}
+              className="shrink-0 rounded border border-zinc-700 bg-zinc-900 px-1 py-0.5 text-xs text-zinc-300"
+            >
+              {agent.harnesses.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.name}
+                </option>
+              ))}
+            </select>
+          )}
           {provisioned && (!agentActive || agentDismissed) && (
             <button
               type="button"
               onClick={() => void showAgent()}
               className="shrink-0 rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
             >
-              Start {agent.name} session
+              Start {startButtonHarnessName} session
             </button>
           )}
           {detail.status !== "archived" && (
@@ -1221,8 +1322,10 @@ function WorkspaceDetailView({
                   workspaceId={detail.id}
                   repo={wr}
                   showRepoName={detail.repos.length > 1}
+                  onPrsChanged={prsChanged}
                 />
               ))}
+            <DetectPrsButton workspaceId={detail.id} onDetected={prsChanged} />
           </div>
         )}
         {detail.tasks.length > 0 && (
@@ -1385,7 +1488,7 @@ function WorkspaceDetailView({
               dismissed: agentDismissed,
               workspaceId: detail.id,
               cwd: agentCwd,
-              agentName: agent.name,
+              agentName: liveHarnessName,
             });
             const terminalArea = (
               <div className="h-full min-h-0 min-w-0">

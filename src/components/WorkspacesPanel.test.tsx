@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { clearResourceCache } from "../lib/resourceCache";
 import type { WorkspaceSummary } from "../lib/workspaces";
-import { renderToHtml } from "../test/render";
-import WorkspacesPanel, { groupWorkspaces } from "./WorkspacesPanel";
+import { nativeInvoke } from "../test/nativeInvoke";
+import { mountForInteraction, renderToHtml, waitFor } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const EXISTING = {
   id: "ws-old",
@@ -27,6 +29,16 @@ const EXISTING = {
       reviewDecision: "review_required",
     },
   ],
+};
+
+// An active workspace nobody has opened, and no agent has worked in, for ten days.
+const IDLE = {
+  ...EXISTING,
+  id: "ws-idle",
+  name: "Forgotten spike",
+  slug: "forgotten-spike",
+  prs: [],
+  lastActiveAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
 };
 
 // A workspace created after the panel last fetched its list: reachable by id but
@@ -90,48 +102,13 @@ const ARCHIVE_STOPPED = {
   error: "one or more worktrees could not be removed",
 };
 
+/** Every path the panel asked the sidecar for, in order. */
+let requested: string[] = [];
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-mock.module("../lib/api", () => ({
-  sidecarInfo: async () => ({ port: 0, token: "test-token" }),
-  // Faithful copy of the real implementation: a naive stub here would leak
-  // into any other test file that runs in the same process (`mock.module` is
-  // process-global, not file-scoped) and break its assertions about the
-  // actual error-detail-extraction behavior.
-  ensureOk: async (res: Response, context: string) => {
-    if (res.ok) return;
-    let raw = "";
-    try {
-      raw = (await res.text()).trim();
-    } catch {
-      // no body to read
-    }
-    let detail: string | null = null;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: unknown };
-        const err = body?.error;
-        if (typeof err === "string") {
-          detail = err;
-        } else if (err && typeof err === "object") {
-          const flat = err as { formErrors?: string[]; fieldErrors?: Record<string, string[]> };
-          const parts: string[] = [];
-          if (Array.isArray(flat.formErrors)) parts.push(...flat.formErrors);
-          for (const [field, msgs] of Object.entries(flat.fieldErrors ?? {})) {
-            if (Array.isArray(msgs) && msgs.length) parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-          if (parts.length) detail = parts.join("; ");
-        }
-        if (detail === null) detail = raw;
-      } catch {
-        detail = raw;
-      }
-    }
-    throw new Error(
-      detail ? `${context} failed (${res.status}): ${detail}` : `${context} failed: ${res.status}`,
-    );
-  },
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -146,8 +123,17 @@ mock.module("../lib/api", () => ({
     providers: { anthropic: false, gemini: false, cerebras: false, huggingface: false },
   }),
   getDbHealth: async () => ({ configured: true, reachable: true }),
-  sidecarFetch: async (path: string) => {
-    if (path === "/api/workspaces") return json([EXISTING]);
+  sidecarFetch: async (url: string, init?: RequestInit) => {
+    if (init?.method && init.method !== "GET") {
+      writes.push({ path: url, method: init.method });
+      return stopFails ? json({ error: "database unavailable" }, 500) : json({ ok: true });
+    }
+    requested.push(url);
+    // The panel flags its reads for the PR poller (`?badges=1`, `?viewing=1`),
+    // which doesn't change what they return.
+    const path = url.split("?")[0]!;
+    if (path === "/api/workspaces")
+      return json([{ ...EXISTING, lastActiveAt: new Date().toISOString() }, IDLE]);
     if (path === `/api/workspaces/${JUST_CREATED.id}`) return json(JUST_CREATED);
     if (path === `/api/workspaces/${ARCHIVING.id}`) return json(ARCHIVING);
     if (path === `/api/workspaces/${ARCHIVE_STOPPED.id}`) return json(ARCHIVE_STOPPED);
@@ -156,13 +142,62 @@ mock.module("../lib/api", () => ({
   },
   // The attention store subscribes to an SSE stream; an empty one keeps it quiet.
   streamSSE: async function* () {},
+});
+
+/** Sidecar calls other than reads, which is what a user action sends. */
+let writes: { path: string; method: string }[] = [];
+/** Makes the sidecar refuse the agent-tab stop, as when its database write fails. */
+let stopFails = false;
+
+/** Harnesses the core reports beyond the built-in one; empty for most tests. */
+let extraHarnesses: { id: string; name: string; kind: string; command: string }[] = [];
+/** The harness the core says the live agent session runs, or null. */
+let liveHarness: { id: string; name: string } | null = null;
+/** Every `pty_start_claude` the panel sent. */
+let started: unknown[] = [];
+
+// The agent tab shows only while the core reports its session alive.
+mock.module("@tauri-apps/api/core", () => ({
+  invoke: async (command: string, args?: { id?: string }) => {
+    if (command === "pty_exists") return args?.id === `ws-claude:${JUST_CREATED.id}`;
+    if (command === "pty_session_harness") return liveHarness;
+    if (command === "pty_start_claude") {
+      started.push(args);
+      return null;
+    }
+    if (command === "get_agent_config") {
+      const config = (await nativeInvoke(command)) as { harnesses: unknown[] };
+      return { ...config, harnesses: [...config.harnesses, ...extraHarnesses] };
+    }
+    return nativeInvoke(command);
+  },
 }));
+
+// Imported after the mock so the panel binds to it.
+const { default: WorkspacesPanel, groupWorkspaces } = await import("./WorkspacesPanel");
 
 const EMPTY_STATE = "Select a workspace or create a new one";
 
 describe("WorkspacesPanel", () => {
   // The panel persists its selection, so each test starts from a clean slate.
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    requested = [];
+  });
+
+  it("tells the PR poller which list and workspace are on screen", async () => {
+    const realHasFocus = document.hasFocus.bind(document);
+    document.hasFocus = () => true;
+    clearResourceCache();
+    try {
+      await renderToHtml(<WorkspacesPanel requested={{ id: JUST_CREATED.id }} />);
+    } finally {
+      document.hasFocus = realHasFocus;
+    }
+
+    expect(requested).toContain("/api/workspaces?badges=1");
+    expect(requested).toContain(`/api/workspaces/${JUST_CREATED.id}?viewing=1`);
+  });
 
   it("keeps a just-created workspace selected even though the list predates it", async () => {
     const html = await renderToHtml(<WorkspacesPanel requested={{ id: JUST_CREATED.id }} />);
@@ -176,6 +211,17 @@ describe("WorkspacesPanel", () => {
     const html = await renderToHtml(<WorkspacesPanel />);
 
     expect(html).toContain("web #12 checks failing");
+  });
+
+  it("marks a workspace idle for a week or more, and dims its name", async () => {
+    const html = await renderToHtml(<WorkspacesPanel />);
+
+    expect(html).toContain("idle 10d");
+    expect(html).toMatch(/class="truncate opacity-60">Forgotten spike</);
+    // The recently used one is neither.
+    expect(html).toContain("Rename the API");
+    expect(html).not.toMatch(/opacity-60">Rename the API</);
+    expect(html.match(/>idle [^<]*</g)).toEqual([">idle 10d<"]);
   });
 
   it("hides the right column while an archive is deleting the worktrees", async () => {
@@ -199,9 +245,110 @@ describe("WorkspacesPanel", () => {
   });
 });
 
+describe("WorkspacesPanel agent tab", () => {
+  let unmount: (() => void) | null = null;
+  const globalWithObserver = globalThis as { IntersectionObserver?: unknown };
+  const hadObserver = "IntersectionObserver" in globalWithObserver;
+
+  beforeEach(() => {
+    localStorage.clear();
+    writes = [];
+    // xterm builds one when the agent tab's terminal opens, and happy-dom has none.
+    globalWithObserver.IntersectionObserver ??= class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    };
+  });
+
+  afterEach(() => {
+    unmount?.();
+    unmount = null;
+    if (!hadObserver) delete globalWithObserver.IntersectionObserver;
+  });
+
+  async function closeAgentTab(): Promise<HTMLElement> {
+    const mounted = await mountForInteraction(
+      <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
+      200,
+    );
+    unmount = mounted.unmount;
+    mounted.host.querySelector<HTMLButtonElement>('[aria-label="End Claude"]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return mounted.host;
+  }
+
+  it("ends the agent's registration in the sidecar when the user closes its tab", async () => {
+    await closeAgentTab();
+
+    // Without this the sidecar resumes the closed session on the next start.
+    expect(writes).toContainEqual({
+      path: `/api/workspaces/${JUST_CREATED.id}/agent/stop`,
+      method: "POST",
+    });
+  });
+
+  it("titles the agent tab after the harness the live session runs", async () => {
+    liveHarness = { id: "pi", name: "Pi" };
+    try {
+      const mounted = await mountForInteraction(
+        <WorkspacesPanel requested={{ id: JUST_CREATED.id }} />,
+        200,
+      );
+      unmount = mounted.unmount;
+      await waitFor(() => mounted.host.querySelector('[aria-label="End Pi"]') !== null);
+    } finally {
+      liveHarness = null;
+    }
+  });
+
+  it("starts the harness picked in the header, offering a picker only when there is a choice", async () => {
+    const builtinOnly = await closeAgentTab();
+    // Wait for the start button first, or "no picker" holds before the panel renders.
+    await waitFor(() => builtinOnly.textContent?.includes("Start Claude session") ?? false);
+    expect(builtinOnly.querySelector('select[aria-label="Agent harness"]')).toBeNull();
+    unmount?.();
+    unmount = null;
+
+    extraHarnesses = [{ id: "pi", name: "Pi", kind: "pi", command: "pi" }];
+    started = [];
+    try {
+      const host = await closeAgentTab();
+      const picker = await (async () => {
+        await waitFor(() => host.querySelector('select[aria-label="Agent harness"]') !== null);
+        return host.querySelector<HTMLSelectElement>('select[aria-label="Agent harness"]')!;
+      })();
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(picker, "pi");
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+      await waitFor(() => host.textContent?.includes("Start Pi session") ?? false);
+      Array.from(host.querySelectorAll("button"))
+        .find((b) => b.textContent === "Start Pi session")
+        ?.click();
+      await waitFor(() => started.length > 0);
+      expect(started[0]).toMatchObject({ workspaceId: JUST_CREATED.id, harness: "pi" });
+    } finally {
+      extraHarnesses = [];
+    }
+  });
+
+  it("says so when the sidecar couldn't record the close", async () => {
+    stopFails = true;
+    try {
+      const host = await closeAgentTab();
+      expect(host.textContent).toContain("may come back after a restart");
+    } finally {
+      stopFails = false;
+    }
+  });
+});
+
 describe("groupWorkspaces", () => {
   const summary = (id: string, repoNames: string[]) =>
-    ({ ...EXISTING, id, repoNames, prs: [] }) as WorkspaceSummary;
+    ({ ...EXISTING, id, repoNames, prs: [], lastActiveAt: null }) as WorkspaceSummary;
 
   it("puts multi-repo workspaces holding the same repos in one group", () => {
     const groups = groupWorkspaces([
@@ -238,4 +385,10 @@ describe("groupWorkspaces", () => {
     // between the panel's periodic refetches.
     expect(labels([...items].reverse())).toEqual(labels(items));
   });
+});
+
+// `mock.module` lasts for the whole run, so hand later suites the shared stub back.
+afterAll(() => {
+  resetSidecarApi();
+  mock.module("@tauri-apps/api/core", () => ({ invoke: nativeInvoke }));
 });

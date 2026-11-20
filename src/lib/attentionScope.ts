@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { AttentionItem } from "./attention";
+import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
+import { type AttentionItem, hasAnswerDialog } from "./attention";
+import { userIsLooking } from "./userIsLooking";
 
 /**
  * What the user is currently looking at, as far as the attention stream cares:
@@ -26,12 +28,10 @@ export interface ViewedScope {
 
 const EMPTY: ReadonlySet<string> = new Set();
 
-const windowIsVisible = () => document.hasFocus() && document.visibilityState !== "hidden";
-
 let workspaceId: string | null = null;
 // Keyed by surface so each mounted `TerminalTabs` owns (and clears) its own entry.
 const sessionsBySurface = new Map<string, string[]>();
-let focused = windowIsVisible();
+let focused = userIsLooking();
 
 let snapshot: ViewedScope = { workspaceId: null, sessionKeys: EMPTY, focused };
 const listeners = new Set<() => void>();
@@ -69,7 +69,7 @@ export function setViewedSessions(surfaceKey: string, keys: string[]): void {
 }
 
 const onWindowVisibilityChange = () => {
-  const next = windowIsVisible();
+  const next = userIsLooking();
   if (next === focused) return;
   focused = next;
   rebuild();
@@ -100,6 +100,24 @@ export function isInView(scope: ViewedScope, item: AttentionItem): boolean {
   if (!scope.focused) return false;
   if (item.sessionKey) return scope.sessionKeys.has(item.sessionKey);
   return Boolean(item.workspaceId) && item.workspaceId === scope.workspaceId;
+}
+
+/**
+ * Whether a newly raised item should open its answer dialog on its own: a
+ * Claude Code permission prompt or a coding agent's question from a session
+ * running in the workspace on screen.
+ *
+ * The session id decides the workspace, not the item's `workspaceId`, which the
+ * raising terminal reports about itself. Never while the window is in the
+ * background, so the click that brings the user back can't land on Approve.
+ */
+export function shouldAutoOpen(scope: ViewedScope, item: AttentionItem): boolean {
+  if (!scope.focused || !scope.workspaceId || !item.sessionKey) return false;
+  return (
+    item.workspaceId === scope.workspaceId &&
+    sessionWorkspaceId(item.sessionKey) === scope.workspaceId &&
+    hasAnswerDialog(item)
+  );
 }
 
 export function getViewedScope(): ViewedScope {

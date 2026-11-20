@@ -5,6 +5,7 @@ import {
   isInView,
   setViewedSessions,
   setViewedWorkspace,
+  shouldAutoOpen,
   type ViewedScope,
 } from "./attentionScope";
 
@@ -66,6 +67,55 @@ describe("isInView", () => {
   it("never matches an item with no origin", () => {
     const viewing = scope({ workspaceId: "w1", sessionKeys: new Set(["ws:w1/t1/p1"]) });
     expect(isInView(viewing, item({ workspaceId: null, sessionKey: null }))).toBe(false);
+  });
+});
+
+describe("shouldAutoOpen", () => {
+  const viewingW1 = scope({ workspaceId: "w1" });
+
+  it("opens a permission prompt from a tab in the workspace on screen", () => {
+    expect(shouldAutoOpen(viewingW1, item())).toBe(true);
+  });
+
+  it("opens a prompt from the workspace's pinned agent session", () => {
+    expect(shouldAutoOpen(viewingW1, item({ sessionKey: "ws-claude:w1" }))).toBe(true);
+  });
+
+  it("opens a question from the workspace on screen", () => {
+    expect(shouldAutoOpen(viewingW1, item({ kind: "question", source: "system" }))).toBe(true);
+  });
+
+  it("waits on the bell while the window is in the background", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w1", focused: false }), item())).toBe(false);
+  });
+
+  it("leaves items from another workspace in the stream", () => {
+    expect(shouldAutoOpen(scope({ workspaceId: "w2" }), item())).toBe(false);
+  });
+
+  it("leaves items alone when no workspace is on screen", () => {
+    const workspaceless = item({ workspaceId: null });
+    expect(shouldAutoOpen(scope(), workspaceless)).toBe(false);
+  });
+
+  it("ignores a session in another workspace that reports this one", () => {
+    expect(shouldAutoOpen(viewingW1, item({ sessionKey: "ws:w2/t1/p1" }))).toBe(false);
+  });
+
+  it("ignores a session in the standalone Terminal tab that reports this workspace", () => {
+    expect(shouldAutoOpen(viewingW1, item({ sessionKey: "tab:terminal/t1/p1" }))).toBe(false);
+  });
+
+  it("ignores kinds that have no answer dialog", () => {
+    expect(shouldAutoOpen(viewingW1, item({ kind: "idle" }))).toBe(false);
+  });
+
+  it("ignores a permission item that didn't come from a Claude Code hook", () => {
+    expect(shouldAutoOpen(viewingW1, item({ source: "system" }))).toBe(false);
+  });
+
+  it("ignores an item with no session to answer for", () => {
+    expect(shouldAutoOpen(viewingW1, item({ sessionKey: null }))).toBe(false);
   });
 });
 

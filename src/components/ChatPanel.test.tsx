@@ -1,13 +1,15 @@
 import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
 import { createElement, useState } from "react";
-import * as realApi from "../lib/api";
-import * as realChat from "../lib/chat";
+import type { HealthResponse } from "../lib/api";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
 import { EFFORT_HINT } from "../lib/effort";
 import { OmniChatOverlayProvider } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
 import { REASONING_HINT } from "../lib/useReasoningPreference";
-import { mountForInteraction, textOf } from "../test/render";
+import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "../lib/voiceConfig";
+import { resetChatApi, stubChatApi } from "../test/chatApi";
+import { mountForInteraction, textOf, waitFor } from "../test/render";
+import { realSidecarApi, resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import ChatPanel from "./ChatPanel";
 
 /**
@@ -28,6 +30,15 @@ const providers = [
     available: true,
   },
   { id: "gemini", label: "Gemini", models: [], available: false },
+  {
+    id: "openai",
+    label: "OpenAI",
+    models: [
+      { id: "gpt-6", capabilities: ["chat"] },
+      { id: "gpt-6-mini", capabilities: ["chat"] },
+    ],
+    available: true,
+  },
 ];
 
 let sessions: Array<{ id: string; title: string | null; createdAt: string; updatedAt: string }> =
@@ -35,8 +46,27 @@ let sessions: Array<{ id: string; title: string | null; createdAt: string; updat
 let created = 0;
 /** Events the next turn streams back, in order. */
 let scripted: unknown[] = [];
+/** Turns parked on a `gate` event, oldest first. A test calls one to let that turn go on. */
+let gates: Array<() => void> = [];
 /** Bodies of every chat request, so a test can see what was re-sent. */
 let sent: Array<Record<string, unknown>> = [];
+/** What `/health` answers after a dropped stream, and how long it takes. */
+let health: HealthResponse | Error = { status: "ok", service: "s", uptimeMs: 3_600_000 };
+let healthDelayMs = 0;
+/** What `/api/voice/config` answers; unset leaves voice unconfigured. */
+let voiceConfig: VoiceConfig | null = null;
+
+const ARTIFACT_ID = "6f1c2b3a-4d5e-4f60-8a9b-0c1d2e3f4a5b";
+const artifact = {
+  id: ARTIFACT_ID,
+  title: "Launch plan",
+  format: "markdown",
+  content: "Ship it on Thursday.",
+  createdBy: "chat",
+  untrusted: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+};
 
 const json = (body: unknown) =>
   new Response(JSON.stringify(body), {
@@ -44,8 +74,12 @@ const json = (body: unknown) =>
     headers: { "content-type": "application/json" },
   });
 
-mock.module("../lib/api", () => ({
-  ...realApi,
+stubSidecarApi({
+  getHealth: async () => {
+    await new Promise((resolve) => setTimeout(resolve, healthDelayMs));
+    if (health instanceof Error) throw health;
+    return health;
+  },
   sidecarFetch: async (path: string, init?: RequestInit) => {
     if (path.startsWith("/api/chat/providers")) return json(providers);
     if (path === "/api/chat/sessions" && init?.method === "POST") {
@@ -61,22 +95,35 @@ mock.module("../lib/api", () => ({
     }
     if (path === "/api/chat/sessions") return json(sessions);
     if (path.endsWith("/messages")) return json([]);
-    // Never fall back to `realApi.sidecarFetch`: after `mock.module` that name
-    // resolves to this function, and an unhandled path recurses until the stack
-    // gives out.
+    if (path === "/api/voice/config" && voiceConfig) return json(voiceConfig);
+    // A detector that never finishes starting, so the mic stays at "Starting".
+    if (path.startsWith("/api/voice/turn-detector")) {
+      return json({ state: "starting", url: null, log: [], error: null });
+    }
+    if (path === `/api/artifacts/${ARTIFACT_ID}`) return json(artifact);
+    // An unknown path fails loudly rather than reaching the real client.
     return new Response("unexpected request", { status: 404 });
   },
-}));
+  // An open artifact's stream stays quiet until the pane closes.
+  streamSSE: async function* (path: string, init: RequestInit = {}) {
+    if (!path.startsWith("/api/artifacts/")) {
+      yield* realSidecarApi.streamSSE(path, init);
+      return;
+    }
+    yield JSON.stringify({ type: "ping" });
+    await new Promise<void>((resolve) =>
+      init.signal?.addEventListener("abort", () => resolve(), { once: true }),
+    );
+  },
+});
 
 mock.module("@tauri-apps/api/core", () => ({ invoke: async () => ({ port: 1, token: "t" }) }));
 
 /**
- * The turn itself is faked at `streamChat` rather than at the socket: several
- * other suites replace `lib/api` process-wide, so which stub answers an SSE
- * request depends on file order. Nothing else stubs `lib/chat`.
+ * The turn itself is faked at `streamChat` rather than at the socket, so the
+ * test scripts chat events instead of SSE frames.
  */
-mock.module("../lib/chat", () => ({
-  ...realChat,
+stubChatApi({
   streamChat: async function* (req: Record<string, unknown>, init: { signal?: AbortSignal } = {}) {
     sent.push(req);
     for (const event of scripted) {
@@ -87,6 +134,15 @@ mock.module("../lib/chat", () => ({
         await new Promise((resolve) => setTimeout(resolve, 200));
         continue;
       }
+      // A pause the test ends itself, for a test that has to know the turn is still running.
+      if ((event as { type?: string }).type === "gate") {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        continue;
+      }
+      // The connection failing underneath the turn, as WebKit reports it.
+      if ((event as { type?: string }).type === "drop") {
+        throw new TypeError((event as { message?: string }).message ?? "Load failed");
+      }
       if ((event as { type?: string }).type === "hang") {
         await new Promise((_resolve, reject) => {
           init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
@@ -94,18 +150,18 @@ mock.module("../lib/chat", () => ({
       }
       yield event;
     }
-  },
-}));
+  } as unknown as typeof import("../lib/chat").streamChat,
+});
 
 /**
  * The turn machine on its own, for what the Chat tab has no affordance to
- * drive — a spoken turn. `lib/chat` is already stubbed for this file, and the
- * hook has no test file of its own because a second `mock.module` on the same
- * module elsewhere would make both order-dependent.
+ * drive — a spoken turn, over the `streamChat` stub above.
  */
 let thread: ReturnType<typeof useChatThread> | null = null;
+/** What the harness reports as on screen, as Omni Chat would. */
+let screen: string | undefined;
 function ThreadHarness() {
-  thread = useChatThread({});
+  thread = useChatThread({ getContext: () => screen });
   return null;
 }
 
@@ -128,8 +184,8 @@ function TogglingHost({
 const composerOf = (host: HTMLElement) =>
   host.querySelector<HTMLTextAreaElement>('textarea[placeholder="Message..."]');
 
-/** Types a message into the composer and presses Send. */
-async function say(host: HTMLElement, text: string) {
+/** Types a message into the composer and presses the named button (Send by default). */
+async function say(host: HTMLElement, text: string, button = "Send") {
   const box = host.querySelector("textarea")!;
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set as (
     v: string,
@@ -138,7 +194,7 @@ async function say(host: HTMLElement, text: string) {
   box.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => setTimeout(resolve, 20));
   Array.from(host.querySelectorAll("button"))
-    .find((b) => b.textContent === "Send")
+    .find((b) => b.textContent === button)
     ?.click();
   await new Promise((resolve) => setTimeout(resolve, 80));
 }
@@ -146,18 +202,24 @@ async function say(host: HTMLElement, text: string) {
 let unmount: (() => void) | null = null;
 
 afterAll(() => {
-  mock.module("../lib/api", () => realApi);
-  mock.module("../lib/chat", () => realChat);
+  resetSidecarApi();
+  resetChatApi();
 });
 
 afterEach(() => {
   unmount?.();
   unmount = null;
   thread = null;
+  screen = undefined;
   sessions = [];
   created = 0;
   scripted = [];
+  for (const release of gates) release();
+  gates = [];
   sent = [];
+  health = { status: "ok", service: "s", uptimeMs: 3_600_000 };
+  healthDelayMs = 0;
+  voiceConfig = null;
   localStorage.clear();
 });
 
@@ -232,6 +294,26 @@ describe("ChatPanel", () => {
     expect(sent[0]).toMatchObject({ model: "claude-opus-5", effort: "high" });
   });
 
+  it("switches to the new provider's first model when the provider changes", async () => {
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await settle();
+    const picker = (title: string) =>
+      Array.from(mounted.host.querySelectorAll("select")).find((s) => s.title === title);
+    expect(picker(MODEL_HINT)?.value).toBe("claude-sonnet-5");
+
+    const provider = picker(PROVIDER_HINT);
+    if (!provider) throw new Error("no provider picker");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await settle();
+    // Checked on the request: a select whose value matches no option shows its
+    // first one anyway, so the picker would read "gpt-6" even with a stale model.
+    scripted = [{ type: "done", finishReason: "stop" }];
+    await say(mounted.host, "hello");
+    expect(sent[sent.length - 1]).toMatchObject({ provider: "openai", model: "gpt-6" });
+  });
+
   it("adds a session the thread created to the picker and selects it", async () => {
     const mounted = await mountForInteraction(createElement(ChatPanel));
     unmount = mounted.unmount;
@@ -262,6 +344,49 @@ describe("ChatPanel", () => {
     expect(text).toContain("found it");
     expect(text).toContain("search_pages");
     expect(text).toContain("on Notion");
+  });
+
+  it("opens an artifact the reply links to beside the conversation", async () => {
+    scripted = [
+      { type: "delta", text: `Wrote it up: [Launch plan](yarvis://artifact/${ARTIFACT_ID}).` },
+      { type: "done", finishReason: "stop" },
+    ];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+    await say(mounted.host, "write a launch plan");
+    expect(mounted.host.querySelector('[aria-label="Artifact: Launch plan"]')).toBeNull();
+
+    const link = Array.from(mounted.host.querySelectorAll("a")).find(
+      (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
+    );
+    link?.click();
+    const paneOf = () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]');
+    await waitFor(
+      () => paneOf()?.textContent?.includes("Ship it on Thursday.") ?? false,
+      "the artifact beside the chat",
+    );
+    const pane = paneOf();
+    // The conversation stays beside it.
+    expect(textOf(mounted.host.innerHTML)).toContain("Wrote it up");
+
+    pane?.querySelector<HTMLButtonElement>('[aria-label="Close artifact"]')?.click();
+    await waitFor(() => paneOf() === null, "the pane closing");
+  });
+
+  it("opens an artifact the host asks for, and says once that it has", async () => {
+    const consumed = mock(() => {});
+    const mounted = await mountForInteraction(
+      createElement(ChatPanel, {
+        requestedArtifactId: ARTIFACT_ID,
+        onArtifactRequestConsumed: consumed,
+      }),
+    );
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.querySelector('[aria-label="Artifact: Launch plan"]') !== null,
+      "the requested artifact",
+    );
+    expect(consumed).toHaveBeenCalledTimes(1);
   });
 
   // Nothing is persisted for a failed turn, so a partial reply left on screen is
@@ -314,6 +439,119 @@ describe("ChatPanel", () => {
     const asked = mounted.host.textContent?.split("pull the notion doc").length ?? 0;
     expect(asked - 1).toBe(1);
     expect(mounted.host.textContent).toContain("second time lucky");
+  });
+
+  it("queues a message typed during a reply and sends it once the reply lands", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    expect(composerOf(mounted.host)?.disabled).toBe(false);
+    // Otherwise the next message is typed onto the end of the one already sent.
+    expect(composerOf(mounted.host)?.value).toBe("");
+    await say(mounted.host, "follow-up", "Queue");
+    expect(sent.map((body) => body.message)).toEqual(["first question"]);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "follow-up",
+    );
+
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    await settle(300);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')).toBeNull();
+  });
+
+  it("drops the queued message the user removes", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "keep me", "Queue");
+    await say(mounted.host, "drop me", "Queue");
+    mounted.host
+      .querySelectorAll<HTMLButtonElement>('[aria-label="Remove queued message"]')[1]
+      ?.click();
+    await settle(20);
+
+    const queue = mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent;
+    expect(queue).toContain("keep me");
+    expect(queue).not.toContain("drop me");
+  });
+
+  it("holds the queue after a failed reply and sends it on Send next", async () => {
+    scripted = [{ type: "wait" }, { type: "error", message: "model not found (status 404)" }];
+    const mounted = await mountForInteraction(createElement(ChatPanel));
+    unmount = mounted.unmount;
+
+    await say(mounted.host, "first question");
+    await say(mounted.host, "follow-up", "Queue");
+    await settle(300);
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.textContent).toContain("waiting until you send them");
+
+    // Sending now would jump the queue and, once it landed, release it.
+    await say(mounted.host, "another thought");
+    expect(sent).toHaveLength(1);
+    expect(mounted.host.querySelector('[aria-label="Queued messages"]')?.textContent).toContain(
+      "another thought",
+    );
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    Array.from(mounted.host.querySelectorAll("button"))
+      .find((b) => b.textContent === "Send next")
+      ?.click();
+    await settle(300);
+    expect(sent.map((body) => body.message)).toEqual([
+      "first question",
+      "follow-up",
+      "another thought",
+    ]);
+  });
+
+  it("sends what is left in the queue in order, one turn at a time", async () => {
+    scripted = [{ type: "gate" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await waitFor(() => gates.length === 1, "the first turn to start");
+    thread?.enqueue("one");
+    thread?.enqueue("two");
+    thread?.enqueue("three");
+    await waitFor(() => thread?.queued.length === 3, "three messages to queue");
+    thread?.removeQueued(1);
+    await waitFor(() => thread?.queued.length === 2, "the removed message to leave the queue");
+    expect(sent).toHaveLength(1);
+
+    // Each turn is let go only once the one before it is the only one running.
+    for (const turns of [2, 3]) {
+      gates.shift()?.();
+      await waitFor(() => sent.length === turns && gates.length === 1, `turn ${turns} to start`);
+    }
+    gates.shift()?.();
+    await waitFor(() => thread?.busy === false, "the last turn to finish");
+    expect(sent.map((body) => body.message)).toEqual(["first question", "one", "three"]);
+  });
+
+  // The overlay can be hidden and the user can move on while a reply runs; the
+  // queued message is about what they were looking at when they wrote it.
+  it("sends a queued message with the screen context from when it was queued", async () => {
+    scripted = [{ type: "wait" }, { type: "delta", text: "a reply" }, { type: "done" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    screen = "PR #18";
+    void thread?.send("what's risky here?");
+    await settle();
+    thread?.enqueue("merge it if it's fine");
+    screen = "PR #19";
+    await settle(500);
+
+    expect(sent.map((body) => body.context)).toEqual(["PR #18", "PR #18"]);
   });
 
   // The Omni Chat overlay covers this panel and carries an approval bar of its
@@ -392,6 +630,60 @@ describe("ChatPanel", () => {
     expect(mounted.host.textContent).toContain("before and after");
   });
 
+  // A continuous mic left open behind another tab would send what it hears
+  // into a chat nobody can see.
+  it("closes continuous voice when the host takes it off screen", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setHostActive(false);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
+  });
+
+  it("closes continuous voice when the Omni Chat overlay covers it", async () => {
+    voiceConfig = {
+      ...DEFAULT_VOICE_CONFIG,
+      sttProvider: "custom:local",
+      sttModel: "whisper",
+      continuous: true,
+    };
+    let setOverlayOpen: (open: boolean) => void = () => {};
+    function OverlayHost() {
+      const [open, setOpen] = useState(false);
+      setOverlayOpen = setOpen;
+      return createElement(OmniChatOverlayProvider, { value: open }, createElement(ChatPanel));
+    }
+    const mounted = await mountForInteraction(createElement(OverlayHost));
+    unmount = mounted.unmount;
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(
+      () => mounted.host.textContent?.includes("Starting turn detection") ?? false,
+      "turn detection to start",
+    );
+
+    setOverlayOpen(true);
+    await waitFor(
+      () => !mounted.host.textContent?.includes("Starting turn detection"),
+      "the mic to close",
+    );
+  });
+
   it("picks up sessions created elsewhere when it comes back into view", async () => {
     const mounted = await mountForInteraction(createElement(TogglingHost));
     unmount = mounted.unmount;
@@ -410,45 +702,6 @@ describe("ChatPanel", () => {
     await settle();
 
     expect(textOf(mounted.host.innerHTML)).toContain("From Omni Chat");
-  });
-
-  it("reopens the session it last had open", async () => {
-    sessions = [
-      {
-        id: "s1",
-        title: "Yesterday",
-        createdAt: "2026-01-01T00:00:00Z",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-    ];
-    localStorage.setItem("test.chat.sessionId", "s1");
-    const mounted = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = mounted.unmount;
-    await settle();
-
-    expect(mounted.host.querySelector("select")?.value).toBe("s1");
-  });
-
-  it("remembers the session a thread opens for the next mount", async () => {
-    const first = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = first.unmount;
-    Array.from(first.host.querySelectorAll("button"))
-      .find((b) => b.textContent === "New chat")
-      ?.click();
-    await settle(50);
-    first.unmount();
-
-    const second = await mountForInteraction(
-      createElement(ChatPanel, { sessionStorageKey: "test.chat.sessionId" }),
-    );
-    unmount = second.unmount;
-    await settle();
-
-    expect(second.host.querySelector("select")?.value).toBe("new-session-1");
   });
 
   it("focuses the composer after New chat", async () => {
@@ -474,6 +727,41 @@ describe("ChatPanel", () => {
     setHostActive(true);
     await settle();
     expect(document.activeElement).toBe(composerOf(mounted.host));
+  });
+
+  // The Chat tab stays mounted while Settings is open, so this is the only
+  // way a provider added there reaches the picker.
+  it("re-reads the providers when it comes back into view, keeping the pick", async () => {
+    const mounted = await mountForInteraction(createElement(TogglingHost));
+    unmount = mounted.unmount;
+    await settle();
+    const picker = (title: string) =>
+      Array.from(mounted.host.querySelectorAll("select")).find((s) => s.title === title);
+    const provider = picker(PROVIDER_HINT);
+    if (!provider) throw new Error("no provider picker");
+    provider.value = "openai";
+    provider.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => picker(MODEL_HINT)?.value === "gpt-6", "the OpenAI model");
+
+    setHostActive(false);
+    await settle();
+    providers.push({
+      id: "custom:litellm",
+      label: "LiteLLM",
+      models: [{ id: "proxy-model", capabilities: ["chat"] }],
+      available: true,
+    });
+    try {
+      setHostActive(true);
+      await waitFor(
+        () => textOf(mounted.host.innerHTML).includes("LiteLLM"),
+        "the added provider in the picker",
+      );
+      expect(picker(PROVIDER_HINT)?.value).toBe("openai");
+      expect(picker(MODEL_HINT)?.value).toBe("gpt-6");
+    } finally {
+      providers.pop();
+    }
   });
 
   // An Omni widget sits beside the layout builder's own composer.
@@ -532,5 +820,114 @@ describe("useChatThread", () => {
     expect(thread?.error?.message).toContain("Turn stopped");
     // Nothing was persisted for it, so the partial reply goes with it.
     expect(thread?.messages.some((m) => m.content.includes("half a th"))).toBe(false);
+  });
+
+  // A follow-up written for a reply that never came may no longer make sense,
+  // so it waits for the user rather than going out on its own.
+  it("holds the queue after a stopped turn until the user sends it", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    thread?.stop();
+    await settle();
+    expect(sent).toHaveLength(1);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
+
+    scripted = [{ type: "delta", text: "a reply" }, { type: "done" }];
+    thread?.sendNextQueued();
+    await settle();
+    expect(sent.map((body) => body.message)).toEqual(["first question", "follow-up"]);
+    expect(thread?.queued).toEqual([]);
+  });
+
+  it("queues trimmed text and refuses a blank message", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    expect(thread?.enqueue("   ")).toBe(false);
+    expect(thread?.enqueue("  follow-up \n")).toBe(true);
+    await settle(20);
+    expect(thread?.queued.map((q) => q.text)).toEqual(["follow-up"]);
+  });
+
+  it("drops the queue when the user starts a new chat", async () => {
+    scripted = [{ type: "hang" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    void thread?.send("first question");
+    await settle();
+    thread?.enqueue("follow-up");
+    await thread?.newChat();
+    await settle();
+    expect(thread?.queued).toEqual([]);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("explains a dropped stream by the last real event, not a heartbeat", async () => {
+    scripted = [
+      { type: "tool_call", id: "t1", name: "search_jira" },
+      { type: "ping" },
+      { type: "drop" },
+    ];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("grab my tickets");
+    await settle();
+
+    expect(thread?.error?.message).toContain("dropped mid-turn");
+    expect(thread?.error?.detail).toContain("Last event received: tool_call");
+  });
+
+  it("says the sidecar restarted when it came back up during the turn", async () => {
+    scripted = [{ type: "wait" }, { type: "drop" }];
+    health = { status: "ok", service: "s", uptimeMs: 0 };
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("what's on today");
+    await settle();
+
+    expect(thread?.error?.message).toContain("restarted during this turn");
+  });
+
+  it("leaves a newer turn's outcome alone when a late explanation arrives", async () => {
+    scripted = [{ type: "drop" }];
+    healthDelayMs = 300;
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("first try");
+    scripted = [{ type: "error", message: "model not found (status 404)" }];
+    await thread?.send("second try");
+    await settle(400);
+
+    expect(thread?.error?.message).toBe("model not found (status 404)");
+  });
+
+  it("formats other TypeErrors as usual", async () => {
+    scripted = [{ type: "drop", message: "undefined is not an object" }];
+    const mounted = await mountForInteraction(createElement(ThreadHarness));
+    unmount = mounted.unmount;
+    await settle(50);
+
+    await thread?.send("hello");
+    await settle();
+
+    expect(thread?.error?.message).toBe("undefined is not an object");
   });
 });

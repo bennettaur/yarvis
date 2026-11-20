@@ -32,14 +32,19 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   tasks: "always",
   memory: "always",
   attention: "always",
+  scheduledTasks: "always",
   // Always on, since `wait_for_answer` has to be reachable the moment
   // `ask_user` comes back pending.
   questions: "always",
   projects: "always",
   todos: "always",
+  // Always on so a Jobs-tab job can write its morning brief without searching.
+  // Scheduled tasks stay read-only: SCHEDULED_TASK_TOOLS offers only list and get.
+  artifacts: "always",
   events: "always",
   digest: "always",
   delegation: "always",
+  claudeTasks: "search",
   // Heads-down mode's working state. A chat reaches for it while planning; the
   // heads-down loop picks its own tools.
   workStreams: "search",
@@ -50,8 +55,11 @@ const FAMILY_POLICY: Record<string, ToolPolicy> = {
   githubIssues: "search",
   azureBoards: "search",
   prReview: "search",
+  mergeReview: "search",
   calendar: "search",
+  alarms: "search",
   browser: "search",
+  web: "search",
   help: "search",
 };
 

@@ -3,11 +3,25 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
+import { createIssueCloser } from "../issues/close.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
-import { lookupBranchPr } from "./poller.ts";
+import {
+  detectWorkspacePrs,
+  linkWorkspacePr,
+  lookupBranchPr,
+  MAX_PR_NUMBER,
+  markWorkspaceListViewed,
+  markWorkspaceViewed,
+  PrLinkRefusal,
+  PrNotLinked,
+  pollerClients,
+  unlinkWorkspacePr,
+} from "./poller.ts";
 import {
   createReviewComment,
   deleteReviewComment,
@@ -115,6 +129,7 @@ const archiveSchema = z.object({
   summary: z.string().nullish(),
   mergedPrUrl: z.string().nullish(),
   force: z.boolean().optional(),
+  closeIssueIds: z.array(z.string().uuid()).max(100).optional(),
 });
 
 // The source-agnostic triple identifying an issue across providers.
@@ -171,6 +186,7 @@ const createReviewCommentSchema = z
     startLine: z.number().int().positive(),
     endLine: z.number().int().positive(),
     body: z.string().min(1).max(16384),
+    source: z.enum(REVIEW_COMMENT_SOURCES).optional(),
   })
   .refine((c) => c.startLine <= c.endLine, "startLine must not be after endLine");
 
@@ -260,7 +276,12 @@ export function createWorkspaceRoutes(config: Config): Hono {
 
   const db = () => getDb(config.databaseUrl as string).db;
 
-  router.get("/", async (c) => c.json(await listWorkspaces(db())));
+  // `badges=1` says the list's PR badges are in front of the user, which is
+  // what lets the poller spend provider requests on them.
+  router.get("/", async (c) => {
+    if (c.req.query("badges") === "1") markWorkspaceListViewed();
+    return c.json(await listWorkspaces(db(), { withActivity: true }));
+  });
 
   // The active workspace (if any) a PR was raised from, so the PR view can link
   // back to it. Registered before "/:id" so "for-pr" isn't read as an id.
@@ -309,6 +330,8 @@ export function createWorkspaceRoutes(config: Config): Hono {
   router.get("/:id", async (c) => {
     const workspace = await getWorkspace(db(), c.req.param("id"));
     if (!workspace) return c.json({ error: "not found" }, 404);
+    // `viewing=1` says the user has this workspace open, so the poller keeps its PR current.
+    if (c.req.query("viewing") === "1") markWorkspaceViewed(workspace.id);
     // `pendingBrief` stays server-side: it is how provisioning remembers a
     // kick-off it still owes a session, and nothing outside the sidecar acts on
     // it. Clients open the workspace and attach to whatever session is there.
@@ -442,6 +465,66 @@ export function createWorkspaceRoutes(config: Config): Hono {
     } catch (e) {
       console.error("[workspaces] PR lookup failed:", describeError(e));
       return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Searches every repo's branches for PRs now, adding what it finds.
+  router.post("/:id/prs/detect", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    try {
+      return c.json({ repos: await detectWorkspacePrs(db(), pollerClients(config), id) });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      console.error("[workspaces] PR detection failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  const prNumber = z.coerce.number().int().positive().max(MAX_PR_NUMBER);
+  const repoIds = (c: { req: { param: (name: string) => string | undefined } }) =>
+    z
+      .object({ id: z.string().uuid(), wrId: z.string().uuid() })
+      .safeParse({ id: c.req.param("id"), wrId: c.req.param("wrId") });
+
+  // Links one of a repo's PRs by number, beside the ones it has.
+  router.post("/:id/repos/:wrId/prs", async (c) => {
+    const ids = repoIds(c);
+    if (!ids.success) return c.json({ error: "invalid workspace or repo id" }, 400);
+    const body = z.object({ number: prNumber }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return c.json({ error: body.error.flatten() }, 400);
+    try {
+      const pr = await linkWorkspacePr(
+        db(),
+        pollerClients(config),
+        ids.data.id,
+        ids.data.wrId,
+        body.data.number,
+        // The user's own request may undo their earlier unlink.
+        { relink: true },
+      );
+      return c.json({ pr });
+    } catch (e) {
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      console.error("[workspaces] PR link failed:", describeError(e));
+      return c.json({ error: clientError(e) }, 502);
+    }
+  });
+
+  // Unlinks one of a repo's PRs; a later search of its branch won't add it back.
+  router.delete("/:id/repos/:wrId/prs/:number", async (c) => {
+    const ids = repoIds(c);
+    const number = prNumber.safeParse(c.req.param("number"));
+    if (!ids.success || !number.success) return c.json({ error: "invalid id or PR number" }, 400);
+    try {
+      await unlinkWorkspacePr(db(), ids.data.id, ids.data.wrId, number.data);
+      return c.json({ ok: true });
+    } catch (e) {
+      if (e instanceof PrNotLinked) return c.json({ error: e.message }, 404);
+      if (e instanceof PrLinkRefusal) return c.json({ error: e.message }, 400);
+      throw e;
     }
   });
 
@@ -709,10 +792,35 @@ export function createWorkspaceRoutes(config: Config): Hono {
     const parsed = archiveSchema.safeParse(body ?? {});
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     try {
-      return c.json(await startArchiveWorkspace(db(), c.req.param("id"), parsed.data), 202);
+      return c.json(
+        await startArchiveWorkspace(
+          db(),
+          c.req.param("id"),
+          parsed.data,
+          defaultGitRunner,
+          createIssueCloser(config),
+        ),
+        202,
+      );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
+  });
+
+  // The user closed the agent tab, which already killed its PTY. Ending its
+  // registration here keeps that session from being resumed on the next start,
+  // whether or not Claude reported its own end when the tab was killed.
+  router.post("/:id/agent/stop", async (c) => {
+    const id = c.req.param("id");
+    if (!z.string().uuid().safeParse(id).success) {
+      return c.json({ error: "invalid workspace id" }, 400);
+    }
+    try {
+      await endWorkspaceAgentSessions(db(), id, STOPPED_END_REASON, `ws-claude:${id}`);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+    return c.json({ ok: true });
   });
 
   return router;

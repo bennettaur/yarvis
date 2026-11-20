@@ -66,6 +66,12 @@ function InsightCard({
           ✕
         </button>
       </div>
+      {insight.placement === "file" && (
+        <p role="status" className="mb-2 text-xs text-amber-300">
+          Posted on the whole file instead: GitHub only takes line comments on lines inside the
+          diff.
+        </p>
+      )}
       <p className="mb-2 text-xs italic text-zinc-400">{insight.question}</p>
       <div className="text-zinc-200">
         <Markdown>{insight.answer}</Markdown>

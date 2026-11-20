@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { waitFor } from "../test/render";
 import {
   clearResourceCache,
   combineResources,
@@ -26,12 +27,24 @@ let failWith: string | null = null;
  * the flags above once exhausted.
  */
 let script: { value?: string; ms?: number; fail?: string }[] = [];
+/** When set, every load waits for it before answering, so a case decides when a load lands. */
+let loadsReleased: Promise<void> | null = null;
+
+/** Holds every load from here on until the returned function is called. */
+function holdLoads(): () => void {
+  let release = () => {};
+  loadsReleased = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return release;
+}
 
 async function load(): Promise<string> {
   fetchCount++;
   const step = script.shift();
   const ms = step?.ms ?? loadMs;
   if (ms > 0) await new Promise((resolve) => setTimeout(resolve, ms));
+  if (loadsReleased) await loadsReleased;
   const fail = step?.fail ?? failWith;
   if (fail) throw new Error(fail);
   return step?.value ?? value;
@@ -87,6 +100,7 @@ beforeEach(() => {
   loadMs = 0;
   failWith = null;
   script = [];
+  loadsReleased = null;
   rendered.length = 0;
   lastRefresh = null;
 });
@@ -162,22 +176,25 @@ describe("useCachedResource", () => {
     // then fresh data — with a real load behind it rather than an invalidation.
     script = [{ value: "page-a" }, { value: "page-b" }];
     const { host, root } = mount(createElement(Probe, { subject: "a", freshness: BRIEF }));
-    await settle();
+    await waitFor(() => host.textContent === "page-a/-:-/-", "page a to load");
     root.render(createElement(Probe, { subject: "b", freshness: BRIEF }));
+    await waitFor(() => host.textContent === "page-b/-:-/-", "page b to load");
+    // At least BRIEF's TTL, so page a's answer is stale when the test returns to it.
     await settle();
-    expect(host.textContent).toBe("page-b/-:-/-");
 
     value = "page-a refreshed";
-    loadMs = 60;
+    const release = holdLoads();
     rendered.length = 0;
     root.render(createElement(Probe, { subject: "a", freshness: BRIEF }));
-    await settle(20);
+    await waitFor(
+      () => host.textContent === "page-a/-:refreshing/-",
+      "page a's cached answer with a refresh behind it",
+    );
     // The frame before the effect runs still holds the key just left — React
     // renders with the state it has. What must never appear is an empty one.
     expect(statesSeen().some((state) => state.startsWith("-/"))).toBe(false);
-    expect(host.textContent).toBe("page-a/-:refreshing/-");
-    await settle(100);
-    expect(host.textContent).toBe("page-a refreshed/-:-/-");
+    release();
+    await waitFor(() => host.textContent === "page-a refreshed/-:-/-", "the refresh to land");
     root.unmount();
   });
 

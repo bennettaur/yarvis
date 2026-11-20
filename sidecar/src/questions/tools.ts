@@ -9,7 +9,7 @@ import {
   mayWaitOn,
   NO_SUCH_QUESTION,
   replyPayload,
-  WAIT_DESCRIPTION,
+  waitDescription,
   waitInputShape,
 } from "./contract.ts";
 import { askQuestions, getQuestion, waitForReply } from "./service.ts";
@@ -71,7 +71,7 @@ export function buildQuestionTools(db: Db, sessionId: string) {
       },
     }),
     wait_for_answer: tool({
-      description: WAIT_DESCRIPTION,
+      description: waitDescription(),
       inputSchema: z.object(waitInputShape),
       execute: async ({ questionId }, { abortSignal }) => {
         try {

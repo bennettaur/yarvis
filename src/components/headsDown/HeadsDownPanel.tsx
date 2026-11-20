@@ -1,44 +1,45 @@
 import { useCallback, useState } from "react";
 import {
   type AllowedTool,
+  clearHeadsDown,
   getHeadsDownConfig,
   getHeadsDownState,
+  HEADS_DOWN_CACHE_KEYS,
   type HeadsDownConfig,
   type HeadsDownMessage,
   type HeadsDownPass,
   type HeadsDownQuestion,
+  type HeadsDownRun,
   type HeadsDownState,
   listAllowedTools,
   listAutoApprovals,
   listHeadsDownMessages,
   listOpenQuestions,
   listPasses,
+  listRoutines,
   listWorkStreams,
+  nextOccurrence,
+  pauseHeadsDown,
+  type RoutinesResponse,
+  reloadRoutines,
+  resumeHeadsDown,
   sendHeadsDownMessage,
+  setHeadsDownStopAt,
   setToolAllowed,
   startHeadsDown,
   stopHeadsDown,
   type WorkStream,
 } from "../../lib/headsDown";
-import { combineResources, useCachedResource } from "../../lib/resourceCache";
+import { combineResources, primeCache, useCachedResource } from "../../lib/resourceCache";
 import RefreshingIndicator from "../RefreshingIndicator";
+import AgentMark, { type AgentState } from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
+import RoutineList from "./RoutineList";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
-
-const CACHE_KEYS = {
-  state: "heads-down:state",
-  questions: "heads-down:questions",
-  streams: "heads-down:streams",
-  passes: "heads-down:passes",
-  messages: "heads-down:messages",
-  config: "heads-down:config",
-  allowedTools: "heads-down:allowed-tools",
-  autoApprovals: "heads-down:auto-approvals",
-};
 
 const NO_QUESTIONS: HeadsDownQuestion[] = [];
 const NO_STREAMS: WorkStream[] = [];
@@ -55,7 +56,110 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-/** Start and stop heads-down mode, and see when it runs next. */
+/**
+ * Starts heads-down mode over by dropping its work streams and messages. Asks
+ * once more before doing it, since dropped streams leave the page.
+ */
+function ClearButton({ disabled, onClear }: { disabled: boolean; onClear: () => void }) {
+  const [confirming, setConfirming] = useState(false);
+  if (!confirming) {
+    return (
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setConfirming(true)}
+        title="Drop every open work stream, delete your messages and dismiss open questions, so the next run starts fresh"
+        className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+      >
+        Clear old work
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-xs text-zinc-400">
+      <span>Drop all open work streams, messages and questions?</span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => {
+          setConfirming(false);
+          onClear();
+        }}
+        className="rounded-md bg-red-600/80 px-2 py-1 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+      >
+        Yes, clear
+      </button>
+      <button
+        type="button"
+        onClick={() => setConfirming(false)}
+        className="text-zinc-400 hover:text-zinc-200"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+/** When the run stops on its own, and a way to set, change or clear it. */
+function StopTime({
+  stopAt,
+  disabled,
+  onSet,
+}: {
+  stopAt: string | null;
+  disabled: boolean;
+  onSet: (stopAt: string | null) => void;
+}) {
+  const [time, setTime] = useState("");
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+      <span>
+        {stopAt ? `Stops at ${new Date(stopAt).toLocaleString()}` : "Runs until you stop it"}
+      </span>
+      <input
+        type="time"
+        value={time}
+        onChange={(e) => setTime(e.target.value)}
+        aria-label="Stop at"
+        className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300"
+      />
+      <button
+        type="button"
+        disabled={disabled || !time}
+        onClick={() => {
+          onSet(nextOccurrence(time));
+          setTime("");
+        }}
+        className="text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+      >
+        {stopAt ? "Change" : "Set stop time"}
+      </button>
+      {stopAt && (
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => onSet(null)}
+          className="text-zinc-400 hover:text-zinc-200 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The header's line about what happens next: paused, working, or when it looks again. */
+function describeNextPass(state: HeadsDownState, run: HeadsDownRun, working: boolean): string {
+  if (run.pausedAt !== null)
+    return "No passes until you resume it. Its streams and questions are kept.";
+  if (working) return "Working now";
+  if (state.nextPassAt) return `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`;
+  // The sidecar leaves out a next pass that would come after the stop time.
+  if (state.lastPass && run.stopAt) return "No more passes before it stops";
+  return "Starting its first pass";
+}
+
+/** Start, pause and stop heads-down mode, and see when it runs next and when it stops. */
 function RunHeader({
   state,
   working,
@@ -68,6 +172,7 @@ function RunHeader({
   onChanged: () => void;
 }) {
   const [focus, setFocus] = useState("");
+  const [stopTime, setStopTime] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const run = state?.run ?? null;
@@ -77,7 +182,6 @@ function RunHeader({
     setError(null);
     try {
       await action();
-      setFocus("");
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -94,45 +198,84 @@ function RunHeader({
     );
   }
 
+  // With no next pass scheduled yet, the first one is starting; a paused run sleeps.
+  const agentState: AgentState =
+    !run?.pausedAt && (working || !state.nextPassAt) ? "working" : "sleeping";
+
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-4">
       {run ? (
         <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
-              <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
-              Heads down since {new Date(run.startedAt).toLocaleString()}
+          <div className="flex min-w-0 items-start gap-3">
+            <AgentMark state={agentState} />
+            <div className="min-w-0">
+              {run.pausedAt !== null ? (
+                <div className="flex items-center gap-2 text-sm font-medium text-sky-300">
+                  <span className="inline-block h-2 w-2 rounded-full bg-sky-400" />
+                  Paused since {new Date(run.pausedAt).toLocaleString()}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+                  Heads down since {new Date(run.startedAt).toLocaleString()}
+                </div>
+              )}
+              {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
+              <p
+                className={`mt-1 text-xs ${agentState === "working" ? "text-cyan-300" : "text-zinc-500"}`}
+              >
+                {describeNextPass(state, run, working)}
+              </p>
+              <StopTime
+                stopAt={run.stopAt}
+                disabled={busy}
+                onSet={(stopAt) => void runAction(() => setHeadsDownStopAt(stopAt))}
+              />
             </div>
-            {run.focus && <p className="mt-1 text-sm text-zinc-300">{run.focus}</p>}
-            <p className="mt-1 text-xs text-zinc-500">
-              {working
-                ? "Working now"
-                : state.nextPassAt
-                  ? `Next pass at ${new Date(state.nextPassAt).toLocaleTimeString()}`
-                  : "Starting its first pass"}
-            </p>
           </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void runAction(stopHeadsDown)}
-            className="shrink-0 rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-          >
-            Stop
-          </button>
+          <div className="flex shrink-0 items-start gap-2">
+            {run.pausedAt !== null && (
+              <ClearButton disabled={busy} onClear={() => void runAction(clearHeadsDown)} />
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void runAction(run.pausedAt !== null ? resumeHeadsDown : pauseHeadsDown)
+              }
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              {run.pausedAt !== null ? "Resume" : "Pause"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runAction(stopHeadsDown)}
+              className="rounded-md border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+            >
+              Stop
+            </button>
+          </div>
         </div>
       ) : (
         <form
           className="space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void runAction(() => startHeadsDown(focus.trim()));
+            void runAction(async () => {
+              await startHeadsDown(focus.trim(), stopTime ? nextOccurrence(stopTime) : undefined);
+              setFocus("");
+              setStopTime("");
+            });
           }}
         >
-          <p className="text-sm text-zinc-300">
-            Heads-down mode keeps your work streams moving while you focus elsewhere. It starts work
-            on tickets, chases CI and reviews, and asks you only what it has to.
-          </p>
+          <div className="flex items-start gap-3">
+            <AgentMark state="off" />
+            <p className="text-sm text-zinc-300">
+              Heads-down mode keeps your work streams moving while you focus elsewhere. It starts
+              work on tickets, chases CI and reviews, and asks you only what it has to.
+            </p>
+          </div>
           <div className="flex gap-2">
             <input
               value={focus}
@@ -141,6 +284,14 @@ function RunHeader({
               aria-label="Focus"
               className="min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm"
             />
+            <input
+              type="time"
+              value={stopTime}
+              onChange={(e) => setStopTime(e.target.value)}
+              aria-label="Stop at (optional)"
+              title="Stop at (optional)"
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm text-zinc-300"
+            />
             <button
               type="submit"
               disabled={busy}
@@ -148,6 +299,7 @@ function RunHeader({
             >
               Go heads down
             </button>
+            <ClearButton disabled={busy} onClear={() => void runAction(clearHeadsDown)} />
           </div>
         </form>
       )}
@@ -220,19 +372,32 @@ function MessageBox({ messages, onSent }: { messages: HeadsDownMessage[]; onSent
  * chatting with the assistant elsewhere while this runs.
  */
 export default function HeadsDownPanel() {
-  const state = useCachedResource<HeadsDownState>(CACHE_KEYS.state, getHeadsDownState);
-  const questions = useCachedResource<HeadsDownQuestion[]>(CACHE_KEYS.questions, listOpenQuestions);
-  const streams = useCachedResource<WorkStream[]>(CACHE_KEYS.streams, listWorkStreams);
-  const passes = useCachedResource<HeadsDownPass[]>(CACHE_KEYS.passes, listPasses);
+  const state = useCachedResource<HeadsDownState>(HEADS_DOWN_CACHE_KEYS.state, getHeadsDownState);
+  const questions = useCachedResource<HeadsDownQuestion[]>(
+    HEADS_DOWN_CACHE_KEYS.questions,
+    listOpenQuestions,
+  );
+  const streams = useCachedResource<WorkStream[]>(HEADS_DOWN_CACHE_KEYS.streams, listWorkStreams);
+  const passes = useCachedResource<HeadsDownPass[]>(HEADS_DOWN_CACHE_KEYS.passes, listPasses);
   const messages = useCachedResource<HeadsDownMessage[]>(
-    CACHE_KEYS.messages,
+    HEADS_DOWN_CACHE_KEYS.messages,
     listHeadsDownMessages,
   );
-  const config = useCachedResource<HeadsDownConfig>(CACHE_KEYS.config, getHeadsDownConfig);
-  const allowedTools = useCachedResource<AllowedTool[]>(CACHE_KEYS.allowedTools, listAllowedTools);
+  const config = useCachedResource<HeadsDownConfig>(
+    HEADS_DOWN_CACHE_KEYS.config,
+    getHeadsDownConfig,
+  );
+  const allowedTools = useCachedResource<AllowedTool[]>(
+    HEADS_DOWN_CACHE_KEYS.allowedTools,
+    listAllowedTools,
+  );
   const autoApprovals = useCachedResource<HeadsDownQuestion[]>(
-    CACHE_KEYS.autoApprovals,
+    HEADS_DOWN_CACHE_KEYS.autoApprovals,
     listAutoApprovals,
+  );
+  const routines = useCachedResource<RoutinesResponse>(
+    HEADS_DOWN_CACHE_KEYS.routines,
+    listRoutines,
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -242,6 +407,7 @@ export default function HeadsDownPanel() {
   const refreshPasses = passes.refresh;
   const refreshMessages = messages.refresh;
   const refreshAutoApprovals = autoApprovals.refresh;
+  const refreshRoutines = routines.refresh;
   const refreshConfig = config.refresh;
   const refreshAll = useCallback(() => {
     void refreshState();
@@ -250,6 +416,7 @@ export default function HeadsDownPanel() {
     void refreshPasses();
     void refreshMessages();
     void refreshAutoApprovals();
+    void refreshRoutines();
   }, [
     refreshState,
     refreshQuestions,
@@ -257,6 +424,7 @@ export default function HeadsDownPanel() {
     refreshPasses,
     refreshMessages,
     refreshAutoApprovals,
+    refreshRoutines,
   ]);
   const live = useLivePass(refreshAll);
   const combined = combineResources([state, questions, streams, passes, messages]);
@@ -318,6 +486,16 @@ export default function HeadsDownPanel() {
       <aside className="space-y-6">
         <Section title="Tell it something">
           <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
+        </Section>
+
+        <Section title="Routines">
+          <RoutineList
+            data={routines.data}
+            loadError={routines.error}
+            onReload={async () =>
+              primeCache(HEADS_DOWN_CACHE_KEYS.routines, await reloadRoutines())
+            }
+          />
         </Section>
 
         <Section title="Pace and working hours">

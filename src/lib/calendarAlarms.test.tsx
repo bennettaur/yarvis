@@ -1,12 +1,12 @@
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, useEffect, useRef } from "react";
-import { nativeInvoke } from "../test/nativeInvoke";
+import { resetAlarms, stubAlarmsApi } from "../test/alarmFixture";
 import { renderToHtml } from "../test/render";
 import type { CalendarEvent } from "./calendar";
 
 /**
  * Guards the meeting → alarm wiring that fulfills issue #68: arming a calendar
- * event must forward its join link into `create_alarm`. This is a positional
+ * event must forward its join link into `createAlarm`. This is a positional
  * call — createAlarm(label, fireAtMs, sound, meetLink) — so a dropped or
  * reordered argument would compile and typecheck while silently losing the
  * link, which only a behavior test at this boundary catches.
@@ -14,15 +14,18 @@ import type { CalendarEvent } from "./calendar";
 
 const created: Array<Record<string, unknown>> = [];
 
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: Record<string, unknown>) => {
-    if (command === "create_alarm") {
-      created.push(args);
-      return { id: "generated", status: "scheduled", ...args };
-    }
-    return nativeInvoke(command);
+stubAlarmsApi({
+  createAlarm: async (
+    label: string,
+    fireAtMs: number,
+    sound = true,
+    meetLink: string | null = null,
+  ) => {
+    created.push({ label, fireAtMs, sound, meetLink });
+    return { id: "generated", status: "scheduled", label, fireAtMs, sound, meetLink };
   },
-}));
+});
+afterAll(resetAlarms);
 
 const { useEventAlarms } = await import("./calendarAlarms");
 
@@ -55,7 +58,7 @@ describe("useEventAlarms arm()", () => {
     created.length = 0;
   });
 
-  it("forwards the event's meet link into create_alarm", async () => {
+  it("forwards the event's meet link into createAlarm", async () => {
     await renderToHtml(
       createElement(ArmOnMount, { event: futureEvent("https://meet.google.com/abc") }),
     );

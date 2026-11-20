@@ -51,6 +51,7 @@ describe("reads through GraphQL", () => {
             merged: false,
             mergeable: "CONFLICTING",
             mergeStateStatus: "DIRTY",
+            headRefOid: "def",
             commits: {
               nodes: [
                 {
@@ -78,6 +79,7 @@ describe("reads through GraphQL", () => {
       merged: false,
       mergeable: false,
       mergeableState: "dirty",
+      headSha: "def",
       checks: { total: 4, success: 1, failure: 1, pending: 2 },
     });
     expect(requests).toEqual(["GRAPHQL"]);
@@ -105,6 +107,62 @@ describe("reads through GraphQL", () => {
       repo: "r",
       state: "closed",
     });
+  });
+
+  it("lists every PR on a branch but a fork's, and when each closed", async () => {
+    const pr = (number: number, headOwner: string, closedAt: string | null) => ({
+      number,
+      title: `PR ${number}`,
+      url: `https://github.com/o/r/pull/${number}`,
+      isDraft: false,
+      state: closedAt ? "MERGED" : "OPEN",
+      createdAt: "2026-10-01",
+      updatedAt: "2026-10-02",
+      closedAt,
+      author: { login: "me" },
+      repository: { name: "r", owner: { login: "o" } },
+      headRepositoryOwner: { login: headOwner },
+    });
+    const { gh } = fakeGitHub(() =>
+      data({
+        repository: {
+          pullRequests: {
+            nodes: [pr(9, "a-fork", null), pr(8, "o", null), pr(7, "O", "2026-10-03")],
+          },
+        },
+      }),
+    );
+    const prs = await gh.findPrsByBranch("o", "r", "feature");
+    expect(prs.map((p) => [p.number, p.closedAt])).toEqual([
+      [8, null],
+      [7, "2026-10-03"],
+    ]);
+  });
+
+  it("keeps when a branch's PRs closed when it falls back to REST", async () => {
+    const restPr = (number: number, closedAt: string | null) => ({
+      number,
+      title: `PR ${number}`,
+      html_url: `https://github.com/o/r/pull/${number}`,
+      user: { login: "me" },
+      draft: false,
+      state: closedAt ? "closed" : "open",
+      created_at: "2026-10-01",
+      updated_at: "2026-10-02",
+      closed_at: closedAt,
+    });
+    const { gh, requests } = fakeGitHub(
+      () => graphqlErrors([{ message: "Something went wrong" }]),
+      {
+        "/repos/o/r/pulls": [restPr(8, null), restPr(7, "2026-10-03")],
+      },
+    );
+    const prs = await gh.findPrsByBranch("o", "r", "feature");
+    expect(prs.map((p) => [p.number, p.closedAt])).toEqual([
+      [8, null],
+      [7, "2026-10-03"],
+    ]);
+    expect(requests).toContain("/repos/o/r/pulls");
   });
 
   it("keeps only issues with every requested label", async () => {
@@ -176,6 +234,7 @@ describe("falls back to REST", () => {
     expect(await gh.prStatus("o", "r", 1)).toMatchObject({
       mergeable: true,
       mergeableState: "clean",
+      headSha: "abc",
     });
     expect(requests).toEqual([
       "GRAPHQL",

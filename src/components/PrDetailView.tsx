@@ -10,6 +10,7 @@ import PrDescription from "./pr/PrDescription";
 import PrFileDiffs from "./pr/PrFileDiffs";
 import PrFileList from "./pr/PrFileList";
 import PrFloatingHeader from "./pr/PrFloatingHeader";
+import PrFlowDiagramSection from "./pr/PrFlowDiagramSection";
 import PrGuidePanel, { PrGuideStart } from "./pr/PrGuidePanel";
 import PrReviewers from "./pr/PrReviewers";
 import PrStackList from "./pr/PrStackList";
@@ -255,6 +256,8 @@ export default function PrDetailView({
           >
             <PrChecks prRef={prRef} />
           </CollapsibleSection>
+
+          <PrFlowDiagramSection guide={guide.guide} />
 
           <Section title="Files" action={<PrGuideStart guide={guide} />}>
             {fileListCollapsed ? (

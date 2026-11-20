@@ -9,7 +9,7 @@ import {
   getStream,
   linkToStream,
   listStreams,
-  streamExists,
+  streamOfLink,
   unlinkFromStream,
   updateStream,
   type WorkStreamWithLinks,
@@ -20,6 +20,10 @@ import {
  * pushing forward. Not on the MCP endpoint, for the same reason todos aren't:
  * a coding session writing here would be one agent editing another's plan.
  */
+
+/** What a pass is told when it tries to change a stream the user paused. */
+export const STREAM_PAUSED =
+  "The user paused this stream. Leave it alone until they resume it, and move on to the others.";
 
 const uuid = z.string().uuid();
 const priority = z.enum(["urgent", "high", "medium", "low"]);
@@ -82,6 +86,7 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
     id: stream.id,
     title: fence(stream.title, nonce),
     status: stream.status,
+    paused: stream.pausedAt !== null,
     priority: stream.priority,
     projectId: stream.projectId,
     summary: text(stream.summary),
@@ -146,10 +151,17 @@ export function buildWorkStreamTools(
   db: Db,
   { unattended = false }: { unattended?: boolean } = {},
 ) {
+  /** A pass leaves a stream the user paused alone; only the user resumes it. */
+  const isPausedForPass = (stream: { pausedAt: Date | null } | null): boolean =>
+    unattended && stream !== null && stream.pausedAt !== null;
+
   return {
     list_work_streams: tool({
-      description:
-        "The threads of work you are pushing forward, each with its tickets, workspaces, PRs and messages. Defaults to the open ones (active, waiting on the user, waiting on others), most urgent first, then the ones untouched longest. Pass awakeOnly to leave out streams whose wakeAt hasn't come yet.",
+      description: `The threads of work you are pushing forward, each with its tickets, workspaces, PRs and messages. Defaults to the open ones (active, waiting on the user, waiting on others), most urgent first, then the ones untouched longest. ${
+        unattended
+          ? "Streams the user paused are left out."
+          : "A paused stream is one heads-down mode leaves alone until the user resumes it."
+      } Pass awakeOnly to leave out streams whose wakeAt hasn't come yet.`,
       inputSchema: z.object({
         statuses: z.array(status).optional().describe("Defaults to the open ones"),
         projectId: uuid.optional(),
@@ -160,6 +172,7 @@ export function buildWorkStreamTools(
           statuses,
           projectId,
           awakeAt: awakeOnly ? new Date() : undefined,
+          excludePaused: unattended,
         });
         const nonce = newNonce();
         return {
@@ -175,6 +188,7 @@ export function buildWorkStreamTools(
       execute: async ({ id }) => {
         const stream = await getStream(db, id);
         if (!stream) return { error: "no work stream with that id" };
+        if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),
@@ -216,22 +230,41 @@ export function buildWorkStreamTools(
         nextAction: z.string().max(1000).nullable().optional(),
         waitingOn: z.string().max(500).nullable().optional(),
         wakeAt: instant.nullable().optional(),
+        paused: z
+          .boolean()
+          .optional()
+          .describe(
+            "Pause the stream so heads-down mode leaves it alone, or resume it. Only when the user asks.",
+          ),
         note: z.string().max(2000).optional(),
       }),
       execute: async ({ id, wakeAt, ...patch }) => {
+        if (unattended && patch.paused !== undefined) {
+          return { error: "only the user pauses or resumes a stream" };
+        }
+        const current = await getStream(db, id);
+        if (!current) return { error: "no work stream with that id" };
+        if (isPausedForPass(current)) return { error: STREAM_PAUSED };
         // Whether a stream is open decides what heads-down mode may act on, so
         // only the user brings back one that was closed.
-        if (unattended && patch.status && !["done", "dropped"].includes(patch.status)) {
-          const current = await getStream(db, id);
-          if (current && ["done", "dropped"].includes(current.status)) {
-            return { error: "a closed stream can only be reopened by the user" };
-          }
+        if (
+          unattended &&
+          patch.status &&
+          !["done", "dropped"].includes(patch.status) &&
+          ["done", "dropped"].includes(current.status)
+        ) {
+          return { error: "a closed stream can only be reopened by the user" };
         }
         const wakeAtDate = wakeAt === undefined ? undefined : wakeAt ? new Date(wakeAt) : null;
-        const stream = await updateStream(db, id, { ...patch, wakeAt: wakeAtDate });
-        return stream
-          ? { id: stream.id, status: stream.status, priority: stream.priority }
-          : { error: "no work stream with that id" };
+        const stream = await updateStream(
+          db,
+          id,
+          { ...patch, wakeAt: wakeAtDate },
+          { unlessPaused: unattended },
+        );
+        // Gone, or paused by the user since it was read above.
+        if (!stream) return { error: unattended ? STREAM_PAUSED : "no work stream with that id" };
+        return { id: stream.id, status: stream.status, priority: stream.priority };
       },
     }),
 
@@ -245,7 +278,9 @@ export function buildWorkStreamTools(
         state: z.string().max(300).optional(),
       }),
       execute: async ({ streamId, ref, title, state }) => {
-        if (!(await streamExists(db, streamId))) return { error: "no work stream with that id" };
+        const stream = await getStream(db, streamId);
+        if (!stream) return { error: "no work stream with that id" };
+        if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
         const link = await linkToStream(db, streamId, {
           ref,
           title,
@@ -259,10 +294,12 @@ export function buildWorkStreamTools(
     unlink_from_work_stream: tool({
       description: "Remove a link that turned out not to belong to the stream.",
       inputSchema: z.object({ linkId: uuid }),
-      execute: async ({ linkId }) =>
-        (await unlinkFromStream(db, linkId))
+      execute: async ({ linkId }) => {
+        if (isPausedForPass(await streamOfLink(db, linkId))) return { error: STREAM_PAUSED };
+        return (await unlinkFromStream(db, linkId))
           ? { linkId, removed: true }
-          : { error: "no link with that id" },
+          : { error: "no link with that id" };
+      },
     }),
 
     find_work_streams_for: tool({
@@ -270,7 +307,7 @@ export function buildWorkStreamTools(
         "Which work streams a ticket, workspace, PR or message is already linked to. Use it before creating a stream, and when something needs attention, to find the stream it belongs to.",
       inputSchema: z.object({ ref: linkRef }),
       execute: async ({ ref }) => {
-        const streams = await findStreamsLinkedTo(db, ref);
+        const streams = (await findStreamsLinkedTo(db, ref)).filter((s) => !isPausedForPass(s));
         const nonce = newNonce();
         return {
           warning: untrustedWarning(nonce),
@@ -278,6 +315,7 @@ export function buildWorkStreamTools(
             id: s.id,
             title: fence(s.title, nonce),
             status: s.status,
+            paused: s.pausedAt !== null,
           })),
         };
       },

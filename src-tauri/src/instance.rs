@@ -3,8 +3,8 @@
 //! An instance is named by `YARVIS_INSTANCE`; absent, the process is the
 //! primary one. The name also selects the bundle identifier (see
 //! `scripts/dev-instance.ts`), and Tauri derives the app data directory and the
-//! single-instance socket from that identifier — so `settings.json`,
-//! `alarms.json` and `core-control.sock` separate without any work here.
+//! single-instance socket from that identifier — so `settings.json` and
+//! `core-control.sock` separate without any work here.
 //!
 //! What does not separate on its own is anything singular to the machine or to
 //! the shared database: the global hotkeys only one process can hold, and the

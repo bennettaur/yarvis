@@ -8,3 +8,9 @@ declare module "*.md" {
   const content: string;
   export default content;
 }
+
+/** The turn detector's Python server, embedded the same way (`voice/turnDetector.ts`). */
+declare module "*.py" {
+  const content: string;
+  export default content;
+}

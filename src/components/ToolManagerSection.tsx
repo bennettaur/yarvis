@@ -27,7 +27,8 @@ const APPROVAL_HINTS: Record<ToolApproval, string> = {
  * MCP-sourced — grouped by source, and lets the user set each tool's policy
  * (always mounted, available via search, or disabled) and, for MCP tools,
  * whether calling one asks first. Changes take effect on the next chat turn; no
- * restart needed.
+ * restart needed. Each group starts collapsed so a server with dozens of tools
+ * doesn't turn the tab into a long scroll.
  *
  * Auto-approval is offered for MCP tools only. A built-in's confirmation is
  * decided by how the turn was composed — a spoken turn was never proof-read —
@@ -107,7 +108,7 @@ export default function ToolManagerSection() {
       {tools.length === 0 ? (
         <p className="text-xs text-zinc-500">No tools registered yet.</p>
       ) : (
-        <div className="space-y-5">
+        <div className="space-y-3">
           <ToolGroup title="Built-in" tools={groups.builtins} onChange={updateTool} />
           {groups.mcpGroups.map((g) => (
             <ToolGroup
@@ -138,25 +139,41 @@ function ToolGroup({
 }) {
   if (tools.length === 0) return null;
   const allAuto = tools.every((t) => t.approval === "auto");
+  // Shown in the header so a collapsed group still says which tools skip the prompt.
+  const autoCount = tools.filter((t) => t.source === "mcp" && t.approval === "auto").length;
   return (
-    <div>
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">{title}</span>
-        {onSetGroupApproval && (
-          <button
-            type="button"
-            onClick={() => onSetGroupApproval(allAuto ? "ask" : "auto")}
-            title={
-              allAuto
-                ? "Make every tool on this server ask before each call."
-                : "Let every tool on this server run without asking, on turns you typed rather than spoke."
-            }
-            className="rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
-          >
-            {allAuto ? "Ask for every tool" : "Auto-approve every tool"}
-          </button>
+    <details className="group">
+      <summary className="mb-2 flex cursor-pointer list-none items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <span
+          aria-hidden="true"
+          className="text-zinc-600 transition-transform group-open:rotate-90"
+        >
+          ▶
+        </span>
+        {title}
+        <span className="font-normal normal-case text-zinc-600">
+          · {tools.length} {tools.length === 1 ? "tool" : "tools"}
+        </span>
+        {autoCount > 0 && (
+          <span className="font-normal normal-case text-amber-500">
+            · {autoCount} auto-approved
+          </span>
         )}
-      </div>
+      </summary>
+      {onSetGroupApproval && (
+        <button
+          type="button"
+          onClick={() => onSetGroupApproval(allAuto ? "ask" : "auto")}
+          title={
+            allAuto
+              ? "Make every tool on this server ask before each call."
+              : "Let every tool on this server run without asking, on turns you typed rather than spoke."
+          }
+          className="mb-2 rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800"
+        >
+          {allAuto ? "Ask for every tool" : "Auto-approve every tool"}
+        </button>
+      )}
       <div className="space-y-2">
         {tools.map((t) => (
           <div
@@ -197,6 +214,6 @@ function ToolGroup({
           </div>
         ))}
       </div>
-    </div>
+    </details>
   );
 }

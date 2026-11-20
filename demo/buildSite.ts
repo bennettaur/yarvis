@@ -1,8 +1,9 @@
 /**
  * Turns a `bun run demo` run into a static site for GitHub Pages: an index
  * with each flow's video and screenshots, plus the showcase deck at
- * `showcase/` and, when it has been built, the showcase video's player at
- * `video/`. Reads `demo/output/` and `video/dist/`, writes `demo/site/`.
+ * `showcase/`, the PR verification explainers at `verification/` and, when it
+ * has been built, the showcase video's player at `video/`. Reads
+ * `demo/output/` and `video/dist/`, writes `demo/site/`.
  *
  *   bun run demo && bun run --cwd video player:build && bun run demo:site
  */
@@ -21,6 +22,11 @@ import { OUTPUT_DIR, REPO_ROOT } from "./paths";
 
 export const SITE_DIR = join(REPO_ROOT, "demo", "site");
 const SHOWCASE = join(REPO_ROOT, "docs", "showcase", "yarvis-showcase.html");
+/** Copied under their own names, since each page links to the other by file name. */
+const EXPLAINERS = [
+  { file: "verify-pr-explainer.html", title: "How /verify-pr works" },
+  { file: "verification-report-explainer.html", title: "The verification report" },
+] as const;
 /** The showcase video's web player, as `bun run --cwd video player:build` leaves it. */
 const VIDEO_PLAYER = join(REPO_ROOT, "video", "dist");
 
@@ -171,7 +177,7 @@ ${video}
 <header>
 <h1>Yarvis in action</h1>
 <p>Recorded automatically from the real app, driven by scripted demo flows. Every name and detail in them is made up.</p>
-<nav>${withVideo ? '<a href="video/">Showcase video</a>' : ""}<a href="showcase/">Showcase deck</a>${flows.map((f) => `<a href="#${escapeHtml(f.slug)}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
+<nav>${withVideo ? '<a href="video/">Showcase video</a>' : ""}<a href="showcase/">Showcase deck</a>${EXPLAINERS.map((e) => `<a href="verification/${e.file}">${escapeHtml(e.title)}</a>`).join("")}${flows.map((f) => `<a href="#${escapeHtml(f.slug)}">${escapeHtml(FLOW_INTROS[f.slug]?.title ?? captionFor(f.slug))}</a>`).join("")}</nav>
 </header>
 <main>
 ${sections}
@@ -197,6 +203,10 @@ function buildSite(): void {
   }
   mkdirSync(join(SITE_DIR, "showcase"), { recursive: true });
   copyFileSync(SHOWCASE, join(SITE_DIR, "showcase", "index.html"));
+  mkdirSync(join(SITE_DIR, "verification"), { recursive: true });
+  for (const { file } of EXPLAINERS) {
+    copyFileSync(join(REPO_ROOT, "docs", file), join(SITE_DIR, "verification", file));
+  }
   const withVideo = existsSync(VIDEO_PLAYER);
   // Optional locally, but the published site is linked to at video/, so CI
   // must not quietly publish without it.

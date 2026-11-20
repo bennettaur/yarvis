@@ -16,6 +16,7 @@ export type SecretKey =
   | "jira_api_token"
   | "database_url"
   | "google_client_secret"
+  | "verify_agent_signing_key"
   // Telegram remote control. These are managed by the dedicated TelegramSection
   // rather than the generic Secrets list, so they are intentionally absent from
   // the SECRETS array below.
@@ -84,6 +85,12 @@ export const SECRETS: SecretMeta[] = [
     label: "Google client secret",
     placeholder: "GOCSPX-...",
     help: "OAuth client secret paired with the Google client id, set below under Settings.",
+  },
+  {
+    key: "verify_agent_signing_key",
+    label: "Merge reviewer signing key",
+    placeholder: "One line of base64",
+    help: "Signs the merge reviewer's approvals so a repo's verification gate can trust them. Make one with `bun run verify:agent-key` in the Yarvis repo.",
   },
 ];
 

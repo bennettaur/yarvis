@@ -45,7 +45,7 @@ function Gutter({
   focusAnchor,
 }: {
   cell: SplitCell | null;
-  onComment?: () => void;
+  onComment?: (extend: boolean) => void;
   onAsk?: (extend: boolean) => void;
   style?: React.CSSProperties;
   /** Marks the first row of a focused range so a scroll can find it. */
@@ -65,7 +65,7 @@ function Gutter({
       {(onAsk || onComment) && (
         <LineActions>
           {onAsk && <AskAboutLineButton onClick={onAsk} />}
-          {onComment && <AddCommentButton onClick={onComment} />}
+          {onComment && <AddCommentButton extendable onClick={onComment} />}
         </LineActions>
       )}
       <span>{cell?.line ?? ""}</span>
@@ -110,8 +110,8 @@ function Code({ cell, syntax }: { cell: SplitCell | null; syntax: DiffHighlight 
  * here is read by scrolling sideways; the scroll container behind it is a guard
  * against content that can't wrap rather than part of how the diff is read.
  *
- * Comments anchor to the right (new file) line, matching what both providers
- * accept — so the composer is only offered on the right gutter.
+ * Each gutter comments on its own file: the left one on the old file's line,
+ * the right one on the new file's.
  */
 /** A gap marker carried through pairing, to be drawn across both columns. */
 type SplitOrGap = SplitRow | { kind: "gap"; gap: Gap; hidden: number };
@@ -163,7 +163,7 @@ export default function SplitDiffBody({
   headSha?: string;
 }) {
   const rows = useMemo(() => pairAroundGaps(expansion.rows), [expansion.rows]);
-  const comments = useLineComments(prRef, file, threads);
+  const comments = useLineComments(prRef, file, threads, { headSha });
   const ask = useAskSelection(file.filename, expansion.rows, insights);
   const syntax = useSyntaxHighlight(prRef, file.filename, file.patch ?? "", headSha);
 
@@ -200,6 +200,7 @@ export default function SplitDiffBody({
             );
           }
           const rightLine = row.right?.line ?? null;
+          const leftLine = row.left?.line ?? null;
           const marked =
             highlight != null &&
             rightLine != null &&
@@ -215,11 +216,20 @@ export default function SplitDiffBody({
                 cell={row.left}
                 style={marked ? FOCUS_STYLE : undefined}
                 focusAnchor={marked && rightLine === highlight.start}
+                onComment={
+                  leftLine != null
+                    ? (extend) => comments.openComposer("LEFT", leftLine, extend)
+                    : undefined
+                }
               />
               <Code cell={row.left} syntax={syntax} />
               <Gutter
                 cell={row.right}
-                onComment={rightLine != null ? () => comments.openComposer(rightLine) : undefined}
+                onComment={
+                  rightLine != null
+                    ? (extend) => comments.openComposer("RIGHT", rightLine, extend)
+                    : undefined
+                }
                 onAsk={
                   insights && rightLine != null ? (extend) => ask(rightLine, extend) : undefined
                 }
@@ -229,9 +239,14 @@ export default function SplitDiffBody({
                   them: a wrapper per line would double the grid's item count
                   on a long file. Held to a readable measure rather than run out
                   to the full width of the two code columns. */}
-              {hasLineComments(rightLine, comments) && (
+              {hasLineComments("LEFT", leftLine, comments) && (
                 <div className="col-span-4 min-w-0 max-w-2xl">
-                  <LineCommentBlock line={rightLine} comments={comments} />
+                  <LineCommentBlock side="LEFT" line={leftLine} comments={comments} />
+                </div>
+              )}
+              {hasLineComments("RIGHT", rightLine, comments) && (
+                <div className="col-span-4 min-w-0 max-w-2xl">
+                  <LineCommentBlock side="RIGHT" line={rightLine} comments={comments} />
                 </div>
               )}
               {insights && hasInsightsAt(insights, file.filename, rightLine) && (

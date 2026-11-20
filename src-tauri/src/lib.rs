@@ -3,6 +3,7 @@ mod clipboard;
 mod control;
 mod custom_providers;
 mod embeddings_secrets;
+mod harness;
 mod instance;
 mod keychain;
 // Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
@@ -120,6 +121,8 @@ pub fn run() {
             if let Err(e) = pty::raise_fd_limit() {
                 eprintln!("[pty] raising the file descriptor limit failed: {e}");
             }
+            // Before the control channel, which the sidecar rings alarms through.
+            alarms::init(app.handle());
             // Bind the control channel before spawning the sidecar so its socket
             // path is available to inject into the sidecar's environment.
             if let Err(e) = control::init(app.handle()) {
@@ -127,9 +130,6 @@ pub fn run() {
             }
             if let Err(e) = sidecar::init(app.handle()) {
                 eprintln!("[sidecar] init failed: {e}");
-            }
-            if let Err(e) = alarms::init(app.handle()) {
-                eprintln!("[alarms] init failed: {e}");
             }
             clipboard::init(app.handle());
             #[cfg(desktop)]
@@ -171,11 +171,7 @@ pub fn run() {
             sidecar::get_sidecar_info,
             sidecar::restart_sidecar,
             sidecar::get_sidecar_log_path,
-            alarms::list_alarms,
-            alarms::create_alarm,
-            alarms::cancel_alarm,
-            alarms::acknowledge_alarm,
-            alarms::snooze_alarm,
+            alarms::release_alarm,
             clipboard::clipboard_history,
             clipboard::clipboard_clear_history,
             clipboard::clipboard_write,
@@ -187,10 +183,15 @@ pub fn run() {
             pty::pty_start_claude,
             pty::pty_is_busy,
             pty::get_agent_config,
+            pty::pty_session_harness,
             focus_main_window,
             settings::get_settings,
             settings::set_max_pty_sessions,
             settings::set_agent,
+            settings::set_agent_harnesses,
+            settings::list_agent_harness_secret_status,
+            settings::set_agent_harness_secret,
+            settings::set_allowed_slash_commands,
             settings::set_azure_devops_org_url,
             settings::set_jira_base_url,
             settings::set_jira_email,
@@ -198,6 +199,8 @@ pub fn run() {
             settings::set_telegram_otp_window_minutes,
             settings::set_color_theme,
             settings::set_terminal_font_size,
+            settings::set_attention_animation,
+            settings::set_channel_messaging,
             settings::set_secret_backend,
         ])
         .run(tauri::generate_context!())

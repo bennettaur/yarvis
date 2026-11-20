@@ -1,19 +1,17 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import type { ProvisionEvent } from "../../lib/workspaces";
-import * as workspaces from "../../lib/workspaces";
+import { resetWorkspacesApi, stubWorkspacesApi } from "../../test/workspacesApi";
 
 // `consumeProvision` drives `provisionWorkspace()`; override just that export
 // with a generator yielding a scripted event sequence so we can assert how each
-// provision outcome is surfaced. The real module's other exports are spread
-// back in — `mock.module` replaces the whole module process-wide, so dropping
-// them would break unrelated tests that import them.
+// provision outcome is surfaced.
 let scripted: ProvisionEvent[] = [];
-mock.module("../../lib/workspaces", () => ({
-  ...workspaces,
+stubWorkspacesApi({
   async *provisionWorkspace() {
     for (const ev of scripted) yield ev;
   },
-}));
+});
+afterAll(resetWorkspacesApi);
 
 const { consumeProvision } = await import("./provisionStream");
 

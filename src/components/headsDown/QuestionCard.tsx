@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { answerQuestion, dismissQuestion, type HeadsDownQuestion } from "../../lib/headsDown";
+import { useWorkspaceNames } from "../../lib/workspaceMentions";
+import WorkspaceMentionText from "../WorkspaceMentionText";
 
 /**
  * One thing heads-down mode is waiting on the user for. A question offers the
@@ -22,6 +24,7 @@ export default function QuestionCard({
   const [answerText, setAnswerText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workspaceNames = useWorkspaceNames();
 
   const send = async (input: { choice?: string; answer?: string }) => {
     setBusy(true);
@@ -72,9 +75,13 @@ export default function QuestionCard({
       <div className="mb-1 text-xs font-medium uppercase tracking-wide text-amber-300">
         {isApproval ? "Approval" : "Question"}
       </div>
-      <p className="whitespace-pre-wrap text-sm text-zinc-100">{question.question}</p>
+      <p className="whitespace-pre-wrap text-sm text-zinc-100">
+        <WorkspaceMentionText text={question.question} names={workspaceNames} />
+      </p>
       {question.situation && !isApproval && (
-        <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">{question.situation}</p>
+        <p className="mt-1 whitespace-pre-wrap text-xs text-zinc-400">
+          <WorkspaceMentionText text={question.situation} names={workspaceNames} />
+        </p>
       )}
       {isApproval && question.toolArgs !== null && (
         <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-zinc-950 p-2 text-xs text-zinc-300">

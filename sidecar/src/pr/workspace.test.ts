@@ -80,6 +80,28 @@ describe("startWorkspaceForPr", () => {
       branch: "topic",
       existingBranch: true,
     });
+    // Linked now, before provisioning or any poll.
+    const [pr] = await db
+      .select()
+      .from(workspaceRepoPr)
+      .where(eq(workspaceRepoPr.workspaceRepoId, detail!.repos[0]!.id));
+    expect(pr).toMatchObject({ prNumber: 7, headBranch: "topic", lastPolledAt: null });
+  });
+
+  it("links the pull request to a workspace already on its branch", async () => {
+    const repo = await addRepo();
+    const workspace = await createWorkspace(db, config, {
+      name: "Existing",
+      repoIds: [repo.id],
+      existingBranches: { [repo.id]: "topic" },
+    });
+    const { kickOff } = recordingKickOff();
+
+    const result = await startWorkspaceForPr(db, config, fakeSource({}), { kickOff });
+
+    expect(result).toEqual({ workspaceId: workspace.id, name: "Existing", existing: true });
+    const [pr] = await db.select().from(workspaceRepoPr);
+    expect(pr).toMatchObject({ prNumber: 7, headBranch: "topic" });
   });
 
   // The session the workspace opens with is a blank prompt, so nothing is
@@ -128,10 +150,9 @@ describe("startWorkspaceForPr", () => {
     ).rejects.toThrow("comes from a fork");
   });
 
-  // The poller writes the PR cache only for workspaces that are already
-  // provisioned, so the cached lookup is blind for the whole of provisioning —
-  // the window a second click actually lands in. Git refuses a second worktree
-  // on a checked-out branch, so the duplicate would strand in `error`.
+  // A second click lands while the first workspace is still provisioning. Git
+  // refuses a second worktree on a checked-out branch, so a duplicate would
+  // strand in `error`.
   it("does not create a second workspace when started twice before the poller caches the PR", async () => {
     await addRepo();
     const { started, kickOff } = recordingKickOff();

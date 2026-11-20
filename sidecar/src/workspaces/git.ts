@@ -15,6 +15,7 @@ import { existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node
 import { rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { run } from "./exec.ts";
+import { symlinkRefusal } from "./symlinkScan.ts";
 
 export interface GitRunResult {
   stdout: string;
@@ -25,11 +26,11 @@ export interface GitRunResult {
 /** Runs `git <args>`; `cwd` is the repo/worktree the command operates in. */
 export type GitRunner = (
   args: string[],
-  opts: { cwd?: string; timeoutMs?: number },
+  opts: { cwd?: string; timeoutMs?: number; stdin?: string },
 ) => Promise<GitRunResult>;
 
 /** Network git operations (clone/fetch) can legitimately take a while. */
-const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
+export const NETWORK_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** A reachability check answers in seconds or not at all; an SSH prompt with
  *  no terminal to answer it would otherwise hold the chat turn for minutes. */
@@ -41,38 +42,111 @@ const REMOTE_CHECK_TIMEOUT_MS = 30 * 1000;
 const REMOVAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
- * Real runner: shells out to `git` with a scrubbed env. `GIT_TERMINAL_PROMPT=0`
- * makes a missing-credential clone fail fast instead of hanging on a prompt the
- * headless sidecar can never answer. `LC_ALL=C` pins git's messages to English:
- * `scrubbedEnv` passes the user's locale through, and `mergeBaseIntoWorktree`
- * reads "Already up to date" out of that output.
+ * Config every git the sidecar starts runs with. A workspace session's sandbox
+ * can write a worktree's index and files, which is enough to stage a fake
+ * submodule whose own git directory sets `core.fsmonitor`; a plain `git status`
+ * would then run that command outside the sandbox. These switch off the
+ * settings that attack uses. Config passed this way outranks every config file
+ * and reaches the git processes git starts for submodules, and `gh` passes it
+ * on to the git it drives. It covers these keys only, not every way a config
+ * file can name a program. Replace refs are ignored so a planted
+ * `refs/replace/*` can't change what a merge or push contains.
  */
-export const defaultGitRunner: GitRunner = (args, opts) =>
-  run(["git", ...args], { ...opts, env: { GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" } });
+const HARDENED_GIT_CONFIG: [string, string][] = [
+  ["core.fsmonitor", "false"],
+  ["submodule.recurse", "false"],
+  ["protocol.file.allow", "never"],
+  ["diff.ignoreSubmodules", "all"],
+  ["status.submoduleSummary", "false"],
+];
+
+/** The env entries that apply `HARDENED_GIT_CONFIG` and ignore replace refs. */
+export function hardenedGitEnv(): Record<string, string> {
+  const env: Record<string, string> = {
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_CONFIG_COUNT: String(HARDENED_GIT_CONFIG.length),
+  };
+  HARDENED_GIT_CONFIG.forEach(([key, value], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = key;
+    env[`GIT_CONFIG_VALUE_${i}`] = value;
+  });
+  return env;
+}
+
+/** What a runner answers in place of running git on a clone with a symlink in its git data. */
+export function refusedResult(reason: string): GitRunResult {
+  return { stdout: "", stderr: reason, exitCode: 128 };
+}
+
+export const GIT_BASE_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: "0",
+  LC_ALL: "C",
+};
+
+/**
+ * A runner that shells out to `git` with a scrubbed env, `env` added, and
+ * `hardenedGitEnv` on top so a caller's env can't switch the hardening off. It
+ * first refuses a clone whose git data has a symlink in it (`symlinkScan.ts`),
+ * since git outside the sandbox would write through it. Every git the sidecar
+ * runs on a workspace clone or worktree comes through here, so no call can
+ * skip the scan. `GIT_TERMINAL_PROMPT=0` makes a missing-credential clone fail
+ * fast instead of hanging on a prompt the headless sidecar can never answer.
+ * `LC_ALL=C` pins git's messages to English: `scrubbedEnv` passes the user's
+ * locale through, and `mergeBaseIntoWorktree` reads "Already up to date" out
+ * of that output.
+ */
+export function gitRunnerWithEnv(env: Record<string, string>): GitRunner {
+  const merged = { ...GIT_BASE_ENV, ...env, ...hardenedGitEnv() };
+  return async (args, opts) => {
+    const refusal = symlinkRefusal(opts.cwd);
+    if (refusal) return refusedResult(refusal);
+    return run(["git", ...args], { ...opts, env: merged });
+  };
+}
+
+export const defaultGitRunner: GitRunner = gitRunnerWithEnv({});
+
+/**
+ * The fully qualified remote-tracking ref for `branch`. A short `origin/<branch>`
+ * resolves a tag or local branch of that name first, and a workspace session's
+ * sandbox may be able to create one, so the sidecar always names the remote ref
+ * in full.
+ */
+export function remoteRef(branch: string): string {
+  return `refs/remotes/origin/${branch}`;
+}
 
 /** Runs a git command and throws a descriptive error on non-zero exit. */
-async function git(
+export async function git(
   runner: GitRunner,
   args: string[],
   cwd?: string,
   timeoutMs?: number,
+  stdin?: string,
 ): Promise<string> {
-  const result = await runner(args, { cwd, timeoutMs });
+  const result = await runner(args, { cwd, timeoutMs, ...(stdin === undefined ? {} : { stdin }) });
   if (result.exitCode !== 0) {
     throw new Error(`git ${args.join(" ")} failed (${result.exitCode}): ${result.stderr.trim()}`);
   }
   return result.stdout;
 }
 
-/** Clones the repo to `primaryClonePath` if it isn't already there. Idempotent. */
+/**
+ * Clones the repo to `primaryClonePath` if it isn't already there, and turns
+ * off fetching tags on every call, so a clone made before this setting gets it
+ * too. Idempotent. A workspace session's sandbox may not write tags, so a fetch
+ * inside it that brought a new one would fail; nothing in Yarvis reads tags.
+ */
 export async function ensurePrimaryClone(
   runner: GitRunner,
   cloneUrl: string,
   primaryClonePath: string,
 ): Promise<void> {
-  if (existsSync(`${primaryClonePath}/.git`)) return;
-  mkdirSync(dirname(primaryClonePath), { recursive: true });
-  await git(runner, ["clone", cloneUrl, primaryClonePath], undefined, NETWORK_TIMEOUT_MS);
+  if (!existsSync(`${primaryClonePath}/.git`)) {
+    mkdirSync(dirname(primaryClonePath), { recursive: true });
+    await git(runner, ["clone", cloneUrl, primaryClonePath], undefined, NETWORK_TIMEOUT_MS);
+  }
+  await git(runner, ["config", "remote.origin.tagOpt", "--no-tags"], primaryClonePath);
 }
 
 /**
@@ -87,29 +161,23 @@ export async function remoteExists(runner: GitRunner, cloneUrl: string): Promise
 }
 
 /**
- * Detects the repo's default branch from `origin/HEAD`. Sets the symbolic ref
- * first if it's missing. Returns null if it still can't be determined so the
- * caller can fall back (e.g. to "main").
+ * Asks the remote which branch its HEAD points at. The local `origin/HEAD` isn't
+ * used: a workspace session's sandbox can write the clone's remote-tracking
+ * refs, and a fetch doesn't rewrite that one. Returns null when the remote can't
+ * be reached or doesn't say, so the caller can fall back (e.g. to "main").
  */
 export async function detectDefaultBranch(
   runner: GitRunner,
   primaryClonePath: string,
 ): Promise<string | null> {
-  const read = async (): Promise<string | null> => {
-    const result = await runner(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], {
-      cwd: primaryClonePath,
-    });
-    if (result.exitCode !== 0) return null;
-    // e.g. "origin/main" -> "main"
-    return result.stdout.trim().replace(/^origin\//, "") || null;
-  };
-
-  const first = await read();
-  if (first) return first;
-
-  // origin/HEAD can be unset (e.g. after a partial fetch); ask git to set it.
-  await runner(["remote", "set-head", "origin", "--auto"], { cwd: primaryClonePath });
-  return read();
+  const result = await runner(["ls-remote", "--symref", "origin", "HEAD"], {
+    cwd: primaryClonePath,
+    timeoutMs: REMOTE_CHECK_TIMEOUT_MS,
+  });
+  if (result.exitCode !== 0) return null;
+  // e.g. "ref: refs/heads/main\tHEAD"
+  const match = result.stdout.match(/^ref: refs\/heads\/(\S+)\tHEAD$/m);
+  return match?.[1] ?? null;
 }
 
 /**
@@ -147,18 +215,17 @@ export async function branchSync(
   branch: string,
   baseBranch: string,
 ): Promise<BranchSync> {
-  const remoteBranch = `origin/${branch}`;
-  const base = `origin/${baseBranch}`;
+  const remoteBranch = remoteRef(branch);
+  const base = remoteRef(baseBranch);
 
   const count = async (range: string): Promise<number> => {
     const out = await git(runner, ["rev-list", "--count", range], worktreePath);
     return Number(out.trim()) || 0;
   };
 
-  const remoteCheck = await runner(
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteBranch}`],
-    { cwd: worktreePath },
-  );
+  const remoteCheck = await runner(["rev-parse", "--verify", "--quiet", remoteBranch], {
+    cwd: worktreePath,
+  });
   const hasRemote = remoteCheck.exitCode === 0;
 
   const baseBehind = await count(`HEAD..${base}`);
@@ -214,7 +281,7 @@ export async function worktreeStatus(
   // second "<original>\0" *after* the new path.
   const porcelain = await git(
     runner,
-    ["status", "--porcelain", "-z", "--untracked-files=no"],
+    ["status", "--porcelain", "-z", "--untracked-files=no", "--ignore-submodules=all"],
     worktreePath,
   );
   const fields = porcelain.split("\0").filter(Boolean);
@@ -276,7 +343,7 @@ export async function mergeBaseIntoWorktree(
   worktreePath: string,
   baseBranch: string,
 ): Promise<MergeOutcome> {
-  const result = await runner(["merge", "--no-edit", `origin/${baseBranch}`], {
+  const result = await runner(["merge", "--no-edit", remoteRef(baseBranch)], {
     cwd: worktreePath,
   });
   if (result.exitCode === 0) {
@@ -286,7 +353,11 @@ export async function mergeBaseIntoWorktree(
       : { result: "merged" };
   }
 
-  const conflicted = await git(runner, ["diff", "--name-only", "--diff-filter=U"], worktreePath);
+  const conflicted = await git(
+    runner,
+    ["diff", "--name-only", "--diff-filter=U", "--ignore-submodules=all"],
+    worktreePath,
+  );
   const files = conflicted.split("\n").filter(Boolean);
   if (files.length) return { result: "conflict", files };
 
@@ -462,17 +533,18 @@ export async function createWorktree(
   mkdirSync(dirname(worktreePath), { recursive: true });
   await git(
     runner,
-    ["worktree", "add", "-b", newBranch, worktreePath, `origin/${baseBranch}`],
+    ["worktree", "add", "-b", newBranch, worktreePath, remoteRef(baseBranch)],
     primaryClonePath,
   );
 }
 
 /**
- * Creates a worktree at `worktreePath` checked out on an existing branch. Passing
- * the bare branch name lets git's DWIM create a local branch tracking
- * `origin/<branch>` when none exists locally, or reuse the local branch if it
- * does — so a branch pushed by someone else, or left by a prior workspace, is
- * picked up. Fetch `origin/<branch>` first (see `fetchBranch`). Prunes stale
+ * Creates a worktree at `worktreePath` checked out on an existing branch: the
+ * local branch if there is one (left by a prior workspace), or a new local
+ * branch tracking `origin/<branch>` (pushed by someone else). Fetch
+ * `origin/<branch>` first (see `fetchBranch`). A new branch's start point is
+ * named in full rather than left to git's guess from the bare name, which
+ * searches every remote and falls back to any ref of that name. Prunes stale
  * worktree metadata so a path freed by an out-of-band folder delete can be reused.
  */
 export async function addExistingBranchWorktree(
@@ -483,7 +555,71 @@ export async function addExistingBranchWorktree(
 ): Promise<void> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
   mkdirSync(dirname(worktreePath), { recursive: true });
-  await git(runner, ["worktree", "add", worktreePath, branch], primaryClonePath);
+  const local = await runner(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  const args =
+    local.exitCode === 0
+      ? ["worktree", "add", worktreePath, branch]
+      : ["worktree", "add", "--track", "-b", branch, worktreePath, remoteRef(branch)];
+  await git(runner, args, primaryClonePath);
+}
+
+/** The names of the clone's local branches, packed ones included. */
+export async function listLocalBranches(
+  runner: GitRunner,
+  primaryClonePath: string,
+): Promise<string[]> {
+  const out = await git(
+    runner,
+    ["for-each-ref", "--format=%(refname:lstrip=2)", "refs/heads"],
+    primaryClonePath,
+  );
+  return out
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Creates a worktree at `worktreePath` on a new local branch `branch`, started
+ * from `origin/<startPoint>` (tracking it when `track` is set). The repo's
+ * hooks and the LFS filter are switched off: the checkout can be a branch an
+ * agent pushed, and a post-checkout hook driven by its files would run outside
+ * the agent's sandbox.
+ */
+export async function addWorktreeWithoutHooks(
+  runner: GitRunner,
+  primaryClonePath: string,
+  worktreePath: string,
+  { branch, startPoint, track }: { branch: string; startPoint: string; track: boolean },
+): Promise<void> {
+  await git(runner, ["worktree", "prune"], primaryClonePath);
+  await git(
+    runner,
+    [
+      "-c",
+      "core.hooksPath=/dev/null",
+      // A branch's .gitattributes picks the filters, and git-lfs would fetch
+      // from a host the branch's .lfsconfig names, past the sandbox's network
+      // allowlist. Blank commands turn the filter off; `required=false` keeps
+      // the checkout from failing without it.
+      "-c",
+      "filter.lfs.process=",
+      "-c",
+      "filter.lfs.smudge=",
+      "-c",
+      "filter.lfs.required=false",
+      "worktree",
+      "add",
+      ...(track ? ["--track"] : []),
+      "-b",
+      branch,
+      worktreePath,
+      remoteRef(startPoint),
+    ],
+    primaryClonePath,
+  );
 }
 
 /**
@@ -522,6 +658,114 @@ export async function removeWorktree(
   await git(runner, ["worktree", "prune"], primaryClonePath);
 }
 
+/**
+ * The tip commit of a local branch whose work has landed, so it is safe to
+ * delete, or null when it hasn't. Landed means its PR merged (a squash merge
+ * leaves the branch's commits off the base), or `origin/<base>` as last fetched
+ * already contains its tip. A merged PR counts only while the remote branch, if
+ * it is still there, holds every local commit, so work added after the merge
+ * isn't deleted with the branch. Pass the tip to `deleteBranch` so a commit
+ * made after this check keeps the branch.
+ */
+export async function landedTip(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  baseBranch: string,
+  prMerged: boolean,
+): Promise<string | null> {
+  const resolved = await runner(["show-ref", "--verify", "--hash", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  if (resolved.exitCode !== 0) return null;
+  // A branch that points at another branch is never landed: deleting it must
+  // not reach the branch it points to.
+  const symref = await runner(["symbolic-ref", "-q", `refs/heads/${branch}`], {
+    cwd: primaryClonePath,
+  });
+  if (symref.exitCode === 0) return null;
+  const tip = resolved.stdout.trim();
+  const contains = async (ref: string) =>
+    (await runner(["merge-base", "--is-ancestor", tip, ref], { cwd: primaryClonePath }))
+      .exitCode === 0;
+  if (await contains(remoteRef(baseBranch))) return tip;
+  if (!prMerged) return null;
+  const remote = await runner(["show-ref", "--verify", "--quiet", remoteRef(branch)], {
+    cwd: primaryClonePath,
+  });
+  return remote.exitCode !== 0 || (await contains(remoteRef(branch))) ? tip : null;
+}
+
+/**
+ * How many commits deleting a branch at `tip` would lose: ones no
+ * remote-tracking ref has (any remote counts, a fork's included), and that
+ * aren't behind `mergedHead`, the head commit a merged PR took. `tip` is a
+ * commit or a full ref name.
+ */
+export async function unpushedCommitCount(
+  runner: GitRunner,
+  primaryClonePath: string,
+  tip: string,
+  mergedHead: string | null = null,
+): Promise<number> {
+  const exclude = ["--remotes"];
+  if (mergedHead !== null) {
+    if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(mergedHead)) {
+      throw new Error(`not a commit id: ${mergedHead}`);
+    }
+    exclude.push(mergedHead);
+  }
+  const out = await git(
+    runner,
+    ["rev-list", "--count", tip, "--not", ...exclude],
+    primaryClonePath,
+  );
+  // Thrown rather than read as 0, which would let the branch be deleted.
+  const count = Number.parseInt(out.trim(), 10);
+  if (!Number.isInteger(count)) throw new Error(`git rev-list gave no count: ${out.trim()}`);
+  return count;
+}
+
+/** Whether a worktree has changes `git worktree remove` would refuse to drop, untracked files included. */
+export async function hasUncommittedChanges(
+  runner: GitRunner,
+  worktreePath: string,
+): Promise<boolean> {
+  const out = await git(runner, ["status", "--porcelain", "--ignore-submodules=all"], worktreePath);
+  return out.trim() !== "";
+}
+
+/**
+ * Deletes a local branch, refusing while a worktree has it checked out. With
+ * `expectedTip`, git deletes it only if it still points there, so a commit
+ * made since the caller checked the branch is never lost.
+ */
+export async function deleteBranch(
+  runner: GitRunner,
+  primaryClonePath: string,
+  branch: string,
+  expectedTip?: string,
+): Promise<void> {
+  if (expectedTip === undefined) {
+    await git(runner, ["branch", "-D", "--", branch], primaryClonePath);
+    return;
+  }
+  // `update-ref` skips the two things `branch -D` does beyond the ref, so both
+  // are done here: the checked-out refusal and dropping the branch's config.
+  const worktrees = await listWorktrees(runner, primaryClonePath);
+  if (worktrees.some((entry) => entry.branch === branch)) {
+    throw new Error(`branch ${branch} is checked out in a worktree`);
+  }
+  // --no-deref so a branch that is a symbolic ref deletes only itself.
+  await git(
+    runner,
+    ["update-ref", "--no-deref", "-d", `refs/heads/${branch}`, expectedTip],
+    primaryClonePath,
+  );
+  // Not checked: it fails when the branch has no config.
+  await runner(["config", "--remove-section", `branch.${branch}`], { cwd: primaryClonePath });
+}
+
 async function removeLeftover(
   worktreePath: string,
   opts: { force: boolean; workspaceRoot: string },
@@ -556,11 +800,11 @@ async function registeredWorktree(
   worktreePath: string,
 ): Promise<WorktreeEntry | undefined> {
   await git(runner, ["worktree", "prune"], primaryClonePath);
-  const target = existsSync(worktreePath)
-    ? canonicalPath(worktreePath)
-    : join(canonicalPath(dirname(worktreePath)), basename(worktreePath));
+  const canonical = (path: string) =>
+    existsSync(path) ? canonicalPath(path) : join(canonicalPath(dirname(path)), basename(path));
+  const target = canonical(worktreePath);
   return (await listWorktrees(runner, primaryClonePath)).find(
-    (entry) => canonicalPath(entry.path) === target,
+    (entry) => canonical(entry.path) === target,
   );
 }
 
@@ -671,10 +915,132 @@ const STATUS_LETTERS: Record<string, string> = {
  * Splits a NUL-terminated git list into fields, dropping the empty one the
  * final NUL leaves behind.
  */
-function splitNulFields(out: string): string[] {
+export function splitNulFields(out: string): string[] {
   const fields = out.split("\0");
   if (fields[fields.length - 1] === "") fields.pop();
   return fields;
+}
+
+/** One file in a diff: what kind of change it is and how many lines moved. */
+export interface DiffRecord {
+  /** Where the file ended up. */
+  path: string;
+  /** Where a rename or copy came from. */
+  oldPath?: string;
+  /** git's status code (`A`, `M`, `D`, `R087`, …); `M` for a file only numstat listed. */
+  code: string;
+  additions: number;
+  deletions: number;
+  /** numstat reported `-` for both counts, i.e. git treats the file as binary. */
+  binary: boolean;
+  /** Blob ids from `--raw` output (all zeros for a side that has no file). */
+  oldOid?: string;
+  newOid?: string;
+}
+
+interface StatusRecord {
+  path: string;
+  oldPath?: string;
+  code: string;
+  oldOid?: string;
+  newOid?: string;
+}
+
+interface CountRecord {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+/**
+ * Reads `-z` status records — `--name-status` (`R087\0old\0new`) or `--raw`
+ * (`:100644 100644 <oid> <oid> R087\0old\0new`) — starting at `start`, for as
+ * long as `isStatus` accepts the field. Returns where it stopped, so the
+ * numstat records that follow `--raw --numstat` output can be read from there.
+ *
+ * A rename or copy carries its source path before its destination; every other
+ * kind carries one path. The file is keyed by where it ended up.
+ */
+function readStatusRecords(
+  fields: string[],
+  start: number,
+  isStatus: (field: string) => boolean,
+): { records: StatusRecord[]; next: number } {
+  const records: StatusRecord[] = [];
+  let i = start;
+  while (i < fields.length && isStatus(fields[i] as string)) {
+    const field = fields[i] as string;
+    // The raw form is `:<old mode> <new mode> <old oid> <new oid> <code>`.
+    const raw = field.startsWith(":") ? field.split(" ") : null;
+    const code = raw ? (raw[4] ?? "") : field;
+    const pathCount = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
+    const path = fields[i + pathCount] ?? "";
+    const oldPath = pathCount === 2 ? fields[i + 1] : undefined;
+    i += pathCount + 1;
+    if (!path) continue;
+    records.push({
+      path,
+      ...(oldPath ? { oldPath } : {}),
+      code,
+      ...(raw ? { oldOid: raw[2], newOid: raw[3] } : {}),
+    });
+  }
+  return { records, next: i };
+}
+
+/**
+ * Reads `--numstat -z` records from `start` to the end. Only the first two tabs
+ * are delimiters — a tab is legal in a filename and `-z` leaves it raw, so the
+ * path is everything after them. A rename or copy leaves the path column empty
+ * and puts the source and destination in the two fields that follow.
+ */
+function readCountRecords(fields: string[], start: number): CountRecord[] {
+  const records: CountRecord[] = [];
+  let i = start;
+  while (i < fields.length) {
+    const [add, del, ...rest] = (fields[i] as string).split("\t");
+    const pathInRecord = rest.join("\t");
+    const isSplitRecord = !pathInRecord;
+    const path = (isSplitRecord ? fields[i + 2] : pathInRecord) ?? "";
+    i += isSplitRecord ? 3 : 1;
+    if (!path) continue;
+    records.push({
+      path,
+      additions: add === "-" ? 0 : Number(add) || 0,
+      deletions: del === "-" ? 0 : Number(del) || 0,
+      binary: add === "-" && del === "-",
+    });
+  }
+  return records;
+}
+
+/** Joins status and count records by path, in the order git listed them. */
+function joinDiffRecords(status: StatusRecord[], counts: CountRecord[]): DiffRecord[] {
+  const byPath = new Map<string, DiffRecord>();
+  for (const record of status) {
+    byPath.set(record.path, { ...record, additions: 0, deletions: 0, binary: false });
+  }
+  for (const count of counts) {
+    byPath.set(count.path, { code: "M", ...byPath.get(count.path), ...count });
+  }
+  return [...byPath.values()];
+}
+
+/** Parses separate `diff --name-status -z` and `diff --numstat -z` output. */
+export function parseNameStatusAndNumstat(nameStatus: string, numstat: string): DiffRecord[] {
+  const { records } = readStatusRecords(splitNulFields(nameStatus), 0, () => true);
+  return joinDiffRecords(records, readCountRecords(splitNulFields(numstat), 0));
+}
+
+/**
+ * Parses one `diff --raw --numstat -z` run: every raw record (each starting
+ * with `:`) comes first, then every numstat record, with no separator.
+ */
+export function parseRawNumstat(out: string): DiffRecord[] {
+  const fields = splitNulFields(out);
+  const { records, next } = readStatusRecords(fields, 0, (field) => field.startsWith(":"));
+  return joinDiffRecords(records, readCountRecords(fields, next));
 }
 
 /**
@@ -696,53 +1062,22 @@ export async function listChangedFiles(
   const base = await resolveDiffBase(runner, worktreePath, baseRef);
   const byPath = new Map<string, ChangedFile>();
 
-  // name-status gives the change kind (A/M/D/R…).
-  const nameStatus = splitNulFields(
-    await git(runner, ["diff", "--name-status", "-z", base], worktreePath),
+  // name-status gives the change kind (A/M/D/R…), numstat the line counts.
+  const records = parseNameStatusAndNumstat(
+    await git(
+      runner,
+      ["diff", "--name-status", "-z", "--ignore-submodules=all", base],
+      worktreePath,
+    ),
+    await git(runner, ["diff", "--numstat", "-z", "--ignore-submodules=all", base], worktreePath),
   );
-  let statusField = 0;
-  while (statusField < nameStatus.length) {
-    const code = nameStatus[statusField];
-    // A rename or copy carries its source path before its destination; every
-    // other kind carries one path. Either way the file is listed where it
-    // ended up, so it's always the last path of the record we want.
-    const pathCount = code.startsWith("R") || code.startsWith("C") ? 2 : 1;
-    const destination = nameStatus[statusField + pathCount] ?? "";
-    statusField += pathCount + 1;
-    if (!destination) continue;
-    byPath.set(destination, {
-      path: destination,
-      status: STATUS_LETTERS[code[0] ?? ""] ?? "modified",
-      additions: 0,
-      deletions: 0,
+  for (const record of records) {
+    byPath.set(record.path, {
+      path: record.path,
+      status: STATUS_LETTERS[record.code[0] ?? ""] ?? "modified",
+      additions: record.additions,
+      deletions: record.deletions,
     });
-  }
-
-  // numstat gives line counts ("-" for binary).
-  const numstat = splitNulFields(
-    await git(runner, ["diff", "--numstat", "-z", base], worktreePath),
-  );
-  let countsField = 0;
-  while (countsField < numstat.length) {
-    // Only the first two tabs are delimiters — a tab is legal in a filename and
-    // `-z` leaves it raw, so the path is everything after them.
-    const [add, del, ...rest] = numstat[countsField].split("\t");
-    const pathInRecord = rest.join("\t");
-    // A rename or copy leaves the path column empty and puts the source and
-    // destination in the two fields that follow.
-    const isSplitRecord = !pathInRecord;
-    const destination = (isSplitRecord ? numstat[countsField + 2] : pathInRecord) ?? "";
-    countsField += isSplitRecord ? 3 : 1;
-    if (!destination) continue;
-    const entry = byPath.get(destination) ?? {
-      path: destination,
-      status: "modified",
-      additions: 0,
-      deletions: 0,
-    };
-    entry.additions = add === "-" ? 0 : Number(add) || 0;
-    entry.deletions = del === "-" ? 0 : Number(del) || 0;
-    byPath.set(destination, entry);
   }
 
   const untracked = await git(
@@ -776,12 +1111,16 @@ export async function fileDiff(
   path: string,
 ): Promise<string> {
   const base = await resolveDiffBase(runner, worktreePath, baseRef);
-  const tracked = await git(runner, ["diff", base, "--", path], worktreePath);
+  const tracked = await git(
+    runner,
+    ["diff", "--no-ext-diff", "--ignore-submodules=all", base, "--", path],
+    worktreePath,
+  );
   if (tracked.trim()) return tracked;
 
   // `git diff --no-index` exits 1 when the files differ — the normal outcome for
   // a new file — so only a code above 1 signals a real failure.
-  const untracked = await runner(["diff", "--no-index", "--", "/dev/null", path], {
+  const untracked = await runner(["diff", "--no-ext-diff", "--no-index", "--", "/dev/null", path], {
     cwd: worktreePath,
   });
   if (untracked.exitCode > 1) {

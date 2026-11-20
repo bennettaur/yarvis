@@ -1,15 +1,16 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import type { Config } from "../config.ts";
-import type { CustomProviderRow } from "../customProviders/service.ts";
-import { guardedFetch } from "../lib/guardedFetch.ts";
 import { readSection, withSection } from "../settings/store.ts";
 import type { ModelSelection } from "./complexity.ts";
-import { availableProviders, findCustomProvider, ollamaUrl, resolveModel } from "./providers.ts";
+import { ollamaChat } from "./ollamaChat.ts";
+import { availableProviders, resolveModelWithOllama, systemOneTargetFor } from "./providers.ts";
+import { type SystemOneDecision, systemOneAsk } from "./systemOne.ts";
 
 /**
  * The decision model: one model, tagged `decision` in the catalogue, that
- * answers structured yes/no judgements for the rest of the app. Its selection
+ * answers structured judgements for the rest of the app: yes/no reviews, and
+ * picks made by decision specialists (`agents/decide.ts`). Its selection
  * and the features that use it live under the `decisionModel` key in
  * `~/.yarvis/settings.json`, beside `complexityModels`, so a change applies to
  * the next call with no restart.
@@ -25,12 +26,21 @@ export interface DecisionModelConfig {
    * before. Separate from `autoApproveTools`: nobody is watching a pass.
    */
   autoApproveHeadsDown: boolean;
+  /**
+   * Let it pick the complexity tier for a delegated run whose specialist names
+   * no model or tier of its own (`complexity-router`).
+   */
+  routeComplexity: boolean;
+  /** Let it pick the specialist for a delegation that names none (`specialist-picker`). */
+  pickSpecialists: boolean;
 }
 
 export const DEFAULT_DECISION_MODEL_CONFIG: DecisionModelConfig = {
   model: null,
   autoApproveTools: false,
   autoApproveHeadsDown: false,
+  routeComplexity: false,
+  pickSpecialists: false,
 };
 
 const SETTINGS_KEY = "decisionModel";
@@ -89,7 +99,13 @@ export interface DecisionRequest<T> {
   schema: z.ZodType<T>;
   /** Cancels the call along with the turn it serves. */
   signal?: AbortSignal;
-  /** Injected by tests in place of the network. Used on the Ollama path. */
+  /**
+   * The same judgement as yes/no questions, for a System One model, which
+   * can't answer to a schema. A request without this fails on a System One
+   * model.
+   */
+  systemOne?: SystemOneDecision<T>;
+  /** Injected by tests in place of the network. Used on the Ollama and System One paths. */
   fetchImpl?: typeof fetch;
 }
 
@@ -108,15 +124,46 @@ export async function decide<T>(
       (s): s is AbortSignal => s !== undefined,
     ),
   );
-  const custom = await findCustomProvider(selection.provider);
-  // Ollama's native API has no effort level, so a saved one is not sent there.
-  if (custom?.apiKind === "ollama") {
-    return decideWithOllama(config, custom, selection.model, request, signal);
+  const systemOneTarget = await systemOneTargetFor(config, selection.provider, selection.model);
+  if (systemOneTarget) {
+    if (!request.systemOne) throw new Error("this decision can't be asked of a System One model");
+    const probabilities = await systemOneAsk({
+      target: systemOneTarget,
+      state: request.prompt,
+      questions: request.systemOne.questions,
+      timeoutMs: DECISION_TIMEOUT_MS,
+      signal,
+      fetchImpl: request.fetchImpl,
+    });
+    return request.schema.parse(request.systemOne.toAnswer(probabilities));
   }
 
-  const model = await resolveModel(config, selection.provider, selection.model, {
-    effort: selection.effort,
-  });
+  const { model, ollama } = await resolveModelWithOllama(
+    config,
+    selection.provider,
+    selection.model,
+    { effort: selection.effort },
+  );
+  // Ollama's native API holds the answer to the schema; its OpenAI-compatible
+  // endpoint, which `model` would use, only promises JSON. It has no effort
+  // level, so a saved one is not sent there.
+  if (ollama) {
+    const reply = await ollamaChat({
+      target: ollama,
+      messages: [
+        { role: "system", content: request.system },
+        { role: "user", content: request.prompt },
+      ],
+      format: z.toJSONSchema(request.schema),
+      // A judgement should come out the same way twice.
+      options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
+      timeoutMs: DECISION_TIMEOUT_MS,
+      signal,
+      fetchImpl: request.fetchImpl,
+    });
+    return request.schema.parse(JSON.parse(reply.content));
+  }
+
   const { output } = await generateText({
     model,
     system: request.system,
@@ -125,61 +172,4 @@ export async function decide<T>(
     abortSignal: signal,
   });
   return output;
-}
-
-const ollamaChatResponseSchema = z.object({
-  message: z.object({ content: z.string() }),
-});
-
-/**
- * Ollama's native `/api/chat`, which takes a JSON schema as `format` and
- * constrains decoding to it. Its OpenAI-compatible endpoint only promises JSON,
- * not this schema, which matters for a small model.
- */
-async function decideWithOllama<T>(
-  config: Config,
-  row: CustomProviderRow,
-  modelId: string,
-  request: DecisionRequest<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  const secrets = config.customProviderSecrets[row.id] ?? { headers: {} };
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...secrets.headers,
-  };
-  if (secrets.apiKey) headers.Authorization = `Bearer ${secrets.apiKey}`;
-
-  const res = await guardedFetch(
-    ollamaUrl(row.baseUrl, "/api/chat"),
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          { role: "system", content: request.system },
-          { role: "user", content: request.prompt },
-        ],
-        format: z.toJSONSchema(request.schema),
-        stream: false,
-        // A judgement should come out the same way twice.
-        options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
-      }),
-      // Also bounds reading the body, which outlives guardedFetch's own deadline.
-      signal,
-    },
-    {
-      fetchImpl: request.fetchImpl ?? fetch,
-      timeoutMs: DECISION_TIMEOUT_MS,
-      allowLoopback: true,
-      // The body is the user's conversation.
-      sameOriginOnly: true,
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`decision model call failed (${res.status})`);
-  }
-  const { message } = ollamaChatResponseSchema.parse(await res.json());
-  return request.schema.parse(JSON.parse(message.content));
 }

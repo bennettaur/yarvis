@@ -8,8 +8,9 @@ import type { ModelInfo } from "./chat";
  * - `openai-chat`  → legacy `/chat/completions` (for gateways without Responses)
  * - `anthropic`    → Anthropic Messages API
  * - `ollama`       → Ollama's native API, needed for its decision models
+ * - `systemone`    → System One API, for decision models only
  */
-export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama";
+export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ollama" | "systemone";
 
 /** One model the proxy serves, tagged with what it can do, like a catalogue entry. */
 export type CustomProviderModel = Pick<ModelInfo, "id" | "capabilities">;

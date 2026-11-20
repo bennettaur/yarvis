@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { PrStack, StackEntry } from "../../lib/pr/types";
 import type {
   StackMergeResult,
@@ -7,16 +7,14 @@ import type {
   WorkspaceWorktree,
 } from "../../lib/workspaces";
 import { mountForInteraction, textOf } from "../../test/render";
+import { resetWorkspacesApi, stubWorkspacesApi } from "../../test/workspacesApi";
 
 let stackResult: WorkspaceStack | Error;
 let mergeCalls: { upTo: number; expect: number[]; method?: string }[] = [];
 let mergeResult: StackMergeResult | Error = { merged: true, output: "merged" };
 
-// Only the two stack calls are stubbed; the rest of the module stays real so
-// sibling tests still see the actual implementations.
-const actual = await import("../../lib/workspaces");
-mock.module("../../lib/workspaces", () => ({
-  ...actual,
+// Only the two stack calls are stubbed; the rest of the module stays real.
+stubWorkspacesApi({
   workspaceRepoStack: async () => {
     if (stackResult instanceof Error) throw stackResult;
     return stackResult;
@@ -32,7 +30,8 @@ mock.module("../../lib/workspaces", () => ({
     if (mergeResult instanceof Error) throw mergeResult;
     return mergeResult;
   },
-}));
+});
+afterAll(resetWorkspacesApi);
 
 const { default: WorkspaceStackView } = await import("./WorkspaceStackView");
 

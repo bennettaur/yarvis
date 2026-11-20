@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clipboardSafePath, clipboardSafeText, clipboardSafeUrl } from "../lib/clipboard";
 import { buildFileTree } from "../lib/fileTree";
 import { requestOpenPr } from "../lib/nav";
+import { refKey } from "../lib/pr/ref";
 import type { PrSummary } from "../lib/pr/types";
 import { repoPrRef } from "../lib/repos";
 import { openExternal } from "../lib/url";
@@ -22,6 +23,7 @@ import FileTreeRows, { treeRowPaddingLeft } from "./files/FileTreeRows";
 import LoadingIndicator from "./LoadingIndicator";
 import CopyPathButton from "./pr/CopyPathButton";
 import type { OpenFileDiff } from "./shell/terminalTabs/TerminalTabs";
+import WorkspaceFailingChecks from "./workspaces/WorkspaceFailingChecks";
 import WorkspaceReviewComments from "./workspaces/WorkspaceReviewComments";
 import WorkspaceStackView from "./workspaces/WorkspaceStackView";
 
@@ -585,17 +587,25 @@ function checksClipboardText(repoName: string, pr: NonNullable<WorkspaceRepoDeta
 
 function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
   const pr = repo.pr;
-  if (!pr || pr.lastPolledAt === null) {
-    return <p className="text-xs text-zinc-500">Not polled yet.</p>;
-  }
-  if (pr.prNumber === null) {
-    return (
-      <p className="text-xs text-zinc-500">
-        No PR for <span className="font-mono">{repo.branch}</span> yet.
-        {pr.lastError && <span className="block text-red-400">{pr.lastError}</span>}
-      </p>
+  // A repo whose branches were searched without finding a PR has no PR row at
+  // all; a worktree's live lookup comes back as a PR with no number instead.
+  const noPrYet = (error: string | null | undefined) => (
+    <p className="text-xs text-zinc-500">
+      No PR for <span className="font-mono">{repo.branch}</span> yet.
+      {error && <span className="block text-red-400">{error}</span>}
+    </p>
+  );
+  if (!pr) {
+    return repo.prsPolledAt ? (
+      noPrYet(repo.prsPollError)
+    ) : (
+      <p className="text-xs text-zinc-500">Not polled yet.</p>
     );
   }
+  if (pr.lastPolledAt === null) {
+    return <p className="text-xs text-zinc-500">Not polled yet.</p>;
+  }
+  if (pr.prNumber === null) return noPrYet(pr.lastError);
   const summary = buildPrSummary(repo);
   return (
     <div className="space-y-2 text-xs">
@@ -648,6 +658,7 @@ function ChecksView({ repo }: { repo: WorkspaceRepoDetail }) {
       )}
       {pr.mergeable && <div className="text-zinc-500">mergeable: {pr.mergeable}</div>}
       {pr.lastError && <div className="text-red-400">{pr.lastError}</div>}
+      {summary && <WorkspaceFailingChecks key={refKey(summary.ref)} prRef={summary.ref} />}
     </div>
   );
 }
