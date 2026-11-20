@@ -3,10 +3,13 @@
 pub mod agent_policy;
 pub mod auth;
 pub mod config;
+pub mod custom_providers;
+pub mod embeddings_secrets;
 pub mod error;
 pub mod events;
 pub mod harness;
 pub mod http_guard;
+pub mod mcp;
 pub mod secret_blob;
 pub mod secret_store;
 pub mod settings;
