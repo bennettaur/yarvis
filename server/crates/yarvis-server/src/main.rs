@@ -1,3 +1,4 @@
+use std::future::IntoFuture;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
@@ -36,12 +37,35 @@ async fn main() {
             std::process::exit(1);
         });
     tracing::info!("listening on http://{bind}");
-    axum::serve(listener, app(AppState::new(config, store)))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await
-        .expect("server error");
+    let server = axum::serve(listener, app(AppState::new(config, store)))
+        .with_graceful_shutdown(shutdown_signal())
+        .into_future();
+    // Graceful shutdown waits for every connection, and event and PTY
+    // WebSockets never end on their own, so give them a few seconds and go.
+    tokio::select! {
+        result = server => result.expect("server error"),
+        _ = async {
+            shutdown_signal().await;
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        } => tracing::info!("open connections didn't close in time; exiting"),
+    }
+}
+
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ctrl-C, or SIGTERM from launchd.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<PathBuf, String> {

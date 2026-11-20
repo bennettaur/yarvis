@@ -10,8 +10,15 @@ several clients. The server can run on the same Mac or on another machine (an
 always-on Intel Mac mini, for example). Clients are the web UI in a browser, a
 thin Tauri app, and later a native macOS app and a phone app.
 
-The spikes under `spikes/` on the `yarvis/explore-a-client-server-architecture`
-branch tested the risky parts. Each has a `FINDINGS.md`.
+Spikes tested the risky parts first. They live on the
+`yarvis/explore-a-client-server-architecture` branch, under `spikes/`, as
+reference code that isn't meant to merge. Each has a `FINDINGS.md`, and
+references below to `spikes/...` point there.
+
+What is built so far: the `server/` skeleton (config, SQLite store, device
+tokens and scopes, the event log and its WebSocket, the error shape, the
+`SecretBackend` trait, `GET /api/health` and `GET /api/devices/me`). The rest
+of this document is the plan the next pull requests implement.
 
 ## Goals for the first pass
 
@@ -70,7 +77,8 @@ origin.
 
 `server/` is a Cargo workspace, separate from `src-tauri/`:
 
-- `server/crates/yarvis-server`: the binary and the axum app.
+- `server/crates/yarvis-server`: the binary and the axum app. It reads
+  `~/.yarvis/server.toml`, or the file given with `--config`.
 - Modules inside it, each owned by one area:
   - `config`: the server config file and command-line flags.
   - `store`: SQLite (`rusqlite`, bundled) for server state: passkeys, devices,
@@ -97,38 +105,88 @@ is what has to run on the machine in front of you (see "Clients").
 
 This follows `spikes/auth/FINDINGS.md`.
 
-- First start prints a one-time setup code to stdout. Registering the first
-  passkey with it creates the first device with the `admin` scope.
-- A passkey sign-in creates a **device** with a random 32-byte token. Only its
-  SHA-256 is stored. Clients send it as `Authorization: Bearer <token>`. Browser
-  WebSockets can't set headers, so they send it as the first message instead,
-  never in the URL.
+- First start prints a one-time setup code to stdout, and writes it to a
+  `0600` file in the data dir for a server whose stdout goes to a log.
+  Registering the first passkey with it creates the first device with all
+  four scopes. The setup routes stop working once a passkey exists.
+- Every passkey sign-in creates a new **device** with a random 32-byte token,
+  sent as base64url without padding. Clients treat it as opaque. Only its
+  SHA-256 is stored. Clients send it as `Authorization: Bearer <token>`.
+  Browser WebSockets can't set headers, so they send it as the first message
+  instead, never in the URL. Signing in again from the same browser makes a
+  second device. The devices page shows when each was last used, so old ones
+  are easy to revoke.
+- A token unused for 90 days stops working.
 - Scopes: `read`, `chat`, `approve`, `admin`. A passkey device gets all four.
-  A token made for a bot or script gets only what it is given. Admin actions
-  (devices, vault, settings that change secrets) also need a passkey check in
-  the last 10 minutes.
+  A token made for a bot or script gets only what it is given.
+- **Fresh**: device management, adding a passkey, and vault actions also need
+  a passkey check on this device in the last 10 minutes (`verified_at`).
+  Without one they get `403 { "error": "fresh passkey check needed" }`, and
+  the client runs `/api/auth/reverify`. A token device can never be fresh,
+  so it can never do these things.
+- Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`.
+  Tokens made with the CLI on the server machine can, since whoever runs that
+  can already read the database.
+- `401` means no token, or a token that's unknown, revoked or expired.
+  `403` means the device lacks the route's scope, or isn't fresh.
 - Revoking a device takes effect on its next request and closes its open
-  WebSockets.
-- Every event has a `device_id`. Proxied sidecar requests carry it in a header.
+  WebSockets, including proxied sidecar streams.
+- Every event has a `deviceId`, `null` for the server's own work. Proxied
+  sidecar requests carry it in `X-Yarvis-Device-Id`.
 
-RP ID: passkeys are tied to one domain for good. The default for the first pass
-is the host name the server is reached at, set in the config (`auth.rp_id` and
-`auth.origins`). For a long-lived install, use a domain you own, with a
-tailnet-only subdomain. The native iOS and macOS apps need that, because the
+**Browser tokens and XSS.** The web UI keeps its token in localStorage, which
+script on the page can read. An HttpOnly cookie would hide the token from an
+injected script, but the script could still act through the page while it is
+open, and cookies bring CSRF and WebSocket-hijacking checks of their own. So
+the defense is keeping script out: every response carries a strict CSP
+(`script-src 'self'`, no inline script) and `frame-ancestors 'none'`. Model
+output and markdown are rendered as data, which the UI already does.
+
+**Host checks.** Every request's `Host` must be a loopback name, the bind
+address, or a host in `auth.origins`. That stops a page on another site from
+reaching a loopback server through DNS rebinding.
+
+**TLS.** The server speaks plain HTTP. It refuses to bind anything but
+loopback unless `server.allow_plain_http = true`, which is for a server with
+TLS in front of it. On a tailnet, `tailscale serve` gives the server an HTTPS
+name, and passkeys need HTTPS on any name other than `localhost`.
+
+RP ID: passkeys are tied to one domain for good. Set it with `auth.rp_id`
+(default `localhost`) and the matching `auth.origins`. For a long-lived
+install, use a domain you own, with a tailnet-only subdomain. The native iOS and macOS apps need that, because the
 domain has to serve an `apple-app-site-association` file. `localhost` works for
 a server and browser on the same Mac.
 
 ## Deployments
 
-Two settings decide where secrets live and whether the server signs commits:
+Two settings decide where secrets live and whether the server signs commits.
+A full `server.toml`, with the defaults:
 
 ```toml
+[server]
+bind = "127.0.0.1:7878"
+data_dir = "~/.yarvis/server"   # written out in full; ~ isn't expanded
+# web_dir = "/path/to/dist"     # the built web UI; unset serves only /api
+allow_plain_http = false        # needed for any bind that isn't loopback
+
+[auth]
+rp_id = "localhost"
+origins = ["http://localhost:7878"]
+
 [secrets]
-backend = "vault"        # "vault" | "keychain" | "onepassword"
+backend = "keychain"            # "vault" | "keychain" | "onepassword"
 
 [ssh_agent]
-enabled = true           # the server's own ssh-agent for git signing
+enabled = false                 # the server's own ssh-agent; needs "vault"
+# upstream_socket = "..."       # the agent workspace shells use when it's off
+
+[sidecar]
+enabled = true
+# command = ["bun", "run", "..."]
 ```
+
+The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
+since the vault is where the signing key lives.
 
 **Home server (the Intel Mac mini).** `backend = "vault"`, `ssh_agent.enabled =
 true`. The server starts locked. A passkey unlock (PRF) or the recovery key
@@ -138,8 +196,13 @@ signature waits for an approval from any device with the `approve` scope.
 
 **Work laptop.** `backend = "onepassword"` (or `"keychain"`),
 `ssh_agent.enabled = false`. Secrets and the signing key stay in 1Password,
-managed the way they are today. Workspace PTYs inherit the user's own
-`SSH_AUTH_SOCK`, which is 1Password's agent. You can still reach this server
+managed the way they are today. Workspace PTYs get `SSH_AUTH_SOCK` set to
+`ssh_agent.upstream_socket` when it is set, and to the server's own
+`SSH_AUTH_SOCK` otherwise. A server started by the Tauri app inherits the
+login session's value. One run by launchd doesn't, so set `upstream_socket` to
+1Password's agent socket,
+`~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock` (written
+out in full). You can still reach this server
 from another device. But 1Password only approves a signature on the laptop
 itself, so commits can only be signed while you are at the laptop. Nothing in
 the server tries to work around that. With `ssh_agent.enabled = false` the
@@ -159,7 +222,7 @@ at boot, before anyone logs in, has no keychain. That setup needs `vault`. See
 ## Clients
 
 All clients use the same HTTP and WebSocket API. Nothing in the API is specific
-to a browser. Cookies are not used for auth.
+to a browser. Cookies are not used for auth (see "Browser tokens and XSS").
 
 **Web UI.** The existing React app in `src/`, built by Vite and served by the
 server. Two changes:
@@ -204,6 +267,17 @@ from them later for a Swift client.
 ## API contract for the first pass
 
 All routes are under `/api`. Errors are `{ "error": string, "detail"?: string }`.
+Times are milliseconds since the Unix epoch. A **device** in a response is:
+
+```json
+{ "deviceId": "…", "name": "My iPhone", "scopes": ["read", "chat"], "verifiedAt": 1763600000000 }
+```
+
+The devices list adds `kind` (`"passkey"` or `"token"`), `createdAt`,
+`lastSeenAt` and `revokedAt`. Tokens and their hashes never appear in a
+response, except the one time a token is created.
+
+- `GET /api/health` → `{ "status": "ok", "service": "yarvis-server" }`, no token.
 
 Auth (no token needed):
 
@@ -215,7 +289,7 @@ Auth (no token needed):
 
 Devices (token needed):
 
-- `GET    /api/devices/me`
+- `GET    /api/devices/me` (`read`) → the calling device
 - `GET    /api/devices` (admin)
 - `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`
 - `DELETE /api/devices/{id}` (admin, fresh)
@@ -223,10 +297,27 @@ Devices (token needed):
 
 Events and approvals:
 
-- `GET /api/events` (WebSocket, `read`). The first client message is
-  `{"type":"auth","token":"..."}`. Then the server sends
-  `{"type":"event", seq, at, deviceId, kind, data}`. A client that reconnects
-  sends `{"type":"auth","token":"...","since":seq}` to catch up.
+- Every WebSocket starts the same way. The client sends
+  `{"type":"auth","token":"…"}` within 10 seconds, plus any fields the route
+  reads. If it fails, the server closes the socket with one of these codes:
+  - `4401`: no auth message, or the token is unknown, revoked or expired. Also
+    sent when the device is revoked while connected. Sign in again.
+  - `4403`: the device lacks the scope.
+  - `4400`: a field the route reads is malformed.
+  - `1011`: the server failed. Reconnect.
+- `GET /api/events` (WebSocket, `read`). With no `since`, the client gets
+  only events from now on. With `"since": seq` it first gets every event
+  after `seq`, then live ones, with nothing missed or repeated. Each message is
+  one event:
+
+  ```json
+  {"type": "event", "seq": 42, "at": 1763600000000, "deviceId": "…", "kind": "approval.requested", "data": {}}
+  ```
+
+  If the client is more than 1000 events behind, or falls behind while
+  connected, it gets `{"type": "lagged"}` and the socket closes. It should
+  reload what it shows, then reconnect without `since`. Event `data` never
+  holds a token or secret, since every `read` device can see the history.
 - Event kinds clients act on:
   - `alarm.fire` and `alarm.release`: what the control channel's alarm methods
     did to the window. `data` is the alarm, as `alarms.rs` builds it.
@@ -276,7 +367,14 @@ Pairing a device without a passkey:
 Sidecar:
 
 - `ANY /api/sidecar/{*path}` → the sidecar's `/{path}`, with `read` for `GET`
-  and `chat` for everything else.
+  and `chat` for everything else. Routes that change what the sidecar may do
+  (MCP servers, custom providers, agent and job definitions, settings) need
+  `admin`. The proxy keeps that list. A path with `..` or an encoded slash is
+  refused. The client's own `Authorization` and `X-Yarvis-Device-Id` headers
+  are dropped before the server adds its own.
+- Routes that local processes call on the sidecar with their own scoped
+  tokens (Claude Code hooks posting to `/ingest/*`, the browser extension's
+  host, the MCP endpoint) are not proxied. They stay on loopback.
 
 ## Open questions
 
