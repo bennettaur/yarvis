@@ -251,7 +251,7 @@ pub(crate) const MAX_REVIEW_CONTEXT_CHARS: usize = 8_000;
 
 /// Checks what the sidecar sent for a review session and returns the context,
 /// cleaned for the launch line. Pure, apart from asking whether each folder
-/// exists, so it is testable without an `AppHandle`.
+/// exists, so it can be unit-tested without a `PtyManager`.
 pub(crate) fn check_review_spawn(
     workspace_id: &str,
     cwd: &str,

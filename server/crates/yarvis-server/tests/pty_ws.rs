@@ -15,7 +15,8 @@ use yarvis_server::app;
 use yarvis_server::auth::Scope;
 use yarvis_server::pty::PtyOptions;
 
-use common::{Server, WAIT, device, serve, until};
+use common::{Server, Setup, WAIT, device, serve, serve_with, until};
+use yarvis_server::config::SshAgentConfig;
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -87,7 +88,20 @@ impl Client {
                 true
             }
             Some(Ok(Message::Text(t))) => {
-                self.texts.push(serde_json::from_str(&t).unwrap());
+                let t: Value = serde_json::from_str(&t).unwrap();
+                // A resync picks up from the last byte this client got, so a
+                // resume must start exactly there and a snapshot must count
+                // the gap it leaves.
+                if t["type"] == "resync" {
+                    let next = self.next.expect("a resync before any output");
+                    assert_eq!(t["requestedOffset"], next);
+                    let start = t["startOffset"].as_u64().unwrap();
+                    match t["mode"].as_str() {
+                        Some("resume") => assert_eq!(start, next),
+                        _ => assert_eq!(t["lostBytes"].as_u64().unwrap(), start - next),
+                    }
+                }
+                self.texts.push(t);
                 true
             }
             Some(Ok(Message::Close(frame))) => {
@@ -262,11 +276,14 @@ async fn a_client_resuming_from_its_offset_gets_exactly_what_it_missed() {
     assert_eq!(attached["startOffset"], left_at);
     assert_eq!(attached["requestedOffset"], left_at);
     assert_eq!(attached["lostBytes"], 0);
+    assert!(attached["endOffset"].as_u64().unwrap() >= left_at);
     back.wait_for_output(&missed).await;
-    assert!(
-        !String::from_utf8_lossy(&back.output).contains("before-done"),
-        "a resume replays only what came after the offset"
-    );
+    // The watcher replayed the whole stream from 0, so what the resumed
+    // client got must be that stream's bytes from `left_at` on.
+    let tail = &watcher.output[left_at as usize..];
+    let shared = tail.len().min(back.output.len());
+    assert_eq!(back.output[..shared], tail[..shared]);
+    assert!(!String::from_utf8_lossy(&back.output).contains("before-done"));
 }
 
 #[tokio::test]
@@ -297,8 +314,9 @@ async fn an_offset_older_than_the_scrollback_gets_a_flagged_snapshot() {
     let start = attached["startOffset"].as_u64().unwrap();
     assert!(start > 0);
     assert_eq!(attached["lostBytes"].as_u64().unwrap(), start);
+    let kept = attached["endOffset"].as_u64().unwrap() - start;
+    assert_eq!(kept, 512);
     back.wait_for_output("all-done-2").await;
-    assert!(back.output.len() <= 512);
 }
 
 #[tokio::test]
@@ -354,6 +372,18 @@ async fn the_first_client_owns_the_size_and_a_later_one_waits_its_turn() {
     assert_eq!(b_attached["owner"], a_id);
     assert_eq!(b_attached["cols"], 100);
     assert_eq!(b_attached["rows"], 30);
+
+    // Once A leaves nobody owns the size, and B typing takes it with B's
+    // recorded viewport.
+    drop(a);
+    loop {
+        let size = b.wait_for_text("size").await;
+        if size["owner"].is_null() {
+            break;
+        }
+    }
+    b.input("stty size\n").await;
+    b.wait_for_output("20 60").await;
 }
 
 #[tokio::test]
@@ -531,11 +561,13 @@ async fn the_core_commands_drive_and_report_on_a_session() {
         .await,
         (204, Value::Null)
     );
-    let size = client.wait_for_text("size").await;
-    assert_eq!(
-        (size["cols"].clone(), size["rows"].clone()),
-        (json!(90), json!(25))
-    );
+    loop {
+        let size = client.wait_for_text("size").await;
+        if size["cols"] == 90 {
+            assert_eq!(size["rows"], 25);
+            break;
+        }
+    }
 
     let (status, body) = core(
         &server,
@@ -551,7 +583,7 @@ async fn the_core_commands_drive_and_report_on_a_session() {
         core(&server, &reader, "pty_session_harness", json!({"id": id})).await,
         (200, Value::Null)
     );
-    let (status, config) = core(&server, &reader, "get_agent_config", json!({})).await;
+    let (status, config) = core(&server, &chat, "get_agent_config", json!({})).await;
     assert_eq!(status, 200);
     assert_eq!(config["defaultHarness"], "claude");
     assert_eq!(config["harnesses"][0]["id"], "claude");
@@ -573,6 +605,9 @@ async fn the_core_commands_drive_and_report_on_a_session() {
 async fn a_client_that_stops_reading_is_resynced_without_holding_up_the_other() {
     let server = serve(PtyOptions {
         client_queue: 2,
+        // The slow client's sends stay blocked until the fast one has read
+        // the whole flood, which a slow runner may take a while over.
+        send_timeout: std::time::Duration::from_secs(120),
         ..PtyOptions::default()
     })
     .await;
@@ -590,10 +625,192 @@ async fn a_client_that_stops_reading_is_resynced_without_holding_up_the_other() 
     fast.wait_for_output("flood-2").await;
 
     slow.wait_for_output("flood-2").await;
-    let resync = slow
-        .texts
-        .iter()
-        .find(|t| t["type"] == "resync")
-        .expect("the slow client was resynced");
-    assert!(resync["requestedOffset"].as_u64().is_some());
+    // `read_one` checked each resync's offsets against what it had received.
+    assert!(
+        slow.texts.iter().any(|t| t["type"] == "resync"),
+        "the slow client was never resynced"
+    );
+}
+
+#[tokio::test]
+async fn every_core_command_needs_its_scope() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, reader) = device(&server.state, &[Scope::Read]).await;
+    let (_, chat) = device(&server.state, &[Scope::Chat]).await;
+    let id = json!({"id": "tab:terminal/t1/p1"});
+    for command in [
+        "pty_write",
+        "pty_resize",
+        "pty_kill",
+        "pty_start_claude",
+        "get_agent_config",
+    ] {
+        let (status, _) = core(&server, &reader, command, id.clone()).await;
+        assert_eq!(status, 403, "{command}");
+    }
+    for command in ["pty_exists", "pty_is_busy", "pty_session_harness"] {
+        let (status, _) = core(&server, &chat, command, id.clone()).await;
+        assert_eq!(status, 403, "{command}");
+        let (status, _) = core(&server, &reader, command, id.clone()).await;
+        assert_eq!(status, 200, "{command}");
+    }
+    let (status, _) = core(&server, "", "pty_exists", id.clone()).await;
+    assert_eq!(status, 401);
+
+    let (status, body) = core(
+        &server,
+        &chat,
+        "pty_write",
+        json!({"id": "nope", "data": "x"}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (400, json!("no such session"))
+    );
+    let (status, _) = core(
+        &server,
+        &chat,
+        "pty_resize",
+        json!({"id": "nope", "cols": 0, "rows": 24}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, body) = core(
+        &server,
+        &chat,
+        "pty_start_claude",
+        json!({"workspaceId": "../x", "cwd": "/tmp", "name": "n", "remoteControl": false}),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].clone()),
+        (400, json!("invalid workspaceId"))
+    );
+}
+
+#[tokio::test]
+async fn pty_start_claude_launches_the_configured_agent() {
+    let server = serve(PtyOptions::default()).await;
+    // `cat` stands in for Claude Code: the launch line is the bare command.
+    server.write_settings(json!({"agentCommand": "cat", "agentName": "Cat"}));
+    let (_, token) = device(&server.state, &[Scope::Read, Scope::Chat]).await;
+    let workspace = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
+    let cwd = server.dir.path().to_string_lossy().into_owned();
+    let (status, _) = core(
+        &server,
+        &token,
+        "pty_start_claude",
+        json!({"workspaceId": workspace, "cwd": cwd, "name": "Fix it", "remoteControl": false}),
+    )
+    .await;
+    assert_eq!(status, 204);
+    let id = format!("ws-claude:{workspace}");
+    assert_eq!(
+        core(&server, &token, "pty_session_harness", json!({"id": id})).await,
+        (200, json!({"id": "claude", "name": "Cat"}))
+    );
+    let (_, config) = core(&server, &token, "get_agent_config", json!({})).await;
+    assert_eq!(config["command"], "cat");
+    until("cat to hold the terminal", || {
+        let busy = server.state.pty.is_busy(&id);
+        async move { busy.then_some(()) }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn revoking_another_device_leaves_this_terminal_open() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (other, _) = device(&server.state, &[Scope::Chat]).await;
+    let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    client.wait_for_text("attached").await;
+    server.state.auth.announce_revocation(&other);
+    let (command, output) = marker("still-here");
+    client.input(&command).await;
+    client.wait_for_output(&output).await;
+}
+
+#[tokio::test]
+async fn the_session_cap_refuses_one_more_shell() {
+    let server = serve(PtyOptions::default()).await;
+    server.write_settings(json!({"maxPtySessions": 1}));
+    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let mut first = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    first.wait_for_text("attached").await;
+    let mut second = Client::connect(&server, "tab:terminal/t1/p2", hello(&token, &server)).await;
+    let error = second.wait_for_text("error").await;
+    assert!(
+        error["error"]
+            .as_str()
+            .unwrap()
+            .contains("too many PTY sessions")
+    );
+    assert_eq!(second.wait_for_close().await, 4400);
+    // The id already held still attaches.
+    let mut again = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    again.wait_for_text("attached").await;
+}
+
+#[tokio::test]
+async fn input_over_the_write_limit_closes_the_socket() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    client.wait_for_text("attached").await;
+    client.input(&"x".repeat(64 * 1024 + 1)).await;
+    assert_eq!(client.wait_for_close().await, 4400);
+}
+
+async fn ssh_auth_sock_seen_with(ssh_agent: SshAgentConfig, server_agent: Option<&str>) -> String {
+    let server = serve_with(Setup {
+        ssh_agent,
+        ..Setup::default()
+    })
+    .await;
+    server
+        .state
+        .pty
+        .set_server_ssh_agent(server_agent.map(Into::into));
+    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    client
+        .input("printf 'sock=[%s]\\n' \"$SSH_AUTH_SOCK\"\n")
+        .await;
+    // The echoed command line holds `%s`, so only the output matches `sock=[/`
+    // or `sock=[]`.
+    loop {
+        let out = String::from_utf8_lossy(&client.output).into_owned();
+        let printed = out
+            .split("sock=[")
+            .skip(1)
+            .find(|rest| !rest.starts_with('%'));
+        if let Some(end) = printed.and_then(|rest| rest.find(']')) {
+            return printed.unwrap()[..end].to_string();
+        }
+        assert!(client.read_one().await);
+    }
+}
+
+#[tokio::test]
+async fn shells_get_the_upstream_agent_or_the_servers_own() {
+    let upstream = SshAgentConfig {
+        enabled: false,
+        upstream_socket: Some("/tmp/upstream-agent.sock".into()),
+    };
+    assert_eq!(
+        ssh_auth_sock_seen_with(upstream, None).await,
+        "/tmp/upstream-agent.sock"
+    );
+    let on = SshAgentConfig {
+        enabled: true,
+        upstream_socket: None,
+    };
+    assert_eq!(
+        ssh_auth_sock_seen_with(on.clone(), Some("/tmp/server-agent.sock")).await,
+        "/tmp/server-agent.sock"
+    );
+    // Locked: no agent at all, not the one the server inherited.
+    assert_eq!(ssh_auth_sock_seen_with(on, None).await, "");
 }

@@ -27,13 +27,31 @@ pub struct Server {
     pub dir: tempfile::TempDir,
 }
 
+/// What a test server differs in.
+#[derive(Default)]
+pub struct Setup {
+    pub pty: PtyOptions,
+    pub ssh_agent: SshAgentConfig,
+    /// What the secrets store holds at the start. Empty when unset.
+    pub secrets: Option<Arc<MemoryBackend>>,
+}
+
 pub async fn serve(options: PtyOptions) -> Server {
+    serve_with(Setup {
+        pty: options,
+        ..Setup::default()
+    })
+    .await
+}
+
+pub async fn serve_with(setup: Setup) -> Server {
+    let options = setup.pty;
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     let mut state = AppState::new(config, Store::open_in_memory().unwrap());
     let settings = SettingsStore::new(dir.path().join("settings.json"));
-    let secrets = MemoryBackend::empty();
+    let secrets = setup.secrets.unwrap_or_else(MemoryBackend::empty);
     let blob = SecretBlob::with_store(
         SecretStore {
             label: "memory",
@@ -45,7 +63,7 @@ pub async fn serve(options: PtyOptions) -> Server {
         settings,
         blob,
         state.events.clone(),
-        SshAgentConfig::default(),
+        setup.ssh_agent,
         PtyOptions {
             shell: Some("/bin/sh".into()),
             ..options
@@ -66,6 +84,13 @@ pub async fn serve(options: PtyOptions) -> Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.state.pty.kill_all();
+    }
+}
+
+impl Server {
+    /// Writes the server's `settings.json`, which it re-reads on every use.
+    pub fn write_settings(&self, settings: serde_json::Value) {
+        std::fs::write(self.dir.path().join("settings.json"), settings.to_string()).unwrap();
     }
 }
 

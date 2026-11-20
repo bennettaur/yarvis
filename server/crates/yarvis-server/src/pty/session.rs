@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use portable_pty::{Child, ChildKiller, MasterPty, PtyPair, PtySize};
@@ -33,6 +33,19 @@ const INPUT_QUEUE: usize = 256;
 /// How often the reader checks for the shell's exit status once the PTY has
 /// closed. The status usually follows EOF within a millisecond or two.
 const EXIT_POLL: Duration = Duration::from_millis(20);
+
+/// How long an agent send waits for the session to take its input before it
+/// gives up. Past this, whatever runs there isn't reading its terminal.
+const INPUT_WAIT: Duration = Duration::from_secs(2);
+const INPUT_RETRY: Duration = Duration::from_millis(5);
+const NOT_ACCEPTING_INPUT: &str = "the session isn't accepting input";
+
+/// The exit code reported when the shell's status couldn't be read.
+pub const EXIT_UNKNOWN: u32 = u32::MAX;
+
+fn exited() -> String {
+    "the session has exited".to_string()
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -273,7 +286,7 @@ impl Session {
             match lock(&self.child).try_wait() {
                 Ok(Some(status)) => return status.exit_code(),
                 Ok(None) => {}
-                Err(_) => return u32::MAX,
+                Err(_) => return EXIT_UNKNOWN,
             }
             std::thread::sleep(EXIT_POLL);
         }
@@ -396,34 +409,64 @@ impl Session {
         if let Some(client) = client {
             self.claim(client);
         }
+        // Room in the queue first, then the gate: a writer waiting on a PTY
+        // that has stopped reading must not hold the gate meanwhile, or an
+        // agent send would wait behind it with every other client.
+        let permit = self.input.reserve().await.map_err(|_| exited())?;
         let _gate = self.input_gate.lock().await;
-        self.input
-            .send(Input { data, done: None })
-            .await
-            .map_err(|_| "the session has exited".to_string())
+        permit.send(Input { data, done: None });
+        Ok(())
     }
 
-    /// Holds the input gate from a blocking thread. See `input_gate`.
-    pub(crate) fn hold_input(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.input_gate.blocking_lock()
+    /// Holds the input gate from a blocking thread. See `input_gate`. Gives
+    /// up after [`INPUT_WAIT`], since the sidecar's control requests wait on
+    /// this.
+    pub(crate) fn hold_input(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+        let deadline = Instant::now() + INPUT_WAIT;
+        loop {
+            if let Ok(gate) = self.input_gate.try_lock() {
+                return Ok(gate);
+            }
+            if Instant::now() > deadline {
+                return Err(NOT_ACCEPTING_INPUT.into());
+            }
+            std::thread::sleep(INPUT_RETRY);
+        }
     }
 
-    /// Writes `data` and waits until it has reached the PTY. Only for a caller
-    /// already holding [`Self::hold_input`], from a blocking thread.
+    /// Writes `data` and waits until it has reached the PTY, for at most
+    /// [`INPUT_WAIT`]. Only for a caller already holding [`Self::hold_input`],
+    /// from a blocking thread. Since the queue is first in, first out, this
+    /// also waits for every write queued before it.
     pub(crate) fn write_and_wait(
         &self,
         _gate: &tokio::sync::MutexGuard<'_, ()>,
         data: &[u8],
     ) -> Result<(), String> {
+        let deadline = Instant::now() + INPUT_WAIT;
         let (done, wait) = std::sync::mpsc::sync_channel(1);
-        self.input
-            .blocking_send(Input {
-                data: data.to_vec(),
-                done: Some(done),
-            })
-            .map_err(|_| "the session has exited".to_string())?;
-        wait.recv()
-            .map_err(|_| "the session has exited".to_string())?
+        let mut input = Input {
+            data: data.to_vec(),
+            done: Some(done),
+        };
+        loop {
+            match self.input.try_send(input) {
+                Ok(()) => break,
+                Err(mpsc::error::TrySendError::Closed(_)) => return Err(exited()),
+                Err(mpsc::error::TrySendError::Full(back)) => {
+                    if Instant::now() > deadline {
+                        return Err(NOT_ACCEPTING_INPUT.into());
+                    }
+                    input = back;
+                    std::thread::sleep(INPUT_RETRY);
+                }
+            }
+        }
+        match wait.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(NOT_ACCEPTING_INPUT.into()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(exited()),
+        }
     }
 
     /// True while the session's shell is running.

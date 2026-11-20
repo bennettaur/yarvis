@@ -20,6 +20,7 @@ use std::sync::atomic::Ordering;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::response::Response;
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -104,7 +105,8 @@ async fn serve(mut socket: WebSocket, state: AppState, id: String) {
         Ok(Ok(session)) => session,
         Ok(Err(e)) => {
             // The client can't fix a refusal by retrying (the cap, an ended
-            // review session), so it gets the reason and a 4400.
+            // review session), so it gets the reason and a 4400, which
+            // clients don't reconnect on (`docs/client-server.md`).
             let _ = socket
                 .send(Message::Text(
                     json!({ "type": "error", "error": e }).to_string().into(),
@@ -120,7 +122,7 @@ async fn serve(mut socket: WebSocket, state: AppState, id: String) {
         }
     };
     let client = state.pty.next_client_id();
-    let timeout = state.pty.options().send_timeout;
+    let send_timeout = state.pty.options().send_timeout;
     session.set_client_size(client, hello.size);
     client_loop(
         socket,
@@ -131,7 +133,7 @@ async fn serve(mut socket: WebSocket, state: AppState, id: String) {
             rx: revoked,
             device_id: device.device_id,
         },
-        timeout,
+        send_timeout,
     )
     .await;
     session.detach(client);
@@ -153,6 +155,7 @@ enum ClientMsg {
 /// Why the client's side of the socket ended.
 enum InputEnd {
     Closed,
+    Revoked,
     /// A write over [`MAX_WRITE_BYTES`].
     TooLarge,
 }
@@ -198,70 +201,105 @@ fn close_frame(reason: CloseReason) -> Message {
     }))
 }
 
+/// Sends `message`, or reports `false` when the socket failed or the send
+/// blocked past `send_timeout`, which drops a client the network has stalled.
+async fn send_within(
+    sink: &mut SplitSink<WebSocket, Message>,
+    send_timeout: std::time::Duration,
+    message: Message,
+) -> bool {
+    matches!(
+        tokio::time::timeout(send_timeout, sink.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+/// Forwards the client's input, viewport and focus to the session until the
+/// client closes, sends too much, or its device is revoked. It watches the
+/// revocation itself so a revoked device's keys stop at once, even while the
+/// output side is stuck sending.
+async fn read_client_input(
+    mut stream: SplitStream<WebSocket>,
+    session: Arc<Session>,
+    client: u64,
+    mut revocation: Revocation,
+) -> InputEnd {
+    loop {
+        let msg = tokio::select! {
+            msg = stream.next() => match msg {
+                Some(Ok(msg)) => msg,
+                _ => return InputEnd::Closed,
+            },
+            id = revocation.rx.recv() => match id {
+                Ok(id) if id != revocation.device_id => continue,
+                // Revoked, or revocations were missed and this device might
+                // be among them: stop either way.
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => return InputEnd::Revoked,
+                Err(broadcast::error::RecvError::Closed) => return InputEnd::Closed,
+            },
+        };
+        let data = match msg {
+            Message::Binary(b) => b.to_vec(),
+            Message::Text(t) => match serde_json::from_str::<ClientMsg>(&t) {
+                Ok(ClientMsg::Input { data }) => data.into_bytes(),
+                Ok(ClientMsg::Resize { cols, rows }) => {
+                    // A zero-sized viewport is a hidden terminal, not a size.
+                    if cols > 0 && rows > 0 {
+                        session.set_client_size(client, Size { cols, rows });
+                    }
+                    continue;
+                }
+                Ok(ClientMsg::Focus) => {
+                    session.claim(client);
+                    continue;
+                }
+                Err(_) => continue,
+            },
+            Message::Close(_) => return InputEnd::Closed,
+            _ => continue,
+        };
+        if data.len() > MAX_WRITE_BYTES {
+            return InputEnd::TooLarge;
+        }
+        // An error means the shell is gone; the output side delivers `exit`.
+        let _ = session.write(Some(client), data).await;
+    }
+}
+
 async fn client_loop(
     socket: WebSocket,
     session: Arc<Session>,
     client: u64,
     from: Option<u64>,
-    mut revocation: Revocation,
-    timeout: std::time::Duration,
+    revocation: Revocation,
+    send_timeout: std::time::Duration,
 ) {
-    let (mut sink, mut stream) = socket.split();
-
+    let (mut sink, stream) = socket.split();
     // Input runs on its own task so a client whose outbound socket is backed
     // up can still type.
-    let input_session = session.clone();
-    let mut input_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = stream.next().await {
-            let data = match msg {
-                Message::Binary(b) => b.to_vec(),
-                Message::Text(t) => match serde_json::from_str::<ClientMsg>(&t) {
-                    Ok(ClientMsg::Input { data }) => data.into_bytes(),
-                    Ok(ClientMsg::Resize { cols, rows }) => {
-                        if cols > 0 && rows > 0 {
-                            input_session.set_client_size(client, Size { cols, rows });
-                        }
-                        continue;
-                    }
-                    Ok(ClientMsg::Focus) => {
-                        input_session.claim(client);
-                        continue;
-                    }
-                    Err(_) => continue,
-                },
-                Message::Close(_) => break,
-                _ => continue,
-            };
-            if data.len() > MAX_WRITE_BYTES {
-                return InputEnd::TooLarge;
-            }
-            if input_session.write(Some(client), data).await.is_err() {
-                // The shell is gone; the output side delivers `exit`.
-                continue;
-            }
-        }
-        InputEnd::Closed
-    });
+    let mut input_task = tokio::spawn(read_client_input(
+        stream,
+        session.clone(),
+        client,
+        revocation,
+    ));
 
     let mut kind = "attached";
     let mut requested = from;
     let ending: Option<Message> = 'outer: loop {
-        let mut att = session.subscribe(client, requested);
-        let mut next = att.start_offset + att.catchup.len() as u64;
-        for m in [
-            attached_msg(kind, client, &att, requested),
-            output_frame(att.start_offset, &att.catchup),
+        let mut attach = session.subscribe(client, requested);
+        let mut next = attach.start_offset + attach.catchup.len() as u64;
+        for message in [
+            attached_msg(kind, client, &attach, requested),
+            output_frame(attach.start_offset, &attach.catchup),
         ] {
-            if !matches!(
-                tokio::time::timeout(timeout, sink.send(m)).await,
-                Ok(Ok(()))
-            ) {
+            if !send_within(&mut sink, send_timeout, message).await {
                 break 'outer None;
             }
         }
         loop {
-            let msg = tokio::select! {
-                ev = att.rx.recv() => match ev {
+            let message = tokio::select! {
+                event = attach.rx.recv() => match event {
                     Some(Event::Output { offset, bytes }) => {
                         debug_assert_eq!(offset, next, "stream must be contiguous");
                         next = offset + bytes.len() as u64;
@@ -270,7 +308,7 @@ async fn client_loop(
                     Some(Event::Size { size, owner }) => text(
                         json!({"type": "size", "cols": size.cols, "rows": size.rows, "owner": owner}),
                     ),
-                    None if att.lagged.load(Ordering::SeqCst) => {
+                    None if attach.lagged.load(Ordering::SeqCst) => {
                         // Dropped for falling behind: resume from the last
                         // byte this client was sent, or a fresh snapshot if
                         // that has left scrollback.
@@ -279,40 +317,28 @@ async fn client_loop(
                         continue 'outer;
                     }
                     None => {
-                        let code = session.exit_code();
-                        let m = text(json!({"type": "exit", "code": code}));
-                        let _ = tokio::time::timeout(timeout, sink.send(m)).await;
+                        let exit = text(json!({"type": "exit", "code": session.exit_code()}));
+                        let _ = send_within(&mut sink, send_timeout, exit).await;
                         break 'outer Some(Message::Close(Some(CloseFrame {
                             code: axum::extract::ws::close_code::NORMAL,
                             reason: "the session ended".into(),
                         })));
                     }
                 },
-                id = revocation.rx.recv() => match id {
-                    Ok(id) if id != revocation.device_id => continue,
-                    // Revoked, or revocations were missed and this device
-                    // might be among them: close either way.
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                        break 'outer Some(close_frame(CloseReason::Unauthorized));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => break 'outer None,
-                },
                 end = &mut input_task => match end {
+                    Ok(InputEnd::Revoked) => break 'outer Some(close_frame(CloseReason::Unauthorized)),
                     Ok(InputEnd::TooLarge) => break 'outer Some(close_frame(CloseReason::BadRequest)),
                     _ => break 'outer None,
                 },
             };
-            if !matches!(
-                tokio::time::timeout(timeout, sink.send(msg)).await,
-                Ok(Ok(()))
-            ) {
+            if !send_within(&mut sink, send_timeout, message).await {
                 break 'outer None;
             }
         }
     };
     input_task.abort();
-    if let Some(m) = ending {
-        let _ = tokio::time::timeout(timeout, sink.send(m)).await;
+    if let Some(message) = ending {
+        let _ = send_within(&mut sink, send_timeout, message).await;
     }
     let _ = sink.close().await;
 }
