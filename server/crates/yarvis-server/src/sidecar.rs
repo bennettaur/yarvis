@@ -270,9 +270,6 @@ impl Sidecar {
         if let Some(dir) = &deps.config.sidecar.migrations_dir {
             cmd.env("YARVIS_MIGRATIONS_DIR", dir);
         }
-        if let Some(path) = legacy_alarms_path() {
-            cmd.env("YARVIS_LEGACY_ALARMS_PATH", path);
-        }
         for (key, value) in self
             .inner
             .extra_env
@@ -422,17 +419,6 @@ fn database_url_override() -> Option<String> {
 /// Reads an env var, treating an empty value as unset.
 fn env_value(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
-}
-
-/// Where the desktop app kept its alarms before the sidecar owned them, so the
-/// sidecar can copy them over once. Only passed when the file is there.
-fn legacy_alarms_path() -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let path = PathBuf::from(std::env::var_os("HOME")?)
-        .join("Library/Application Support/com.mikebennett.yarvis/alarms.json");
-    path.is_file().then_some(path)
 }
 
 /// The instance identity handed to the sidecar. A desktop app or a second

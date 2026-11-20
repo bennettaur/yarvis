@@ -852,3 +852,41 @@ async fn a_sidecar_that_exits_is_restarted() {
     assert_eq!(stopped.data, json!({ "reason": "exited", "code": 3 }));
     supervisor.abort();
 }
+
+/// The server stops by dropping the supervisor, which must take the sidecar
+/// with it rather than leave it running.
+#[tokio::test]
+async fn stopping_the_supervisor_kills_the_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pid");
+    let script = format!(
+        "echo $$ > '{0}.tmp' && mv '{0}.tmp' '{0}'; exec sleep 30",
+        pid_file.display()
+    );
+    let mut config = Config::default();
+    config.sidecar.command = Some(vec!["sh".into(), "-c".into(), script]);
+    let h = test_server(config, MemoryBackend::empty(), 1);
+    let deps = SupervisorDeps {
+        config: h.state.config.clone(),
+        settings: h.state.settings.clone(),
+        secrets: h.state.secrets.clone(),
+        events: h.state.events.clone(),
+    };
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
+    until("the pid file", async || pid_file.exists()).await;
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(alive(&pid));
+    supervisor.abort();
+    let _ = supervisor.await;
+    until("the sidecar to exit", async || !alive(&pid)).await;
+}
