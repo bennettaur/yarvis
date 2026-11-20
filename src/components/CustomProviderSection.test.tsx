@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { mountForInteraction } from "../test/render";
+import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 import CustomProviderSection from "./CustomProviderSection";
 
 const PROVIDER = {
@@ -39,15 +40,7 @@ function reply(url: string, method: string): unknown {
   return [PROVIDER];
 }
 
-/**
- * `mock.module` replaces the module for the whole test process, so the real
- * exports are spread back in: a stub that redefines `ensureOk` silently
- * replaces what `api.test.ts` asserts about.
- */
-const actualApi = await import("../lib/api");
-
-mock.module("../lib/api", () => ({
-  ...actualApi,
+stubSidecarApi({
   getHealth: async () => ({
     status: "ok",
     service: "sidecar",
@@ -64,7 +57,9 @@ mock.module("../lib/api", () => ({
       headers: { "content-type": "application/json" },
     });
   },
-}));
+});
+
+afterAll(resetSidecarApi);
 
 let unmount: (() => void) | null = null;
 
