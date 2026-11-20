@@ -1,8 +1,9 @@
 //! The server's config file (`server.toml`).
 //!
 //! Every field has a default, so an empty file (or no file) gives a server on
-//! 127.0.0.1 that keeps secrets in the macOS Keychain and runs no ssh-agent:
-//! the same behavior as the desktop app today.
+//! 127.0.0.1 that keeps secrets wherever the desktop app's settings say (the
+//! macOS Keychain unless they name 1Password) and runs no ssh-agent: the same
+//! behavior as the desktop app.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -82,7 +83,11 @@ pub enum SecretBackendKind {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
-    pub backend: SecretBackendKind,
+    /// Unset means `settings.json`'s `secretBackend` decides, as it does for
+    /// the desktop app (the Keychain when that's unset too). A server started
+    /// by the desktop app on an existing install then keeps reading the store
+    /// the user already chose, rather than quietly switching to the Keychain.
+    pub backend: Option<SecretBackendKind>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -108,6 +113,10 @@ pub struct SidecarConfig {
     /// The command that starts the sidecar. Unset means `bun run` on the
     /// sidecar's entry point in this checkout.
     pub command: Option<Vec<String>>,
+    /// Where a compiled sidecar finds its database migrations, passed to it as
+    /// `YARVIS_MIGRATIONS_DIR`. A sidecar run from the checkout finds them
+    /// there, so this is for a packaged build.
+    pub migrations_dir: Option<PathBuf>,
 }
 
 impl Default for SidecarConfig {
@@ -115,6 +124,7 @@ impl Default for SidecarConfig {
         Self {
             enabled: true,
             command: None,
+            migrations_dir: None,
         }
     }
 }
@@ -176,7 +186,7 @@ impl Config {
                  front of it (for example `tailscale serve`) and set server.allow_plain_http = true",
             );
         }
-        if self.ssh_agent.enabled && self.secrets.backend != SecretBackendKind::Vault {
+        if self.ssh_agent.enabled && self.secrets.backend != Some(SecretBackendKind::Vault) {
             return invalid(
                 "ssh_agent.enabled needs secrets.backend = \"vault\", which holds the signing key",
             );
@@ -201,7 +211,7 @@ mod tests {
     fn an_empty_file_gives_a_loopback_server_with_no_ssh_agent() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.server.bind.ip().is_loopback());
-        assert_eq!(config.secrets.backend, SecretBackendKind::Keychain);
+        assert_eq!(config.secrets.backend, None);
         assert!(!config.ssh_agent.enabled);
     }
 
@@ -216,7 +226,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.secrets.backend, SecretBackendKind::OnePassword);
+        assert_eq!(config.secrets.backend, Some(SecretBackendKind::OnePassword));
         assert!(!config.ssh_agent.enabled);
     }
 
@@ -263,6 +273,6 @@ mod tests {
     fn a_missing_file_gives_the_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::load(&dir.path().join("server.toml")).unwrap();
-        assert_eq!(config.secrets.backend, SecretBackendKind::Keychain);
+        assert_eq!(config.secrets.backend, None);
     }
 }

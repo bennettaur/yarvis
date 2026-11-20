@@ -20,6 +20,7 @@ use std::net::TcpListener;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -83,6 +84,10 @@ struct Inner {
     /// clients.
     mcp_token: String,
     restart: Notify,
+    /// Whether a sidecar process is up. The port is only reserved while one
+    /// is, so the proxy sends nothing there otherwise: another local process
+    /// could have bound it and would be handed the bearer token.
+    running: AtomicBool,
     log_path: PathBuf,
     /// Variables other modules add to the sidecar's environment, such as the
     /// control socket's path. Applied on the next spawn.
@@ -93,28 +98,38 @@ impl Sidecar {
     /// Picks a free loopback port and fresh tokens. The process isn't started
     /// until [`Self::supervise`] runs.
     pub fn new(data_dir: &Path) -> std::io::Result<Self> {
-        Ok(Self::at(
+        Ok(Self::build(
             Endpoint {
                 port: pick_free_port()?,
                 token: random_token(),
             },
             data_dir.join("logs").join("sidecar.log"),
+            false,
         ))
     }
 
-    /// A sidecar already listening at `endpoint`, for tests and for a sidecar
-    /// started by hand.
+    /// A sidecar already listening at `endpoint`, for tests.
     pub fn at(endpoint: Endpoint, log_path: PathBuf) -> Self {
+        Self::build(endpoint, log_path, true)
+    }
+
+    fn build(endpoint: Endpoint, log_path: PathBuf, running: bool) -> Self {
         Self {
             inner: Arc::new(Inner {
                 endpoint,
                 attention_token: random_token(),
                 mcp_token: random_token(),
                 restart: Notify::new(),
+                running: AtomicBool::new(running),
                 log_path,
                 extra_env: Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Whether a sidecar process is up to take requests.
+    pub fn is_running(&self) -> bool {
+        self.inner.running.load(Ordering::SeqCst)
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -180,6 +195,7 @@ impl Sidecar {
                     }
                     continue;
                 }
+                // A panic here is a bug, so stop rather than spin on it.
                 Err(e) => {
                     tracing::error!("sidecar: reading the secrets panicked: {e}");
                     return;
@@ -202,6 +218,7 @@ impl Sidecar {
                     continue;
                 }
             };
+            self.inner.running.store(true, Ordering::SeqCst);
             if let Some(out) = child.stdout.take() {
                 tee(out, log.clone(), false);
             }
@@ -227,14 +244,17 @@ impl Sidecar {
             // No-op if it already exited.
             let _ = child.start_kill();
             let _ = child.wait().await;
+            self.inner.running.store(false, Ordering::SeqCst);
             append_event(&deps.events, "sidecar.stopped", reason).await;
             sleep(RESTART_DELAY).await;
         }
     }
 
     fn build_command(&self, deps: &SupervisorDeps, secrets: &Value) -> Result<Command, String> {
+        // The sidecar inherits the server's environment, so the PATH and debug
+        // flags (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was
+        // started with reach it.
         let mut cmd = command_base(&deps.config)?;
-        strip_endpoint_overrides(&mut cmd);
         let endpoint = self.endpoint();
         cmd.env("YARVIS_SIDECAR_PORT", endpoint.port.to_string());
         cmd.env("YARVIS_SIDECAR_TOKEN", &endpoint.token);
@@ -247,12 +267,11 @@ impl Sidecar {
         for (key, value) in instance_env(&instance_name(), background_workers_enabled()) {
             cmd.env(key, value);
         }
-        // Forwarded so a server started with them traces embedder selection
-        // and what an MCP server actually sent.
-        for flag in ["YARVIS_DEBUG_MEMORY", "YARVIS_DEBUG_MCP"] {
-            if let Ok(value) = std::env::var(flag) {
-                cmd.env(flag, value);
-            }
+        if let Some(dir) = &deps.config.sidecar.migrations_dir {
+            cmd.env("YARVIS_MIGRATIONS_DIR", dir);
+        }
+        if let Some(path) = legacy_alarms_path() {
+            cmd.env("YARVIS_LEGACY_ALARMS_PATH", path);
         }
         for (key, value) in self
             .inner
@@ -266,6 +285,8 @@ impl Sidecar {
         for (key, value) in sidecar_env(secrets, &deps.settings.snapshot()) {
             cmd.env(key, value);
         }
+        // Last, so nothing set above can bring one back.
+        strip_endpoint_overrides(&mut cmd);
         // The child dies with the server rather than lingering.
         cmd.kill_on_drop(true);
         Ok(cmd)
@@ -346,7 +367,10 @@ pub fn sidecar_env(secrets: &Value, settings: &Settings) -> Vec<(&'static str, S
     env
 }
 
-/// The configured command, or `bun run` on this checkout's sidecar entry point.
+/// The configured command, or `bun run` on the sidecar's entry point. The
+/// default path is fixed when the server is built, so it only works for a
+/// server run from the checkout it was built in; a packaged server sets
+/// `[sidecar] command`.
 fn command_base(config: &Config) -> Result<Command, String> {
     match &config.sidecar.command {
         Some(argv) => {
@@ -398,6 +422,17 @@ fn database_url_override() -> Option<String> {
 /// Reads an env var, treating an empty value as unset.
 fn env_value(key: &str) -> Option<String> {
     std::env::var(key).ok().filter(|v| !v.trim().is_empty())
+}
+
+/// Where the desktop app kept its alarms before the sidecar owned them, so the
+/// sidecar can copy them over once. Only passed when the file is there.
+fn legacy_alarms_path() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let path = PathBuf::from(std::env::var_os("HOME")?)
+        .join("Library/Application Support/com.mikebennett.yarvis/alarms.json");
+    path.is_file().then_some(path)
 }
 
 /// The instance identity handed to the sidecar. A desktop app or a second
@@ -576,6 +611,7 @@ mod tests {
             "anthropic_api_key": "sk-ant",
             "github_token": "",
             "database_url": "postgres://main",
+            "customProviders": { "litellm": { "apiKey": "k" } },
         });
         let mut settings = Settings::default();
         settings.jira_email = Some("dev@acme.com".into());
@@ -591,9 +627,16 @@ mod tests {
         assert_eq!(get("JIRA_EMAIL"), Some("dev@acme.com"));
         assert_eq!(get("TELEGRAM_OTP_WINDOW_MINUTES"), Some("30"));
         assert_eq!(get("JIRA_BASE_URL"), None);
-        if database_url_override().is_none() {
-            assert_eq!(get("DATABASE_URL"), Some("postgres://main"));
-        }
+        // The override, when the test runs with one, wins; see the test above.
+        assert_eq!(
+            get("DATABASE_URL"),
+            database_url(database_url_override(), Some("postgres://main".into())).as_deref()
+        );
+        assert_eq!(
+            get("YARVIS_CUSTOM_PROVIDER_SECRETS"),
+            Some(r#"{"litellm":{"apiKey":"k"}}"#)
+        );
+        assert_eq!(get("YARVIS_MCP_SECRETS"), None);
     }
 
     #[test]

@@ -44,6 +44,15 @@ impl MemoryBackend {
         })
     }
 
+    /// Holds `blob` but refuses every write.
+    pub fn read_only(blob: &str) -> Arc<Self> {
+        Arc::new(Self {
+            blob: Mutex::new(Some(blob.to_string())),
+            write_fails: true,
+            ..Self::default()
+        })
+    }
+
     pub fn contents(&self) -> Option<String> {
         self.blob.lock().unwrap().clone()
     }

@@ -6,7 +6,7 @@
 //! other harness is an entry in `agentHarnesses`, and `defaultAgentHarness`
 //! picks which one a launch gets when it names none.
 //!
-//! Harnesses are written only from the webview, like the agent command, because
+//! Harnesses are written only through the admin core API, like the agent command, because
 //! a harness's command is typed into a shell. A caller on the control channel
 //! can pick a harness by id but never supply a command of its own.
 //!
@@ -275,8 +275,9 @@ fn non_blank(value: Option<&str>) -> Option<String> {
     value.map(strip_control).filter(|s| !s.is_empty())
 }
 
-/// The built-in harness from the agent name and command already resolved by
-/// `pty` (env override, then setting, then default).
+/// The built-in harness from the agent name and command already resolved
+/// (env override, then setting, then default; see
+/// [`crate::agent_policy::resolve_agent_command`]).
 pub fn builtin(name: String, command: String) -> ResolvedHarness {
     let kind = if runs_claude_code(&command) {
         HarnessKind::ClaudeCode
@@ -336,7 +337,7 @@ fn resolve_stored(harness: &AgentHarness) -> Option<ResolvedHarness> {
 /// the built-in harness are always allowed, as is a Claude Code harness
 /// started with `--resume`.
 ///
-/// The core can't tell a real resume from a spawn that merely carries a
+/// The server can't tell a real resume from a spawn that merely carries a
 /// resume id, so the exemption relies on the sidecar. Only its restart sweep
 /// (`resumeAgentSession` in `workspaces/claudeSession.ts`) sets one, with the
 /// harness from a session row that the session's own hook wrote using the
@@ -419,10 +420,10 @@ pub fn is_valid_id(id: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// A portable environment variable name that isn't one the core sets itself.
+/// A portable environment variable name that isn't one the server sets itself.
 /// `YARVIS_*` carries the session's tokens and key: a harness that set them
 /// would at best break the session's registration and at worst point it at
-/// another terminal's. `TERM` is the core's, set for the PTY it opens.
+/// another terminal's. `TERM` is the server's, set for the PTY it opens.
 fn is_valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
@@ -476,8 +477,7 @@ pub fn validate(harnesses: &[AgentHarness], default_id: Option<&str>) -> Result<
             return Err(format!("harness \"{label}\" needs a command"));
         }
         // The command and prompt arguments are typed into an interactive shell,
-        // where a newline or 0x03/0x15 would end the line early; see
-        // `pty::is_unsafe_name_char`.
+        // where a newline or 0x03/0x15 would end the line early.
         let typed = [
             Some(harness.name.as_str()),
             Some(harness.command.as_str()),
@@ -767,7 +767,7 @@ mod tests {
         assert!(check(None, Some("yolo"), false).is_err());
         // The user made it the default, so a launch by name is no wider.
         assert!(check(Some("yolo"), Some("yolo"), false).is_ok());
-        // A resume relaunches what the core launched; no tool can ask for one.
+        // A resume relaunches what the server launched; no tool can ask for one.
         assert!(check(None, Some("yolo"), true).is_ok());
         let mut pi_only = harnesses.clone();
         pi_only[0].assistant_may_use = false;

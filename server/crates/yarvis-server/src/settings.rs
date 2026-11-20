@@ -18,8 +18,8 @@
 //! That narrows, but doesn't close, the window. There is no file lock, so two
 //! processes saving at nearly the same moment can still clobber each other.
 //!
-//! A handful of fields (`azure_devops_org_url` to `telegram_otp_window_minutes`)
-//! used to live in the Keychain's secrets blob. [`SettingsStore::migrate_keychain_settings`]
+//! Older desktop builds kept a handful of these fields (`azure_devops_org_url`
+//! to `telegram_otp_window_minutes`) in the Keychain's secrets blob. [`SettingsStore::migrate_keychain_settings`]
 //! moves any it finds there once, then never touches the Keychain for this
 //! again (`keychain_settings_migrated`).
 
@@ -104,7 +104,39 @@ pub struct Settings {
     keychain_settings_migrated: Option<bool>,
 }
 
-/// Keychain keys that used to carry the non-secret fields above. Kept only for
+impl Settings {
+    /// Whether `secretBackend` names 1Password. Anything else, including
+    /// unset or a value this build doesn't know, means the Keychain.
+    pub fn selects_onepassword(&self) -> bool {
+        self.secret_backend.as_deref() == Some("onepassword")
+    }
+
+    /// The 1Password item `onePasswordVault`/`onePasswordItem` name.
+    pub fn onepassword_item(&self) -> Result<ItemRef, String> {
+        ItemRef::new(
+            self.one_password_vault.as_deref().unwrap_or_default(),
+            self.one_password_item.as_deref().unwrap_or_default(),
+        )
+    }
+}
+
+/// A store [`SettingsStore::set_secret_backend`] can move between.
+#[derive(PartialEq)]
+enum Target {
+    Keychain,
+    OnePassword(ItemRef),
+}
+
+impl Target {
+    fn store(&self) -> Store {
+        match self {
+            Self::Keychain => Store::keychain(),
+            Self::OnePassword(item) => Store::onepassword(item.clone()),
+        }
+    }
+}
+
+/// Keychain keys older builds used for the non-secret fields above. Kept only for
 /// the one-time migration; they are not in [`secret_blob::SECRET_KEYS`], so
 /// nothing can write them back.
 const LEGACY_SETTING_KEYS: &[&str] = &[
@@ -178,7 +210,7 @@ impl SettingsStore {
         self.path.with_file_name("secrets.lock")
     }
 
-    /// The settings as they are on disk now. A malformed or missing file reads
+    /// The settings as they are on disk. A malformed or missing file reads
     /// as defaults rather than failing: a fresh install gets the built-in
     /// defaults, and a concurrent writer's temp file is never read half-written
     /// because it only replaces the file by rename.
@@ -202,7 +234,7 @@ impl SettingsStore {
     }
 
     /// Stores the live-PTY-session cap, or clears it back to the default with
-    /// `None`. Rejects a value outside what the PTY module will enforce rather
+    /// `None`. Rejects a value outside what the session launcher enforces rather
     /// than storing one and echoing back a cap that isn't the one in force.
     pub fn set_max_pty_sessions(&self, value: Option<usize>) -> Result<(), String> {
         match value {
@@ -225,8 +257,9 @@ impl SettingsStore {
     /// Control characters are rejected. The command is typed into an
     /// interactive shell as a single launch line, so a newline would submit
     /// whatever follows it as a second command, and 0x03/0x15 would do the
-    /// same through the line editor. The file is hand-editable, so the PTY
-    /// module re-checks on read; rejecting here gives the user an error instead
+    /// same through the line editor. The file is hand-editable, so the
+    /// session launcher re-checks on read
+    /// ([`agent_policy::resolve_agent_command`]); rejecting here gives the user an error instead
     /// of silent mangling.
     pub fn set_agent(&self, name: Option<String>, command: Option<String>) -> Result<(), String> {
         let name = non_blank(name);
@@ -420,24 +453,26 @@ impl SettingsStore {
         self.update(|s| s.terminal_font_size = value)
     }
 
-    /// Points the server at a different 1Password item, carrying the existing
+    /// Points the server at a different secret store, carrying the existing
     /// secrets across.
     ///
-    /// Which kind of store holds the secrets is `server.toml`'s decision, so
-    /// `backend` must name the configured kind. A switch between kinds is an
-    /// edit to that file and a restart. What can change here is which
-    /// 1Password item a 1Password server reads.
+    /// When `server.toml` names a backend, that file decides the kind of
+    /// store, so `backend` must name it. A switch between kinds is an edit to
+    /// that file and a restart, and what can change here is which 1Password
+    /// item a 1Password server reads. The first item such a server is given is
+    /// filled from the Keychain, where the desktop app kept the secrets. When
+    /// `server.toml` names none, `settings.json` decides, and this switches
+    /// between the Keychain and 1Password the way the desktop app does.
     ///
-    /// The order is the whole of the safety: reach the new item, copy the blob
-    /// into it, and only then persist the selection. Reversed, an item that
-    /// turns out to be unreachable leaves the server pointing at nothing. The
-    /// old copy is left in place, so a user who mistypes a vault has somewhere
-    /// to switch back to. The first item a server is given is filled from the
-    /// Keychain, which is where the desktop app kept the secrets before.
+    /// The order is the whole of the safety: reach the new store, copy the
+    /// blob into it, and only then persist the selection. Reversed, a store
+    /// that turns out to be unreachable leaves the server pointing at nothing.
+    /// The old copy is left in place, so a user who mistypes a vault has
+    /// somewhere to switch back to.
     pub fn set_secret_backend(
         &self,
         secrets: &SecretBlob,
-        configured: SecretBackendKind,
+        configured: Option<SecretBackendKind>,
         backend: &str,
         vault: Option<String>,
         item: Option<String>,
@@ -452,47 +487,64 @@ impl SettingsStore {
                 )));
             }
         };
-        if requested != configured {
-            return Err(BackendSwitchError::NotConfigured);
+        match configured {
+            Some(kind) if kind != requested => return Err(BackendSwitchError::NotConfigured),
+            Some(SecretBackendKind::Keychain | SecretBackendKind::Vault) => {
+                return Ok(Copied::Unchanged);
+            }
+            None if requested == SecretBackendKind::Vault => {
+                return Err(BackendSwitchError::NotConfigured);
+            }
+            _ => {}
         }
         let vault = non_blank(vault);
         let item = non_blank(item);
-        if configured != SecretBackendKind::OnePassword {
-            return Ok(Copied::Unchanged);
-        }
-        let target = ItemRef::new(
-            vault.as_deref().unwrap_or_default(),
-            item.as_deref().unwrap_or_default(),
-        )
-        .map_err(BackendSwitchError::Invalid)?;
+        let target = match requested {
+            SecretBackendKind::OnePassword => Target::OnePassword(
+                ItemRef::new(
+                    vault.as_deref().unwrap_or_default(),
+                    item.as_deref().unwrap_or_default(),
+                )
+                .map_err(BackendSwitchError::Invalid)?,
+            ),
+            _ => Target::Keychain,
+        };
         // Held until the new selection is saved: a write that landed in the
-        // old item after the copy would be left behind there.
+        // old store after the copy would be left behind there.
         let guard = secrets
             .lock_for_write()
             .map_err(BackendSwitchError::Failed)?;
         let settings = self.snapshot();
-        let current = ItemRef::new(
-            settings.one_password_vault.as_deref().unwrap_or_default(),
-            settings.one_password_item.as_deref().unwrap_or_default(),
-        )
-        .ok();
-        // Re-saving the same item is not a switch: reporting it as a copy that
-        // found nothing would tell a user with a full store that it was empty.
-        let copied = if current.as_ref() == Some(&target) {
+        // A 1Password server reads the item settings name whatever
+        // `secretBackend` says; otherwise `secretBackend` decides. With no
+        // usable item, the store being left is the Keychain.
+        let reads_item = configured.is_some() || settings.selects_onepassword();
+        let current = match settings.onepassword_item() {
+            Ok(item) if reads_item => Target::OnePassword(item),
+            _ => Target::Keychain,
+        };
+        // Re-saving the same selection is not a switch: reporting it as a copy
+        // that found nothing would tell a user with a full store it was empty.
+        let copied = if current == target {
             Copied::Unchanged
         } else {
-            onepassword::probe(&target).map_err(BackendSwitchError::Failed)?;
-            let source = match current {
-                Some(current) => Store::onepassword(current),
-                None => Store::keychain(),
-            };
-            copy_secrets(&guard, &source, &Store::onepassword(target))
+            if let Target::OnePassword(item) = &target {
+                onepassword::probe(item).map_err(BackendSwitchError::Failed)?;
+            }
+            copy_secrets(&guard, &current.store(), &target.store())
                 .map_err(BackendSwitchError::Failed)?
         };
         self.update(|s| {
-            s.secret_backend = Some("onepassword".to_string());
-            s.one_password_vault = vault;
-            s.one_password_item = item;
+            s.secret_backend =
+                matches!(target, Target::OnePassword(_)).then(|| "onepassword".into());
+            // Kept when switching back to the Keychain, so returning to
+            // 1Password doesn't mean retyping the vault and item.
+            if vault.is_some() {
+                s.one_password_vault = vault;
+            }
+            if item.is_some() {
+                s.one_password_item = item;
+            }
         })
         .map_err(BackendSwitchError::Failed)?;
         Ok(copied)
@@ -1241,6 +1293,33 @@ mod tests {
         );
     }
 
+    /// A Keychain that can't be read leaves the flag unset, so the next start
+    /// tries again.
+    #[test]
+    fn an_unreadable_keychain_skips_the_migration_until_next_time() {
+        let (_dir, store) = temp_store();
+        let keychain = memory(MemoryBackend::unreadable());
+        let secrets = SecretBlob::with_store(keychain.clone(), store.clone());
+        store.migrate_keychain_settings(&secrets, &keychain);
+        assert_eq!(store.snapshot().keychain_settings_migrated, None);
+        assert!(!store.path().exists());
+    }
+
+    /// The settings are saved before the Keychain is touched, so a failed
+    /// clear leaves the values in both places rather than in neither.
+    #[test]
+    fn a_keychain_that_cannot_be_cleared_still_keeps_the_migrated_values() {
+        let (_dir, store) = temp_store();
+        let held = r#"{"jira_email":"dev@acme.com"}"#;
+        let fake = MemoryBackend::read_only(held);
+        let keychain = memory(fake.clone());
+        let secrets = SecretBlob::with_store(keychain.clone(), store.clone());
+        store.migrate_keychain_settings(&secrets, &keychain);
+        assert_eq!(store.snapshot().jira_email.as_deref(), Some("dev@acme.com"));
+        assert_eq!(store.snapshot().keychain_settings_migrated, Some(true));
+        assert_eq!(fake.contents().as_deref(), Some(held));
+    }
+
     /// The sidecar keeps its own sections in this same file, so a save must
     /// carry them across, and a cleared field must not keep its value.
     #[test]
@@ -1341,7 +1420,7 @@ mod tests {
         let err = store
             .set_secret_backend(
                 &secrets,
-                SecretBackendKind::Keychain,
+                Some(SecretBackendKind::Keychain),
                 "onepassword",
                 None,
                 None,
@@ -1350,14 +1429,20 @@ mod tests {
         assert!(matches!(err, BackendSwitchError::NotConfigured));
         assert!(err.to_string().contains("server.toml"));
         assert!(matches!(
-            store.set_secret_backend(&secrets, SecretBackendKind::Keychain, "nope", None, None),
+            store.set_secret_backend(
+                &secrets,
+                Some(SecretBackendKind::Keychain),
+                "nope",
+                None,
+                None
+            ),
             Err(BackendSwitchError::Invalid(_))
         ));
         assert_eq!(
             store
                 .set_secret_backend(
                     &secrets,
-                    SecretBackendKind::Keychain,
+                    Some(SecretBackendKind::Keychain),
                     "keychain",
                     None,
                     None
@@ -1375,13 +1460,42 @@ mod tests {
         let err = store
             .set_secret_backend(
                 &secrets,
-                SecretBackendKind::OnePassword,
+                Some(SecretBackendKind::OnePassword),
                 "onepassword",
                 Some("Private".into()),
                 None,
             )
             .unwrap_err();
         assert!(matches!(err, BackendSwitchError::Invalid(_)), "{err}");
+    }
+
+    /// With no backend in `server.toml`, the switch follows the desktop app's
+    /// rules: `settings.json` holds the choice, and the vault can't be picked.
+    #[test]
+    fn with_no_configured_backend_settings_hold_the_choice() {
+        let (_dir, store) = temp_store();
+        let secrets = blob(&store, MemoryBackend::empty());
+        assert!(matches!(
+            store.set_secret_backend(&secrets, None, "vault", None, None),
+            Err(BackendSwitchError::NotConfigured)
+        ));
+        std::fs::write(
+            store.path(),
+            json!({ "secretBackend": "onepassword", "onePasswordVault": "Private", "onePasswordItem": "Yarvis" })
+                .to_string(),
+        )
+        .unwrap();
+        let copied = store
+            .set_secret_backend(
+                &secrets,
+                None,
+                "onepassword",
+                Some("Private".into()),
+                Some("Yarvis".into()),
+            )
+            .unwrap();
+        assert_eq!(copied, Copied::Unchanged);
+        assert!(store.snapshot().selects_onepassword());
     }
 
     /// Re-saving the item already in use touches no store at all, so no `op`
@@ -1398,7 +1512,7 @@ mod tests {
         let copied = store
             .set_secret_backend(
                 &secrets,
-                SecretBackendKind::OnePassword,
+                Some(SecretBackendKind::OnePassword),
                 "onepassword",
                 Some(" Private ".into()),
                 Some("Yarvis".into()),
