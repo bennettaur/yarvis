@@ -6,7 +6,8 @@ worth quoting carry a **copy button**. For text you paste again and again, the
 **clipboard palette** keeps saved snippets and this session's clipboard
 history one shortcut away.
 
-There is nothing to set up.
+There is nothing to set up. Clipboard history is recorded by the desktop app,
+so in a browser the palette has only your saved entries.
 
 ## Use it
 

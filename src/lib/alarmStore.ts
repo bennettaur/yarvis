@@ -12,7 +12,7 @@ import {
 
 /**
  * Shared live view of the alarm list, which the sidecar owns. One change
- * stream, a backstop poll and an `alarm-fired` listener feed every subscriber,
+ * stream, a backstop poll and an `alarm.fire` listener feed every subscriber,
  * so the alarms page, the attention panel, the takeover overlay, and any number
  * of calendar widgets all read the same list without multiplying requests.
  *
@@ -29,7 +29,7 @@ let ringing: Alarm[] = [];
 let takeoverQueue: Alarm[] = [];
 
 /**
- * Ids whose `alarm-fired` event arrived during this app run. An alarm left in
+ * Ids whose `alarm.fire` event arrived during this app run. An alarm left in
  * the "fired" state by a previous run is still worth listing (nobody ever
  * dismissed it) but must not throw up a full-screen takeover on launch, so only
  * this run's firings drive the overlay.
@@ -87,7 +87,7 @@ function applyList(next: Alarm[]): void {
   const listChanged = fingerprint(next) !== fingerprint(alarms);
   if (listChanged) alarms = next;
   pruneFiredThisRun();
-  // An `alarm-fired` event for an alarm the poll already reported as fired
+  // An `alarm.fire` event for an alarm the poll already reported as fired
   // leaves the list identical but still moves the takeover queue, so the
   // derived lists get their own say in whether to notify.
   const derivedChanged = recomputeDerived();
