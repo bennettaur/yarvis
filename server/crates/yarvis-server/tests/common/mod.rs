@@ -17,6 +17,7 @@ use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse, Url};
 use yarvis_server::config::Config;
+use yarvis_server::rate_limit::RateLimiter;
 use yarvis_server::store::Store;
 use yarvis_server::{AppState, app};
 
@@ -33,11 +34,19 @@ impl Harness {
         Self::on(Store::open_in_memory().unwrap()).await
     }
 
+    /// Every request a test builds shares one rate-limit budget (no peer
+    /// address), so the harness lifts the limit. `with_default_limit` keeps it.
     pub async fn on(store: Store) -> Self {
+        let mut harness = Self::with_default_limit(store).await;
+        harness.state.auth_limiter = RateLimiter::new(100_000, Duration::from_secs(60));
+        harness
+    }
+
+    pub async fn with_default_limit(store: Store) -> Self {
         let state = AppState::new(Config::default(), store);
         let setup_code = state
             .passkeys
-            .issue_setup_code_if_needed()
+            .issue_setup_code_if_needed(None)
             .await
             .unwrap()
             .unwrap_or_default();
@@ -54,7 +63,8 @@ impl Harness {
         let mut request = Request::builder()
             .method(method)
             .uri(path)
-            .header("content-type", "application/json");
+            .header("content-type", "application/json")
+            .header("host", "localhost");
         if let Some(token) = token {
             request = request.header("authorization", format!("Bearer {token}"));
         }

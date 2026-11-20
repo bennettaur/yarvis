@@ -1,14 +1,15 @@
 //! `/api/auth/*` and `/api/passkeys/*`: setup with the one-time code, passkey
-//! sign-in, the freshness check, and adding more passkeys.
+//! sign-in, the freshness check, and managing passkeys.
 //!
 //! Every WebAuthn exchange is two requests. `start` stores the ceremony and
 //! returns `{ ceremonyId, options }`; `finish` names the ceremony and carries
 //! the authenticator's answer. A ceremony can be finished once.
 
+use axum::extract::Path;
 use axum::extract::State;
 use axum::http::header::USER_AGENT;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -17,7 +18,7 @@ use webauthn_rs::prelude::{
 };
 
 use super::fresh::Fresh;
-use super::passkeys::Ceremony;
+use super::passkeys::{Ceremony, RemovePasskey};
 use super::setup_code::CodeError;
 use super::{Admin, Authed, DeviceContext, Scope, create_device};
 use crate::AppState;
@@ -28,9 +29,10 @@ use crate::rate_limit;
 use crate::store::now_ms;
 
 pub fn router(state: &AppState) -> Router<AppState> {
-    // Only these need no token, so only these are rate-limited per address.
+    // These need no token and each can start a ceremony or spend a setup
+    // code guess, so they are rate-limited per address. Status is left out so
+    // a client polling it can't use up the owner's budget.
     let open = Router::new()
-        .route("/api/auth/status", get(status))
         .route("/api/auth/setup/start", post(setup_start))
         .route("/api/auth/setup/finish", post(setup_finish))
         .route("/api/auth/login/start", post(login_start))
@@ -40,10 +42,13 @@ pub fn router(state: &AppState) -> Router<AppState> {
             rate_limit::limit,
         ));
     Router::new()
+        .route("/api/auth/status", get(status))
         .route("/api/auth/reverify/start", post(reverify_start))
         .route("/api/auth/reverify/finish", post(reverify_finish))
         .route("/api/passkeys/register/start", post(register_start))
         .route("/api/passkeys/register/finish", post(register_finish))
+        .route("/api/passkeys", get(list_passkeys))
+        .route("/api/passkeys/{id}", delete(remove_passkey))
         .merge(open)
 }
 
@@ -79,8 +84,15 @@ fn start_ceremony<T: Serialize>(
     }))
 }
 
+/// The cause goes to the debug log only. These routes answer callers with no
+/// token, who don't need to learn which check failed.
 fn passkey_check_failed(e: WebauthnError) -> ApiError {
-    ApiError::new(StatusCode::UNAUTHORIZED, "passkey check failed").with_detail(e.to_string())
+    tracing::debug!("passkey check failed: {e}");
+    ApiError::new(StatusCode::UNAUTHORIZED, "passkey check failed")
+}
+
+fn setup_done() -> ApiError {
+    ApiError::conflict("setup is done").with_detail("sign in with a passkey instead")
 }
 
 fn unknown_ceremony() -> ApiError {
@@ -122,6 +134,9 @@ async fn setup_start(
     Json(body): Json<SetupStart>,
 ) -> ApiResult<Json<Started<impl Serialize>>> {
     let device_name = device_name(&body.device_name)?;
+    if !state.passkeys.setup_required().await? {
+        return Err(setup_done());
+    }
     let wrong_code = || ApiError::new(StatusCode::UNAUTHORIZED, "wrong setup code");
     let code = state
         .passkeys
@@ -169,6 +184,9 @@ async fn setup_finish(
     else {
         return Err(unknown_ceremony());
     };
+    if !state.passkeys.setup_required().await? {
+        return Err(setup_done());
+    }
     let passkey = state
         .passkeys
         .webauthn()
@@ -440,4 +458,78 @@ async fn register_finish(
         )
         .await?;
     Ok(Json(Added { passkey_id }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PasskeyRow {
+    id: String,
+    label: String,
+    created_at: i64,
+}
+
+async fn list_passkeys(
+    State(state): State<AppState>,
+    _: Authed<Admin>,
+) -> ApiResult<Json<Vec<PasskeyRow>>> {
+    let rows = state
+        .passkeys
+        .passkeys()
+        .await?
+        .into_iter()
+        .map(|p| PasskeyRow {
+            id: p.id,
+            label: p.label,
+            created_at: p.created_at,
+        })
+        .collect();
+    Ok(Json(rows))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Removed {
+    revoked_devices: Vec<String>,
+}
+
+/// Removes a passkey and signs out every device it signed in. A passkey added
+/// from a stolen device stays usable until this runs, so revoking the device
+/// alone isn't enough.
+async fn remove_passkey(
+    State(state): State<AppState>,
+    Fresh { device, .. }: Fresh<Admin>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Removed>> {
+    let revoked = match state.passkeys.remove_passkey(&id).await? {
+        RemovePasskey::Removed { revoked } => revoked,
+        RemovePasskey::LastOne => {
+            return Err(ApiError::conflict("that is the last passkey")
+                .with_detail("add another before removing this one"));
+        }
+        RemovePasskey::NotFound => return Err(ApiError::not_found()),
+    };
+    for revoked_id in &revoked {
+        state.auth.announce_revocation(revoked_id);
+    }
+    state
+        .events
+        .append(
+            Some(&device.device_id),
+            "passkey.removed",
+            json!({ "passkeyId": id, "revokedDevices": revoked }),
+        )
+        .await?;
+    for revoked_id in &revoked {
+        state
+            .events
+            .append(
+                Some(&device.device_id),
+                "device.revoked",
+                json!({ "deviceId": revoked_id }),
+            )
+            .await?;
+    }
+    Ok(Json(Removed {
+        revoked_devices: revoked,
+    }))
 }
