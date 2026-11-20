@@ -4,7 +4,7 @@ import { passThrough } from "./passThrough";
 
 /**
  * A stand-in for `src/lib/alarms`: the list the sidecar answers, the calls
- * that change it, and the `alarm-fired` event the core emits.
+ * that change it, and the `alarm.fire` event the server sends.
  *
  * A suite puts it in place with `stubAlarmsApi`, and `resetAlarms` clears it,
  * so `lib/alarms` is registered once here (see `passThrough.ts`) and every
@@ -70,7 +70,7 @@ export const fakeAlarms = {
   followAlarmChanges: (_onChange: () => void) => () => {},
 };
 
-/** Marks an alarm fired the way the sidecar does, then announces it the way the core does. */
+/** Marks an alarm fired the way the sidecar does, then announces it the way the server does. */
 export function fireAlarm(id: string): void {
   const alarm = setStatus(id, "fired");
   for (const listener of firedListeners) listener(alarm);
