@@ -8,7 +8,8 @@ use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// Wrong guesses allowed before the code is burned. A burned code needs a
-/// server restart to replace, so guessing gets 5 tries against about 2^49.
+/// server restart to replace, so an attacker gets 5 guesses at a 10-character
+/// code (about 2^49 possibilities).
 pub const ATTEMPTS: u8 = 5;
 
 /// No 0/O, 1/I/L or U, so a code read off a terminal survives being retyped.
@@ -54,7 +55,8 @@ impl SetupCode {
     pub fn check(&mut self, given: &str) -> Result<CodeHash, CodeError> {
         let given = hash(given);
         let code = self.code.as_mut().ok_or(CodeError::NoCode)?;
-        // Comparing hashes keeps timing from leaking how much of the code matched.
+        // Both sides are hashes, so how long the comparison takes says nothing
+        // about how close the guess was.
         if code.hash == given {
             return Ok(given);
         }

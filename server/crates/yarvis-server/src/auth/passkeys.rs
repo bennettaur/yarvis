@@ -96,8 +96,8 @@ impl PasskeyAuth {
         })))
     }
 
-    /// The relying party, for modules that run their own ceremonies (vault
-    /// unlock with PRF) against the same passkeys.
+    /// The relying party, for modules that run passkey ceremonies of their
+    /// own against the same passkeys.
     pub fn webauthn(&self) -> &Webauthn {
         &self.0.webauthn
     }

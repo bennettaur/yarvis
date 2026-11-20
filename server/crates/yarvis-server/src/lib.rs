@@ -26,6 +26,10 @@ use crate::events::EventLog;
 use crate::rate_limit::RateLimiter;
 use crate::store::Store;
 
+/// Enough for a person retrying a passkey prompt, few enough that a script
+/// can't fill the ceremony map.
+const AUTH_REQUESTS_PER_MINUTE: u32 = 30;
+
 /// State every route can reach. Modules that need their own state add a
 /// field here and build it in [`AppState::new`].
 #[derive(Clone)]
@@ -63,10 +67,6 @@ impl FromRef<AppState> for Auth {
         state.auth.clone()
     }
 }
-
-/// Enough for a person retrying a passkey prompt, few enough that a script
-/// can't fill the ceremony map.
-const AUTH_REQUESTS_PER_MINUTE: u32 = 30;
 
 /// The whole app. Each module contributes its routes here.
 pub fn app(state: AppState) -> Router {

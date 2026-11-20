@@ -96,7 +96,7 @@ async fn list(
 }
 
 #[derive(Deserialize)]
-struct Mint {
+struct MintBody {
     name: String,
     scopes: Vec<Scope>,
 }
@@ -104,10 +104,10 @@ struct Mint {
 async fn mint(
     State(state): State<AppState>,
     Fresh { device, .. }: Fresh<Admin>,
-    Json(body): Json<Mint>,
+    Json(body): Json<MintBody>,
 ) -> ApiResult<Json<SignedIn>> {
     let name = device_name(&body.name)?;
-    let scopes = dedupe(body.scopes);
+    let scopes = normalize_scopes(body.scopes);
     if scopes.is_empty() {
         return Err(ApiError::bad_request("a token needs at least one scope"));
     }
@@ -151,7 +151,8 @@ pub async fn add_token_device(
     })
 }
 
-fn dedupe(scopes: Vec<Scope>) -> Vec<Scope> {
+/// Drops duplicates and puts scopes in a fixed order.
+fn normalize_scopes(scopes: Vec<Scope>) -> Vec<Scope> {
     Scope::ALL
         .into_iter()
         .filter(|scope| scopes.contains(scope))
@@ -170,13 +171,13 @@ async fn revoke(
     Path(id): Path<String>,
 ) -> ApiResult<Json<Revoked>> {
     let revoked_at = now_ms();
-    let target = id.clone();
+    let row_id = id.clone();
     let changed = state
         .store
         .call(move |conn| {
             conn.execute(
                 "UPDATE devices SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
-                rusqlite::params![revoked_at, target],
+                rusqlite::params![revoked_at, row_id],
             )
         })
         .await?;
@@ -209,7 +210,7 @@ pub fn parse_scope_list(list: &str) -> Result<Vec<Scope>, String> {
             .ok_or_else(|| format!("unknown scope {word:?}; use read, chat, approve or admin"))?;
         scopes.push(scope);
     }
-    let scopes = dedupe(scopes);
+    let scopes = normalize_scopes(scopes);
     if scopes.is_empty() {
         return Err("give at least one scope".into());
     }
