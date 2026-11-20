@@ -9,12 +9,22 @@
 //!
 //! What does not separate on its own is the global hotkeys only one process
 //! can hold. Those default to the primary instance and are opt-in elsewhere.
-//! The local server inherits this process's environment, so
+//! Nor do a dev build's Vite and local server ports, which the launcher moves
+//! with `YARVIS_DEV_PORT`. The local server inherits this process's environment, so
 //! `YARVIS_INSTANCE`, `YARVIS_BACKGROUND_WORKERS` and `YARVIS_DATABASE_URL`
 //! reach it and the sidecar it starts unchanged.
 
 /// Name reported by a process that was never given one.
 const PRIMARY: &str = "main";
+
+/// Port the Vite dev server uses when no instance moved it. Matches
+/// `vite.config.ts`.
+const DEFAULT_DEV_PORT: u16 = 1420;
+
+/// In a dev build the local server listens this far above the Vite port, so
+/// Vite's `/api` proxy knows where it is before the app starts it. Matches
+/// `vite.config.ts` and `scripts/dev-instance.ts`.
+const DEV_SERVER_PORT_OFFSET: u16 = 6000;
 
 /// Reads an env var, treating an empty value as unset so an exported-but-blank
 /// variable behaves the same as no variable at all.
@@ -70,6 +80,30 @@ pub fn global_shortcuts_enabled() -> bool {
     )
 }
 
+/// Parses the Vite dev-server port. Anything that isn't a port falls back to
+/// the default rather than propagating: the value becomes an origin in the
+/// server's `auth.origins` and the bridge capability, so a comma or a host in
+/// it would otherwise widen both.
+fn resolve_dev_port(raw: Option<&str>) -> u16 {
+    raw.and_then(|p| p.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_DEV_PORT)
+}
+
+/// The Vite dev server this instance's window loads in a dev build. The
+/// launcher sets it (see `scripts/dev-instance.ts`) because the default one is
+/// already taken.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub fn dev_port() -> u16 {
+    resolve_dev_port(env_value("YARVIS_DEV_PORT").as_deref())
+}
+
+/// The port the local server listens on in a dev build. `None` when the dev
+/// port is too high to leave room above it.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub fn dev_server_port() -> Option<u16> {
+    dev_port().checked_add(DEV_SERVER_PORT_OFFSET)
+}
+
 /// Marks a secondary instance's window with its name. Two instances are
 /// otherwise identical on screen, and picking the wrong window is how a test
 /// lands in the app holding the real data.
@@ -118,5 +152,28 @@ mod tests {
         assert!(!primary_owned(None, false));
         assert!(primary_owned(Some("1"), false));
         assert!(!primary_owned(Some("0"), true));
+    }
+    #[test]
+    fn an_unset_dev_port_falls_back_to_the_default() {
+        assert_eq!(resolve_dev_port(None), DEFAULT_DEV_PORT);
+        assert_eq!(resolve_dev_port(Some("  ")), DEFAULT_DEV_PORT);
+    }
+
+    #[test]
+    fn a_dev_port_is_used_as_given() {
+        assert_eq!(resolve_dev_port(Some(" 1437 ")), 1437);
+    }
+
+    #[test]
+    fn a_dev_port_that_could_widen_the_origin_list_is_refused() {
+        assert_eq!(
+            resolve_dev_port(Some("1420,https://evil.example")),
+            DEFAULT_DEV_PORT
+        );
+        assert_eq!(
+            resolve_dev_port(Some("1420 https://evil.example")),
+            DEFAULT_DEV_PORT
+        );
+        assert_eq!(resolve_dev_port(Some("99999999999")), DEFAULT_DEV_PORT);
     }
 }

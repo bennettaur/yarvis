@@ -33,7 +33,7 @@ Data lives in PostgreSQL with pgvector. Non-secret settings live in
 Run these from the repo root.
 
 ```bash
-bun run tauri dev                 # the full app: builds the frontend and server/, then the Tauri app starts the server
+bun run tauri dev                 # the full app: builds server/, starts Vite, then the Tauri app starts the server
 bun run tauri:build               # a release bundle with the server and compiled sidecar (see Nightly builds)
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
@@ -315,10 +315,15 @@ second one a name:
 bun run dev:instance migration-test
 ```
 
-The name picks a bundle identifier (`com.mikebennett.yarvis.migration-test`).
+The name picks a bundle identifier (`com.mikebennett.yarvis.migration-test`)
+and a pair of Vite ports in the 1430–1489 range, with the local server 6000
+above the first. The pair comes from the name, so it's the same every launch.
+If something else holds one of the three ports, the launcher moves to the next
+free pair. The second Vite port is the HMR socket, used when `TAURI_DEV_HOST`
+is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it is taken.
 Because macOS derives the app data directory from the identifier, each instance
-gets its own `connection.json`, its own local server (with its own port and
-`server.db`) and its own Keychain device token. The window title shows the name.
+gets its own `connection.json`, its own `server.db` and its own Keychain device
+token. The window title shows the name.
 
 Use `dev:instance` rather than setting `YARVIS_INSTANCE` on a plain
 `bun run tauri dev`. The variable alone makes the process skip the hotkeys and
@@ -397,8 +402,12 @@ since an app opened from Finder gets one without Homebrew or mise on it. The
 server passes that `PATH` on to the sidecar.
 
 `tauri.conf.json`'s `frontendDist` is `src-tauri/connect/`, the app's own
-connect page. The UI itself is built to `dist/` and served by the server, which
-is why a dev build runs `bun run build` first and has no hot reload.
+connect page. A release build's UI is built to `dist/` and served by the
+server. A dev build's window loads the Vite dev server instead, for hot reload,
+and Vite proxies `/api` (WebSockets included) to the local server, which
+listens 6000 ports above Vite (7420 beside the default 1420). The app waits for
+Vite before starting the server, since `tauri dev` starts Vite only after
+`server/` has built.
 
 The nightly is ad-hoc code-signed but not notarized, so macOS blocks the first
 launch:

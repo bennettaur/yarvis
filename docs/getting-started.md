@@ -28,8 +28,8 @@ Yarvis is a Tauri desktop app made of four pieces:
 - a **React frontend** (`src/`) that draws the UI,
 - a **Bun sidecar** (`sidecar/`) that talks to Postgres and the LLM providers.
 
-`bun run tauri dev` builds the frontend and the server, then the app starts the
-server, which starts the sidecar. Data lives in a local PostgreSQL database
+`bun run tauri dev` builds the server and starts the Vite dev server, then the
+app starts the server, which starts the sidecar. Data lives in a local PostgreSQL database
 with the `pgvector` extension. Secrets live in the macOS Keychain. Everything
 else lives in `~/.yarvis/settings.json`. See [Configuration](configuration.md)
 for the details.
@@ -157,8 +157,8 @@ The first run compiles the Tauri app and the server, which takes a few
 minutes. Later runs take seconds. When the build finishes, a Yarvis window
 opens.
 
-The frontend is built once per launch, so a change to `src/` needs a restart
-of `bun run tauri dev` to show up.
+The window loads the UI from Vite, which proxies `/api` to the server, so a
+change to `src/` shows up straight away.
 
 If macOS asks whether Yarvis may use the Keychain, choose **Always Allow**. Dev
 builds aren't code-signed, so you may be asked for your login password

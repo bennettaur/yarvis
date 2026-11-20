@@ -50,7 +50,8 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct BundledPaths {
     pub server_bin: PathBuf,
-    pub web_dir: PathBuf,
+    /// The built UI. Unset in a dev build, where Vite serves it.
+    pub web_dir: Option<PathBuf>,
     /// Unset in a dev build, where the server runs the sidecar from source.
     pub sidecar_bin: Option<PathBuf>,
     pub migrations_dir: Option<PathBuf>,
@@ -62,7 +63,7 @@ impl BundledPaths {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         Ok(Self {
             server_bin: root.join("server/target/debug/yarvis-server"),
-            web_dir: root.join("dist"),
+            web_dir: None,
             sidecar_bin: None,
             migrations_dir: None,
         })
@@ -84,7 +85,7 @@ impl BundledPaths {
         let suffix = std::env::consts::EXE_SUFFIX;
         Ok(Self {
             server_bin: exe.with_file_name(format!("yarvis-server{suffix}")),
-            web_dir: resources.join("dist"),
+            web_dir: Some(resources.join("dist")),
             sidecar_bin: Some(exe.with_file_name(format!("yarvis-sidecar{suffix}"))),
             migrations_dir: Some(resources.join("drizzle")),
         })
@@ -93,6 +94,7 @@ impl BundledPaths {
 
 /// Uses `preferred` when it is free, so the server's URL stays the same from
 /// one run to the next, and otherwise any free loopback port.
+#[cfg_attr(debug_assertions, allow(dead_code))]
 pub fn pick_port(preferred: Option<u16>) -> std::io::Result<u16> {
     if let Some(port) = preferred {
         if TcpListener::bind(("127.0.0.1", port)).is_ok() {
@@ -121,24 +123,38 @@ pub fn onepassword_agent_socket() -> Option<PathBuf> {
     socket.exists().then_some(socket)
 }
 
+/// What the app writes into the local server's `server.toml`.
+pub struct ServerConfigInputs<'a> {
+    pub port: u16,
+    /// The port the server had on its last run, whose origins are dropped.
+    pub previous_port: Option<u16>,
+    /// Used only when the file names no `data_dir`.
+    pub default_data_dir: &'a Path,
+    pub paths: &'a BundledPaths,
+    /// The SSH agent workspace shells should use. An app opened from Finder
+    /// inherits `SSH_AUTH_SOCK` from launchd, which is macOS's own agent
+    /// rather than 1Password's, so without it git signing in a workspace would
+    /// reach the wrong agent. It is only filled in when the user set none and
+    /// the server's own agent is off, since the server refuses both at once.
+    pub agent_socket: Option<&'a Path>,
+    /// A dev build's Vite dev server, which serves the UI and proxies `/api`
+    /// here, so it has to pass the server's Host and origin checks.
+    pub dev_ui_origin: Option<&'a str>,
+}
+
 /// Merges the keys the app owns into `existing` (the current `server.toml`,
 /// or empty). A file that doesn't parse is an error, so a typo the user made
 /// is reported rather than overwritten.
-///
-/// `agent_socket` is the SSH agent workspace shells should use. An app opened
-/// from Finder inherits `SSH_AUTH_SOCK` from launchd, which is macOS's own
-/// agent rather than 1Password's, so without it git signing in a workspace
-/// would reach the wrong agent. It is only filled in when the user set none
-/// and the server's own agent is off, since the server refuses both at once.
-pub fn render_server_config(
-    existing: &str,
-    port: u16,
-    default_data_dir: &Path,
-    previous_port: Option<u16>,
-    paths: &BundledPaths,
-    agent_socket: Option<&Path>,
-) -> Result<String, String> {
+pub fn render_server_config(existing: &str, inputs: &ServerConfigInputs) -> Result<String, String> {
     use toml::{Table, Value};
+    let ServerConfigInputs {
+        port,
+        previous_port,
+        default_data_dir,
+        paths,
+        agent_socket,
+        dev_ui_origin,
+    } = *inputs;
 
     let mut doc: Table = existing
         .parse()
@@ -149,7 +165,10 @@ pub fn render_server_config(
     server
         .entry("data_dir")
         .or_insert_with(|| path_value(default_data_dir));
-    server.insert("web_dir".into(), path_value(&paths.web_dir));
+    match &paths.web_dir {
+        Some(dir) => server.insert("web_dir".into(), path_value(dir)),
+        None => server.remove("web_dir"),
+    };
 
     // The window loads the server at 127.0.0.1, and a browser on this Mac is
     // likelier to use localhost. Both are added beside any the user listed,
@@ -165,7 +184,10 @@ pub fn render_server_config(
         let stale = loopback_origins(old);
         origins.retain(|o| !o.as_str().is_some_and(|o| stale.iter().any(|s| s == o)));
     }
-    for wanted in loopback_origins(port) {
+    for wanted in loopback_origins(port)
+        .into_iter()
+        .chain(dev_ui_origin.map(str::to_string))
+    {
         if !origins.iter().any(|o| o.as_str() == Some(wanted.as_str())) {
             origins.push(wanted.into());
         }
@@ -296,6 +318,23 @@ pub async fn wait_healthy(port: u16, limit: Duration) -> Result<(), String> {
         }
         sleep(HEALTH_POLL).await;
     }
+}
+
+/// Waits until something accepts connections on `localhost:port`. Tries every
+/// address `localhost` resolves to, since a dev server may listen on `::1` only.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub async fn wait_for_port(port: u16, limit: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + limit;
+    while TcpStream::connect(("localhost", port)).await.is_err() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "nothing listened on localhost:{port} within {}s",
+                limit.as_secs()
+            ));
+        }
+        sleep(HEALTH_POLL).await;
+    }
+    Ok(())
 }
 
 /// Whether the server still accepts `token`. `false` only on a 401, which means
@@ -521,9 +560,20 @@ mod tests {
     fn paths(release: bool) -> BundledPaths {
         BundledPaths {
             server_bin: "/App/Contents/MacOS/yarvis-server".into(),
-            web_dir: "/App/Contents/Resources/dist".into(),
+            web_dir: release.then(|| "/App/Contents/Resources/dist".into()),
             sidecar_bin: release.then(|| "/App/Contents/MacOS/yarvis-sidecar".into()),
             migrations_dir: release.then(|| "/App/Contents/Resources/drizzle".into()),
+        }
+    }
+
+    fn inputs(paths: &BundledPaths) -> ServerConfigInputs<'_> {
+        ServerConfigInputs {
+            port: 7123,
+            previous_port: None,
+            default_data_dir: Path::new("/data/server"),
+            paths,
+            agent_socket: None,
+            dev_ui_origin: None,
         }
     }
 
@@ -541,15 +591,7 @@ mod tests {
 
     #[test]
     fn a_first_config_points_the_server_at_the_bundle() {
-        let text = render_server_config(
-            "",
-            7123,
-            Path::new("/data/server"),
-            None,
-            &paths(true),
-            None,
-        )
-        .unwrap();
+        let text = render_server_config("", &inputs(&paths(true))).unwrap();
         let doc = parse(&text);
         assert_eq!(doc["server"]["bind"].as_str(), Some("127.0.0.1:7123"));
         assert_eq!(doc["server"]["data_dir"].as_str(), Some("/data/server"));
@@ -586,15 +628,7 @@ mod tests {
             rp_id = "yarvis.example.com"
             origins = ["https://yarvis.example.com"]
         "#;
-        let text = render_server_config(
-            existing,
-            7123,
-            Path::new("/data/server"),
-            None,
-            &paths(true),
-            None,
-        )
-        .unwrap();
+        let text = render_server_config(existing, &inputs(&paths(true))).unwrap();
         let doc = parse(&text);
         assert_eq!(doc["secrets"]["backend"].as_str(), Some("onepassword"));
         assert_eq!(doc["auth"]["rp_id"].as_str(), Some("yarvis.example.com"));
@@ -608,10 +642,8 @@ mod tests {
 
     #[test]
     fn restarting_on_the_same_port_adds_no_duplicate_origins() {
-        let once =
-            render_server_config("", 7123, Path::new("/d"), None, &paths(true), None).unwrap();
-        let twice =
-            render_server_config(&once, 7123, Path::new("/d"), None, &paths(true), None).unwrap();
+        let once = render_server_config("", &inputs(&paths(true))).unwrap();
+        let twice = render_server_config(&once, &inputs(&paths(true))).unwrap();
         assert_eq!(
             parse(&twice)["auth"]["origins"].as_array().unwrap().len(),
             2
@@ -626,11 +658,10 @@ mod tests {
         "#;
         let text = render_server_config(
             existing,
-            7123,
-            Path::new("/d"),
-            Some(7000),
-            &paths(true),
-            None,
+            &ServerConfigInputs {
+                previous_port: Some(7000),
+                ..inputs(&paths(true))
+            },
         )
         .unwrap();
         let origins: Vec<_> = parse(&text)["auth"]["origins"]
@@ -650,23 +681,36 @@ mod tests {
     }
 
     #[test]
+    fn a_dev_build_lets_vite_serve_the_ui_and_reach_the_server() {
+        let existing = "[server]\nweb_dir = \"/App/Contents/Resources/dist\"\n";
+        let text = render_server_config(
+            existing,
+            &ServerConfigInputs {
+                dev_ui_origin: Some("http://localhost:1420"),
+                ..inputs(&paths(false))
+            },
+        )
+        .unwrap();
+        let doc = parse(&text);
+        assert!(!doc["server"].as_table().unwrap().contains_key("web_dir"));
+        let origins: Vec<_> = doc["auth"]["origins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o.as_str().unwrap())
+            .collect();
+        assert!(origins.contains(&"http://localhost:1420"), "{origins:?}");
+    }
+
+    #[test]
     fn a_dev_build_leaves_the_sidecar_to_the_servers_default() {
-        let text =
-            render_server_config("", 7123, Path::new("/d"), None, &paths(false), None).unwrap();
+        let text = render_server_config("", &inputs(&paths(false))).unwrap();
         assert!(!parse(&text).contains_key("sidecar"));
     }
 
     #[test]
     fn a_broken_config_is_reported_not_overwritten() {
-        let err = render_server_config(
-            "[server\nbind=",
-            7123,
-            Path::new("/d"),
-            None,
-            &paths(true),
-            None,
-        )
-        .unwrap_err();
+        let err = render_server_config("[server\nbind=", &inputs(&paths(true))).unwrap_err();
         assert!(err.contains("server.toml"), "{err}");
     }
 
@@ -684,11 +728,10 @@ mod tests {
     fn workspace_shells_get_1passwords_agent_when_it_exists() {
         let text = render_server_config(
             "",
-            7123,
-            Path::new("/d"),
-            None,
-            &paths(true),
-            Some(Path::new(AGENT)),
+            &ServerConfigInputs {
+                agent_socket: Some(Path::new(AGENT)),
+                ..inputs(&paths(true))
+            },
         )
         .unwrap();
         assert_eq!(upstream(&text).as_deref(), Some(AGENT));
@@ -696,8 +739,7 @@ mod tests {
 
     #[test]
     fn no_agent_socket_is_written_when_1password_has_none() {
-        let text =
-            render_server_config("", 7123, Path::new("/d"), None, &paths(true), None).unwrap();
+        let text = render_server_config("", &inputs(&paths(true))).unwrap();
         assert_eq!(upstream(&text), None);
         assert!(!parse(&text).contains_key("ssh_agent"));
     }
@@ -707,11 +749,10 @@ mod tests {
         let existing = "[ssh_agent]\nupstream_socket = \"/tmp/my-agent.sock\"\n";
         let text = render_server_config(
             existing,
-            7123,
-            Path::new("/d"),
-            None,
-            &paths(true),
-            Some(Path::new(AGENT)),
+            &ServerConfigInputs {
+                agent_socket: Some(Path::new(AGENT)),
+                ..inputs(&paths(true))
+            },
         )
         .unwrap();
         assert_eq!(upstream(&text).as_deref(), Some("/tmp/my-agent.sock"));
@@ -723,11 +764,10 @@ mod tests {
         let existing = "[ssh_agent]\nenabled = true\n";
         let text = render_server_config(
             existing,
-            7123,
-            Path::new("/d"),
-            None,
-            &paths(true),
-            Some(Path::new(AGENT)),
+            &ServerConfigInputs {
+                agent_socket: Some(Path::new(AGENT)),
+                ..inputs(&paths(true))
+            },
         )
         .unwrap();
         assert_eq!(upstream(&text), None);
@@ -911,6 +951,22 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("didn't start"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_listening_port_is_seen() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        wait_for_port(port, Duration::from_secs(5)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_port_nothing_listens_on_times_out() {
+        let port = pick_port(None).unwrap();
+        let err = wait_for_port(port, Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(err.contains("nothing listened"), "{err}");
     }
 
     #[tokio::test]
