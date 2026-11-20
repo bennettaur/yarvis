@@ -1,6 +1,7 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import type { ProviderInfo } from "../../lib/chat";
+import { localFeaturesAvailable } from "../../lib/core";
 import { primeCache } from "../../lib/resourceCache";
 import type { VoiceConfig } from "../../lib/voiceConfig";
 import type { VoiceProfile } from "../../lib/voiceProfiles";
@@ -220,7 +221,11 @@ function TakeRow({ take }: { take: StudioTake }) {
       )}
       {saveError && <span className="text-xs text-red-400">{saveError}</span>}
       <span className="ml-auto flex items-center gap-2">
-        {take.savedPath ? (
+        {take.savedPath && !localFeaturesAvailable() ? (
+          <span className="text-xs text-zinc-500" title={take.savedPath}>
+            Saved
+          </span>
+        ) : take.savedPath ? (
           <button
             type="button"
             onClick={() => void revealItemInDir(take.savedPath ?? "")}

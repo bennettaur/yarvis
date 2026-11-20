@@ -11,6 +11,7 @@ import {
   writeClipboard,
 } from "../../lib/clipboard";
 import { filterHistory, useScreenedHistory } from "../../lib/clipboardHistory";
+import { localFeaturesAvailable } from "../../lib/core";
 import { formatRelativeTime } from "../../lib/time";
 import ClipboardEntryForm, { type ClipboardDraft } from "./ClipboardEntryForm";
 
@@ -37,6 +38,8 @@ const PREVIEW_LENGTH = 140;
 
 type Tab = "saved" | "history";
 
+// History is what the desktop app recorded from this machine's clipboard, so
+// a browser has only the saved entries, which the server keeps.
 const TABS: { id: Tab; label: string }[] = [
   { id: "saved", label: "Saved" },
   { id: "history", label: "History" },
@@ -76,7 +79,11 @@ export default function ClipboardPalette({
   const [editing, setEditing] = useState<{ id: string | null; draft: ClipboardDraft } | null>(null);
   const [reloads, setReloads] = useState(0);
 
-  const { history, error: historyError, refresh: refreshHistory } = useScreenedHistory(open);
+  const {
+    history,
+    error: historyError,
+    refresh: refreshHistory,
+  } = useScreenedHistory(open && localFeaturesAvailable());
   const inputRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(() => setReloads((n) => n + 1), []);
@@ -263,24 +270,27 @@ export default function ClipboardPalette({
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-300">Clipboard</span>
           <div className="flex gap-1">
-            {TABS.map(({ id, label }) => (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={tab === id}
-                onClick={() => {
-                  // The query carries over, so one search can be tried against both lists.
-                  setTab(id);
-                  setSelected(0);
-                  inputRef.current?.focus();
-                }}
-                className={`rounded-md px-2 py-1 text-xs ${
-                  tab === id ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+            {/* History is this machine's clipboard, which only the desktop app records. */}
+            {TABS.filter(({ id }) => id !== "history" || localFeaturesAvailable()).map(
+              ({ id, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={tab === id}
+                  onClick={() => {
+                    // The query carries over, so one search can be tried against both lists.
+                    setTab(id);
+                    setSelected(0);
+                    inputRef.current?.focus();
+                  }}
+                  className={`rounded-md px-2 py-1 text-xs ${
+                    tab === id ? "bg-zinc-700 text-zinc-100" : "text-zinc-400 hover:bg-zinc-800"
+                  }`}
+                >
+                  {label}
+                </button>
+              ),
+            )}
           </div>
           {tab === "saved" ? (
             <button
