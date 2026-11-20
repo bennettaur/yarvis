@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { type AuthStatus, getAuthStatus, setUpWithCode, signInWithPasskey } from "../../lib/auth";
+import { clearResourceCache } from "../../lib/resourceCache";
 import { deviceToken, onAuthChange } from "../../lib/server";
 import { restartEvents } from "../../lib/serverEvents";
 
@@ -123,7 +124,11 @@ export default function SignInGate({ children }: { children: React.ReactNode }) 
     deviceToken().then((token) => {
       if (active) setGate(token ? "signed-in" : "signed-out");
     });
-    const off = onAuthChange((signedIn) => setGate(signedIn ? "signed-in" : "signed-out"));
+    const off = onAuthChange((signedIn) => {
+      // What the last device loaded isn't for whoever signs in next.
+      if (!signedIn) clearResourceCache();
+      setGate(signedIn ? "signed-in" : "signed-out");
+    });
     return () => {
       active = false;
       off();

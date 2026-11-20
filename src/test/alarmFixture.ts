@@ -66,6 +66,7 @@ export const fakeAlarms = {
       firedListeners.delete(cb);
     };
   },
+  onAlarmReleased: async (_cb: (alarm: Alarm) => void) => () => {},
   // Tests change the list through this fake, never behind the store's back.
   followAlarmChanges: (_onChange: () => void) => () => {},
 };

@@ -1,9 +1,9 @@
 import { useCallback, useState } from "react";
 import {
-  ALL_SCOPES,
   type Device,
   getMyDevice,
   listDevices,
+  MINTABLE_SCOPES,
   mintDeviceToken,
   revokeDevice,
   type Scope,
@@ -19,10 +19,8 @@ const ME_KEY = "server:devices:me";
 const BUTTON =
   "rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50";
 
-function when(value: Device["lastSeenAt"]): string {
-  if (value === null || value === undefined) return "never";
-  const date = typeof value === "number" ? new Date(value) : new Date(value);
-  return Number.isNaN(date.getTime()) ? "unknown" : date.toLocaleString();
+function formatLastSeen(ms: Device["lastSeenAt"]): string {
+  return ms ? new Date(ms).toLocaleString() : "never";
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -30,7 +28,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /**
  * The clients signed in to this server, and tokens minted for the ones that
  * can't use a passkey (a Tauri app pointed at a remote server, a script).
- * Revoking a device ends its sessions on its next request.
+ * Revoking a device signs it out at once and closes its open connections.
  */
 export default function DevicesSection() {
   const me = useCachedResource(ME_KEY, getMyDevice, SIDECAR_FRESHNESS);
@@ -52,10 +50,10 @@ export default function DevicesSection() {
   const revoke = useCallback(
     async (device: Device) => {
       setError(null);
-      setBusyId(device.id);
+      setBusyId(device.deviceId);
       try {
-        await revokeDevice(device.id);
-        if (device.id === me.data?.id) {
+        await revokeDevice(device.deviceId);
+        if (device.deviceId === me.data?.deviceId) {
           signOut();
           return;
         }
@@ -66,7 +64,7 @@ export default function DevicesSection() {
         setBusyId(null);
       }
     },
-    [me.data?.id, reload],
+    [me.data?.deviceId, reload],
   );
 
   const mint = useCallback(async () => {
@@ -108,7 +106,7 @@ export default function DevicesSection() {
     }
   };
 
-  const list = (devices.data ?? []).filter((d) => !d.revokedAt);
+  const activeDevices = (devices.data ?? []).filter((d) => !d.revokedAt);
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -118,7 +116,7 @@ export default function DevicesSection() {
         scopes, and revoking one signs it out at once.
       </p>
 
-      {(error || me.error || devices.error) && (
+      {(error ?? me.error ?? devices.error) && (
         <p className="mb-3 text-sm text-red-400" role="alert">
           {error ?? me.error ?? devices.error}
         </p>
@@ -138,31 +136,31 @@ export default function DevicesSection() {
       {isAdmin && (
         <>
           <ul className="mb-5 divide-y divide-zinc-800 rounded-md border border-zinc-800">
-            {list.map((device) => (
-              <li key={device.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+            {activeDevices.map((device) => (
+              <li key={device.deviceId} className="flex items-center gap-3 px-3 py-2 text-sm">
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-zinc-200">
                     {device.name}
-                    {device.id === me.data?.id && (
+                    {device.deviceId === me.data?.deviceId && (
                       <span className="ml-2 text-xs text-sky-400">this device</span>
                     )}
                   </span>
                   <span className="block text-xs text-zinc-500">
                     {device.kind === "token" ? "Token" : "Passkey"} · {device.scopes.join(", ")} ·
-                    last seen {when(device.lastSeenAt)}
+                    last seen {formatLastSeen(device.lastSeenAt)}
                   </span>
                 </span>
                 <button
                   type="button"
                   className={BUTTON}
-                  disabled={busyId === device.id}
+                  disabled={busyId === device.deviceId}
                   onClick={() => void revoke(device)}
                 >
-                  {busyId === device.id ? "Revoking…" : "Revoke"}
+                  {busyId === device.deviceId ? "Revoking…" : "Revoke"}
                 </button>
               </li>
             ))}
-            {list.length === 0 && !devices.loading && (
+            {activeDevices.length === 0 && !devices.loading && (
               <li className="px-3 py-2 text-xs text-zinc-500">No devices.</li>
             )}
           </ul>
@@ -171,8 +169,8 @@ export default function DevicesSection() {
             Pair a device with a token
           </h3>
           <p className="mb-3 text-xs text-zinc-500">
-            For a client that can't use a passkey. Paste the token into it. Give it only the scopes
-            it needs: admin can manage devices and secrets.
+            For a client that can't use a passkey. Paste the token into it, and give it only the
+            scopes it needs. Admin stays with passkey devices.
           </p>
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs text-zinc-400">
@@ -186,7 +184,7 @@ export default function DevicesSection() {
             </label>
             <fieldset className="flex gap-3 text-xs text-zinc-300">
               <legend className="sr-only">Scopes</legend>
-              {ALL_SCOPES.map((scope) => (
+              {MINTABLE_SCOPES.map((scope) => (
                 <label key={scope} className="flex items-center gap-1">
                   <input
                     type="checkbox"

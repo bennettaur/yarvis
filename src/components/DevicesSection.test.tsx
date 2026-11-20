@@ -8,7 +8,7 @@ import { stubServerRoutes } from "../test/serverRoutes";
 import DevicesSection from "./DevicesSection";
 
 const me: Device = {
-  id: "d-me",
+  deviceId: "d-me",
   name: "Chrome on Mac",
   kind: "passkey",
   scopes: ["read", "chat", "approve", "admin"],
@@ -21,12 +21,12 @@ const server = stubServerRoutes({
   "GET /api/devices": () => Response.json(devices),
   "POST /api/devices/tokens": (body) => {
     const { name, scopes } = body as { name: string; scopes: Device["scopes"] };
-    const device: Device = { id: "d-new", name, kind: "token", scopes };
+    const device: Device = { deviceId: "d-new", name, kind: "token", scopes };
     devices = [...devices, device];
     return Response.json({ token: "yv_secret_once", device });
   },
   "DELETE /api/devices/d-phone": () => {
-    devices = devices.filter((d) => d.id !== "d-phone");
+    devices = devices.filter((d) => d.deviceId !== "d-phone");
     return new Response(null, { status: 204 });
   },
 });
@@ -60,7 +60,7 @@ describe("DevicesSection", () => {
   it("lists the devices and revokes one", async () => {
     devices = [
       me,
-      { id: "d-phone", name: "Phone", kind: "passkey", scopes: ["read"], lastSeenAt: null },
+      { deviceId: "d-phone", name: "Phone", kind: "passkey", scopes: ["read"], lastSeenAt: null },
     ];
     const mounted = await mountForInteraction(createElement(DevicesSection));
     unmount = mounted.unmount;

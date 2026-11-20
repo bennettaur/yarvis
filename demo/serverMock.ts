@@ -22,7 +22,7 @@ interface Options {
 }
 
 const DEMO_DEVICE = {
-  id: "demo-device",
+  deviceId: "demo-device",
   name: "Demo browser",
   kind: "passkey",
   scopes: ["read", "chat", "approve", "admin"],

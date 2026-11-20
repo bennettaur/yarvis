@@ -209,7 +209,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "delete_embeddings_secret":
       return null;
 
-    // The sidecar keeps the alarms; the core only stops one ringing.
+    // The sidecar keeps the alarms; the app only rings one and stops it.
+    case "fire_alarm":
     case "release_alarm":
       return null;
 

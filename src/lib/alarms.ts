@@ -1,6 +1,6 @@
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { ensureOk, sidecarFetch, streamSSE } from "./api";
-import { core } from "./core";
+import { core, localFeaturesAvailable } from "./core";
 import { onServerEvent } from "./serverEvents";
 
 /**
@@ -61,9 +61,37 @@ export const acknowledgeAlarm = (id: string) => releaseAndRecord(id, "acknowledg
 export const snoozeAlarm = (id: string, minutes: number) =>
   releaseAndRecord(id, "snooze", { minutes });
 
-/** Subscribe to alarms firing, from the server's event stream. */
+/**
+ * Subscribe to alarms firing, from the server's event stream. In the desktop
+ * app the window is also taken over and the alarm rung on this machine, which
+ * only the app can do.
+ */
 export const onAlarmFired = (cb: (alarm: Alarm) => void): Promise<UnlistenFn> =>
-  Promise.resolve(onServerEvent<Alarm>("alarm.fire", (e) => cb(e.data)));
+  Promise.resolve(
+    onServerEvent<Alarm>("alarm.fire", (e) => {
+      if (localFeaturesAvailable()) {
+        void core("fire_alarm", { alarm: e.data }).catch((err) =>
+          console.error("[alarms] ringing on this machine failed:", err),
+        );
+      }
+      cb(e.data);
+    }),
+  );
+
+/**
+ * Subscribe to an alarm being dealt with anywhere, from the server's event
+ * stream. In the desktop app it also stops the ring on this machine, since the
+ * user may have acknowledged it on another device.
+ */
+export const onAlarmReleased = (cb: (alarm: Alarm) => void): Promise<UnlistenFn> =>
+  Promise.resolve(
+    onServerEvent<Alarm>("alarm.release", (e) => {
+      if (localFeaturesAvailable()) {
+        void core("release_alarm", { id: e.data.id }).catch(() => {});
+      }
+      cb(e.data);
+    }),
+  );
 
 /** How long to wait before reconnecting a dropped stream. */
 const RECONNECT_MS = 5_000;

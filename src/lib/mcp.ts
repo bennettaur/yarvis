@@ -223,7 +223,7 @@ export async function getMcpEndpoint(): Promise<McpEndpoint> {
   return res.json();
 }
 
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
+/* ---------- Secrets (core commands, kept in the server's secret store) ---------- */
 
 export function listMcpSecretStatus(): Promise<McpSecretStatus[]> {
   return core<McpSecretStatus[]>("list_mcp_secret_status");

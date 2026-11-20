@@ -163,11 +163,19 @@ export class Demo {
     );
     if (result.status !== 0) throw new Error(`firing the alarm failed: ${result.stderr}`);
     const fired: Alarm = { ...alarm, id: result.stdout.trim(), status: "fired" };
-    await this.page.evaluate((alarm) => {
-      const controls = window.__yarvisDemoControls;
-      if (!controls) throw new Error("the Tauri mock isn't installed");
-      controls.emitServerEvent("alarm.fire", alarm);
-    }, fired);
+    await this.emitServerEvent("alarm.fire", fired);
+  }
+
+  /** Sends an event on the server's event stream (e.g. `alarm.fire`). */
+  async emitServerEvent(kind: string, data: unknown): Promise<void> {
+    await this.page.evaluate(
+      ({ kind, data }) => {
+        const controls = window.__yarvisDemoControls;
+        if (!controls) throw new Error("the Tauri mock isn't installed");
+        controls.emitServerEvent(kind, data);
+      },
+      { kind, data },
+    );
   }
 
   /** Fires a native event, as the Rust core would (e.g. `omni-chat-summon`). */

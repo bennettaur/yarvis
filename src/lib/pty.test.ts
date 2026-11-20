@@ -111,6 +111,24 @@ describe("the PTY socket client", () => {
     unOutput();
   });
 
+  it("closes its terminals when the device signs out", async () => {
+    const unOutput = await onPtyOutput("tab:4", () => {});
+    const before = fakeSockets().length;
+    const attached = attachPty("tab:4", 80, 24);
+    await waitFor(() => fakeSockets().length === before + 1, "the socket");
+    const socket = fakeSockets()[before];
+    socket?.open();
+    socket?.sendJson({ type: "attached", endOffset: 0 });
+    socket?.sendOutput(0, "");
+    await attached;
+
+    signOut();
+
+    expect(socket?.readyState).toBe(3);
+    saveDeviceToken("tok-pty");
+    unOutput();
+  });
+
   it("rejects the attach when the server refuses it", async () => {
     const unOutput = await onPtyOutput("tab:3", () => {});
     const before = fakeSockets().length;

@@ -14,7 +14,7 @@ export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ol
 /**
  * Structural fields for a user-configured proxy. Stored in Postgres. Secret
  * values (apiKey + each custom header value) are managed separately via the
- * Tauri commands below and live in the macOS Keychain.
+ * core commands below and live in the server's secret store.
  */
 export interface CustomProvider {
   id: string;
@@ -84,7 +84,7 @@ export async function deleteCustomProvider(id: string): Promise<void> {
   await ensureOk(res, "delete custom provider");
 }
 
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
+/* ---------- Secrets (core commands, kept in the server's secret store) ---------- */
 
 export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
   return core<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");

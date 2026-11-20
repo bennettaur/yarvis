@@ -74,8 +74,8 @@ you:
   only your saved entries.
 - Global shortcuts, such as the ones that open
   [Quick Chat](quick-chat.md) and the clipboard palette from another app.
-- An alarm taking over the screen. In a browser a ringing alarm shows under
-  **Ringing** in the attention panel, where you can acknowledge or snooze it.
+- An alarm bringing the window to the front over your other apps. In a
+  browser the alarm still takes over the page, but only while its tab is open.
 - **Show in Finder** for a saved voice clip.
 - Continuous voice mode's turn detector, which listens on a port only the
   server's own machine can reach. It works in a browser on that machine, not

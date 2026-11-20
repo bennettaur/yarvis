@@ -55,7 +55,10 @@ const fakeAssertion = {
 };
 
 const requestOptions = {
-  publicKey: { challenge: "AQID", allowCredentials: [{ id: "AQID", type: "public-key" }] },
+  ceremonyId: "c-2",
+  options: {
+    publicKey: { challenge: "AQID", allowCredentials: [{ id: "AQID", type: "public-key" }] },
+  },
 };
 
 beforeEach(() => {
@@ -113,17 +116,19 @@ describe("sign-in", () => {
         },
       });
     routes["POST /api/auth/setup/finish"] = () =>
-      Response.json({ token: "tok-new", device: { id: "d1", name: "Mac", scopes: ["admin"] } });
+      Response.json({
+        token: "tok-new",
+        device: { deviceId: "d1", name: "Mac", scopes: ["admin"] },
+      });
     credentials.create = async () => fakeAttestation;
 
     const signedIn = await setUpWithCode("ABCDE-FGHIJ", "Mac");
 
-    expect(signedIn.device.id).toBe("d1");
+    expect(signedIn.device.deviceId).toBe("d1");
     expect(await deviceToken()).toBe("tok-new");
     expect(calls[0]?.body).toEqual({ code: "ABCDE-FGHIJ", deviceName: "Mac" });
     expect(calls[1]?.body).toEqual({
       ceremonyId: "c-1",
-      deviceName: "Mac",
       credential: {
         id: "cred-1",
         rawId: "AQID",
@@ -133,10 +138,13 @@ describe("sign-in", () => {
     });
   });
 
-  it("signs in with a passkey when the start route answers bare options", async () => {
+  it("signs in with a passkey and names the new device", async () => {
     routes["POST /api/auth/login/start"] = () => Response.json(requestOptions);
     routes["POST /api/auth/login/finish"] = () =>
-      Response.json({ token: "tok-login", device: { id: "d2", name: "Phone", scopes: ["read"] } });
+      Response.json({
+        token: "tok-login",
+        device: { deviceId: "d2", name: "Phone", scopes: ["read"] },
+      });
     credentials.get = async () => fakeAssertion;
 
     await signInWithPasskey("Phone");
@@ -154,6 +162,7 @@ describe("sign-in", () => {
           userHandle: null,
         },
       },
+      ceremonyId: "c-2",
       deviceName: "Phone",
     });
   });
@@ -172,8 +181,11 @@ describe("admin actions", () => {
     let mints = 0;
     routes["POST /api/devices/tokens"] = () =>
       ++mints === 1
-        ? Response.json({ error: "check your passkey again" }, { status: 403 })
-        : Response.json({ token: "tok-bot", device: { id: "d3", name: "bot", scopes: ["read"] } });
+        ? Response.json({ error: "reauth_required" }, { status: 403 })
+        : Response.json({
+            token: "tok-bot",
+            device: { deviceId: "d3", name: "bot", scopes: ["read"] },
+          });
     routes["POST /api/auth/reverify/start"] = () => Response.json(requestOptions);
     routes["POST /api/auth/reverify/finish"] = () => Response.json({});
     credentials.get = async () => fakeAssertion;
@@ -189,5 +201,13 @@ describe("admin actions", () => {
     ]);
     // The token minted for someone else is never kept as this device's own.
     expect(await deviceToken()).toBe("tok-admin");
+  });
+
+  it("doesn't ask for the passkey when the device just lacks the scope", async () => {
+    saveDeviceToken("tok-reader");
+    routes["POST /api/devices/tokens"] = () =>
+      Response.json({ error: "this device doesn't have the admin scope" }, { status: 403 });
+    await expect(mintDeviceToken("bot", ["read"])).rejects.toThrow("admin scope");
+    expect(calls.map((c) => c.url)).toEqual(["/api/devices/tokens"]);
   });
 });

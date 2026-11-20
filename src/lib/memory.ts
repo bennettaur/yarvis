@@ -224,7 +224,7 @@ export const memDeleteEmbeddingsConfig = () =>
 
 export const memReembed = () => send<{ reembedded: number }>("/api/memory/reembed", "POST");
 
-/* ---------- Embeddings secrets (Tauri commands, Keychain-backed) ---------- */
+/* ---------- Embeddings secrets (core commands, kept in the server's secret store) ---------- */
 
 export type EmbeddingsSecretSlot = "apiKey" | `header:${string}`;
 

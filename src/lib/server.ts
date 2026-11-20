@@ -78,7 +78,7 @@ export function signOut(): void {
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch {
-    // Nothing stored to remove.
+    // Storage blocked: nothing to clear.
   }
   tokenPromise = Promise.resolve(null);
   notifyAuth(false);
@@ -113,9 +113,14 @@ export function serverSocketUrl(path: string): string | null {
   return `${scheme}//${location.host}${path}`;
 }
 
-/** The close codes the server uses for a failed WebSocket sign-in (HTTP 401 and 403). */
+/** The close code for a token the server doesn't accept; the device signs in again. */
 export const WS_UNAUTHORIZED = 4401;
-export const WS_FORBIDDEN = 4403;
+/**
+ * True for a close the server chose because of the request (4400, 4401,
+ * 4403), which reconnecting won't change. A 1011 or a dropped network is
+ * worth retrying.
+ */
+export const refusedByServer = (code: number): boolean => code >= 4000 && code < 5000;
 
 /**
  * Opens a WebSocket to the server and sends the auth message, with `hello`'s
