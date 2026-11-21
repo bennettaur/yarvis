@@ -12,8 +12,10 @@ import { nativeInvoke } from "./nativeInvoke";
  * Frontend test setup, preloaded for every `bun test` run under src/ (see
  * bunfig.toml). It registers a happy-dom global environment so React can render
  * into a real DOM, and stubs the Tauri runtime APIs — which only exist inside
- * the desktop shell — with inert defaults. Tests that need specific sidecar
- * data stub `src/lib/api` through `stubSidecarApi` in `./sidecarApi`.
+ * the desktop shell — with inert defaults. Calls to the server's core commands
+ * (`lib/core`) are answered by the same `invoke` stub; see `./coreApi`. Tests
+ * that need specific sidecar data stub `src/lib/api` through `stubSidecarApi`
+ * in `./sidecarApi`.
  */
 
 // `lib/resourceCache` outlives the components reading it on purpose, which in a
@@ -37,6 +39,9 @@ mock.module("@tauri-apps/plugin-opener", () => ({
   openUrl: async () => {},
   revealItemInDir: async () => {},
 }));
+
+// After the Tauri stubs: `core()` answers through the `invoke` stub above.
+await import("./coreApi");
 
 mock.module("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: async () => true,

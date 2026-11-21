@@ -46,9 +46,14 @@ Three processes, each with a clean ownership boundary:
   Claude Code harness, so the sidecar's restart sweep can bring back a session
   the user started. That makes `resume` something only the sweep may set, from
   a hook-verified session row. Never expose it to an agent tool.
-- **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
-  Rust core via `invoke` (native + secrets) and to the sidecar over
-  authenticated loopback HTTP (data + AI).
+- **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Served by
+  yarvis-server and talks only to it, on its own origin, with a device token
+  (`lib/server.ts`): `core()` (`lib/core.ts`) for what the Rust core did
+  (settings, secrets, PTY control), `sidecarFetch` for the sidecar behind
+  the server's proxy, and WebSockets for events and terminals. Inside the
+  Tauri window, the machine-local commands (clipboard history, window focus,
+  ringing an alarm) go to the Tauri bridge instead. See
+  `docs/client-server.md`.
 - **Bun sidecar** (`sidecar/`) — a Hono HTTP service owning Postgres access
   (Drizzle ORM), LLM calls, and memory. Also hosts an optional Telegram
   remote-control bot.

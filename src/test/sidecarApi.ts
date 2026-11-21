@@ -11,8 +11,8 @@ import { mock } from "bun:test";
  * `resetSidecarApi` clears them.
  *
  * An override changes what code outside `lib/api` sees. Inside it, the real
- * `getHealth` and `streamSSE` still call the real `sidecarInfo` and
- * `sidecarFetch`, so a suite that needs them answered stubs them directly.
+ * `getHealth` and `streamSSE` still call the real `sidecarFetch`, so a suite
+ * that needs them answered stubs them directly.
  */
 
 type SidecarApi = typeof import("../lib/api");
