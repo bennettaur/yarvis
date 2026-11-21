@@ -469,7 +469,10 @@ async fn relay_turn_detector(mut socket: WebSocket, state: AppState) {
 /// and the sidecar's callback route it forwards to. The browser arrives with no
 /// token, so these are unauthenticated; the sidecar accepts only a `state` its
 /// own flow issued.
-const OAUTH_CALLBACKS: &[(&str, &str)] = &[("/api/oauth/mcp/callback", "/oauth/mcp/callback")];
+const OAUTH_CALLBACKS: &[(&str, &str)] = &[
+    ("/api/oauth/mcp/callback", "/oauth/mcp/callback"),
+    ("/api/oauth/google/callback", "/oauth/google/callback"),
+];
 
 /// A callback's query is a code, a state and maybe an error: small.
 const MAX_CALLBACK_QUERY: usize = 8 * 1024;

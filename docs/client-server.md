@@ -677,8 +677,9 @@ Pairing a device without a passkey:
 
 OAuth redirects (no token: a browser arriving from an authorization server):
 
-- `GET /api/oauth/mcp/callback?code&state`, forwarded to the sidecar's own
-  callback with the query only, none of the browser's headers. The sidecar
+- `GET /api/oauth/mcp/callback?code&state` and
+  `GET /api/oauth/google/callback?code&state`, each forwarded to the
+  sidecar's own callback with the query only, none of the browser's headers. The sidecar
   accepts only a `state` its own flow issued, once. Nothing else on the
   sidecar is reachable this way. The sidecar registers this URL as the
   redirect when `auth.origins` has an `https` origin off loopback (passed to it
@@ -736,9 +737,10 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
-- **Google OAuth is local-only.** Google Calendar's sign-in redirects to the
-  sidecar's loopback port, so it works only in a browser on the server's own
-  machine.
+- **Google OAuth on a `*.ts.net` name is unconfirmed.** Google requires a
+  Web application client's redirect host to end in a domain on the Public
+  Suffix List. Whether `ts.net` passes hasn't been checked; a domain you own
+  does.
 - **Port squatting in local mode.** The Tauri app starts its server on a
   loopback port and sends it a token. Another local user who binds that port
   first receives the token. The app doesn't check the server's identity yet.

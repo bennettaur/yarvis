@@ -23,6 +23,23 @@ const config: Config = {
 const app = createApp(config);
 const auth = { Authorization: "Bearer test-token" };
 
+describe("the Google redirect", () => {
+  it("is the loopback callback, for a Desktop app client", async () => {
+    const res = await app.request("/api/calendar/auth-url", { headers: auth });
+    const url = new URL(((await res.json()) as { url: string }).url);
+    expect(url.searchParams.get("redirect_uri")).toBe("http://127.0.0.1:0/oauth/google/callback");
+  });
+
+  it("is the server's origin when it is reached from other machines, for a Web client", async () => {
+    const remote = createApp({ ...config, publicOrigin: "https://mini.example.ts.net" });
+    const res = await remote.request("/api/calendar/auth-url", { headers: auth });
+    const url = new URL(((await res.json()) as { url: string }).url);
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://mini.example.ts.net/api/oauth/google/callback",
+    );
+  });
+});
+
 describe("calendar events route validation", () => {
   it("rejects a non-ISO timeMin with 400", async () => {
     const res = await app.request("/api/calendar/events?timeMin=not-a-date", {

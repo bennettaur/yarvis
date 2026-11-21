@@ -1089,6 +1089,24 @@ async fn an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback()
     let body = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body, "query=code=c1&state=s1 cookie=false");
 
+    // Google's redirect goes to the sidecar's Google callback.
+    let sidecar =
+        serve(Router::new().route(
+            "/oauth/google/callback",
+            get(|uri: axum::http::Uri| async move {
+                format!("google {}", uri.query().unwrap_or_default())
+            }),
+        ))
+        .await;
+    let google = test_server(Config::default(), MemoryBackend::empty(), sidecar);
+    let req = Request::get("/api/oauth/google/callback?code=g&state=s")
+        .header("host", "localhost")
+        .body(Body::empty())
+        .unwrap();
+    let response = app(google.state.clone()).oneshot(req).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, "google code=g&state=s");
+
     for path in [
         "/api/oauth/mcp/callback/x",
         "/api/oauth/mcp",
