@@ -764,7 +764,9 @@ Core commands that changed on the way from `invoke`:
   only on repos an admin registered, with nothing the caller chooses.
 - **A lock doesn't reach running PTY sessions.** Stopping the sidecar (on
   lock, restart or shutdown) kills it and every process it started, but PTY
-  sessions keep the environment they started with.
+  sessions keep the environment they started with. A sidecar that crashes on
+  its own leaves its detached children (agent runs, the voice servers)
+  reparented; its startup sweep ends the agent runs.
 - **Monaco under the CSP is untested.** Monaco's TypeScript worker contains
   a `new Function(`. The end-to-end test doesn't open an editor, since that
   needs the sidecar, so whether it trips `script-src 'self'` is unchecked.

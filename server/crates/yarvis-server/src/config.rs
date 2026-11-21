@@ -63,18 +63,37 @@ impl AuthConfig {
     /// origin that isn't loopback, such as a `tailscale serve` name. OAuth
     /// redirects go there, so they work from a browser anywhere. `None` for a
     /// server only reached on loopback.
-    pub fn public_origin(&self) -> Option<&str> {
-        self.origins
-            .iter()
-            .map(|o| o.trim_end_matches('/'))
-            .find(|origin| {
-                let Some(host) = origin.strip_prefix("https://") else {
-                    return false;
-                };
-                let host = host.split(':').next().unwrap_or_default();
-                !matches!(host, "localhost" | "127.0.0.1" | "[") && !host.starts_with('[')
+    /// Written as a browser would serialize it (lowercase host, no `:443`),
+    /// which is what an OAuth provider compares a redirect against. An origin
+    /// with userinfo, a path or a query isn't one, and is skipped.
+    pub fn public_origin(&self) -> Option<String> {
+        self.origins.iter().find_map(|origin| {
+            let uri: axum::http::Uri = origin.parse().ok()?;
+            let authority = uri.authority()?;
+            let plain = uri.scheme_str() == Some("https")
+                && !authority.as_str().contains('@')
+                && matches!(uri.path(), "" | "/")
+                && uri.query().is_none();
+            let host = authority.host().to_ascii_lowercase();
+            if !plain || is_loopback_host(&host) {
+                return None;
+            }
+            Some(match authority.port_u16().filter(|port| *port != 443) {
+                Some(port) => format!("https://{host}:{port}"),
+                None => format!("https://{host}"),
             })
+        })
     }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl Default for AuthConfig {
@@ -234,12 +253,25 @@ mod tests {
         };
         assert_eq!(auth(&["http://localhost:7878"]).public_origin(), None);
         assert_eq!(
-            auth(&["https://localhost:7878", "https://[::1]"]).public_origin(),
+            auth(&[
+                "https://localhost:7878",
+                "https://[::1]",
+                "https://127.0.0.2",
+                "https://LOCALHOST.",
+                "https://x.localhost",
+                "https://evil@mini.example.ts.net",
+                "https://mini.example.ts.net/path",
+            ])
+            .public_origin(),
             None
         );
         assert_eq!(
-            auth(&["http://127.0.0.1:7878", "https://mini.example.ts.net/"]).public_origin(),
-            Some("https://mini.example.ts.net")
+            auth(&["http://127.0.0.1:7878", "https://Mini.Example.ts.net:443/"]).public_origin(),
+            Some("https://mini.example.ts.net".into())
+        );
+        assert_eq!(
+            auth(&["https://mini.example.ts.net:8443"]).public_origin(),
+            Some("https://mini.example.ts.net:8443".into())
         );
     }
 

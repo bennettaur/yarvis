@@ -552,7 +552,7 @@ async fn connect_turn_detector(state: &AppState) -> Result<UpstreamSocket, Strin
         .and_then(|v| v["url"].as_str().map(String::from))
         .ok_or("the turn detector isn't running")?;
     // Only ever a loopback address the sidecar reports; never somewhere else.
-    if !url.starts_with("ws://127.0.0.1:") {
+    if !is_loopback_ws(&url) {
         return Err("the turn detector reported an address off loopback".into());
     }
     let connect = tokio_tungstenite::connect_async(url);
@@ -561,6 +561,20 @@ async fn connect_turn_detector(state: &AppState) -> Result<UpstreamSocket, Strin
         .map_err(|_| "timed out connecting to the turn detector".to_string())?
         .map_err(|e| e.to_string())?;
     Ok(socket)
+}
+
+/// `ws://127.0.0.1:<port>/…` and nothing else: no userinfo, which would move
+/// the real host after an `@`.
+fn is_loopback_ws(url: &str) -> bool {
+    let Ok(uri) = url.parse::<Uri>() else {
+        return false;
+    };
+    uri.scheme_str() == Some("ws")
+        && uri.authority().is_some_and(|authority| {
+            !authority.as_str().contains('@')
+                && authority.host() == "127.0.0.1"
+                && authority.port_u16().is_some()
+        })
 }
 
 /// Relays frames both ways until either side closes or the device is revoked.
@@ -860,6 +874,20 @@ mod tests {
             "/api/./x",
         ] {
             assert_eq!(decoded_path(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_turn_detector_must_be_on_loopback() {
+        assert!(is_loopback_ws("ws://127.0.0.1:5123/?token=t"));
+        for url in [
+            "ws://127.0.0.1:5123@evil.example/?token=t",
+            "ws://127.0.0.1/?token=t",
+            "wss://127.0.0.1:5123/",
+            "ws://127.0.0.10:5123/",
+            "ws://evil.example:5123/",
+        ] {
+            assert!(!is_loopback_ws(url), "{url}");
         }
     }
 

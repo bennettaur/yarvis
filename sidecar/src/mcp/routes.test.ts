@@ -294,12 +294,15 @@ describe("mcp oauth callback", () => {
     expect(await res.text()).toContain("unknown or expired");
   });
 
-  it("reports an authorization the user declined", async () => {
+  it("reports an authorization the user declined, by its error code only", async () => {
     const res = await app.request(
-      "/oauth/mcp/callback?error=access_denied&error_description=User%20said%20no",
+      "/oauth/mcp/callback?error=access_denied&error_description=Visit%20evil.example",
     );
     expect(res.status).toBe(400);
-    expect(await res.text()).toContain("User said no");
+    const page = await res.text();
+    expect(page).toContain("Authorization failed (access_denied).");
+    // The page can be served on the server's own origin, so no free text from the query.
+    expect(page).not.toContain("evil.example");
   });
 
   it("refuses a callback with no code", async () => {

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
+import { oauthErrorCode } from "../mcp/callbackRoutes.ts";
 import { buildAuthUrl, createGoogleCalendarClient, scopeSatisfied } from "./client.ts";
 import {
   clearToken,
@@ -159,7 +160,7 @@ export function createGoogleCallbackRoutes(config: Config): Hono {
     const code = c.req.query("code");
     const state = c.req.query("state");
     const err = c.req.query("error");
-    if (err) return c.html(donePage(`Authorization failed: ${err}`), 400);
+    if (err) return c.html(donePage(`Authorization failed${oauthErrorCode(err)}.`), 400);
     if (!code || !state || !consumeState(state)) {
       return c.html(donePage("Invalid or expired authorization."), 400);
     }
