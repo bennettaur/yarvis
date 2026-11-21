@@ -108,9 +108,8 @@ struct Status {
 }
 
 async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
-    // Nothing in the server can unlock a vault yet, so a vault stays locked.
     let vault = match state.config.secrets.backend {
-        SecretBackendKind::Vault => "locked",
+        SecretBackendKind::Vault => state.vault.state().map_err(ApiError::internal)?.as_str(),
         SecretBackendKind::Keychain | SecretBackendKind::OnePassword => "absent",
     };
     Ok(Json(Status {
@@ -500,8 +499,20 @@ async fn remove_passkey(
     Fresh { device, .. }: Fresh<Admin>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Removed>> {
+    let credential_id = state
+        .passkeys
+        .passkeys()
+        .await?
+        .into_iter()
+        .find(|p| p.id == id)
+        .map(|p| p.passkey.cred_id().to_vec());
     let revoked = match state.passkeys.remove_passkey(&id).await? {
-        RemovePasskey::Removed { revoked } => revoked,
+        RemovePasskey::Removed { revoked } => {
+            if let Some(credential_id) = credential_id {
+                crate::vault::forget_passkey(&state.vault, &credential_id);
+            }
+            revoked
+        }
         RemovePasskey::LastOne => {
             return Err(ApiError::conflict("that is the last passkey")
                 .with_detail("add another before removing this one"));
