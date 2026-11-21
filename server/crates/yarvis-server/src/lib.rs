@@ -9,7 +9,9 @@ pub mod events;
 pub mod http_guard;
 pub mod rate_limit;
 pub mod secret_store;
+pub mod ssh_agent;
 pub mod store;
+pub mod vault;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +26,9 @@ use crate::auth::{Auth, Authed, DeviceContext, Read};
 use crate::config::Config;
 use crate::events::EventLog;
 use crate::rate_limit::RateLimiter;
+use crate::ssh_agent::SshAgent;
 use crate::store::Store;
+use crate::vault::Vault;
 
 /// Enough for a person retrying a passkey prompt, few enough that a script
 /// can't fill the ceremony map.
@@ -42,6 +46,12 @@ pub struct AppState {
     pub approvals: Approvals,
     /// Shared by the routes that need no token.
     pub auth_limiter: RateLimiter,
+    /// Locked until a passkey or the recovery key opens it. Only used when
+    /// `secrets.backend = "vault"`.
+    pub vault: Vault,
+    /// Runs only while the vault is unlocked, and never when
+    /// `ssh_agent.enabled` is off.
+    pub ssh_agent: SshAgent,
 }
 
 impl AppState {
@@ -54,6 +64,8 @@ impl AppState {
                 .unwrap_or_else(|e| panic!("invalid [auth] config: {e}")),
             approvals: Approvals::new(store.clone(), events.clone()),
             auth_limiter: RateLimiter::new(AUTH_REQUESTS_PER_MINUTE, Duration::from_secs(60)),
+            vault: Vault::new(&config.server.data_dir),
+            ssh_agent: SshAgent::default(),
             config: Arc::new(config),
             auth: Auth::new(store.clone()),
             events,
@@ -77,6 +89,8 @@ pub fn app(state: AppState) -> Router {
         .merge(auth::routes::router(&state))
         .merge(devices::router())
         .merge(approvals::router())
+        .merge(vault::routes::router(&state))
+        .merge(ssh_agent::router(&state))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             http_guard::guard,
