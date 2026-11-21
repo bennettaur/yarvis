@@ -121,7 +121,7 @@ This follows `spikes/auth/FINDINGS.md`.
   A token made for a bot or script gets only what it is given.
 - **Fresh**: device management, adding a passkey, and vault actions also need
   a passkey check on this device in the last 10 minutes (`verified_at`).
-  Without one they get `403 { "error": "fresh passkey check needed" }`, and
+  Without one they get `403 { "error": "reauth_required" }`, and
   the client runs `/api/auth/reverify`. A token device can never be fresh,
   so it can never do these things.
 - Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`.
@@ -282,18 +282,40 @@ response, except the one time a token is created.
 Auth (no token needed):
 
 - `GET  /api/auth/status` → `{ setupRequired, rpId, vault: "absent"|"locked"|"unlocked" }`
-- `POST /api/auth/setup/start` `{ code, deviceName }` → WebAuthn creation options
-- `POST /api/auth/setup/finish` `{ credential }` → `{ token, device }`
-- `POST /api/auth/login/start` → WebAuthn request options
-- `POST /api/auth/login/finish` `{ credential, deviceName }` → `{ token, device }`
+- `POST /api/auth/setup/start` `{ code, deviceName }` → `{ ceremonyId, options }`
+  (WebAuthn creation options)
+- `POST /api/auth/setup/finish` `{ ceremonyId, credential }` → `{ token, device }`
+- `POST /api/auth/login/start` → `{ ceremonyId, options }` (WebAuthn request options)
+- `POST /api/auth/login/finish` `{ ceremonyId, credential, deviceName }` → `{ token, device }`
+
+Every WebAuthn exchange is a `start` and a `finish`. The `ceremonyId` from
+`start` names the challenge `finish` answers, and works once, for 5 minutes.
+The setup and sign-in routes (not `status`) are rate-limited per client
+address. A wrong setup code counts against 5 tries; after that the server
+needs a restart to print a new code. Once a passkey exists the setup routes
+answer `409`.
 
 Devices (token needed):
 
 - `GET    /api/devices/me` (`read`) → the calling device
 - `GET    /api/devices` (admin)
-- `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`
-- `DELETE /api/devices/{id}` (admin, fresh)
-- `POST   /api/auth/reverify/start|finish` (passkey check, makes the device fresh)
+- `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`.
+  `scopes` can't include `admin` (`400`).
+- `DELETE /api/devices/{id}` (admin, fresh) → `{ revokedAt }`
+- `POST   /api/auth/reverify/start` (admin) → `{ ceremonyId, options }`, and
+  `/finish` `{ ceremonyId, credential }` → `{ verifiedAt }`: a passkey check
+  that makes the device fresh. Only a device signed in with a passkey can do
+  it, so a token is never fresh.
+- `POST   /api/passkeys/register/start` `{ label }` (admin, fresh) →
+  `{ ceremonyId, options }`, and `/finish` `{ ceremonyId, credential }` →
+  `{ passkeyId }`: adds another passkey, such as a security key as a backup.
+- `GET    /api/passkeys` (admin) → `[{ id, label, createdAt }]`
+- `DELETE /api/passkeys/{id}` (admin, fresh) → `{ revokedDevices }`: removes a
+  passkey and revokes every device it signed in. The last passkey can't be
+  removed (`409`).
+
+"Fresh" means a passkey check in the last 10 minutes. Without one these
+routes answer `403 { "error": "reauth_required" }`.
 
 Events and approvals:
 
@@ -323,13 +345,17 @@ Events and approvals:
     did to the window. `data` is the alarm, as `alarms.rs` builds it.
   - `approval.requested` and `approval.answered`: see below.
   - `device.created` and `device.revoked`.
+  - `passkey.added` and `passkey.removed`.
   - `sidecar.started` and `sidecar.stopped`: the sidecar restarted, so cached
     data may be stale.
   - `vault.locked` and `vault.unlocked`.
   - `pty.exited`: `{ id, code }`.
 - `GET  /api/approvals` (`read`)
 - `POST /api/approvals/{id}` `{ approve: bool }` (`approve`). The first answer
-  wins. Later answers get `409`.
+  wins. Later answers get `409`, and so does an answer after the approval
+  timed out. No answer in time, a restart, or a requester that stops waiting
+  all count as a denial; `approval.answered` then has `deviceId: null` and a
+  `reason`.
 
 Core (what `invoke` did; one route per command, JSON body = the command's
 arguments with the same camelCase keys the frontend passes to `invoke` today,
