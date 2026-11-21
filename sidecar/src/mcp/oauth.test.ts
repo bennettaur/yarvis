@@ -369,3 +369,11 @@ describe("oauthRedirectUri", () => {
     ).toBe("https://mini.example.ts.net/api/oauth/mcp/callback");
   });
 });
+
+describe("oauthErrorCode", () => {
+  it("shows an OAuth error code and nothing else from the query", async () => {
+    const { oauthErrorCode } = await import("./callbackRoutes.ts");
+    expect(oauthErrorCode("access_denied")).toBe(" (access_denied)");
+    expect(oauthErrorCode("Your session expired, visit evil.example")).toBe("");
+  });
+});

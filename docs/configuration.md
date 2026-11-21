@@ -322,9 +322,9 @@ such a server needs a "Web application" client:
    API enabled, and choose **Create credentials → OAuth client ID**.
 2. Pick **Web application** as the application type.
 3. Under **Authorized redirect URIs**, add
-   `https://<your server's origin>/api/oauth/google/callback`, exactly as the
-   server's first non-loopback `https` origin in `auth.origins` spells it
-   (Google matches it character for character).
+   `https://<your server's origin>/api/oauth/google/callback`, with the host
+   in lowercase and no `:443` (Google matches it character for character).
+   The origin is the first `https` one in `auth.origins` that isn't loopback.
 4. Create it, then enter its client ID and secret in **Settings →
    Credentials** as for a Desktop client (`googleClientId` and
    `google_client_secret`). Connect again from the Calendar tab.

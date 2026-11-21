@@ -222,7 +222,7 @@ impl Sidecar {
             };
             // Kills what the sidecar started with it, whichever way it stops,
             // including this task being dropped at shutdown.
-            let tree = child.id().map(ProcessTree);
+            let mut tree = child.id().map(ProcessTree);
             self.inner.running.store(true, Ordering::SeqCst);
             if let Some(out) = child.stdout.take() {
                 tee(out, log.clone(), false);
@@ -238,6 +238,11 @@ impl Sidecar {
             .await;
             let reason = tokio::select! {
                 status = child.wait() => {
+                    // Already reaped, so its pid may be reused: only its group,
+                    // which can't be reused while a member lives, is killed.
+                    if let Some(tree) = tree.take() {
+                        tree.kill_group_only();
+                    }
                     tracing::warn!("sidecar exited ({status:?}); restarting shortly");
                     json!({ "reason": "exited", "code": status.ok().and_then(|s| s.code()) })
                 }
@@ -317,8 +322,26 @@ impl Sidecar {
 /// reparented and can't be found by ancestry. So the sidecar is paused first,
 /// which keeps it from starting more, and every descendant's group is killed
 /// before the sidecar's own. PTY sessions are the server's, not the sidecar's,
-/// so they're untouched.
+/// so they're untouched. A sidecar that exits on its own has its detached
+/// children reparented already; the sidecar's own startup sweep ends the agent
+/// runs among them.
 struct ProcessTree(u32);
+
+impl ProcessTree {
+    /// For a sidecar that already exited: no pause or walk, which would act on
+    /// whatever process has its pid now.
+    fn kill_group_only(self) {
+        #[cfg(unix)]
+        if let Ok(group) = libc::pid_t::try_from(self.0)
+            && group > 1
+            && group != unsafe { libc::getpgrp() }
+        {
+            // SAFETY: a signal to a process group the server created.
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+        std::mem::forget(self);
+    }
+}
 
 impl Drop for ProcessTree {
     fn drop(&mut self) {
@@ -348,7 +371,7 @@ fn kill_tree(root: u32) {
 /// `ps` can't be run, which leaves only the sidecar's own group to kill.
 #[cfg(unix)]
 fn descendant_groups(root: libc::pid_t) -> Vec<libc::pid_t> {
-    let Ok(out) = std::process::Command::new("ps")
+    let Ok(out) = std::process::Command::new("/bin/ps")
         .args(["-A", "-o", "pid=,ppid=,pgid="])
         .output()
     else {
