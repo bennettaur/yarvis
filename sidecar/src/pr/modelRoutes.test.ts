@@ -179,6 +179,13 @@ describe("GET/PATCH /api/pr-models/verification", () => {
             env: { XDG_DATA_HOME: "/tmp/elsewhere" },
           },
           {
+            id: "oc-flags",
+            name: "OC flags",
+            kind: "opencode",
+            command: "opencode",
+            secretEnv: ["OPENCODE_FLAGS"],
+          },
+          {
             id: "moved",
             name: "Moved",
             kind: "claude-code",
@@ -199,6 +206,7 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     ]);
     expect((await patch({ harness: "oc-wrapped" })).status).toBe(400);
     expect((await patch({ harness: "oc-moved" })).status).toBe(400);
+    expect((await patch({ harness: "oc-flags" })).status).toBe(400);
 
     expect((await patch({ harness: "pi" })).status).toBe(400);
     expect((await patch({ harness: "wrapped" })).status).toBe(400);

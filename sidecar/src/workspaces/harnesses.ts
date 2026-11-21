@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { z } from "zod";
+import type { HarnessRunEnv } from "../core/controlClient.ts";
 import { readSection, settingsAreReadable } from "../settings/store.ts";
 
 /**
@@ -43,7 +44,10 @@ interface StoredHarness {
   secretEnv?: unknown;
 }
 
-/** Mirrors the core's `HEADLESS_REFUSED_ENV`: variables a verification run refuses from a harness. */
+/**
+ * Mirrors the core's `HEADLESS_REFUSED_ENV` and `HEADLESS_REFUSED_PREFIXES`:
+ * variables a verification run refuses from a harness.
+ */
 const HEADLESS_REFUSED_ENV = new Set([
   "HOME",
   "CLAUDE_CONFIG_DIR",
@@ -53,19 +57,19 @@ const HEADLESS_REFUSED_ENV = new Set([
   "XDG_DATA_HOME",
   "XDG_STATE_HOME",
   "XDG_CACHE_HOME",
-  "OPENCODE_CONFIG",
-  "OPENCODE_CONFIG_DIR",
-  "OPENCODE_CONFIG_CONTENT",
-  "OPENCODE_MODELS_PATH",
-  "OPENCODE_MODELS_URL",
-  "OPENCODE_DISABLE_MODELS_FETCH",
 ]);
+const HEADLESS_REFUSED_PREFIXES = ["OPENCODE_", "BUN_"];
 
 /** Whether a stored harness sets a variable a verification run refuses. */
 function setsRefusedEnv(h: StoredHarness): boolean {
   const plain = h.env && typeof h.env === "object" ? Object.keys(h.env) : [];
   const secret = Array.isArray(h.secretEnv) ? h.secretEnv : [];
-  return [...plain, ...secret].some((key) => HEADLESS_REFUSED_ENV.has(String(key)));
+  return [...plain, ...secret].some((key) => {
+    const name = String(key);
+    return (
+      HEADLESS_REFUSED_ENV.has(name) || HEADLESS_REFUSED_PREFIXES.some((p) => name.startsWith(p))
+    );
+  });
 }
 
 /** Kinds the core knows; anything else it reads as `custom` (`HarnessKind::parse`). */
@@ -80,12 +84,14 @@ function runsProgram(command: string, binary: string): boolean {
   return !!program && basename(program) === binary;
 }
 
-function runsClaude(command: string): boolean {
-  return runsProgram(command, "claude");
-}
-
 /** The kinds a verification run can drive, by the program each must run. */
 const HEADLESS_PROGRAMS: Record<string, string> = { "claude-code": "claude", opencode: "opencode" };
+
+/** Whether a saved harness of `kind` can run verification checks. */
+function headlessCapable(kind: string, h: StoredHarness & { command: string }): boolean {
+  const binary = HEADLESS_PROGRAMS[kind];
+  return !!binary && runsProgram(h.command, binary) && !setsRefusedEnv(h);
+}
 
 /**
  * The kind the core gives the built-in harness: Claude Code when its command
@@ -93,7 +99,7 @@ const HEADLESS_PROGRAMS: Record<string, string> = { "claude-code": "claude", ope
  * only Claude Code takes Remote Control.
  */
 function builtinKind(command: string): string {
-  return runsClaude(command) ? "claude-code" : "custom";
+  return runsProgram(command, "claude") ? "claude-code" : "custom";
 }
 
 interface KnownHarness extends HarnessListing {
@@ -152,10 +158,7 @@ async function allHarnesses(env: NodeJS.ProcessEnv): Promise<KnownHarness[]> {
         kind,
         isDefault: effectiveDefault === h.id,
         assistantMayUse: h.assistantMayUse === true,
-        runsHeadless:
-          kind in HEADLESS_PROGRAMS &&
-          runsProgram(h.command, HEADLESS_PROGRAMS[kind] ?? "") &&
-          !setsRefusedEnv(h),
+        runsHeadless: headlessCapable(kind, h),
       };
     }),
   ];
@@ -190,14 +193,15 @@ export async function listAgentHarnesses(
  */
 export async function listVerificationHarnesses(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ id: string; name: string; kind: string }[]> {
+): Promise<{ id: string; name: string; kind: HarnessRunEnv["kind"] }[]> {
   return (await allHarnesses(env))
     .filter((h) => h.runsHeadless)
     .map(({ id, name, kind }) => ({
       id,
       name,
-      // The built-in agent's checks always run its Claude Code build.
-      kind: id === BUILTIN_HARNESS_ID ? "claude-code" : kind,
+      // Only those two kinds run headless, and the built-in agent's checks
+      // always run its Claude Code build.
+      kind: kind === "opencode" && id !== BUILTIN_HARNESS_ID ? "opencode" : "claude-code",
     }));
 }
 

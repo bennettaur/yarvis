@@ -214,11 +214,10 @@ pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
 /// is kept from reading credentials by rules written against the home folder
 /// (`Read(~/.ssh)`) and the CLI's own config, so moving either one, or
 /// loading code into the CLI itself, would quietly undo them. An OpenCode run
-/// gets folders of its own through the `XDG_*` variables, and the `OPENCODE_*`
-/// ones would load config or a model catalog from somewhere else. The sidecar
-/// sets its own values over a harness's anyway; refusing them says so on save
-/// rather than letting a setting silently not apply.
-const HEADLESS_REFUSED_ENV: [&str; 14] = [
+/// gets folders of its own through the `XDG_*` variables. The sidecar sets its
+/// own values over a harness's anyway; refusing them says so on save rather
+/// than letting a setting silently not apply.
+const HEADLESS_REFUSED_ENV: [&str; 8] = [
     "HOME",
     "CLAUDE_CONFIG_DIR",
     "NODE_OPTIONS",
@@ -227,13 +226,20 @@ const HEADLESS_REFUSED_ENV: [&str; 14] = [
     "XDG_DATA_HOME",
     "XDG_STATE_HOME",
     "XDG_CACHE_HOME",
-    "OPENCODE_CONFIG",
-    "OPENCODE_CONFIG_DIR",
-    "OPENCODE_CONFIG_CONTENT",
-    "OPENCODE_MODELS_PATH",
-    "OPENCODE_MODELS_URL",
-    "OPENCODE_DISABLE_MODELS_FETCH",
 ];
+
+/// Prefixes a headless run refuses too: OpenCode reads many `OPENCODE_*`
+/// variables (config, a model catalog, a home folder, its Claude Code
+/// compatibility, experimental features), and it is a Bun build, so `BUN_*`
+/// can load code into it. A list of names would miss the next one added.
+const HEADLESS_REFUSED_PREFIXES: [&str; 2] = ["OPENCODE_", "BUN_"];
+
+fn refused_in_headless_run(key: &str) -> bool {
+    HEADLESS_REFUSED_ENV.contains(&key)
+        || HEADLESS_REFUSED_PREFIXES
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
 
 /// The program and full environment a headless run uses for `harness`: its
 /// plain variables, then its secret ones. `read_root` reads the secret store
@@ -251,7 +257,7 @@ pub fn headless_run_env(
         .chain(&harness.secret_env);
     if let Some(key) = declared
         .into_iter()
-        .find(|key| HEADLESS_REFUSED_ENV.contains(&key.as_str()))
+        .find(|key| refused_in_headless_run(key))
     {
         return Err(format!(
             "\"{}\" sets {key}, which a verification run can't take: it would move the files the run is kept from reading",
@@ -721,7 +727,17 @@ mod tests {
         config_dir.secret_env = vec!["CLAUDE_CONFIG_DIR".to_string()];
         let mut opencode_data = stored("oc", HarnessKind::Opencode, "opencode");
         opencode_data.env = BTreeMap::from([("XDG_DATA_HOME".to_string(), "/x".to_string())]);
-        for harness in [moved_home, config_dir, opencode_data] {
+        let mut opencode_flags = stored("oc2", HarnessKind::Opencode, "opencode");
+        opencode_flags.secret_env = vec!["OPENCODE_FLAGS".to_string()];
+        let mut bun_options = stored("oc3", HarnessKind::Opencode, "opencode");
+        bun_options.env = BTreeMap::from([("BUN_OPTIONS".to_string(), "--x".to_string())]);
+        for harness in [
+            moved_home,
+            config_dir,
+            opencode_data,
+            opencode_flags,
+            bun_options,
+        ] {
             let resolved = resolve_stored(&harness).unwrap();
             let err = headless_run_env(&resolved, || panic!("secrets read for a refused harness"))
                 .unwrap_err();
