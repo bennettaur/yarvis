@@ -27,16 +27,16 @@ Three processes, each with a clean ownership boundary:
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY. `harness.runEnv` is the one method that hands a secret back to the
-  sidecar: one Claude Code or OpenCode harness's kind, program and
+  sidecar: one Claude Code, OpenCode or Pi harness's kind, program and
   environment, its secret variables included, for a verification run. The
   harness is the one the user set in Settings or picked for a run on the
   Verification tab; the assistant's tools take none, though the runs it
   starts use the Settings one. The values go only into the run's
   environment, never a log or a row, and a harness setting a variable that
   would move what the run may not read (`HOME`, `CLAUDE_CONFIG_DIR`, the
-  `XDG_*_HOME` folders) or change how the harness runs (any `BUN_*`, and
-  on OpenCode any `OPENCODE_*` but the Zen key `OPENCODE_API_KEY`) is
-  refused. Like every method it trusts any
+  `XDG_*_HOME` folders) or change how the harness runs (any `BUN_*`, on
+  OpenCode any `OPENCODE_*` but the Zen key `OPENCODE_API_KEY`, and on Pi
+  any `PI_*`) is refused. Like every method it trusts any
   process running as the user, so such a process can read those secrets
   through the socket; that was accepted rather than tying the socket to the
   sidecar's pid.
@@ -799,6 +799,21 @@ report there and leaves the fixes to the author.
   handed over as a file (`OPENCODE_MODELS_PATH`), since a process with
   empty folders downloads its own in the background and a run that picks a
   newer model first fails.
+  Pi (`agentRuns/pi.ts`) runs the same way, from its own CLI flags, which
+  are the contract a customized Pi build has to keep. Pi has no permission
+  rules, so it is offered only read, grep, find and ls (`--tools`), and the
+  `sandbox-exec` profile alone keeps those to the checkout, the context
+  folder and Pi's own package. `PI_CODING_AGENT_DIR` and `HOME` point at
+  folders of its own, since `~/.pi/agent` holds extensions (code) and
+  logins. `-ne`, `--no-mcp`, `--no-skills`, `--no-context-files` and
+  `--no-approve` load nothing else, `--no-session` writes no transcript,
+  and `--offline` keeps it from downloading the ripgrep or fd it lacks, so
+  a tool whose program isn't installed is left out instead. An npm
+  install's `pi` is a Node script, run with the `node` beside it so no
+  version manager's shim runs under the sandbox. The plugin agent's prompt
+  is its `--system-prompt`, and its last message is the answer, as for
+  OpenCode. The parser trusts the read tool's `details`, not its text, for
+  what lines a read showed, since the text is the file's own.
   These runs are pointed at a pull request's checkout, which its author
   controls, so they read no settings files at all (`--setting-sources ""`):
   the checkout's can declare hooks, which are shell commands Claude Code runs

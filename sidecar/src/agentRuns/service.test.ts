@@ -1143,6 +1143,160 @@ describe("a fan-out run on OpenCode", () => {
   });
 });
 
+describe("a fan-out run on Pi", () => {
+  const countsSchema = z.object({ counts: z.array(z.number()) });
+  const checkout = makeTempDir("yarvis-pi-checkout-");
+  const context = makeTempDir("yarvis-pi-context-");
+  // Stands in for sandbox-exec, as for OpenCode: records the profile under its pid, then runs Pi.
+  const profiles = makeTempDir("yarvis-pi-profiles-");
+  const sandboxExec = fakeClaude(
+    dir,
+    "pi-sandbox",
+    `printf '%s' "$2" > "${profiles}/$$"\nshift 2\nexec "$@"`,
+  );
+  const base = {
+    kind: "test-kind",
+    targetKey: "gh:o/r/1",
+    cwd: checkout,
+    addDirs: [context],
+    allowedTools: ["Read", "Grep", "Glob"],
+    timeoutMs: 10_000,
+    model: "anthropic/claude-sonnet-5-5:high",
+    backend: "pi" as const,
+    partSchema: countSchema,
+    combine: (answers: unknown[]) => ({
+      counts: answers.map((a) => (a as { count: number }).count),
+    }),
+    outputSchema: countsSchema,
+  };
+  const part = (agent: string, word: string) => ({
+    description: `the ${word} part`,
+    agent: `yarvis-review:${agent}`,
+    prompt: `count the ${word} files`,
+    fallback: { count: -1 },
+  });
+  const piDeps = (program: string, env: Record<string, string> = {}) => ({
+    program,
+    env,
+    instance: "test",
+    registry,
+    sandboxExec,
+  });
+  const answer = (count: number) =>
+    [
+      { type: "session", id: `s-${count}` },
+      {
+        type: "tool_execution_start",
+        toolCallId: "c1",
+        toolName: "read",
+        args: { path: `${checkout}/a.ts`, offset: 1, limit: 10 },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "c1",
+        toolName: "read",
+        result: {},
+        isError: false,
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: JSON.stringify({ count }) }],
+          stopReason: "stop",
+          usage: { cost: { total: 0.02 } },
+        },
+      },
+      { type: "agent_settled", aborted: false },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+
+  it("runs each part as Pi with the agent's prompt as its system prompt, loading nothing else", async () => {
+    const record = makeTempDir("yarvis-pi-record-");
+    const one = join(dir, "pi-one.jsonl");
+    const two = join(dir, "pi-two.jsonl");
+    writeFileSync(one, `${answer(1)}\n`);
+    writeFileSync(two, `${answer(2)}\n`);
+    // A shell script, so it runs as it is rather than under Node.
+    const program = fakeClaude(
+      dir,
+      "pi-ok",
+      [
+        'for last in "$@"; do :; done',
+        `out="${record}/$$"`,
+        'mkdir -p "$out"',
+        'printf \'%s\\n\' "$@" > "$out/argv"',
+        'pwd > "$out/cwd"',
+        'env > "$out/env"',
+        'prev=""; for a in "$@"; do [ "$prev" = "--system-prompt" ] && cp "$a" "$out/system"; prev="$a"; done',
+        'case "$last" in',
+        `  *one*) cat "${one}" ;;`,
+        `  *two*) cat "${two}" ;;`,
+        "esac",
+      ].join("\n"),
+    );
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("risk-reviewer", "one"), part("test-reviewer", "two")] },
+      // A harness pointing Pi at the user's own config folder doesn't get its way.
+      piDeps(program, { PI_CODING_AGENT_DIR: "/Users/someone/.pi/agent", PROVIDER_KEY: "sk-test" }),
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [1, 2] } });
+    expect(outcome.costUsd).toBeCloseTo(0.04);
+
+    const pids = readdirSync(record);
+    expect(pids).toHaveLength(2);
+    for (const pid of pids) {
+      const read = (file: string) => readFileSync(join(record, pid, file), "utf8");
+      const argv = read("argv").trim().split("\n");
+      const env = Object.fromEntries(
+        read("env")
+          .split("\n")
+          .filter((line) => line.includes("="))
+          .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+      );
+      const root = read("cwd")
+        .trim()
+        .replace(/\/project$/, "");
+      expect(root).toContain("yarvis-pi-");
+      expect(env.HOME).toBe(join(root, "home"));
+      expect(env.PI_CODING_AGENT_DIR).toBe(join(root, "agent"));
+      expect(env.PI_OFFLINE).toBe("1");
+      expect(env.PROVIDER_KEY).toBe("sk-test");
+      for (const flag of ["--mode", "--no-session", "--no-extensions", "--no-context-files"]) {
+        expect(argv).toContain(flag);
+      }
+      expect(argv[argv.indexOf("--model") + 1]).toBe("anthropic/claude-sonnet-5-5:high");
+      expect(argv[argv.indexOf("--tools") + 1]?.split(",")).toContain("read");
+      const system = read("system");
+      expect(system).toStartWith(RUN_GUARDRAIL);
+      expect(system).toContain(`The PR checkout is at ${checkout}.`);
+      expect(system).toContain(jsonSchemaArg(countSchema));
+      const profile = readFileSync(join(profiles, pid), "utf8");
+      expect(profile).toContain(`(allow file-write* (subpath "${root}")`);
+      expect(profile).toContain(`(subpath "${realpathSync(checkout)}")`);
+      expect(profile).toContain(`(allow process-exec (literal "${program}")`);
+      // Its folder went when it exited.
+      expect(existsSync(root)).toBe(false);
+    }
+    rmSync(record, { recursive: true, force: true });
+  });
+
+  it("refuses a run it can't set up before writing anything", async () => {
+    const parts = [part("risk-reviewer", "one")];
+    const program = fakeClaude(dir, "pi-never", "exit 1");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts, model: "sonnet" }, piDeps(program)),
+    ).rejects.toThrow("a Pi run needs its model as provider/model");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts, allowedTools: ["Read", "Bash"] }, piDeps(program)),
+    ).rejects.toThrow("can't be given Bash");
+    expect((await sql`SELECT count(*)::int AS n FROM agent_runs`)[0]?.n).toBe(0);
+  });
+});
+
 describe("process slots", () => {
   it("hands a freed slot to the longest waiter, and none to one whose wait was cancelled", async () => {
     const slots = new ProcessSlots(1);

@@ -169,6 +169,14 @@ describe("GET/PATCH /api/pr-models/verification", () => {
           { id: "bedrock", name: "Bedrock", kind: "claude-code", command: "claude" },
           { id: "wrapped", name: "Wrapped", kind: "claude-code", command: "ssh box claude" },
           { id: "pi", name: "Pi", kind: "pi", command: "pi" },
+          {
+            id: "pi-dir",
+            name: "Pi moved",
+            kind: "pi",
+            command: "pi",
+            env: { PI_CODING_AGENT_DIR: "/tmp/elsewhere" },
+          },
+          { id: "pi-wrapped", name: "Docker Pi", kind: "pi", command: "docker run pi" },
           { id: "oc", name: "OpenCode", kind: "opencode", command: "/opt/bin/opencode" },
           { id: "oc-wrapped", name: "Docker OC", kind: "opencode", command: "docker run oc" },
           {
@@ -209,6 +217,7 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     expect(body.harnesses).toEqual([
       { id: "claude", name: "Claude", kind: "claude-code" },
       { id: "bedrock", name: "Bedrock", kind: "claude-code" },
+      { id: "pi", name: "Pi", kind: "pi" },
       { id: "oc", name: "OpenCode", kind: "opencode" },
       { id: "oc-zen", name: "OC Zen", kind: "opencode" },
     ]);
@@ -216,7 +225,8 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     expect((await patch({ harness: "oc-moved" })).status).toBe(400);
     expect((await patch({ harness: "oc-flags" })).status).toBe(400);
 
-    expect((await patch({ harness: "pi" })).status).toBe(400);
+    expect((await patch({ harness: "pi-dir" })).status).toBe(400);
+    expect((await patch({ harness: "pi-wrapped" })).status).toBe(400);
     expect((await patch({ harness: "wrapped" })).status).toBe(400);
     expect((await patch({ harness: "moved" })).status).toBe(400);
     expect(await (await patch({ harness: "bedrock" })).json()).toMatchObject({

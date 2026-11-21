@@ -3,17 +3,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  jsonAnswer,
   makeOpenCodeDirs,
   OpenCodeEventParser,
   openCodeActions,
   openCodeCommand,
   openCodeConfig,
   openCodeEnv,
-  openCodeSandboxProfile,
   removeOpenCodeDirs,
-  SANDBOX_EXEC,
 } from "./opencode.ts";
+import { jsonAnswer, SANDBOX_EXEC, sandboxProfile } from "./sandboxedCli.ts";
 import { FIXTURES, makeTempDir } from "./testSupport.ts";
 
 function parseFixture(name: string) {
@@ -282,7 +280,7 @@ describe("an OpenCode process's setup", () => {
   });
 
   it("denies the home folder but what it may read, writes outside its folder, and other programs", () => {
-    const profile = openCodeSandboxProfile({
+    const profile = sandboxProfile({
       root: "/private/tmp/run",
       readable: ["/Users/someone/dev/checkout"],
       programs: ["/opt/bin/opencode"],
@@ -316,7 +314,7 @@ describe("an OpenCode process's setup", () => {
       // A program it put in its own folder, as OpenCode does with the ripgrep it downloads.
       writeFileSync(join(dirs.root, "own.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       try {
-        const profile = openCodeSandboxProfile({
+        const profile = sandboxProfile({
           root: dirs.root,
           readable: [checkout],
           // macOS's sh runs bash as itself.

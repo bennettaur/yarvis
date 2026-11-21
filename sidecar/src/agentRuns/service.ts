@@ -20,12 +20,21 @@ import {
   openCodeConfig,
   openCodeEnv,
   openCodeInstructions,
-  openCodeSandboxProfile,
   removeOpenCodeDirs,
-  SANDBOX_EXEC,
   writeOpenCodeConfig,
 } from "./opencode.ts";
 import { copyCatalog, openCodeCatalog } from "./opencodeCatalog.ts";
+import {
+  makePiDirs,
+  PiEventParser,
+  piCommand,
+  piEnv,
+  piInstructions,
+  piLaunch,
+  piTools,
+  removePiDirs,
+  writePiSystemPrompt,
+} from "./pi.ts";
 import { type PluginCopy, type PluginName, pluginAgentPrompt, writePluginCopy } from "./plugins.ts";
 import {
   killLeftoverGroup,
@@ -33,6 +42,7 @@ import {
   processStartTime,
   type StreamingExit,
 } from "./process.ts";
+import { SANDBOX_EXEC, sandboxProfile } from "./sandboxedCli.ts";
 import {
   type ClaudeStreamResult,
   type FileRead,
@@ -594,13 +604,15 @@ export type FanOutRunOptions<T, R = T> = Omit<
      * `model`, and only Read, Grep and Glob in `allowedTools`. It loads no
      * plugin: each part's agent prompt is read from `plugins` and given to
      * OpenCode as its agent. `effort` and `maxTurns` don't apply, since
-     * OpenCode takes neither, so `timeoutMs` is all that bounds a part.
+     * OpenCode takes neither, so `timeoutMs` is all that bounds a part. A Pi
+     * run (`agentRuns/pi.ts`) needs the same, the agent's prompt becoming
+     * Pi's system prompt; its effort goes in the model's `:thinking` suffix.
      */
     backend?: FanOutBackend;
   };
 
 /** The CLIs a fan-out run's parts can run on. */
-export type FanOutBackend = "claude-code" | "opencode";
+export type FanOutBackend = "claude-code" | "opencode" | "pi";
 
 /** What turns a process's output lines into a run's events and answer. */
 interface ProcessParser {
@@ -641,7 +653,7 @@ const PART_ATTEMPTS = 2;
  * `combine` builds in code from the parts' answers rather than a coordinating
  * model copying them. A part that fails is started once more, and one that
  * fails again answers its `fallback`, unless every part failed, which fails
- * the run. Parts run on Claude Code, or on OpenCode with `backend: "opencode"`.
+ * the run. Parts run on Claude Code, or on OpenCode or Pi with `backend`.
  * Throws for the same reasons as {@link startClaudeRun}.
  */
 export async function startClaudeFanOutRun<T, R = T>(
@@ -651,11 +663,16 @@ export async function startClaudeFanOutRun<T, R = T>(
 ): Promise<ClaudeRunHandle<R>> {
   if (options.parts.length === 0) throw new Error("a fan-out run needs at least one part");
   const registry = deps.registry ?? agentRunRegistry;
-  const openCode = options.backend === "opencode" ? await openCodeSetup(options, deps) : null;
-  const label = openCode ? "OpenCode" : "Claude Code";
+  const sandboxed =
+    options.backend === "opencode"
+      ? await openCodeSetup(options, deps)
+      : options.backend === "pi"
+        ? await piSetup(options, deps)
+        : null;
+  const label = sandboxed?.label ?? "Claude Code";
   const { cwd, program } = await checkRunOptions(options, deps);
-  const { id, args, removePlugins } = openCode
-    ? // An OpenCode part gets its agent's prompt as text, not as a plugin.
+  const { id, args, removePlugins } = sandboxed
+    ? // An OpenCode or Pi part gets its agent's prompt as text, not as a plugin.
       await registerRun(db, { ...options, plugins: [] }, deps, () => [])
     : await registerRun(db, options, deps, (dirs) =>
         options.parts.map((part) =>
@@ -688,8 +705,8 @@ export async function startClaudeFanOutRun<T, R = T>(
   );
 
   const prepare = (part: RunPart, index: number): PreparedProcess =>
-    openCode
-      ? openCode.prepare(part, cwd)
+    sandboxed
+      ? sandboxed.prepare(part, cwd)
       : {
           program,
           args: args[index] ?? [],
@@ -824,18 +841,8 @@ export async function startClaudeFanOutRun<T, R = T>(
 async function openCodeSetup<T, R>(
   options: FanOutRunOptions<T, R>,
   deps: ClaudeRunDeps,
-): Promise<{ prepare: (part: RunPart, checkout: string) => PreparedProcess }> {
-  if (!deps.program) throw new Error("an OpenCode run needs the harness's program");
-  const program = harnessProgram(deps.program);
-  const model = options.model;
-  // Settings hold the stricter rule; this only keeps an alias like "sonnet" out.
-  if (!model || !/^[^/\s]+\/\S+$/.test(model)) {
-    throw new Error("an OpenCode run needs its model as provider/model");
-  }
-  const sandboxExec = deps.sandboxExec ?? SANDBOX_EXEC;
-  if (!existsSync(sandboxExec)) {
-    throw new Error("OpenCode runs need macOS's sandbox-exec, which isn't on this machine");
-  }
+): Promise<SandboxedSetup> {
+  const { program, model, sandboxExec } = checkSandboxed("OpenCode", options, deps);
   const actions = openCodeActions(options.allowedTools);
   const readable = [options.cwd, ...(options.addDirs ?? [])];
   // OpenCode's grep and glob run ripgrep: the one on PATH, or one it downloads into its folder.
@@ -843,17 +850,17 @@ async function openCodeSetup<T, R>(
   const answerSchema = jsonSchemaArg(options.partSchema);
   const catalog = await (deps.loadCatalog ?? openCodeCatalog)();
   return {
+    label: "OpenCode",
     prepare: (part, checkout) => {
       const dirs = makeOpenCodeDirs();
       try {
         // The plugin's name isn't part of an OpenCode agent id.
         const agentId = part.agent.split(":").pop() ?? part.agent;
-        const system = [
-          RUN_GUARDRAIL,
-          ...(options.appendSystemPrompt ? [options.appendSystemPrompt] : []),
-          pluginAgentPrompt(part.agent),
+        const system = sandboxedSystemPrompt(
+          options,
+          part.agent,
           openCodeInstructions(checkout, answerSchema),
-        ].join("\n\n");
+        );
         writeOpenCodeConfig(
           dirs,
           openCodeConfig({
@@ -866,7 +873,7 @@ async function openCodeSetup<T, R>(
         const command = openCodeCommand({
           sandboxExec,
           program,
-          profile: openCodeSandboxProfile({
+          profile: sandboxProfile({
             root: dirs.root,
             readable,
             programs: [program, ...(ripgrep ? [ripgrep] : [])],
@@ -888,6 +895,107 @@ async function openCodeSetup<T, R>(
         };
       } catch (e) {
         removeOpenCodeDirs(dirs);
+        throw e;
+      }
+    },
+  };
+}
+
+/** How a backend that runs under `sandbox-exec` readies each of a run's processes. */
+interface SandboxedSetup {
+  /** The CLI's name, for messages. */
+  label: string;
+  prepare: (part: RunPart, checkout: string) => PreparedProcess;
+}
+
+/** The prompt a sandboxed part's agent runs with: the plugin agent's, framed for this run. */
+function sandboxedSystemPrompt(
+  options: { appendSystemPrompt?: string },
+  agent: string,
+  instructions: string,
+): string {
+  return [
+    RUN_GUARDRAIL,
+    ...(options.appendSystemPrompt ? [options.appendSystemPrompt] : []),
+    pluginAgentPrompt(agent),
+    instructions,
+  ].join("\n\n");
+}
+
+/** Checks shared by the sandboxed backends; the harness's program, resolved. */
+function checkSandboxed<T, R>(
+  name: string,
+  options: FanOutRunOptions<T, R>,
+  deps: ClaudeRunDeps,
+): { program: string; model: string; sandboxExec: string } {
+  if (!deps.program) throw new Error(`a ${name} run needs the harness's program`);
+  const model = options.model;
+  // Settings hold the stricter rule; this only keeps an alias like "sonnet" out.
+  if (!model || !/^[^/\s]+\/\S+$/.test(model)) {
+    throw new Error(`a ${name} run needs its model as provider/model`);
+  }
+  const sandboxExec = deps.sandboxExec ?? SANDBOX_EXEC;
+  if (!existsSync(sandboxExec)) {
+    throw new Error(`${name} runs need macOS's sandbox-exec, which isn't on this machine`);
+  }
+  return { program: harnessProgram(deps.program), model, sandboxExec };
+}
+
+/**
+ * What a Pi fan-out run checks before anything is written, and how it readies
+ * each of its processes: a private folder holding the agent's prompt, under
+ * its own sandbox profile.
+ */
+async function piSetup<T, R>(
+  options: FanOutRunOptions<T, R>,
+  deps: ClaudeRunDeps,
+): Promise<SandboxedSetup> {
+  const { program, model, sandboxExec } = checkSandboxed("Pi", options, deps);
+  // Pi's grep runs ripgrep and its find runs fd, from PATH; offline, it downloads neither.
+  const helpers = { rg: onPath("rg"), fd: onPath("fd") };
+  const tools = piTools(options.allowedTools, (name) => !!helpers[name as keyof typeof helpers]);
+  const launch = piLaunch(program, onPath);
+  const readable = [options.cwd, ...(options.addDirs ?? [])];
+  const answerSchema = jsonSchemaArg(options.partSchema);
+  const programs = [
+    ...launch.programs,
+    ...Object.values(helpers).filter((p): p is string => p !== null),
+  ];
+  return {
+    label: "Pi",
+    prepare: (part, checkout) => {
+      const dirs = makePiDirs();
+      try {
+        writePiSystemPrompt(
+          dirs,
+          sandboxedSystemPrompt(options, part.agent, piInstructions(checkout, answerSchema)),
+        );
+        const command = piCommand({
+          sandboxExec,
+          launch,
+          profile: sandboxProfile({
+            root: dirs.root,
+            readable: [...readable, ...launch.readable],
+            programs,
+            secretPaths: SECRET_HOME_PATHS,
+          }),
+          tools,
+          systemPromptFile: dirs.systemPrompt,
+          model,
+          prompt: part.prompt,
+        });
+        return {
+          program: command.program,
+          args: command.args,
+          stdin: "",
+          cwd: dirs.project,
+          // Ours last, so a harness can't point Pi back at the user's folders.
+          env: { ...deps.env, ...piEnv(dirs) },
+          parser: new PiEventParser(checkout, new Set(tools)),
+          cleanup: () => removePiDirs(dirs),
+        };
+      } catch (e) {
+        removePiDirs(dirs);
         throw e;
       }
     },
