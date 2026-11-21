@@ -111,7 +111,7 @@ async fn recovery_unlock_and_lock_gate_the_secrets_and_append_events() {
             Some(json!({ "recoveryKey": wrong })),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, _) = v
         .harness
         .call(
@@ -460,11 +460,7 @@ async fn rotating_the_recovery_key_needs_a_fresh_device_and_retires_the_old_one(
         .await;
     assert_eq!(status, StatusCode::OK);
     let (status, _) = v.unlock_with_recovery(&token).await;
-    assert_eq!(
-        status,
-        StatusCode::UNAUTHORIZED,
-        "the old key still opened it"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "the old key still opened it");
     v.recovery_key = new_key;
     let (status, body) = v.unlock_with_recovery(&token).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -492,7 +488,7 @@ async fn the_vault_passphrase_unlocks_and_wrong_guesses_wait() {
     let (status, _) = v.unlock_with_passphrase(&token, common::PASSPHRASE).await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "the sign-in passphrase isn't the vault's"
     );
     let (status, body) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
@@ -583,7 +579,7 @@ async fn changing_the_vault_passphrase_needs_proof_and_a_fresh_device() {
             )),
         )
         .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     let (status, body) = v
         .harness
         .call(
@@ -612,7 +608,7 @@ async fn changing_the_vault_passphrase_needs_proof_and_a_fresh_device() {
     let (status, _) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
     assert_eq!(
         status,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "the old passphrase still opened it"
     );
     until("the guess delay to pass", || async {

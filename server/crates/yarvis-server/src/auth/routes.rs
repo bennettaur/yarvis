@@ -68,8 +68,10 @@ fn wrong_credentials() -> ApiError {
     ApiError::new(StatusCode::UNAUTHORIZED, "wrong passphrase or code")
 }
 
+/// 403, not 401: on routes a signed-in device calls, a 401 means the token is
+/// no good, and clients sign out on it. A mistyped code isn't that.
 fn wrong_code() -> ApiError {
-    ApiError::new(StatusCode::UNAUTHORIZED, "wrong code")
+    ApiError::new(StatusCode::FORBIDDEN, "wrong code")
         .with_detail("enter the code your authenticator app shows now")
 }
 
@@ -410,7 +412,7 @@ async fn change_passphrase(
         .await?
     {
         return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
             "that isn't the current passphrase",
         ));
     }

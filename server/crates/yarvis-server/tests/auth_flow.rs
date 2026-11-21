@@ -59,7 +59,7 @@ async fn setup_needs_the_code_a_passphrase_and_a_working_authenticator() {
     let (st, _) = h
         .call("POST", "/api/auth/setup/finish", None, Some(finish(wrong)))
         .await;
-    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(st, StatusCode::FORBIDDEN);
     let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(
         status["setupRequired"], true,
@@ -261,7 +261,7 @@ async fn admin_actions_need_a_recent_code() {
         .await;
     assert_eq!(
         st,
-        StatusCode::UNAUTHORIZED,
+        StatusCode::FORBIDDEN,
         "a wrong code doesn't make it fresh"
     );
     let code = h.code().await;
@@ -296,7 +296,7 @@ async fn changing_the_passphrase_needs_the_old_one_and_can_sign_out_the_rest() {
             Some(json!({ "currentPassphrase": "not it at all", "newPassphrase": new })),
         )
         .await;
-    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(st, StatusCode::FORBIDDEN);
     let (st, body) = h
         .call(
             "POST",
