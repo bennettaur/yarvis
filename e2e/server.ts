@@ -54,7 +54,7 @@ export async function startServer(): Promise<TestServer> {
   const dataDir = join(root, "data");
   mkdirSync(home, { recursive: true });
   const port = await freePort();
-  // `localhost`, not 127.0.0.1: WebAuthn needs the RP ID to be a domain.
+  // The origin the server's Host check allows by default.
   const origin = `http://localhost:${port}`;
   const configPath = join(root, "server.toml");
   writeFileSync(

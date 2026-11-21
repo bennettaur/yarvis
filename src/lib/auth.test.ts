@@ -166,6 +166,28 @@ describe("admin actions", () => {
     expect(calls.map((c) => c.url)).toEqual(["/api/devices/tokens"]);
   });
 
+  it("fails the action on a wrong code and keeps this device signed in", async () => {
+    saveDeviceToken("tok-admin");
+    routes["POST /api/devices/tokens"] = () =>
+      Response.json({ error: "reauth_required" }, { status: 403 });
+    routes["POST /api/auth/reverify"] = () =>
+      Response.json({ error: "wrong code" }, { status: 403 });
+    promptAnswers("000000");
+    await expect(mintDeviceToken("bot", ["read"])).rejects.toThrow("wrong code");
+    expect(calls.map((c) => c.url)).toEqual(["/api/devices/tokens", "/api/auth/reverify"]);
+    expect(await deviceToken()).toBe("tok-admin");
+  });
+
+  it("asks only once when the retried action still wants a code", async () => {
+    saveDeviceToken("tok-admin");
+    routes["POST /api/devices/tokens"] = () =>
+      Response.json({ error: "reauth_required" }, { status: 403 });
+    routes["POST /api/auth/reverify"] = () => Response.json({ verifiedAt: 1 });
+    const asked = promptAnswers("123456");
+    await expect(mintDeviceToken("bot", ["read"])).rejects.toThrow("reauth_required");
+    expect(asked.count).toBe(1);
+  });
+
   it("doesn't ask for a code when the device just lacks the scope", async () => {
     saveDeviceToken("tok-reader");
     routes["POST /api/devices/tokens"] = () =>

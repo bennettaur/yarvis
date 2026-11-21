@@ -127,12 +127,15 @@ test("setup, the vault passphrase, and sign-in with a code", async () => {
   await page.getByLabel("Vault passphrase").fill(PASSPHRASE);
   await page.getByRole("button", { name: "Unlock" }).click();
   await expect(page.getByRole("alert")).toContainText("doesn't open the vault");
-  // A wrong passphrase makes the next try wait a second, so retry until it's let in.
+  // A wrong passphrase makes the next try wait a second, so retry while the
+  // server answers 429. Each try waits on its answer, since stretching the
+  // passphrase can take more than a second on a slow runner.
   await expect(async () => {
     await page.getByLabel("Vault passphrase").fill(server.vaultPassphrase);
+    const answer = page.waitForResponse((r) => r.url().endsWith("/api/vault/unlock"));
     await page.getByRole("button", { name: "Unlock" }).click();
-    await expect(page.getByText("The server's vault is locked")).toBeHidden({ timeout: 1000 });
-  }).toPass({ timeout: 10_000 });
+    expect((await answer).status()).toBe(200);
+  }).toPass({ timeout: 15_000 });
   await enterApp();
 
   // Sign out by dropping the token, then sign in: a wrong code first.
