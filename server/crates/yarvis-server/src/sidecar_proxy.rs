@@ -45,7 +45,8 @@ use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest};
 
 use crate::AppState;
 use crate::auth::{
-    Admin, Approve, Authed, Chat, CloseReason, DeviceContext, Read, Scope, authenticate_ws,
+    Admin, Approve, Authed, Chat, CloseReason, DeviceContext, Read, Scope, Terminal,
+    authenticate_ws,
 };
 use crate::error::ApiError;
 
@@ -246,6 +247,11 @@ async fn authorize(
         }
         Scope::Chat => {
             Authed::<Chat>::from_request_parts(parts, state)
+                .await?
+                .device
+        }
+        Scope::Terminal => {
+            Authed::<Terminal>::from_request_parts(parts, state)
                 .await?
                 .device
         }

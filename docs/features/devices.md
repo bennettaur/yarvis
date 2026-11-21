@@ -34,11 +34,13 @@ the sign-in screen.
 | Scope | Allows |
 |---|---|
 | `read` | Reading data and following events |
-| `chat` | Chatting, and using terminals and agent sessions |
+| `chat` | Chatting and acting through the assistant |
+| `terminal` | Opening terminals and agent sessions, which run a shell as the server's user |
 | `approve` | Answering approvals |
 | `admin` | Managing devices and changing settings and secrets |
 
-A passkey sign-in gets all four. Creating a token, and revoking a device,
+A passkey sign-in gets all five. A token created in Settings can't have
+`terminal` or `admin`. Creating a token, and revoking a device,
 also ask you to check your passkey again if you haven't in the last few
 minutes.
 

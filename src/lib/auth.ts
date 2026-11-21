@@ -7,9 +7,21 @@ import { saveDeviceToken, serverFetch } from "./server";
  * minted for a script; each carries its own scopes and can be revoked alone.
  */
 
-export type Scope = "read" | "chat" | "approve" | "admin";
-/** What a token minted from Settings can carry: the server keeps `admin` for passkey devices and its own CLI. */
+export type Scope = "read" | "chat" | "terminal" | "approve" | "admin";
+/**
+ * What a token minted from Settings can carry. The server keeps `admin` and
+ * `terminal` (a shell on the server) for passkey devices and its own CLI.
+ */
 export const MINTABLE_SCOPES: readonly Scope[] = ["read", "chat", "approve"];
+
+/** What each scope lets a device do, as the Devices tab shows it. */
+export const SCOPE_LABELS: Record<Scope, string> = {
+  read: "see data and events",
+  chat: "send messages",
+  terminal: "open terminals",
+  approve: "answer approvals",
+  admin: "manage devices and secrets",
+};
 
 export interface AuthStatus {
   setupRequired: boolean;

@@ -28,7 +28,7 @@ use tokio::time::{sleep, timeout};
 
 /// Every scope: the window runs the whole UI, admin screens included. These
 /// are the scope names `yarvis-server device add --scopes` takes.
-pub const DEVICE_SCOPES: &str = "read,chat,approve,admin";
+pub const DEVICE_SCOPES: &str = "read,chat,terminal,approve,admin";
 
 /// A first start creates the database and starts the sidecar, which can take a
 /// while on a cold disk.
@@ -824,7 +824,7 @@ mod tests {
                 "--name",
                 "Tauri on test",
                 "--scopes",
-                "read,chat,approve,admin",
+                "read,chat,terminal,approve,admin",
             ]
         );
     }

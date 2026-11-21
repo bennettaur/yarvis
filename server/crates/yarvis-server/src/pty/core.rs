@@ -1,6 +1,6 @@
 //! The PTY commands `POST /api/core/{command}` serves, with the same
 //! camelCase arguments the UI passes to `invoke`. Driving a session needs
-//! `chat`, reading one needs `read`. Attaching isn't here: it is the
+//! `terminal`, reading one needs `read`. Attaching isn't here: it is the
 //! `/api/pty/{id}` WebSocket.
 
 use serde::Deserialize;
@@ -18,7 +18,7 @@ pub fn scope_of(command: &str) -> Option<Scope> {
         // The agent commands are user-written and can carry an inline
         // `VAR=secret`, so only a device that may start sessions sees them.
         "get_agent_config" | "pty_write" | "pty_resize" | "pty_kill" | "pty_start_claude" => {
-            Scope::Chat
+            Scope::Terminal
         }
         _ => return None,
     })
@@ -160,10 +160,10 @@ mod tests {
 
     #[test]
     fn driving_a_session_needs_chat_and_reading_one_needs_read() {
-        assert_eq!(scope_of("pty_write"), Some(Scope::Chat));
-        assert_eq!(scope_of("pty_start_claude"), Some(Scope::Chat));
+        assert_eq!(scope_of("pty_write"), Some(Scope::Terminal));
+        assert_eq!(scope_of("pty_start_claude"), Some(Scope::Terminal));
         assert_eq!(scope_of("pty_exists"), Some(Scope::Read));
-        assert_eq!(scope_of("get_agent_config"), Some(Scope::Chat));
+        assert_eq!(scope_of("get_agent_config"), Some(Scope::Terminal));
         // Attaching is the `/api/pty/{id}` WebSocket, not a core command.
         assert_eq!(scope_of("pty_attach"), None);
     }

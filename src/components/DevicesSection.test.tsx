@@ -11,7 +11,7 @@ const me: Device = {
   deviceId: "d-me",
   name: "Chrome on Mac",
   kind: "passkey",
-  scopes: ["read", "chat", "approve", "admin"],
+  scopes: ["read", "chat", "terminal", "approve", "admin"],
 };
 let devices: Device[] = [];
 let current: Device = me;
