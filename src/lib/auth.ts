@@ -26,7 +26,8 @@ export const SCOPE_LABELS: Record<Scope, string> = {
 export interface AuthStatus {
   setupRequired: boolean;
   rpId: string;
-  vault: "absent" | "locked" | "unlocked";
+  /** `absent` when the server keeps its secrets somewhere other than its vault. */
+  vault: "absent" | "uninitialized" | "locked" | "unlocked";
 }
 
 /** A device as the server returns it. Times are milliseconds since the epoch. */
@@ -238,6 +239,57 @@ export async function reverify(): Promise<void> {
     "/api/auth/reverify/finish",
     { ceremonyId, credential },
     "passkey check",
+  );
+}
+
+/* ---------- Vault ---------- */
+
+type VaultState = "uninitialized" | "locked" | "unlocked";
+
+/** Opens the server's vault with the recovery key `yarvis-server vault init` printed. */
+export const unlockVaultWithRecovery = (recoveryKey: string) =>
+  post<{ state: VaultState }>("/api/vault/unlock/recovery", { recoveryKey }, "unlock the vault");
+
+/** What `/api/vault/unlock/start` adds to the request options: a PRF salt per passkey. */
+interface VaultUnlockOptions extends JsonRequestOptions {
+  publicKey: JsonRequestOptions["publicKey"] & {
+    extensions?: { prf?: { evalByCredential?: Record<string, { first: string }> } };
+  };
+}
+
+/**
+ * Opens the vault with a passkey that has a vault wrapper. The passkey's PRF
+ * output is the key, so this needs a browser and authenticator with the WebAuthn
+ * PRF extension.
+ */
+export async function unlockVaultWithPasskey(): Promise<{ state: VaultState }> {
+  const { ceremonyId, options } = await post<Started<VaultUnlockOptions>>(
+    "/api/vault/unlock/start",
+    {},
+    "start vault unlock",
+  );
+  const salts = options.publicKey.extensions?.prf?.evalByCredential ?? {};
+  const request = toRequestOptions(options);
+  if (request.publicKey) {
+    request.publicKey.extensions = {
+      prf: {
+        evalByCredential: Object.fromEntries(
+          Object.entries(salts).map(([id, salt]) => [id, { first: base64urlToBuffer(salt.first) }]),
+        ),
+      },
+    } as AuthenticationExtensionsClientInputs;
+  }
+  const cred = (await navigator.credentials.get(request)) as PublicKeyCredential | null;
+  if (!cred) throw new Error(NO_CREDENTIAL);
+  const prf = (cred.getClientExtensionResults() as { prf?: { results?: { first?: ArrayBuffer } } })
+    .prf?.results?.first;
+  if (!prf) {
+    throw new Error("this browser or passkey can't unlock the vault; use the recovery key");
+  }
+  return post<{ state: VaultState }>(
+    "/api/vault/unlock/finish",
+    { ceremonyId, credential: assertionJson(cred), prfFirst: bufferToBase64url(prf) },
+    "unlock the vault",
   );
 }
 
