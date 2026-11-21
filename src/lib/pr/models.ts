@@ -28,8 +28,9 @@ export async function getPrModelConfig(): Promise<PrModelConfig> {
 }
 
 /**
- * The verification report runs on Claude Code, so each section takes a Claude
- * Code model alias and effort rather than a provider/model pair. The budget
+ * Each verification section takes a Claude Code model alias and effort rather
+ * than a provider/model pair. On an OpenCode harness the alias is a tier that
+ * `harnessModels` maps to an OpenCode model, and effort doesn't apply. The budget
  * only warns: a run estimated over it asks first, and nothing stops it once
  * agreed.
  */
@@ -66,7 +67,7 @@ export interface VerificationRunConfig {
    */
   harnessModels?: Record<string, HarnessModels>;
   /** The harnesses a check can run with: the built-in agent first, then saved Claude Code and OpenCode ones. */
-  harnesses: { id: string; name: string; kind: string }[];
+  harnesses: { id: string; name: string; kind: "claude-code" | "opencode" }[];
   /** Every section, in report order, with what it runs on when not overridden. */
   sectionDefaults: {
     section: ReportSection;

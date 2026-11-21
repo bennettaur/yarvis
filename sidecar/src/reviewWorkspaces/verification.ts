@@ -1717,7 +1717,7 @@ function harnessModel(
   const mapped = settings.harnessModels?.[harness.id]?.[model];
   if (!mapped) {
     throw new ReviewWorkspaceError(
-      `harness "${harness.id}" has no OpenCode model for the ${model} tier; pick one under Settings → PR review → Verification`,
+      `harness "${harness.id}" has no OpenCode model for the ${model} tier; pick one under Settings → PR review → Review models`,
       400,
     );
   }
@@ -1863,7 +1863,8 @@ async function startSectionRun(
           model,
           // The section's Claude Code alias, which an OpenCode harness maps to `model`.
           tier,
-          effort,
+          // OpenCode takes no effort: a `#variant` on the model stands in for it.
+          effort: harness.kind === "opencode" ? null : effort,
           harness: harness.id,
           format: RUN_FORMAT,
         },

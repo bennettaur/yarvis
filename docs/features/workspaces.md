@@ -97,18 +97,19 @@ environment, plain and secret, not the rest of its command, so a variable
 the run needs belongs in the environment list rather than before the
 program in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
 `NODE_OPTIONS`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, an
-`XDG_*_HOME` folder or one of OpenCode's `OPENCODE_CONFIG*` or
-`OPENCODE_MODELS_*` variables isn't offered: those would move the files a
-run over someone else's code is kept from reading, or load config from
-somewhere else. The assistant can't pick a harness for the checks, but the
+`XDG_*_HOME` folder, or any `OPENCODE_*` or `BUN_*` variable, isn't offered:
+those would move the files a run over someone else's code is kept from
+reading, or change how OpenCode runs. The assistant can't pick a harness for the checks, but the
 ones it starts use the harness set in Settings. Any program running as you
 can ask the app for a harness's secret variables this way, so keep them to
 keys scoped for this use.
 
 An OpenCode harness runs the checks without your own OpenCode setup, the way
 a Claude Code run loads none of your settings: each check's process gets
-empty config and data folders of its own, so your `opencode.json`, plugins,
-MCP servers, agents and `/connect` logins don't apply. A provider's key goes
+empty config and data folders and a home folder of its own, so your
+`opencode.json`, plugins, MCP servers, agents and `/connect` logins don't
+apply, and neither does your `~/.claude/CLAUDE.md`, which OpenCode otherwise
+reads. A provider's key goes
 in the harness's secret environment instead (`ANTHROPIC_API_KEY`,
 `OPENROUTER_API_KEY` and so on); OpenCode Zen's free models need none. Under
 **Settings → PR review** you give the harness an OpenCode model for each of

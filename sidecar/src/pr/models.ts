@@ -46,9 +46,11 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
 }
 
 /**
- * The verification report runs on Claude Code rather than on a chat provider,
- * so it takes Claude Code model aliases and a budget instead of a
- * provider/model pair. Kept under its own `prVerification` key.
+ * The verification report runs on Claude Code or OpenCode rather than on a chat
+ * provider, so it takes Claude Code model aliases and a budget instead of a
+ * provider/model pair. On an OpenCode harness each alias is a tier that
+ * `harnessModels` maps to an OpenCode model. Kept under its own
+ * `prVerification` key.
  *
  * Each section runs on a model and effort matched to its job
  * (`SECTION_RUN_DEFAULTS` in `reviewWorkspaces/verification.ts`); `sections`
@@ -105,7 +107,7 @@ export interface VerificationRunConfig {
   sections: Record<string, RunChoice>;
   /**
    * The agent harness the checks run with, by id; left out, the built-in
-   * agent. It must be a Claude Code harness: the settings route checks on
+   * agent. It must be a Claude Code or OpenCode harness: the settings route checks on
    * save, and the core again when it hands over the harness's environment.
    */
   harness?: string;
@@ -183,7 +185,7 @@ interface VerificationRunConfigPatch {
   sections?: Record<string, RunChoice>;
   /** `null` goes back to the built-in agent. */
   harness?: string | null;
-  /** Replaces each named harness's tiers; an empty object or `null` clears them. */
+  /** Replaces each named harness's tiers; `null` (or an empty object) clears them. */
   harnessModels?: Record<string, HarnessModels | null>;
 }
 
