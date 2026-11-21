@@ -179,7 +179,7 @@ impl Sidecar {
         {
             tracing::warn!("no sidecar log file ({e}); output goes to the server's log only");
         }
-        let mut vault = deps.vault.clone();
+        let mut vault_unlocked = deps.vault_unlocked.clone();
         loop {
             rotate_if_large(&log);
             // Off the async workers: reading the secrets can block on a
@@ -193,7 +193,7 @@ impl Sidecar {
                     tokio::select! {
                         _ = sleep(SECRETS_RETRY_DELAY) => {}
                         _ = self.inner.restart.notified() => {}
-                        _ = vault_changed(&mut vault) => {}
+                        _ = vault_changed(&mut vault_unlocked) => {}
                     }
                     continue;
                 }
@@ -242,7 +242,7 @@ impl Sidecar {
                     tracing::info!("sidecar restart requested");
                     json!({ "reason": "restart" })
                 }
-                _ = vault_locked(&mut vault) => {
+                _ = vault_locked(&mut vault_unlocked) => {
                     tracing::info!("the vault locked; stopping the sidecar until it unlocks");
                     json!({ "reason": "vault.locked" })
                 }
@@ -306,14 +306,14 @@ pub struct SupervisorDeps {
     /// Whether the vault is unlocked, when the secrets live in it. An unlock
     /// starts a waiting sidecar at once. A lock stops a running one: it holds
     /// every secret in its environment, so leaving it up would undo the lock.
-    pub vault: Option<watch::Receiver<bool>>,
+    pub vault_unlocked: Option<watch::Receiver<bool>>,
 }
 
 /// Resolves when the vault's state changes. Never resolves without a vault,
 /// or once the vault is gone.
-async fn vault_changed(vault: &mut Option<watch::Receiver<bool>>) {
-    let Some(rx) = vault else {
-        return std::future::pending().await;
+async fn vault_changed(unlocked: &mut Option<watch::Receiver<bool>>) {
+    let Some(rx) = unlocked else {
+        return std::future::pending::<()>().await;
     };
     if rx.changed().await.is_err() {
         std::future::pending::<()>().await;
@@ -321,9 +321,9 @@ async fn vault_changed(vault: &mut Option<watch::Receiver<bool>>) {
 }
 
 /// Resolves when the vault locks. Never resolves without a vault.
-async fn vault_locked(vault: &mut Option<watch::Receiver<bool>>) {
-    let Some(rx) = vault else {
-        return std::future::pending().await;
+async fn vault_locked(unlocked: &mut Option<watch::Receiver<bool>>) {
+    let Some(rx) = unlocked else {
+        return std::future::pending::<()>().await;
     };
     if rx.wait_for(|unlocked| !unlocked).await.is_err() {
         std::future::pending::<()>().await;

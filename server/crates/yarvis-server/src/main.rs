@@ -246,7 +246,7 @@ async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
         settings: state.settings.clone(),
         secrets: state.secrets.clone(),
         events: state.events.clone(),
-        vault: (state.config.secrets.backend == Some(SecretBackendKind::Vault))
+        vault_unlocked: (state.config.secrets.backend == Some(SecretBackendKind::Vault))
             .then(|| state.vault.subscribe()),
     };
     Some(tokio::spawn(state.sidecar.clone().supervise(deps)))

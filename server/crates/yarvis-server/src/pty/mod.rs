@@ -223,11 +223,9 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner()) = env;
     }
 
-    /// Sets the socket of the server's own ssh-agent. `AppState::new` sets it
-    /// once from the config ([`crate::ssh_agent::socket_path`]): the path is
-    /// fixed and the socket comes and goes with the vault, so a shell started
-    /// while locked can sign once the vault unlocks. Used only when
-    /// `ssh_agent.enabled` is on.
+    /// Sets the server ssh-agent's socket path, used when `ssh_agent.enabled`
+    /// is on. The path is fixed and the socket comes and goes with the vault,
+    /// so a shell started while locked can sign once it unlocks.
     pub fn set_server_ssh_agent(&self, socket: Option<PathBuf>) {
         *self
             .inner

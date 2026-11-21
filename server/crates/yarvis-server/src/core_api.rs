@@ -73,14 +73,10 @@ pub const COMMANDS: &[(&str, Scope)] = &[
     ("restart_sidecar", Scope::Admin),
 ];
 
-/// Admin commands that also need a passkey check within the last few minutes
-/// (`Fresh<Admin>`). Switching the backend copies every secret into another
-/// store and is rare, so a stolen admin token shouldn't be enough for it.
-/// Setting and deleting a secret need only `admin`: an overwrite loses the old
-/// value as surely as a delete, and a CLI-paired device (the Tauri app's) can
-/// never be fresh, so asking for it there would lock the single-Mac setup out
-/// of its own keys. A CLI device that needs a backend switch can edit
-/// `server.toml` or `settings.json`, which it can already reach.
+/// Admin commands that also need `Fresh<Admin>`. A backend switch copies every
+/// secret elsewhere, so a stolen admin token alone shouldn't do it. Secret
+/// writes stay plain `admin`, since the Tauri app's CLI-made token is never
+/// fresh, and an overwrite loses a value as surely as a delete.
 const FRESH_COMMANDS: &[&str] = &["set_secret_backend"];
 
 fn scope_of(command: &str) -> Option<Scope> {

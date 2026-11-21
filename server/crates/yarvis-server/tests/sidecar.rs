@@ -798,7 +798,7 @@ async fn the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidec
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
-        vault: None,
+        vault_unlocked: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
 
@@ -863,7 +863,7 @@ async fn a_sidecar_that_exits_is_restarted() {
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
-        vault: None,
+        vault_unlocked: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
     until("a restart after the exit", async || {
@@ -893,7 +893,7 @@ async fn stopping_the_supervisor_kills_the_sidecar() {
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
-        vault: None,
+        vault_unlocked: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
     until("the pid file", async || pid_file.exists()).await;
@@ -936,7 +936,7 @@ async fn the_sidecar_follows_the_vault_lock() {
         settings: state.settings.clone(),
         secrets: state.secrets.clone(),
         events: state.events.clone(),
-        vault: Some(state.vault.subscribe()),
+        vault_unlocked: Some(state.vault.subscribe()),
     };
     let supervisor = tokio::spawn(state.sidecar.clone().supervise(deps));
 
@@ -961,9 +961,15 @@ async fn the_sidecar_follows_the_vault_lock() {
         .vault
         .unlock_with_recovery(&created.recovery_key)
         .unwrap();
-    until("a start after the second unlock", async || {
-        kinds(&state).await.len() == 3
-    })
-    .await;
+    // Well inside the supervisor's 5-second retry, so only the unlock can
+    // have started it.
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        until("a start after the second unlock", async || {
+            kinds(&state).await.len() == 3
+        }),
+    )
+    .await
+    .expect("the unlock didn't start the sidecar; it waited out the retry");
     supervisor.abort();
 }

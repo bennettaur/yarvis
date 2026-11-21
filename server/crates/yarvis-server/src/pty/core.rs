@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn driving_a_session_needs_chat_and_reading_one_needs_read() {
+    fn driving_a_session_needs_terminal_and_reading_one_needs_read() {
         assert_eq!(scope_of("pty_write"), Some(Scope::Terminal));
         assert_eq!(scope_of("pty_start_claude"), Some(Scope::Terminal));
         assert_eq!(scope_of("pty_exists"), Some(Scope::Read));
