@@ -22,8 +22,8 @@ fn to_secret_error(e: VaultError) -> SecretError {
 
 impl SecretBackend for VaultBackend {
     /// `Ok(None)` only for an unlocked vault that has never stored a blob. A
-    /// locked or missing vault is an error, so the read-modify-write above
-    /// this never mistakes it for an empty store.
+    /// locked or missing vault is an error, so the caller's read-modify-write
+    /// never mistakes it for an empty store.
     fn read_root(&self) -> Result<Option<String>, SecretError> {
         let Some(bytes) = self.vault.secret(SECRETS_BLOB).map_err(to_secret_error)? else {
             return Ok(None);

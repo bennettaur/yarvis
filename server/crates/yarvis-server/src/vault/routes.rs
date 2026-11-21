@@ -35,24 +35,21 @@ use crate::auth::passkeys::Ceremony;
 use crate::auth::{Admin, Authed, Read};
 use crate::config::SecretBackendKind;
 use crate::error::{ApiError, ApiResult};
-use crate::{rate_limit, ssh_agent};
+use crate::ssh_agent;
 
 pub fn router(state: &AppState) -> Router<AppState> {
-    let unlock = Router::new()
+    // The unlock routes aren't rate-limited: they need an admin token, and
+    // the shared per-address budget is charged before auth, so anyone could
+    // spend it and block the owner's unlock.
+    Router::new()
+        .route("/api/vault/status", get(status))
         .route("/api/vault/unlock/start", post(unlock_start))
         .route("/api/vault/unlock/finish", post(unlock_finish))
         .route("/api/vault/unlock/recovery", post(unlock_recovery))
-        .route_layer(middleware::from_fn_with_state(
-            state.auth_limiter.clone(),
-            rate_limit::limit,
-        ));
-    Router::new()
-        .route("/api/vault/status", get(status))
         .route("/api/vault/lock", post(lock))
         .route("/api/vault/wrappers/passkey/start", post(enroll_start))
         .route("/api/vault/wrappers/passkey/finish", post(enroll_finish))
         .route("/api/vault/wrappers/{id}", delete(remove_wrapper))
-        .merge(unlock)
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             only_with_vault,
@@ -85,6 +82,8 @@ fn vault_error(e: VaultError) -> ApiError {
         other => ApiError::internal(other),
     }
 }
+
+const PRF_OUTPUT_LEN: usize = 32;
 
 fn unknown_ceremony() -> ApiError {
     ApiError::bad_request("unknown or expired ceremony").with_detail("start again")
@@ -150,9 +149,13 @@ fn prf_output(prf_first: Option<Zeroizing<String>>) -> ApiResult<UnwrapSecret> {
             "this browser or authenticator can't unlock the vault; use the recovery key",
         )
     })?;
+    // PRF outputs are 32 bytes. A shorter one would make a wrapper that
+    // anyone with the file could brute-force.
     let bytes = B64
         .decode(encoded.as_bytes())
-        .map_err(|_| ApiError::bad_request("prfFirst isn't base64url"))?;
+        .ok()
+        .filter(|b| b.len() == PRF_OUTPUT_LEN)
+        .ok_or_else(|| ApiError::bad_request("prfFirst isn't 32 bytes of base64url"))?;
     Ok(UnwrapSecret::from_bytes(bytes))
 }
 
@@ -163,6 +166,7 @@ fn prf_output(prf_first: Option<Zeroizing<String>>) -> ApiResult<UnwrapSecret> {
 struct WrapperRow {
     id: String,
     label: String,
+    /// `"recovery"` or `"passkey"`: the API's names, not the file's tags.
     kind: &'static str,
     /// The passkey this wrapper belongs to, for a `passkey` wrapper whose
     /// passkey still exists.
@@ -297,7 +301,7 @@ async fn unlock_finish(
         .passkey_by_credential_id(result.cred_id().as_slice())
         .await?
         .map(|p| p.id);
-    unlocked(
+    after_unlock(
         &state,
         &device.device_id,
         json!({ "via": "passkey", "passkeyId": passkey_id }),
@@ -322,13 +326,13 @@ async fn unlock_recovery(
         .vault
         .unlock_with_recovery(&recovery)
         .map_err(vault_error)?;
-    unlocked(&state, &device.device_id, json!({ "via": "recovery" })).await
+    after_unlock(&state, &device.device_id, json!({ "via": "recovery" })).await
 }
 
 /// Everything that follows an unlock: the ssh-agent, when it is on, and the
 /// event. An agent that can't start leaves the vault unlocked, since the
 /// secrets are still needed; its status route shows it isn't running.
-async fn unlocked(state: &AppState, device_id: &str, data: Value) -> ApiResult<Json<Value>> {
+async fn after_unlock(state: &AppState, device_id: &str, data: Value) -> ApiResult<Json<Value>> {
     if let Err(e) = ssh_agent::start(state) {
         tracing::error!("the vault is unlocked but the ssh-agent didn't start: {e}");
     }
@@ -345,9 +349,7 @@ async fn lock(
     State(state): State<AppState>,
     Authed { device, .. }: Authed<Admin>,
 ) -> ApiResult<Json<Value>> {
-    // The agent goes first, so it never signs with a key the vault dropped.
-    ssh_agent::stop(&state);
-    if state.vault.lock() {
+    if ssh_agent::stop_and_lock(&state) {
         state
             .events
             .append(Some(&device.device_id), "vault.locked", json!({}))
@@ -382,12 +384,12 @@ async fn enroll_start(
         .find(|p| p.id == body.passkey_id)
         .ok_or_else(ApiError::not_found)?;
     let credential_id = record.passkey.cred_id().to_vec();
-    let encoded = B64.encode(&credential_id);
+    let credential_id_b64 = B64.encode(&credential_id);
     let has_wrapper = state.vault.wrappers().map_err(vault_error)?.iter().any(|w| {
-        matches!(&w.kind, WrapperKind::PasskeyPrf { credential_id, .. } if *credential_id == encoded)
+        matches!(&w.kind, WrapperKind::PasskeyPrf { credential_id, .. } if *credential_id == credential_id_b64)
     });
     if has_wrapper {
-        return Err(vault_error(VaultError::DuplicateWrapper(encoded)));
+        return Err(vault_error(VaultError::DuplicateWrapper(credential_id_b64)));
     }
     let mut salt = [0u8; 32];
     rand::rng().fill_bytes(&mut salt);
@@ -397,7 +399,7 @@ async fn enroll_start(
         .webauthn()
         .start_passkey_authentication(std::slice::from_ref(&record.passkey))
         .map_err(ApiError::internal)?;
-    let options = with_prf(&options, &[(encoded, prf_salt.clone())]);
+    let options = with_prf(&options, &[(credential_id_b64, prf_salt.clone())]);
     start_ceremony(
         &state,
         Ceremony::VaultEnroll {
@@ -436,12 +438,14 @@ async fn enroll_finish(
         ));
     }
     let prf = prf_output(body.prf_first)?;
-    let encoded = B64.encode(&credential_id);
+    let credential_id_b64 = B64.encode(&credential_id);
     state
         .vault
-        .add_passkey_wrapper(&encoded, &prf_salt, &label, &prf)
+        .add_passkey_wrapper(&credential_id_b64, &prf_salt, &label, &prf)
         .map_err(vault_error)?;
-    Ok(Json(json!({ "wrapperId": passkey_wrapper_id(&encoded) })))
+    Ok(Json(
+        json!({ "wrapperId": passkey_wrapper_id(&credential_id_b64) }),
+    ))
 }
 
 async fn remove_wrapper(
