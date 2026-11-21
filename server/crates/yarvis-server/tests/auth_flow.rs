@@ -408,7 +408,7 @@ async fn revoking_a_device_takes_effect_on_its_next_request() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|d| d["id"] == phone_id)
+        .find(|d| d["deviceId"] == phone_id)
         .unwrap()
         .clone();
     assert!(row["revokedAt"].is_i64(), "revoked devices stay listed");

@@ -327,7 +327,10 @@ answer `409`.
 Devices (token needed):
 
 - `GET    /api/devices/me` (`read`) → the calling device
-- `GET    /api/devices` (admin)
+- `GET    /api/devices` (admin) → every device, revoked ones included:
+  `[{ deviceId, name, kind: "passkey"|"token", scopes, passkeyId, createdBy,
+  userAgent, createdAt, lastSeenAt, verifiedAt, revokedAt, current }]`.
+  `current` marks the calling device.
 - `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`.
   `scopes` can't include `admin` (`400`).
 - `DELETE /api/devices/{id}` (admin, fresh) → `{ revokedAt }`
