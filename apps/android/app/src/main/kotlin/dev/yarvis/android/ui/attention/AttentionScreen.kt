@@ -56,7 +56,7 @@ import kotlinx.serialization.json.contentOrNull
 @Composable
 fun AttentionScreen(viewModel: AttentionViewModel, modifier: Modifier = Modifier) {
     val attention by viewModel.attention.collectAsStateWithLifecycle()
-    val open by viewModel.open.collectAsStateWithLifecycle()
+    val opened by viewModel.opened.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
 
@@ -96,7 +96,7 @@ fun AttentionScreen(viewModel: AttentionViewModel, modifier: Modifier = Modifier
         }
     }
 
-    open?.let { ItemSheet(it, busy, viewModel) }
+    opened?.let { ItemSheet(it, busy, viewModel) }
 }
 
 private fun kindLabel(item: AttentionItem): String = when {
@@ -183,7 +183,7 @@ private fun PermissionCard(request: PermissionRequest, busy: Boolean, viewModel:
                     onDecline = { viewModel.decidePermission(request, PermissionDecision.Deny()) },
                 )
             } else {
-                Text(prettyInput(request), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                Text(formatToolInput(request), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
                 var message by remember(request.id) { mutableStateOf("") }
                 OutlinedTextField(
                     value = message,
@@ -218,10 +218,10 @@ internal fun permissionAnswers(questions: List<QuestionItem>, answers: List<Ques
         q.question to listOf(a.selected.joinToString(", "), a.text.orEmpty().trim()).filter { it.isNotEmpty() }.joinToString("\n")
     }
 
-private fun prettyInput(request: PermissionRequest): String {
+private fun formatToolInput(request: PermissionRequest): String {
     val command = (request.toolInput["command"] as? JsonPrimitive)?.contentOrNull
     if (command != null) return command
-    return request.toolInput.entries.joinToString("\n") { (k, v) -> "$k: ${compact(v)}" }
+    return request.toolInput.entries.joinToString("\n") { (name, value) -> "$name: ${compact(value)}" }
 }
 
 private fun compact(value: JsonElement): String =
@@ -249,18 +249,18 @@ private fun QuestionForm(
             q.options?.let { options ->
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     options.forEach { option ->
-                        val on = option.label in selected[i]
+                        val isSelected = option.label in selected[i]
                         if (q.multiSelect) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = on, onCheckedChange = { if (it) selected[i].add(option.label) else selected[i].remove(option.label) })
+                                Checkbox(checked = isSelected, onCheckedChange = { if (it) selected[i].add(option.label) else selected[i].remove(option.label) })
                                 Text(option.label)
                             }
                         } else {
                             FilterChip(
-                                selected = on,
+                                selected = isSelected,
                                 onClick = {
                                     selected[i].clear()
-                                    if (!on) selected[i].add(option.label)
+                                    if (!isSelected) selected[i].add(option.label)
                                 },
                                 label = { Text(option.label) },
                             )

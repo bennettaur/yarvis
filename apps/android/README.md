@@ -10,7 +10,8 @@ A small native client for a Yarvis server. It does two things:
   agents, heads-down questions and approvals, items the assistant or the app
   surfaced, and server approvals such as git signatures. You can approve or
   deny, answer a question (choices, several choices, or free text), or
-  dismiss an item. New items raise a local notification.
+  dismiss an item. New items raise a local notification, except while the
+  Attention tab is on screen.
 
 Terminals, settings, devices and first-time setup stay in the web UI.
 

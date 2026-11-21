@@ -3,9 +3,11 @@ package dev.yarvis.android.ui
 import dev.yarvis.android.FakeChatApi
 import dev.yarvis.android.FakePrefs
 import dev.yarvis.android.MainDispatcherRule
+import dev.yarvis.android.api.ApiException
 import dev.yarvis.android.api.ChatEvent
 import dev.yarvis.android.api.ChatMessage
 import dev.yarvis.android.api.ReauthCancelledException
+import dev.yarvis.android.data.ChatModelChoice
 import dev.yarvis.android.ui.chat.ChatThreadViewModel
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -29,7 +31,7 @@ class ChatThreadViewModelTest {
         advanceUntilIdle()
         assertEquals("anthropic" to "claude-sonnet-5-5", fresh.state.value.provider to fresh.state.value.model)
 
-        prefs.saved = "anthropic" to "claude-opus-5-5"
+        prefs.saved = ChatModelChoice("anthropic", "claude-opus-5-5")
         val remembered = ChatThreadViewModel(api, prefs, sessionId = null)
         advanceUntilIdle()
         assertEquals("claude-opus-5-5", remembered.state.value.model)
@@ -119,8 +121,8 @@ class ChatThreadViewModelTest {
         assertTrue(s.approvals.isEmpty())
         assertNull(s.error)
         assertEquals("Turn stopped. Nothing was saved for it.", s.notice)
-        // The stream was dropped: nothing reads the turn's channel anymore.
-        assertTrue(api.turnEvents.trySend(ChatEvent(type = "delta", text = "late")).isSuccess)
+        // The stream was dropped, so a late frame changes nothing.
+        api.turnEvents.send(ChatEvent(type = "delta", text = "late"))
         advanceUntilIdle()
         assertNull(vm.state.value.streaming)
     }
@@ -139,6 +141,56 @@ class ChatThreadViewModelTest {
         assertFalse(s.running)
         assertEquals("The provider refused the request\n\n429", s.error)
         assertTrue(s.messages.none { it.role == "assistant" })
+    }
+
+    @Test
+    fun `a turn the sidecar refuses ends with an error`() = runTest {
+        api.streamError = ApiException(503, "database not configured")
+        val vm = ChatThreadViewModel(api, prefs, sessionId = "s1")
+        advanceUntilIdle()
+        vm.send("Hi")
+        advanceUntilIdle()
+
+        assertFalse(vm.state.value.running)
+        assertTrue(vm.state.value.error!!.contains("database not configured"))
+    }
+
+    @Test
+    fun `with no model on the server nothing is sent`() = runTest {
+        api.providerList.clear()
+        val vm = ChatThreadViewModel(api, prefs, sessionId = "s1")
+        advanceUntilIdle()
+        vm.send("Hi")
+        advanceUntilIdle()
+
+        assertTrue(api.requests.isEmpty())
+        assertEquals("No chat model is set up on the server.", vm.state.value.error)
+    }
+
+    @Test
+    fun `choosing a model remembers it`() = runTest {
+        val vm = ChatThreadViewModel(api, prefs, sessionId = null)
+        advanceUntilIdle()
+        vm.chooseModel("anthropic", "claude-opus-5-5")
+        advanceUntilIdle()
+
+        assertEquals(ChatModelChoice("anthropic", "claude-opus-5-5"), prefs.saved)
+    }
+
+    @Test
+    fun `a failed approval answer keeps the approval and says why`() = runTest {
+        val vm = ChatThreadViewModel(api, prefs, sessionId = "s1")
+        advanceUntilIdle()
+        vm.send("Do it")
+        api.turnEvents.send(ChatEvent(type = "tool_approval_request", id = "c1", name = "deploy", server = ""))
+        advanceUntilIdle()
+        api.approvalError = ApiException(403, "this device doesn't have the approve scope")
+
+        vm.answerApproval(vm.state.value.approvals.single(), approved = true)
+        advanceUntilIdle()
+
+        assertEquals(1, vm.state.value.approvals.size)
+        assertTrue(vm.state.value.error!!.contains("approve scope"))
     }
 
     @Test

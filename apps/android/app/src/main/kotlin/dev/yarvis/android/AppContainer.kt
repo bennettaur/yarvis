@@ -3,6 +3,7 @@ package dev.yarvis.android
 import android.content.Context
 import android.os.Build
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import dev.yarvis.android.api.AuthClient
@@ -27,19 +28,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.UUID
 import okhttp3.HttpUrl
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 
-/** Everything a signed-in screen needs. */
+/** Everything a signed-in screen needs. [id] tells one sign-in from the next, even to the same server. */
 class SignedInSession(
     val serverUrl: HttpUrl,
     val client: YarvisClient,
     val attention: AttentionRepository,
+    val id: String = UUID.randomUUID().toString(),
 )
 
 sealed interface AuthState {
     data object Loading : AuthState
-    data class SignedOut(val lastServerUrl: String?) : AuthState
+    /** [notice] says what the sign-out couldn't do, such as revoke the device. */
+    data class SignedOut(val lastServerUrl: String?, val notice: String? = null) : AuthState
     data class SignedIn(val session: SignedInSession) : AuthState
 }
 
@@ -50,8 +55,14 @@ class AppContainer(private val context: Context) {
     val codePrompt = CodePromptState()
     val notifier = AttentionNotifier(context)
 
+    /** For ordinary requests: a stalled one fails instead of hanging the screen. */
     private val http: OkHttpClient = OkHttpClient.Builder()
-        // Server-sent event streams and long tool approvals sit quiet for minutes.
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    private val streamHttp: OkHttpClient = http.newBuilder()
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        // Server-sent event streams sit quiet for minutes, such as while a tool approval waits.
         .readTimeout(0, TimeUnit.MILLISECONDS)
         // Notices a dead events socket; the server answers pings without app code.
         .pingInterval(30, TimeUnit.SECONDS)
@@ -66,7 +77,7 @@ class AppContainer(private val context: Context) {
     }
 
     val signInGateway = object : SignInGateway {
-        override suspend fun setupRequired(server: HttpUrl) = AuthClient(server, http).status().setupRequired
+        override suspend fun isSetupRequired(server: HttpUrl) = AuthClient(server, http).status().setupRequired
 
         override suspend fun signIn(server: HttpUrl, request: LoginRequest) {
             val signedIn = AuthClient(server, http).login(request)
@@ -106,36 +117,50 @@ class AppContainer(private val context: Context) {
     }
 
     private fun begin(server: HttpUrl, token: String) {
-        val authed = http.newBuilder()
-            .addInterceptor { chain ->
-                val response = chain.proceed(chain.request())
-                if (response.code == 401) scope.launch { forget() }
-                response
-            }
-            .build()
-        val client = YarvisClient(server, token, authed, codePrompt)
-        val events = ServerEventsSocket(server, token, http)
-        val attention = AttentionRepository(client, events::signals, scope, onSignedOut = { scope.launch { forget() } })
+        lateinit var session: SignedInSession
+        val signOutOn401 = Interceptor { chain ->
+            val response = chain.proceed(chain.request())
+            if (response.code == 401) scope.launch { forget(session) }
+            response
+        }
+        val client = YarvisClient(
+            server,
+            token,
+            http.newBuilder().addInterceptor(signOutOn401).build(),
+            streamHttp = streamHttp.newBuilder().addInterceptor(signOutOn401).build(),
+            codePrompt = codePrompt,
+        )
+        val events = ServerEventsSocket(server, token, streamHttp)
+        val attention = AttentionRepository(client, events::signals, scope, onSignedOut = { scope.launch { forget(session) } })
+        session = SignedInSession(server, client, attention)
         notifier.follow(scope, attention.arrivals)
-        _auth.value = AuthState.SignedIn(SignedInSession(server, client, attention))
-        attention.start()
+        _auth.value = AuthState.SignedIn(session)
+        if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) attention.start()
     }
 
     /** Revokes the device on the server when it can, then forgets the token. */
     fun signOut() {
         val session = (auth.value as? AuthState.SignedIn)?.session ?: return
         scope.launch {
-            runCatching { session.client.revokeSelf() }
-            forget()
+            val revoked = runCatching { session.client.revokeSelf() }.isSuccess
+            forget(
+                session,
+                notice = if (revoked) {
+                    null
+                } else {
+                    "Signed out here, but this device is still on the server. Revoke it from the devices list in the web UI."
+                },
+            )
         }
     }
 
-    private suspend fun forget() {
-        val session = (auth.value as? AuthState.SignedIn)?.session ?: return
+    /** Signs [session] out. A late 401 from an earlier session leaves the current one alone. */
+    private suspend fun forget(session: SignedInSession, notice: String? = null) {
+        if ((auth.value as? AuthState.SignedIn)?.session !== session) return
         session.attention.stop()
         notifier.stopFollowing()
         store.clearToken()
-        _auth.value = AuthState.SignedOut(session.serverUrl.toString())
+        _auth.value = AuthState.SignedOut(session.serverUrl.toString(), notice)
     }
 
     private companion object {

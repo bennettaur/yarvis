@@ -107,18 +107,30 @@ class AttentionRepositoryTest {
         val (repo, _) = repository()
         repo.start()
         runCurrent()
-        val attentionBefore = api.attentionLoads
-        val approvalsBefore = api.approvalLoads
 
+        api.pending += item("after-restart", 1)
         events.send(event("sidecar.started"))
         runCurrent()
-        assertEquals(attentionBefore + 1, api.attentionLoads)
-        assertEquals(approvalsBefore, api.approvalLoads)
+        assertEquals(listOf("after-restart"), repo.state.value.items.map { it.id })
 
+        api.pending.clear()
+        api.pendingApprovals += approval("ap9")
         events.send(EventsSignal.Lagged)
         runCurrent()
-        assertEquals(attentionBefore + 2, api.attentionLoads)
-        assertEquals(approvalsBefore + 1, api.approvalLoads)
+        assertTrue(repo.state.value.items.isEmpty())
+        assertEquals(listOf("ap9"), repo.state.value.approvals.map { it.id })
+    }
+
+    @Test
+    fun `a refused events socket says approvals won't update live`() = runTest {
+        val (repo, _) = repository()
+        repo.start()
+        runCurrent()
+
+        events.send(EventsSignal.Refused(4403))
+        runCurrent()
+
+        assertTrue(repo.state.value.error!!.contains("4403"))
     }
 
     @Test
@@ -153,7 +165,13 @@ class AttentionRepositoryTest {
 
         repo.stop()
         runCurrent()
+        api.stream.send(item("late", 9))
+        api.pendingApprovals += approval("late")
+        events.send(event("approval.requested"))
+        runCurrent()
 
         assertTrue(!repo.running)
+        assertTrue(repo.state.value.items.isEmpty())
+        assertTrue(repo.state.value.approvals.isEmpty())
     }
 }

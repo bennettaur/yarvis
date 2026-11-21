@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class AttentionState(
     /** Pending sidecar items, newest first. */
@@ -55,10 +57,11 @@ class AttentionRepository(
     val arrivals: SharedFlow<Arrival> = _arrivals
 
     private var jobs: List<Job> = emptyList()
+    private val reloading = Mutex()
 
     /** Ids already seen, so a reload after a reconnect only announces what's really new. */
     private val seen = mutableSetOf<String>()
-    private var hydrated = false
+    private var loadedOnce = false
 
     val running: Boolean get() = jobs.any { it.isActive }
 
@@ -77,10 +80,15 @@ class AttentionRepository(
 
     fun forgetApproval(id: String) = _state.update { s -> s.copy(approvals = s.approvals.filterNot { it.id == id }) }
 
-    suspend fun reloadAttention() {
+    /**
+     * Reloads the pending list. Both loops call this, so a lock keeps an older
+     * snapshot from landing after a newer one.
+     */
+    suspend fun reloadAttention() = reloading.withLock {
         val items = api.pendingAttention().sortedByDescending { it.seq }
-        val announce = hydrated
-        hydrated = true
+        // The first load only fills `seen`, so opening the app doesn't notify for everything already waiting.
+        val announce = loadedOnce
+        loadedOnce = true
         _state.update { it.copy(items = items, loaded = true, error = null) }
         for (item in items) noteArrival(item, announce)
     }
@@ -99,7 +107,7 @@ class AttentionRepository(
         if (seen.add(item.id) && announce) _arrivals.emit(Arrival(item.id, item.title, item.body))
     }
 
-    private fun apply(item: AttentionItem) {
+    private fun mergeItem(item: AttentionItem) {
         _state.update { s ->
             val rest = s.items.filterNot { it.id == item.id }
             val items = if (item.status == "pending") (rest + item).sortedByDescending { it.seq } else rest
@@ -113,7 +121,7 @@ class AttentionRepository(
                 reloadAttention()
                 api.attentionStream().collect { item ->
                     if (item.status == "pending") noteArrival(item, announce = true)
-                    apply(item)
+                    mergeItem(item)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -128,24 +136,27 @@ class AttentionRepository(
     }
 
     private suspend fun eventsLoop() {
-        safely { reloadApprovals() }
+        reportingErrors { reloadApprovals() }
         events().collect { signal ->
             when (signal) {
                 is EventsSignal.Event -> when (signal.event.kind) {
-                    "approval.requested", "approval.answered" -> safely { reloadApprovals() }
-                    "sidecar.started" -> safely { reloadAttention() }
+                    "approval.requested", "approval.answered" -> reportingErrors { reloadApprovals() }
+                    "sidecar.started" -> reportingErrors { reloadAttention() }
                 }
                 EventsSignal.Lagged -> {
-                    safely { reloadApprovals() }
-                    safely { reloadAttention() }
+                    reportingErrors { reloadApprovals() }
+                    reportingErrors { reloadAttention() }
                 }
                 EventsSignal.SignedOut -> onSignedOut()
-                is EventsSignal.Refused -> Unit
+                // The socket gives up; the attention SSE stream still keeps the bell's items live.
+                is EventsSignal.Refused -> _state.update {
+                    it.copy(error = "Server approvals won't update live (the server refused the events socket: ${signal.code})")
+                }
             }
         }
     }
 
-    private suspend fun safely(block: suspend () -> Unit) {
+    private suspend fun reportingErrors(block: suspend () -> Unit) {
         try {
             block()
         } catch (e: CancellationException) {

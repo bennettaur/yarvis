@@ -57,7 +57,7 @@ class AttentionNotifier(private val context: Context) {
     }
 
     private fun post(arrival: Arrival) {
-        if (Build.VERSION.SDK_INT >= 33 &&
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             return
@@ -78,6 +78,14 @@ class AttentionNotifier(private val context: Context) {
             .setContentIntent(open)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            // Prompts can hold commands and paths, so a locked phone shows only that something is waiting.
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle("Yarvis needs you")
+                    .build(),
+            )
             .build()
         NotificationManagerCompat.from(context).notify(arrival.key.hashCode(), notification)
     }

@@ -29,7 +29,7 @@ class SessionStore(private val context: Context) {
         val prefs = context.dataStore.data.first()
         val url = prefs[SERVER_URL] ?: return null
         val sealed = prefs[TOKEN] ?: return null
-        val token = runCatching { open(sealed) }.getOrNull() ?: return null
+        val token = runCatching { unseal(sealed) }.getOrNull() ?: return null
         return SavedSession(url, token)
     }
 
@@ -48,11 +48,11 @@ class SessionStore(private val context: Context) {
         context.dataStore.edit { it.remove(TOKEN) }
     }
 
-    suspend fun chatModel(): Pair<String, String>? {
+    suspend fun chatModel(): ChatModelChoice? {
         val prefs = context.dataStore.data.first()
         val provider = prefs[CHAT_PROVIDER] ?: return null
         val model = prefs[CHAT_MODEL] ?: return null
-        return provider to model
+        return ChatModelChoice(provider, model)
     }
 
     suspend fun saveChatModel(provider: String, model: String) {
@@ -83,7 +83,7 @@ class SessionStore(private val context: Context) {
         return Base64.encodeToString(out, Base64.NO_WRAP)
     }
 
-    private fun open(sealed: String): String {
+    private fun unseal(sealed: String): String {
         val bytes = Base64.decode(sealed, Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 0, IV_BYTES))

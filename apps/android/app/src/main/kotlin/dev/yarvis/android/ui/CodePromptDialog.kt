@@ -8,7 +8,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -19,7 +19,8 @@ import dev.yarvis.android.data.CodePromptState
 fun CodePromptDialog(prompt: CodePromptState) {
     val asking by prompt.asking.collectAsStateWithLifecycle()
     if (!asking) return
-    var code by rememberSaveable { mutableStateOf("") }
+    // Not saveable: a code is good for seconds and shouldn't sit in saved state.
+    var code by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = {
             code = ""
