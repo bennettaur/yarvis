@@ -383,7 +383,11 @@ Events and approvals:
   - `vault.locked` and `vault.unlocked`. `vault.unlocked` has `via`
     (`"passkey"` or `"recovery"`) and, for a passkey, `passkeyId`.
   - `pty.exited`: `{ id, code }`.
-- `GET  /api/approvals` (`read`)
+- `GET  /api/approvals` (`read`) → the pending ones, oldest first:
+  `[{ id, kind, summary, data, createdAt, expiresAt }]`. `kind` names the
+  requester (`git.sign`), `summary` is the line to show, `data` is the
+  requester's own details (for `git.sign`, `keyFingerprint` and
+  `hashAlgorithm`), and times are milliseconds since the epoch.
 - `POST /api/approvals/{id}` `{ approve: bool }` (`approve`). The first answer
   wins. Later answers get `409`, and so does an answer after the approval
   timed out. No answer in time, a restart, or a requester that stops waiting

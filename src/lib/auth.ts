@@ -282,14 +282,18 @@ export const revokeDevice = (id: string) =>
 
 /* ---------- Approvals ---------- */
 
-/** A request waiting on a device with the `approve` scope. */
+/** A request waiting on a device with the `approve` scope, as `GET /api/approvals` lists it. */
 export interface Approval {
   id: string;
+  /** What asked, such as `git.sign`. */
   kind: string;
   /** What is being asked, as the server words it. */
-  summary?: string;
-  detail?: string;
-  createdAt?: number;
+  summary: string;
+  /** The requester's details, shaped by `kind`. */
+  data: Record<string, unknown>;
+  /** Milliseconds since the epoch. Past `expiresAt` the server denies it. */
+  createdAt: number;
+  expiresAt: number;
 }
 
 /** The approvals still waiting on an answer. */

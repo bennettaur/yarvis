@@ -36,8 +36,11 @@ afterEach(() => {
 
 const signing: Approval = {
   id: "ap-1",
-  kind: "ssh.sign",
-  summary: "Sign a commit in yarvis",
+  kind: "git.sign",
+  summary: "Sign with SHA256:abc (sha512)",
+  data: { keyFingerprint: "SHA256:abc", hashAlgorithm: "sha512" },
+  createdAt: 1_763_600_000_000,
+  expiresAt: 1_763_600_060_000,
 };
 
 const buttonNamed = (host: HTMLElement, text: string) =>
@@ -58,7 +61,7 @@ describe("ApprovalsList", () => {
     );
     unmount = mounted.unmount;
     await waitFor(
-      () => mounted.host.textContent?.includes("Sign a commit") ?? false,
+      () => mounted.host.textContent?.includes("Sign with SHA256:abc") ?? false,
       "the request",
     );
 
@@ -95,7 +98,7 @@ describe("ApprovalsList", () => {
       });
 
       await waitFor(
-        () => mounted.host.textContent?.includes("Sign a commit") ?? false,
+        () => mounted.host.textContent?.includes("Sign with SHA256:abc") ?? false,
         "the request",
       );
     } finally {
