@@ -1,6 +1,8 @@
-import { afterAll, afterEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { ClipboardEntry } from "../../lib/clipboard";
+import { resetCore, stubCore } from "../../test/coreApi";
+import { actAsDesktopApp } from "../../test/desktopApp";
 import { nativeInvoke } from "../../test/nativeInvoke";
 import { mountForInteraction, renderToHtml } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
@@ -62,6 +64,14 @@ stubSidecarApi({
 const SETTLE_MS = 400;
 /** Long enough for a tab click's state change to render. */
 const TAB_SWITCH_MS = 50;
+
+// History is a desktop-app feature, so the suite runs as the app except where
+// a test says otherwise.
+let restoreBrowser: () => void = () => {};
+beforeAll(() => {
+  restoreBrowser = actAsDesktopApp();
+});
+afterAll(() => restoreBrowser());
 
 describe("ClipboardPalette", () => {
   it("renders nothing while closed", async () => {
@@ -133,6 +143,43 @@ describe("ClipboardPalette", () => {
       expect(html).toContain("Clear history");
       expect(html).not.toContain("New entry");
     });
+  });
+});
+
+describe("ClipboardPalette in a browser", () => {
+  it("offers only the saved entries, since history is the desktop app's", async () => {
+    restoreBrowser();
+    try {
+      const { host, unmount } = await mountForInteraction(
+        createElement(ClipboardPalette, { open: true, onClose: () => {} }),
+        SETTLE_MS,
+      );
+      const tabs = [...host.querySelectorAll("button[aria-pressed]")].map((el) => el.textContent);
+      unmount();
+      expect(tabs).toEqual(["Saved"]);
+    } finally {
+      restoreBrowser = actAsDesktopApp();
+    }
+  });
+});
+
+describe("ClipboardPalette in a desktop app pointed at a remote server", () => {
+  afterAll(resetCore);
+
+  it("drops the History tab when the app won't hand over its history", async () => {
+    stubCore({
+      core: async (command: string) => {
+        if (command === "clipboard_history") throw new Error("not allowed from this origin");
+        return nativeInvoke(command);
+      },
+    });
+    const { host, unmount } = await mountForInteraction(
+      createElement(ClipboardPalette, { open: true, onClose: () => {} }),
+      SETTLE_MS,
+    );
+    const tabs = [...host.querySelectorAll("button[aria-pressed]")].map((el) => el.textContent);
+    unmount();
+    expect(tabs).toEqual(["Saved"]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import type { ProviderInfo } from "../../lib/chat";
+import { localFeaturesAvailable } from "../../lib/core";
 import { primeCache } from "../../lib/resourceCache";
 import type { VoiceConfig } from "../../lib/voiceConfig";
 import type { VoiceProfile } from "../../lib/voiceProfiles";
@@ -221,14 +222,21 @@ function TakeRow({ take }: { take: StudioTake }) {
       {saveError && <span className="text-xs text-red-400">{saveError}</span>}
       <span className="ml-auto flex items-center gap-2">
         {take.savedPath ? (
-          <button
-            type="button"
-            onClick={() => void revealItemInDir(take.savedPath ?? "")}
-            title={take.savedPath}
-            className={BUTTON}
-          >
-            Show in Finder
-          </button>
+          // The clip is saved on the server's machine, which only the desktop app can open.
+          localFeaturesAvailable() ? (
+            <button
+              type="button"
+              onClick={() => void revealItemInDir(take.savedPath ?? "")}
+              title={take.savedPath}
+              className={BUTTON}
+            >
+              Show in Finder
+            </button>
+          ) : (
+            <span className="text-xs text-zinc-500" title={take.savedPath}>
+              Saved
+            </span>
+          )
         ) : (
           <button type="button" onClick={() => void save()} className={BUTTON}>
             Save
