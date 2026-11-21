@@ -274,6 +274,11 @@ impl Sidecar {
             "YARVIS_ALLOWED_ORIGINS",
             allowed_origins(&deps.config.auth.origins),
         );
+        // Where OAuth redirects land when the server is reached from elsewhere.
+        match deps.config.auth.public_origin() {
+            Some(origin) => cmd.env("YARVIS_PUBLIC_ORIGIN", origin),
+            None => cmd.env_remove("YARVIS_PUBLIC_ORIGIN"),
+        };
         for (key, value) in instance_env(&instance_name(), background_workers_enabled()) {
             cmd.env(key, value);
         }

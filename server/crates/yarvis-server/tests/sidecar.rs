@@ -1057,6 +1057,52 @@ async fn the_sidecar_follows_the_vault_lock() {
     supervisor.abort();
 }
 
+/// The authorization server redirects the browser, with no token, to the
+/// server's origin. Only the query reaches the sidecar's callback route; the
+/// browser's headers don't, and no other sidecar route is reachable this way.
+#[tokio::test]
+async fn an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback() {
+    let sidecar = serve(Router::new().route(
+        "/oauth/mcp/callback",
+        get(|headers: HeaderMap, uri: axum::http::Uri| async move {
+            let forwarded_cookie = headers.contains_key("cookie");
+            (
+                [("content-type", "text/html")],
+                format!(
+                    "query={} cookie={forwarded_cookie}",
+                    uri.query().unwrap_or_default()
+                ),
+            )
+        }),
+    ))
+    .await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), sidecar);
+    let mut req = Request::get("/api/oauth/mcp/callback?code=c1&state=s1")
+        .header("host", "localhost")
+        .header("cookie", "a=b")
+        .body(Body::empty())
+        .unwrap();
+    req.headers_mut().remove("authorization");
+    let response = app(h.state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/html");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, "query=code=c1&state=s1 cookie=false");
+
+    for path in [
+        "/api/oauth/mcp/callback/x",
+        "/api/oauth/mcp",
+        "/api/oauth/other",
+    ] {
+        let req = Request::get(path)
+            .header("host", "localhost")
+            .body(Body::empty())
+            .unwrap();
+        let status = app(h.state.clone()).oneshot(req).await.unwrap().status();
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
 /// A fake turn detector on its own loopback port: it takes only its own token
 /// and echoes each binary frame back.
 async fn fake_turn_detector() -> u16 {

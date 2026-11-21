@@ -465,6 +465,59 @@ async fn relay_turn_detector(mut socket: WebSocket, state: AppState) {
     }
 }
 
+/// OAuth redirects the server's origin takes for the sidecar: its public path,
+/// and the sidecar's callback route it forwards to. The browser arrives with no
+/// token, so these are unauthenticated; the sidecar accepts only a `state` its
+/// own flow issued.
+const OAUTH_CALLBACKS: &[(&str, &str)] = &[("/api/oauth/mcp/callback", "/oauth/mcp/callback")];
+
+/// A callback's query is a code, a state and maybe an error: small.
+const MAX_CALLBACK_QUERY: usize = 8 * 1024;
+
+/// The routes for [`OAUTH_CALLBACKS`].
+pub fn oauth_callback_router() -> axum::Router<AppState> {
+    OAUTH_CALLBACKS
+        .iter()
+        .fold(axum::Router::new(), |router, (public, sidecar)| {
+            router.route(
+                public,
+                axum::routing::get(move |State(state): State<AppState>, uri: Uri| {
+                    oauth_callback(state, sidecar, uri)
+                }),
+            )
+        })
+}
+
+/// Forwards one OAuth redirect to the sidecar's fixed callback route: the
+/// query only, with none of the browser's headers.
+async fn oauth_callback(state: AppState, sidecar_path: &'static str, uri: Uri) -> Response {
+    let query = uri.query().unwrap_or_default();
+    if query.len() > MAX_CALLBACK_QUERY {
+        return ApiError::bad_request("the callback's query is too long").into_response();
+    }
+    if !state.sidecar.is_running() {
+        return not_running().into_response();
+    }
+    let endpoint = state.sidecar.endpoint();
+    let target = format!("http://127.0.0.1:{}{sidecar_path}?{query}", endpoint.port);
+    let Ok(request) = axum::http::Request::get(target).body(Body::empty()) else {
+        return ApiError::bad_request("a malformed callback").into_response();
+    };
+    match tokio::time::timeout(CONNECT_TIMEOUT * 15, client().request(request)).await {
+        Ok(Ok(response)) => {
+            let (parts, body) = response.into_parts();
+            let mut out = Response::new(Body::new(body));
+            *out.status_mut() = parts.status;
+            if let Some(kind) = parts.headers.get(axum::http::header::CONTENT_TYPE) {
+                out.headers_mut()
+                    .insert(axum::http::header::CONTENT_TYPE, kind.clone());
+            }
+            out
+        }
+        _ => not_running().into_response(),
+    }
+}
+
 /// Asks the sidecar where its turn detector listens, then connects there.
 async fn connect_turn_detector(state: &AppState) -> Result<UpstreamSocket, String> {
     if !state.sidecar.is_running() {

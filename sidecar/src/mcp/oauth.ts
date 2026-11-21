@@ -54,7 +54,16 @@ const MAX_PENDING_STATES = 64;
 /** Path the loopback redirect lands on, mounted outside the bearer wall. */
 export const OAUTH_CALLBACK_PATH = "/oauth/mcp/callback";
 
+/** Where yarvis-server takes the redirect on its own origin and forwards it here. */
+const SERVER_CALLBACK_PATH = "/api/oauth/mcp/callback";
+
+/**
+ * The redirect URI flows register. On a server reached from other machines
+ * it is the server's origin, so a browser anywhere can finish the flow;
+ * otherwise the sidecar's loopback port, which only this machine can reach.
+ */
 export function oauthRedirectUri(config: Config): string {
+  if (config.publicOrigin) return `${config.publicOrigin}${SERVER_CALLBACK_PATH}`;
   return `http://127.0.0.1:${config.port}${OAUTH_CALLBACK_PATH}`;
 }
 

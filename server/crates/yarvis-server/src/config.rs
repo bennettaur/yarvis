@@ -58,6 +58,25 @@ pub struct AuthConfig {
     pub origins: Vec<String>,
 }
 
+impl AuthConfig {
+    /// The origin other machines reach this server on: the first `https`
+    /// origin that isn't loopback, such as a `tailscale serve` name. OAuth
+    /// redirects go there, so they work from a browser anywhere. `None` for a
+    /// server only reached on loopback.
+    pub fn public_origin(&self) -> Option<&str> {
+        self.origins
+            .iter()
+            .map(|o| o.trim_end_matches('/'))
+            .find(|origin| {
+                let Some(host) = origin.strip_prefix("https://") else {
+                    return false;
+                };
+                let host = host.split(':').next().unwrap_or_default();
+                !matches!(host, "localhost" | "127.0.0.1" | "[") && !host.starts_with('[')
+            })
+    }
+}
+
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
@@ -206,6 +225,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_public_origin_is_the_first_https_one_off_loopback() {
+        let auth = |origins: &[&str]| AuthConfig {
+            rp_id: "x".into(),
+            origins: origins.iter().map(|o| o.to_string()).collect(),
+        };
+        assert_eq!(auth(&["http://localhost:7878"]).public_origin(), None);
+        assert_eq!(
+            auth(&["https://localhost:7878", "https://[::1]"]).public_origin(),
+            None
+        );
+        assert_eq!(
+            auth(&["http://127.0.0.1:7878", "https://mini.example.ts.net/"]).public_origin(),
+            Some("https://mini.example.ts.net")
+        );
+    }
 
     #[test]
     fn an_empty_file_gives_a_loopback_server_with_no_ssh_agent() {

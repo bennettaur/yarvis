@@ -675,6 +675,15 @@ Pairing a device without a passkey:
   user pastes it into the client being paired (a Tauri app pointed at a remote
   server, a script).
 
+OAuth redirects (no token: a browser arriving from an authorization server):
+
+- `GET /api/oauth/mcp/callback?code&state`, forwarded to the sidecar's own
+  callback with the query only, none of the browser's headers. The sidecar
+  accepts only a `state` its own flow issued, once. Nothing else on the
+  sidecar is reachable this way. The sidecar registers this URL as the
+  redirect when `auth.origins` has an `https` origin off loopback (passed to it
+  as `YARVIS_PUBLIC_ORIGIN`), and its loopback callback otherwise.
+
 Voice:
 
 - `GET /api/voice/turn-detector/socket` (WebSocket, `chat`): continuous voice
@@ -727,9 +736,9 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
-- **OAuth callbacks are local-only.** MCP and Google Calendar OAuth redirect
-  to the sidecar's loopback port, so they work only in a browser on the
-  server's own machine.
+- **Google OAuth is local-only.** Google Calendar's sign-in redirects to the
+  sidecar's loopback port, so it works only in a browser on the server's own
+  machine.
 - **Port squatting in local mode.** The Tauri app starts its server on a
   loopback port and sends it a token. Another local user who binds that port
   first receives the token. The app doesn't check the server's identity yet.
