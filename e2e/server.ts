@@ -112,6 +112,8 @@ export async function startServer(): Promise<TestServer> {
       // Not listening yet.
     }
     if (child.exitCode !== null || Date.now() > deadline) {
+      child.kill("SIGKILL");
+      rmSync(root, { recursive: true, force: true });
       throw new Error(`yarvis-server didn't start:\n${log}`);
     }
     await new Promise((r) => setTimeout(r, 100));
