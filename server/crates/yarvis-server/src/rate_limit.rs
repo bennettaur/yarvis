@@ -1,7 +1,7 @@
 //! A per-IP request limit for the routes anyone can call without a token
-//! (sign-in and setup). Each start stores ceremony state and each setup
-//! attempt can burn the setup code, so an unlimited caller could fill memory
-//! or lock the owner out.
+//! (sign-in and setup). Each one hashes a passphrase, a setup start holds a
+//! pending enrollment, and wrong guesses burn the setup code or lock sign-in,
+//! so an unlimited caller could tie up the server or lock the owner out.
 //!
 //! The address is the TCP peer's. Behind a reverse proxy on the same machine
 //! (`tailscale serve`) every client shares 127.0.0.1 and so shares one budget,

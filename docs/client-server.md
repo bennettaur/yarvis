@@ -52,8 +52,8 @@ Not yet:
 - One Rust binary, `yarvis-server`, that a browser can use with no Tauri app
   installed.
 - Every client signs in with the passphrase and a TOTP code, or uses a scoped
-  device token. Every event
-  records which device caused it, and a device can be revoked at once.
+  device token. Every event records which device caused it, and a device can
+  be revoked at once.
 - PTY sessions (Claude Code in a workspace) stream over WebSocket to any number
   of clients and survive a client disconnecting.
 - Secrets can live in the server's own encrypted vault, unlocked with its own
@@ -155,7 +155,7 @@ authenticator app (TOTP), or one of its backup codes.
   can read the database can make codes. The passphrase hash still stands
   between them and a sign-in.
 - **Backup codes** are 10 codes of 10 characters, stored as SHA-256 (they
-  carry about 50 bits each, so a slow hash adds nothing). Each signs in once in
+  carry about 49 bits each, so a slow hash adds nothing). Each signs in once in
   place of a TOTP code.
 - **Sign-in** checks the passphrase first and the second factor only after it
   matches, and every refusal says only "wrong passphrase or code". Each sign-in
@@ -165,8 +165,8 @@ authenticator app (TOTP), or one of its backup codes.
   set headers, so they send it as the first message instead, never in the URL.
   Signing in again from the same browser makes a second device. The devices
   page shows when each was last used, so old ones are easy to revoke.
-- **Lockout.** Ten failed sign-ins (or reverify codes) in 15 minutes, from
-  anywhere, lock sign-in for 15 minutes. That caps guessing, and it also lets
+- **Lockout.** Ten failures in 15 minutes (sign-ins, reverify codes, or a
+  wrong current passphrase on a passphrase change), from anywhere, lock sign-in for 15 minutes. That caps guessing, and it also lets
   anyone who can reach the server keep the owner locked out by failing on
   purpose; that trade is accepted. On top of it, the sign-in and setup routes
   are rate-limited per address.
@@ -174,7 +174,7 @@ authenticator app (TOTP), or one of its backup codes.
 - Scopes: `read`, `chat`, `terminal`, `approve`, `admin`. A signed-in device
   gets all five. A token made for a bot or script gets only what it is given,
   and `POST /api/devices/tokens` can't give `terminal` or `admin`.
-- **Fresh**: device management, the account routes, and changing the vault's
+- **Fresh**: device management, the account changes, and changing the vault's
   passphrase or recovery key or the secrets backend also need a recent check
   on this device: a sign-in or a TOTP code (`POST /api/auth/reverify`) in the
   last 10 minutes (`verified_at`). Without one they get
@@ -199,7 +199,7 @@ authenticator app (TOTP), or one of its backup codes.
   whoever runs that can already read the database and open a shell.
 - `401` means no token, or a token that's unknown, revoked or expired, and
   clients sign out on it. `403` means the device lacks the route's scope,
-  isn't fresh, or sent a wrong code or vault secret.
+  isn't fresh, or sent a wrong code, passphrase or vault secret.
 - Revoking a device takes effect on its next request and closes its open
   WebSockets, including proxied sidecar streams.
 - Every event has a `deviceId`, `null` for the server's own work. Proxied
@@ -220,7 +220,8 @@ reaching a loopback server through DNS rebinding.
 **TLS.** The server speaks plain HTTP. It refuses to bind anything but
 loopback unless `server.allow_plain_http = true`, which is for a server with
 TLS in front of it. On a tailnet, `tailscale serve` gives the server an HTTPS
-`*.ts.net` name, and nothing else is needed: sign-in isn't tied to a domain.
+`*.ts.net` name. Add that URL to `auth.origins`; sign-in isn't tied to a
+domain, so nothing else is needed.
 
 ## Deployments
 
@@ -443,10 +444,13 @@ Auth (no token needed):
   `400`; a wrong setup code is `401` with the tries left in `detail`.
 - `POST /api/auth/setup/finish` `{ enrollmentId, code }` →
   `{ token, device, backupCodes }`. `code` is the first TOTP code; a wrong one
-  is `403` and the enrollment stays open for another try (10 minutes).
+  is `403`, and the enrollment stays open until 10 minutes after
+  `setup/start`. An unknown or expired `enrollmentId` is `400`, and a setup
+  code used meanwhile is `401`.
 - `POST /api/auth/login` `{ passphrase, code | backupCode, deviceName }` →
   `{ token, device }`. Any wrong factor is `401 { "error": "wrong passphrase
-  or code" }`; while sign-in is locked, `429`.
+  or code" }`; while sign-in is locked, `429`. Sending both or neither of
+  `code` and `backupCode` is `400`; before setup, `409`.
 
 The setup and sign-in routes (not `status`) are rate-limited per client
 address. Once the account exists the setup routes answer `409`.
@@ -466,7 +470,9 @@ Devices and the account (token needed):
   `403`. A wrong code is `403` and counts towards the lockout.
 - `GET    /api/account` (admin) → `{ backupCodesLeft }`
 - `POST   /api/account/passphrase` `{ currentPassphrase, newPassphrase,
-  signOutOtherDevices? }` (admin, fresh) → `{ revokedDevices }`
+  signOutOtherDevices? }` (admin, fresh) → `{ revokedDevices }`. A new
+  passphrase under 12 characters is `400`; a wrong current one is `403` and
+  counts towards the lockout; while locked, `429`.
 - `POST   /api/account/totp/start` (admin, fresh) → an enrollment, as setup
   returns, that only this device can finish; `/finish` `{ enrollmentId, code,
   signOutOtherDevices? }` → `{ revokedDevices }` replaces the secret.
@@ -665,7 +671,8 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   wrappers: [{ id, label, kind: "passphrase"|"recovery" }] }`
 - `POST /api/vault/unlock` `{ passphrase }` (admin) → `{ state }`. A wrong
   passphrase is `403`, and makes the next try wait: 1 second, then doubling to
-  at most 5 minutes, cleared by a right one. Trying sooner is `429`. A wait
+  at most 5 minutes, cleared by a right one. Trying sooner is `429`, and so
+  is a try sent while another is still being checked. A wait
   only slows guessing; unlike a lockout, it can't keep the owner out for long,
   and only an admin device can make it grow.
 - `POST /api/vault/unlock/recovery` `{ recoveryKey }` (admin) → `{ state }`.
@@ -674,9 +681,15 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
 - `POST /api/vault/lock` (admin) → `{ state }`. Stops the ssh-agent first.
 - `POST /api/vault/passphrase` `{ currentPassphrase | recoveryKey,
   newPassphrase }` (admin, fresh, unlocked) → `{ state }`: re-wraps the vault
-  key under the new passphrase. The old one stops working.
-- `POST /api/vault/recovery-key` (admin, fresh, unlocked) → `{ recoveryKey }`,
-  shown once. The old key stops working.
+  key under the new passphrase. The old one stops working. Sending both or
+  neither proof is `400`, and so is the sign-in passphrase as the new one. A
+  wrong proof is `403`; a wrong passphrase slows the next try as an unlock's
+  does (`429` while waiting).
+- `POST /api/vault/recovery-key` `{ currentPassphrase | recoveryKey }` (admin,
+  fresh, unlocked) → `{ recoveryKey }`, shown once. The old key stops
+  working. It needs the same proof as a passphrase change: otherwise a stolen
+  fresh device could rotate the key, then use the new key to replace the
+  passphrase.
 - `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
   with the key and socket only while the agent runs; 404 when
   `ssh_agent.enabled = false`.

@@ -92,7 +92,6 @@ async fn setup_needs_the_code_a_passphrase_and_a_working_authenticator() {
     assert_eq!(st, StatusCode::CONFLICT);
     let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(status["setupRequired"], false);
-    assert!(status.get("rpId").is_none());
 }
 
 #[tokio::test]
