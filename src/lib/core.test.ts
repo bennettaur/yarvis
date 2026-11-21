@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { invoke } from "@tauri-apps/api/core";
 import { realCore } from "../test/coreApi";
 import { actAsDesktopApp } from "../test/desktopApp";
 import { SidecarError } from "./api";
@@ -96,8 +97,8 @@ describe("core", () => {
 
     it("sends them to the Tauri bridge inside the app", async () => {
       restore = actAsDesktopApp();
-      // `setup.ts`'s invoke stub answers an unknown command with undefined.
-      expect(await core("focus_main_window")).toBeUndefined();
+      // Whichever suite's invoke stub is live answers both the same way.
+      expect(await core("clipboard_history")).toEqual(await invoke("clipboard_history"));
       expect(calls).toEqual([]);
     });
   });
