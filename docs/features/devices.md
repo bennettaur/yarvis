@@ -80,6 +80,3 @@ you:
 - An alarm bringing the window to the front over your other apps. In a
   browser the alarm still takes over the page, but only while its tab is open.
 - **Show in Finder** for a saved voice clip.
-- Continuous voice mode's turn detector, which listens on a port only the
-  server's own machine can reach. It works in a browser on that machine, not
-  from another one.

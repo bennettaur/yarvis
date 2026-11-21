@@ -71,8 +71,7 @@ a native passkey check first.
   the Tauri names (`set_secret`, `pty_write`) and the frontend's camelCase
   arguments. That works from Swift but has no schema.
 - **Local-only flows.** MCP and Google OAuth redirect to the sidecar's
-  loopback port, and the voice turn detector is a loopback WebSocket. Neither
-  works from another machine, native or not.
+  loopback port, which works only from the server's machine, native or not.
 - Nothing else is browser-specific. Auth is a bearer header, never a cookie;
   WebSockets authenticate with their first message; CSP and frame headers only
   matter to the web UI.

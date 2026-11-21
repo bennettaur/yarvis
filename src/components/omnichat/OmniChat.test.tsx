@@ -64,7 +64,7 @@ stubSidecarApi({
     }
     // A detector that never finishes starting, so the mic stays at "Starting".
     if (path.startsWith("/api/voice/turn-detector")) {
-      return json({ state: "starting", url: null, log: [], error: null });
+      return json({ state: "starting", log: [], error: null });
     }
     return new Response("unexpected request", { status: 404 });
   },

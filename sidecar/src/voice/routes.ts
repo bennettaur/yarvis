@@ -471,5 +471,8 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
 
   router.post("/turn-detector/start", (c) => c.json(turnDetector.start()));
 
+  // For yarvis-server only, which refuses to proxy it to clients.
+  router.get("/turn-detector/upstream", (c) => c.json({ url: turnDetector.upstreamUrl() }));
+
   return router;
 }
