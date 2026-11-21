@@ -82,17 +82,13 @@ enum Methods {
 }
 
 /// Sidecar routes that need more than the default scope, matched by path
-/// segment (`*` is any one segment) on the path and everything below it, or on
-/// the path alone when the pattern ends in `$`. The first match wins, so the
-/// narrow exceptions come before their prefixes.
+/// segment (`*` is any one segment) on the path and everything below it. The
+/// first match wins, so the narrow exceptions come before their prefixes.
 ///
-/// `terminal`: routes that write into worktrees, run git on them (merge,
-/// archive), clone a PR, or start a process there (a setup script, a Claude
-/// Code session or run). A planted file or script runs as the server's user,
-/// as a shell would, and so does text an agent reads as the user's request (a
-/// review comment, a heads-down pass's instructions). Workspace writes are
-/// `terminal` unless listed as `chat` first, so a route added later fails
-/// closed; the `chat` ones only change rows (names, links).
+/// `terminal`: saving a file into a worktree, the one sidecar route that is
+/// raw shell access by another name (a planted hook runs as the server's
+/// user). Starting workspaces and driving their agent sessions is `chat`,
+/// since that is what a chat device is for.
 ///
 /// `admin`: routes that change what the sidecar or its agents may do: MCP
 /// servers (a stdio server is a command the sidecar runs), LLM providers and
@@ -103,72 +99,16 @@ enum Methods {
 /// it is `admin`.
 ///
 /// `approve`: answers to tool approvals, permission prompts and agent
-/// questions.
+/// questions, and the grant that lets a PR's setup script run.
 const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
     ("/api/mcp-endpoint/connection", Methods::All, Scope::Admin),
     ("/api/mcp/tools/search", Methods::Writes, Scope::Chat),
+    ("/api/jobs/agent-jobs/*/run", Methods::Writes, Scope::Chat),
     (
-        "/api/jobs/agent-jobs/*/run",
+        "/api/workspaces/*/repos/*/file",
         Methods::Writes,
         Scope::Terminal,
     ),
-    // Exact paths (`$`), so a route nested under one later still fails closed.
-    ("/api/workspaces/*$", Methods::Writes, Scope::Chat),
-    (
-        "/api/workspaces/*/prs/detect$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    (
-        "/api/workspaces/*/repos/*/prs$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    (
-        "/api/workspaces/*/repos/*/prs/*$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    ("/api/workspaces/*/tasks$", Methods::Writes, Scope::Chat),
-    ("/api/workspaces/*/tasks/*$", Methods::Writes, Scope::Chat),
-    ("/api/workspaces/*/issues$", Methods::Writes, Scope::Chat),
-    (
-        "/api/workspaces/*/agent/stop$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    ("/api/workspaces", Methods::Writes, Scope::Terminal),
-    ("/api/review-workspaces/*$", Methods::Writes, Scope::Chat),
-    (
-        "/api/review-workspaces/*/open$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    (
-        "/api/review-workspaces/*/prs/*/review-mark$",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    ("/api/review-workspaces", Methods::Writes, Scope::Terminal),
-    // Start a workspace, or hand work to its agent, from elsewhere in the app.
-    ("/api/pr/workspace", Methods::Writes, Scope::Terminal),
-    (
-        "/api/pr/resolve-conflicts",
-        Methods::Writes,
-        Scope::Terminal,
-    ),
-    ("/api/pr/fix-checks", Methods::Writes, Scope::Terminal),
-    ("/api/issues/*/start-work", Methods::Writes, Scope::Terminal),
-    ("/api/jira/start-work", Methods::Writes, Scope::Terminal),
-    (
-        "/api/azure-boards/start-work",
-        Methods::Writes,
-        Scope::Terminal,
-    ),
-    // A heads-down pass sends instructions into workspace sessions unasked.
-    ("/api/heads-down/start", Methods::Writes, Scope::Terminal),
-    ("/api/heads-down/resume", Methods::Writes, Scope::Terminal),
-    ("/api/heads-down/messages", Methods::Writes, Scope::Terminal),
     ("/api/chat/approvals", Methods::Writes, Scope::Approve),
     (
         "/api/attention/permissions",
@@ -177,6 +117,11 @@ const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
     ),
     ("/api/questions", Methods::Writes, Scope::Approve),
     ("/api/heads-down/questions", Methods::Writes, Scope::Approve),
+    (
+        "/api/review-workspaces/*/prs/*/setup",
+        Methods::Writes,
+        Scope::Approve,
+    ),
     ("/api/custom-providers", Methods::Writes, Scope::Admin),
     ("/api/model-catalog", Methods::Writes, Scope::Admin),
     ("/api/complexity-models", Methods::Writes, Scope::Admin),
@@ -226,20 +171,14 @@ fn required_scope(method: &Method, path: &str) -> Scope {
     }
 }
 
-/// Whether `path` is `pattern` or below it, segment by segment. A pattern
-/// ending in `$` matches only the path itself.
+/// Whether `path` is `pattern` or below it, segment by segment.
 fn path_matches(pattern: &str, path: &str) -> bool {
-    let (pattern, exact) = match pattern.strip_suffix('$') {
-        Some(pattern) => (pattern, true),
-        None => (pattern, false),
-    };
     let mut segments = path.split('/');
-    let matched = pattern.split('/').all(|want| {
+    pattern.split('/').all(|want| {
         segments
             .next()
             .is_some_and(|got| want == "*" || want == got)
-    });
-    matched && (!exact || segments.next().is_none())
+    })
 }
 
 pub async fn proxy(State(state): State<AppState>, request: Request) -> Response {
@@ -695,6 +634,7 @@ mod tests {
             "/api/attention/permissions/p1",
             "/api/questions/q1/answer",
             "/api/heads-down/questions/q1/dismiss",
+            "/api/review-workspaces/w1/prs/p1/setup",
         ] {
             assert_eq!(
                 required_scope(&Method::POST, path),
@@ -713,7 +653,7 @@ mod tests {
         );
         assert_eq!(
             required_scope(&Method::POST, "/api/jobs/agent-jobs/j1/run"),
-            Scope::Terminal
+            Scope::Chat
         );
         assert_eq!(
             required_scope(&Method::PUT, "/api/jobs/agent-jobs/j1"),
@@ -723,78 +663,32 @@ mod tests {
         assert_eq!(required_scope(&Method::POST, "/api/mcpx"), Scope::Chat);
     }
 
-    /// What writes a worktree, runs git or a process there needs `terminal`.
+    /// Saving into a worktree is a shell by another name; the rest of the
+    /// workspace routes, starting one and driving its agent included, are what
+    /// a chat device is for.
     #[test]
-    fn workspace_routes_that_reach_a_worktree_need_terminal() {
-        for (method, path) in [
-            (Method::POST, "/api/workspaces"),
-            (Method::POST, "/api/workspaces/w1/provision"),
-            (Method::PUT, "/api/workspaces/w1/repos/r1/file"),
-            (Method::POST, "/api/workspaces/w1/repos/r1/stack/merge"),
-            (Method::POST, "/api/workspaces/w1/archive"),
-            (Method::POST, "/api/workspaces/w1/some-route-added-later"),
-            (Method::POST, "/api/review-workspaces"),
-            (Method::POST, "/api/review-workspaces/w1/archive"),
-            (Method::POST, "/api/review-workspaces/w1/prs"),
-            (Method::DELETE, "/api/review-workspaces/w1/prs/p1"),
-            (Method::POST, "/api/review-workspaces/w1/prs/p1/refresh"),
-            (Method::POST, "/api/review-workspaces/w1/prs/p1/setup"),
-            (Method::POST, "/api/review-workspaces/w1/claude-session"),
-            (
-                Method::POST,
-                "/api/review-workspaces/w1/prs/p1/verification",
-            ),
-            (Method::POST, "/api/review-workspaces/w1/prs/p1/rereview"),
-            (Method::POST, "/api/jobs/agent-jobs/j1/run"),
-            (Method::POST, "/api/pr/workspace"),
-            (Method::POST, "/api/pr/resolve-conflicts"),
-            (Method::POST, "/api/pr/fix-checks"),
-            (Method::POST, "/api/issues/github/start-work"),
-            (Method::POST, "/api/jira/start-work"),
-            (Method::POST, "/api/azure-boards/start-work"),
-            (Method::POST, "/api/workspaces/w1/ignore-error"),
-            (Method::POST, "/api/workspaces/w1/review-comments"),
-            (Method::PATCH, "/api/workspaces/w1/review-comments/c1"),
-            (Method::POST, "/api/workspaces/w1/repos/r1/prs/12/checkout"),
-            (Method::POST, "/api/heads-down/start"),
-            (Method::POST, "/api/heads-down/resume"),
-            (Method::POST, "/api/heads-down/messages"),
-        ] {
-            assert_eq!(required_scope(&method, path), Scope::Terminal, "{path}");
-        }
-    }
-
-    /// Routes that only change rows stay `chat`, and reads stay `read`.
-    #[test]
-    fn workspace_bookkeeping_stays_chat() {
-        for (method, path) in [
-            (Method::PATCH, "/api/workspaces/w1"),
-            (Method::POST, "/api/workspaces/w1/prs/detect"),
-            (Method::POST, "/api/workspaces/w1/repos/r1/prs"),
-            (Method::DELETE, "/api/workspaces/w1/repos/r1/prs/12"),
-            (Method::POST, "/api/workspaces/w1/tasks"),
-            (Method::DELETE, "/api/workspaces/w1/tasks/t1"),
-            (Method::DELETE, "/api/workspaces/w1/issues"),
-            (Method::POST, "/api/workspaces/w1/agent/stop"),
-            (Method::PATCH, "/api/review-workspaces/w1"),
-            (Method::POST, "/api/review-workspaces/w1/open"),
-            (Method::POST, "/api/review-workspaces/w1/prs/p1/review-mark"),
-        ] {
-            assert_eq!(required_scope(&method, path), Scope::Chat, "{path}");
-        }
+    fn only_saving_a_worktree_file_needs_terminal() {
+        assert_eq!(
+            required_scope(&Method::PUT, "/api/workspaces/w1/repos/r1/file"),
+            Scope::Terminal
+        );
         assert_eq!(
             required_scope(&Method::GET, "/api/workspaces/w1/repos/r1/file"),
             Scope::Read
         );
-        // Writes to GitHub or JIRA, not to a worktree.
-        assert_eq!(
-            required_scope(&Method::POST, "/api/pr/insight/i1/post"),
-            Scope::Chat
-        );
-        assert_eq!(
-            required_scope(&Method::POST, "/api/jira/issue/K-1/comment"),
-            Scope::Chat
-        );
+        for (method, path) in [
+            (Method::POST, "/api/workspaces"),
+            (Method::POST, "/api/workspaces/w1/provision"),
+            (Method::POST, "/api/workspaces/w1/repos/r1/stack/merge"),
+            (Method::POST, "/api/workspaces/w1/review-comments"),
+            (Method::POST, "/api/workspaces/w1/archive"),
+            (Method::POST, "/api/review-workspaces/w1/claude-session"),
+            (Method::POST, "/api/pr/resolve-conflicts"),
+            (Method::POST, "/api/issues/github/start-work"),
+            (Method::POST, "/api/heads-down/messages"),
+        ] {
+            assert_eq!(required_scope(&method, path), Scope::Chat, "{path}");
+        }
     }
 
     /// The sidecar's router decodes the path before routing, so an encoded
@@ -802,8 +696,8 @@ mod tests {
     #[test]
     fn rules_match_the_decoded_path() {
         assert_eq!(
-            decoded_path("/api/%77orkspaces/w1/archive").as_deref(),
-            Some("/api/workspaces/w1/archive")
+            decoded_path("/api/%77orkspaces/w1/repos/r1/file").as_deref(),
+            Some("/api/workspaces/w1/repos/r1/file")
         );
         assert_eq!(
             decoded_path("/api/%6dcp/servers").as_deref(),
@@ -820,16 +714,6 @@ mod tests {
         ] {
             assert_eq!(decoded_path(bad), None, "{bad}");
         }
-    }
-
-    #[test]
-    fn an_exact_pattern_matches_only_its_own_path() {
-        assert!(path_matches("/api/workspaces/*$", "/api/workspaces/w1"));
-        assert!(!path_matches(
-            "/api/workspaces/*$",
-            "/api/workspaces/w1/archive"
-        ));
-        assert!(!path_matches("/api/workspaces/*$", "/api/workspaces"));
     }
 
     #[test]

@@ -34,8 +34,8 @@ the sign-in screen.
 | Scope | Allows |
 |---|---|
 | `read` | Reading data and following events |
-| `chat` | Chatting, and keeping track of workspaces: names, linked PRs, tasks and issues |
-| `terminal` | Opening terminals and agent sessions, and anything that writes into a workspace or runs code there (creating or archiving one, saving a file, merging, a PR's setup script, review comments an agent acts on, heads-down passes), since each runs as the server's user |
+| `chat` | Chatting, and starting and driving workspaces and their agent sessions, directly or through the assistant |
+| `terminal` | Opening terminals, and saving files into a workspace, since both run code as the server's user |
 | `approve` | Answering approvals |
 | `admin` | Managing devices and changing settings and secrets |
 
