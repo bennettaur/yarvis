@@ -34,10 +34,14 @@ test.beforeAll(async ({ browser }) => {
     });
   });
   page.on("console", (msg) => {
-    if (process.env.E2E_DEBUG) console.log("PAGE", msg.type(), msg.text());
     if (/Content Security Policy/i.test(msg.text())) cspViolations.push(msg.text());
   });
   await addPasskeyAuthenticator(page);
+});
+
+// Checked after every test, so a CSP regression shows even when a later step fails.
+test.afterEach(() => {
+  expect(cspViolations).toEqual([]);
 });
 
 test.afterAll(async () => {
@@ -127,14 +131,7 @@ test("devices: mint a read-only token and revoke it", async () => {
   // `read` and `chat` start ticked.
   await page.getByRole("checkbox", { name: /^chat/ }).uncheck();
   await page.getByRole("button", { name: "Create token" }).click();
-  for (let i = 0; i < 6; i++) {
-    console.log(
-      "DEBUG",
-      i,
-      (await page.locator("body").innerText()).slice(0, 400).replace(/\n/g, " | "),
-    );
-    await page.waitForTimeout(500);
-  }
+  await expect(page.getByRole("button", { name: "Done" })).toBeVisible();
   await page.getByRole("button", { name: "Done" }).click();
 
   const row = page.getByRole("listitem").filter({ hasText: "Dashboard" });
@@ -150,11 +147,17 @@ test("terminal: run a command, then resume the scrollback after a reload", async
     .getByRole("button", { name: /^Terminal( —|$)/ })
     .click();
   const terminal = page.locator(".xterm").filter({ visible: true }).first();
+  // Keys typed before the shell is attached would be lost.
+  await expect(terminal).toContainText("$");
   await terminal.click();
   // The marker is split so the echoed command line can't match the output.
   await page.keyboard.type("echo hel''lo-e2e");
   await page.keyboard.press("Enter");
   await expect(terminal).toContainText("hello-e2e");
+  // Shells get the server's agent socket from AppState, even while it's locked.
+  await page.keyboard.type("echo sock=$SSH_AUTH_SOCK");
+  await page.keyboard.press("Enter");
+  await expect(terminal).toContainText(`sock=${join(server.dataDir, "ssh-agent.sock")}`);
 
   await page.reload();
   await enterApp();
@@ -240,8 +243,4 @@ test("vault: sign a commit through the approvals box", async () => {
   expect(await commit).toBe(0);
   // `G`: a good signature from a key in the allowed signers file.
   expect(git("log", "-1", "--format=%G?").trim()).toBe("G");
-});
-
-test("no CSP violations", () => {
-  expect(cspViolations).toEqual([]);
 });
