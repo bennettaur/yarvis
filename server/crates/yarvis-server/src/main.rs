@@ -62,6 +62,10 @@ async fn serve(config: Config, store: Store, config_path: &std::path::Path) {
             config_path.display()
         ));
     }
+    #[cfg(unix)]
+    if let Err(e) = yarvis_server::pty::process::raise_fd_limit() {
+        tracing::warn!("couldn't raise the file descriptor limit: {e}");
+    }
     let bind = config.server.bind;
     let setup_code_file = config.server.data_dir.join("setup-code");
     let state = AppState::new(config, store);
@@ -87,6 +91,15 @@ async fn serve(config: Config, store: Store, config_path: &std::path::Path) {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
+    // Before the sidecar starts, since it gets the path as `YARVIS_CORE_SOCK`.
+    #[cfg(unix)]
+    match yarvis_server::control::start(state.clone()).await {
+        Ok(path) => state
+            .sidecar
+            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy()),
+        Err(e) => tracing::error!("the control socket isn't available: {e}"),
+    }
+    let pty = state.pty.clone();
     let supervisor = start_core(&state).await;
     tracing::info!("listening on http://{bind}");
     // The peer address feeds the per-IP limit on the sign-in routes.
@@ -111,6 +124,7 @@ async fn serve(config: Config, store: Store, config_path: &std::path::Path) {
         supervisor.abort();
         let _ = supervisor.await;
     }
+    pty.kill_all();
 }
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);

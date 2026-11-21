@@ -11,9 +11,12 @@ base64 = "0.22"
 chacha20poly1305 = "0.10"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hkdf = "0.12"
+hmac = "0.12"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+libc = "0.2"
+portable-pty = "0.9"
 rand = "0.9"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

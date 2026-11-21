@@ -368,7 +368,10 @@ Events and approvals:
   holds a token or secret, since every `read` device can see the history.
 - Event kinds clients act on:
   - `alarm.fire` and `alarm.release`: what the control channel's alarm methods
-    did to the window. `data` is the alarm, as `alarms.rs` builds it.
+    did to the window. For `alarm.fire`, `data` is the alarm, as `alarms.rs`
+    builds it: `{ id, label, fireAtMs, sound, meetLink, status }`. For
+    `alarm.release` it is `{ id }`. The server doesn't remember which alarms
+    are ringing, so a client that sees the same id fire twice rings it once.
   - `approval.requested` and `approval.answered`: see below.
   - `device.created` and `device.revoked`.
   - `passkey.added` and `passkey.removed`.
@@ -393,11 +396,109 @@ response = its return value, `204` for none):
   settings, `chat` for PTY control, `read` for reads. A command that only makes
   sense on the client machine is not served here.
 
-PTY:
+PTY (`chat` to drive a session, `read` to look at one):
 
-- `GET /api/pty/{id}` (WebSocket, `chat`). Auth as above, plus
-  `"offset": n` to resume. Then the protocol from `spikes/pty-ws`: binary
-  frames are output, `{"type":"input"|"resize"|"focus"}` from the client.
+`chat` lets a device run a shell as the user the server runs as. From there
+it can reach everything that user can, the control socket and the secrets
+store included, so treat `chat` as full trust. Don't give it to a token for
+a bot or a script.
+
+- `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
+- `POST /api/core/pty_resize` `{ id, cols, rows }` → `204`. Attached clients
+  get a `size` message; who owns the size doesn't change.
+- `POST /api/core/pty_kill` `{ id }` → `204`, also when there was no session.
+- `POST /api/core/pty_start_claude` `{ workspaceId, cwd, name, remoteControl, harness? }`
+  → `204`. Starts the agent session `ws-claude:<workspaceId>`. A command's
+  own refusal (an unknown harness, the session cap) is a `400` with the reason
+  in `error`.
+- `POST /api/core/pty_exists` `{ id }` → `true` while a shell runs there.
+- `POST /api/core/pty_is_busy` `{ id }` → `true` while something other than
+  the shell holds the terminal.
+- `POST /api/core/pty_session_harness` `{ id }` → `{ id, name }` or `null`.
+- `POST /api/core/get_agent_config` → `{ name, command, harnesses, defaultHarness }`.
+  `chat`, since the commands are user-written and can carry a `VAR=secret`.
+
+- `GET /api/pty/{id}` (WebSocket, `chat`). `{id}` is the session id,
+  URL-encoded (ids such as `ws:<workspaceId>/<tab>/<pane>` hold slashes). The
+  hello is:
+
+  ```json
+  {"type": "auth", "token": "…", "cols": 120, "rows": 32, "offset": 1234, "cwd": "/path"}
+  ```
+
+  `cols` and `rows` are the client's viewport (default 80×24). `offset` is
+  where to resume, from an earlier connection. `cwd` is where a shell spawned
+  by this attach opens. Attaching to an id with no running shell spawns a
+  plain one there, except under `review-claude:`, which only the sidecar can
+  start. A malformed field closes with `4400`. A refusal the client can't fix
+  by retrying (the session cap, an ended review session) sends
+  `{"type": "error", "error": "…"}`, then closes with `4400`.
+
+  Then the server sends, as JSON text:
+
+  ```json
+  {"type": "attached", "clientId": 7, "mode": "resume", "requestedOffset": 1234,
+   "startOffset": 1234, "endOffset": 1500, "lostBytes": 0,
+   "cols": 120, "rows": 32, "owner": 7, "exit": null}
+  ```
+
+  and right after it one binary catch-up frame, then live binary output
+  frames. Every binary frame is an 8-byte big-endian stream offset followed
+  by the bytes. The catch-up starts at `startOffset`, and each frame starts
+  where the previous one ended. Offsets count every byte the session ever
+  produced, so they stay valid when old output is dropped and across a
+  respawn under the same id.
+
+  - `mode: "resume"`: `offset` was still in scrollback, and the catch-up is
+    exactly what came after it. Append it.
+  - `mode: "snapshot"`: no `offset`, or one the server no longer has. The
+    catch-up is everything kept (up to 1 MiB). Clear the screen and replay
+    it. `lostBytes` is how many bytes between `offset` and `startOffset` are
+    gone.
+
+  Other server messages:
+  - `{"type": "size", "cols", "rows", "owner"}`: the PTY size changed, or
+    its owner did. `owner` is a `clientId`, or `null` when nobody owns it.
+  - `{"type": "resync", …}`: the same fields as `attached`, sent when the
+    client fell behind, followed by a catch-up frame. It resumes from the
+    last byte the client was sent, or is a snapshot if that is gone.
+  - `{"type": "exit", "code": 3}`: the shell exited, after its last output
+    byte. The socket then closes with `1000`.
+
+  From the client:
+  - A binary frame, or `{"type": "input", "data": "…"}`: input, at most
+    64 KiB a message. More closes the socket with `4400`.
+  - `{"type": "resize", "cols", "rows"}`: the client's viewport.
+  - `{"type": "focus"}`: take over the PTY size.
+
+  The first client to report a viewport owns the PTY size. A client takes it
+  over by typing or sending `focus`, and the PTY is then resized to that
+  client's last viewport. A non-owner's viewport is recorded but not applied.
+  When the owner disconnects, the size stays until the next client types or
+  focuses. A client whose socket stops draining is resynced rather than
+  slowing the others down, and one whose send blocks for 10 seconds is
+  dropped. Revoking the device closes its terminals with `4401`.
+
+  While the sidecar types an instruction into an agent session
+  (`claude.send`, `claude.slash`), other input to that session waits, from
+  the text to its Enter.
+
+  When a session's shell exits, the event log gets `pty.exited` with
+  `{ id, code }`.
+
+The sidecar's control socket is `core-control.sock` in the server's data dir
+(mode 0600, in a 0700 folder). The sidecar gets its path as
+`YARVIS_CORE_SOCK`. It keeps `control.rs`'s method list and checks. Two things
+differ from the desktop app: the alarm methods append `alarm.fire` and
+`alarm.release` events instead of taking over a window, and `mcp.saveOAuth`
+and `github.saveToken` write the secrets blob in whichever backend the server
+uses.
+
+Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
+`enabled = false`, `upstream_socket` when set, else the server's own value;
+with `enabled = true`, the socket the server's ssh-agent reports through
+`PtyManager::set_server_ssh_agent`, and none at all until it does (or while
+the vault is locked), so git can't sign through another agent.
 
 Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
 

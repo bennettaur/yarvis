@@ -4,6 +4,7 @@ pub mod agent_policy;
 pub mod approvals;
 pub mod auth;
 pub mod config;
+pub mod control;
 pub mod core_api;
 pub mod custom_providers;
 pub mod devices;
@@ -13,6 +14,7 @@ pub mod events;
 pub mod harness;
 pub mod http_guard;
 pub mod mcp;
+pub mod pty;
 pub mod rate_limit;
 pub mod secret_blob;
 pub mod secret_store;
@@ -36,6 +38,7 @@ use crate::auth::passkeys::PasskeyAuth;
 use crate::auth::{Auth, Authed, DeviceContext, Read};
 use crate::config::Config;
 use crate::events::EventLog;
+use crate::pty::{PtyManager, PtyOptions, SidecarSessionEnv};
 use crate::rate_limit::RateLimiter;
 use crate::secret_blob::SecretBlob;
 use crate::settings::SettingsStore;
@@ -69,6 +72,7 @@ pub struct AppState {
     pub settings: SettingsStore,
     pub secrets: SecretBlob,
     pub sidecar: Sidecar,
+    pub pty: PtyManager,
 }
 
 impl AppState {
@@ -82,6 +86,21 @@ impl AppState {
         let secrets = SecretBlob::from_config(config.secrets.backend, settings.clone());
         let sidecar = Sidecar::new(&config.server.data_dir)
             .expect("couldn't pick a loopback port for the sidecar");
+        let pty = PtyManager::new(
+            settings.clone(),
+            secrets.clone(),
+            events.clone(),
+            config.ssh_agent.clone(),
+            PtyOptions::default(),
+        );
+        // The sidecar's port and tokens are fixed for the server's life, so
+        // every session can be given them from the start.
+        pty.set_sidecar_env(Some(SidecarSessionEnv {
+            port: sidecar.endpoint().port,
+            attention_token: sidecar.attention_token().to_string(),
+            signing_key: sidecar.endpoint().token.clone(),
+            mcp_token: Some(sidecar.mcp_token().to_string()),
+        }));
         Self {
             passkeys: PasskeyAuth::new(&config.auth, store.clone())
                 .unwrap_or_else(|e| panic!("invalid [auth] config: {e}")),
@@ -92,6 +111,7 @@ impl AppState {
             settings,
             secrets,
             sidecar,
+            pty,
             config: Arc::new(config),
             auth: Auth::new(store.clone()),
             events,
@@ -117,6 +137,7 @@ pub fn app(state: AppState) -> Router {
         .merge(approvals::router())
         .merge(vault::routes::router(&state))
         .merge(ssh_agent::router(&state))
+        .route("/api/pty/{id}", get(pty::ws::ws))
         .route("/api/sidecar/{*path}", any(sidecar_proxy::proxy))
         .route("/api/core/{command}", post(core_api::command))
         .merge(web::fallback(state.config.server.web_dir.as_deref()))
