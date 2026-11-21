@@ -1,9 +1,22 @@
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 import { redactSecrets } from "../llm/errors.ts";
 import type { AgentRunEvent } from "./events.ts";
+import {
+  asNumber,
+  asString,
+  checkoutInstructions,
+  isObject,
+  type Json,
+  jsonAnswer,
+  MAX_FILE_READS,
+  MAX_PATH_CHARS,
+  MAX_SUMMARY_CHARS,
+  MAX_TEXT_CHARS,
+  oneLine,
+} from "./sandboxedCli.ts";
 import type { ClaudeStreamResult, FileRead, ParsedLine } from "./streamJson.ts";
 
 /**
@@ -37,8 +50,6 @@ import type { ClaudeStreamResult, FileRead, ParsedLine } from "./streamJson.ts";
  *   JSON schema and its last message is parsed as JSON. The fan-out checks it
  *   against the schema and asks once more when it doesn't fit.
  */
-
-export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
 /** What a Claude Code tool list grants, in OpenCode's permission actions. */
 const OPENCODE_ACTIONS: Record<string, string> = { Read: "read", Grep: "grep", Glob: "glob" };
@@ -148,97 +159,9 @@ export function writeOpenCodeConfig(dirs: OpenCodeDirs, config: Record<string, u
   writeFileSync(join(dirs.project, "opencode.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
-/**
- * Added to the agent's prompt. The agents were written for Claude Code, whose
- * run starts in the checkout and answers through a tool.
- */
+/** Added to the agent's prompt: where the checkout is and how to answer. */
 export function openCodeInstructions(checkout: string, answerSchema: string): string {
-  return [
-    "## Where things are",
-    "",
-    `The PR checkout is at ${checkout}. It is not your working directory, so give`,
-    "its full path, or a path inside it, to Read, Grep and Glob. Wherever these",
-    "instructions say the working directory, they mean the checkout.",
-    "",
-    "## Your answer",
-    "",
-    "End with your answer as your last message: one JSON object matching this JSON",
-    "schema, and nothing else, with no prose before or after it and no code fence.",
-    "",
-    answerSchema,
-  ].join("\n");
-}
-
-/** A Seatbelt string literal. */
-function sbString(value: string): string {
-  if (/["\\\0\n]/.test(value)) throw new Error(`unsafe path for the sandbox profile: ${value}`);
-  return `"${value}"`;
-}
-
-function realpathOr(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return path;
-  }
-}
-
-/** `/a/b/c` → `/`, `/a`, `/a/b`: what a process stats on the way to `/a/b/c`. */
-function ancestors(path: string): string[] {
-  const out: string[] = [];
-  for (let dir = dirname(path); ; dir = dirname(dir)) {
-    out.push(dir);
-    if (dir === dirname(dir)) return out;
-  }
-}
-
-/**
- * The sandbox for one process. In the real home folder it reads only the
- * `readable` folders and its programs, never `secretPaths`; it writes only in
- * its own folder; and it runs only `programs` and what it put in that folder
- * (the ripgrep it downloads, say). The network is open, since the model is
- * reached over it, and OpenCode's own permissions keep the model from a tool
- * that could use it.
- */
-export function openCodeSandboxProfile(options: {
-  root: string;
-  /** Folders it may read wherever they are: the checkout, the context folder. */
-  readable: readonly string[];
-  /** Executables it may run besides those in `root`: OpenCode itself, ripgrep. */
-  programs: readonly string[];
-  /** Under the home folder, e.g. `.ssh`. */
-  secretPaths: readonly string[];
-  home?: string;
-}): string {
-  const home = realpathOr(options.home ?? homedir());
-  const root = realpathOr(options.root);
-  const sub = (path: string) => `(subpath ${sbString(path)})`;
-  const lit = (path: string) => `(literal ${sbString(path)})`;
-  const readable = [root, ...options.readable.map(realpathOr)];
-  // A program is often a link (`/opt/homebrew/bin/opencode`); exec checks both names.
-  const programs = [...new Set(options.programs.flatMap((p) => [p, realpathOr(p)]))];
-  const secrets = [...options.secretPaths, ".claude", ".agents"].map((p) => sub(join(home, p)));
-  // Stat-ing the way down to what it may read has to work, or `realpath` fails.
-  const metadata = [...new Set([...readable, ...programs].flatMap((p) => [p, ...ancestors(p)]))];
-  return [
-    "(version 1)",
-    "(allow default)",
-    `(deny file-read* ${sub(home)})`,
-    `(allow file-read* ${[...readable.map(sub), ...programs.map(lit)].join(" ")})`,
-    `(deny file-read* ${secrets.join(" ")})`,
-    `(allow file-read-metadata ${metadata.map(lit).join(" ")})`,
-    "(deny file-write*)",
-    `(allow file-write* ${sub(root)} ${[
-      '(literal "/dev/null")',
-      '(literal "/dev/zero")',
-      '(literal "/dev/dtracehelper")',
-      '(regex #"^/dev/fd/")',
-    ].join(" ")})`,
-    // A hard link inside the folder to a file outside it would make that file writable.
-    "(deny file-link)",
-    "(deny process-exec)",
-    `(allow process-exec ${[...programs.map(lit), sub(root)].join(" ")})`,
-  ].join("\n");
+  return checkoutInstructions(checkout, answerSchema, "Read, Grep and Glob");
 }
 
 /**
@@ -299,29 +222,6 @@ export function openCodeCommand(options: {
 }
 
 /**
- * The JSON object a model's last message holds: the whole message, or the one
- * fenced block it wrapped the object in despite being told not to. Null for
- * anything else, so an object the model only quoted, from a file it read, is
- * never taken for its answer.
- */
-export function jsonAnswer(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*\n([\s\S]*?)\n```$/.exec(trimmed);
-  try {
-    const value: unknown = JSON.parse(fenced?.[1] ?? trimmed);
-    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Longest text event kept, as for a Claude Code run. */
-const MAX_TEXT_CHARS = 8_000;
-const MAX_SUMMARY_CHARS = 160;
-const MAX_PATH_CHARS = 4096;
-const MAX_FILE_READS = 20_000;
-
-/**
  * How OpenCode's read tool says what it showed, on the first line of its
  * output: "Read file <path>, lines 1-4". Only that line, since the file's own
  * text follows it.
@@ -330,25 +230,6 @@ const READ_RANGE = /^Read file .*, lines (\d+)-(\d+)$/;
 
 /** OpenCode's tool names, shown under Claude Code's. */
 const CLAUDE_TOOL_NAMES: Record<string, string> = { read: "Read", grep: "Grep", glob: "Glob" };
-
-type Json = Record<string, unknown>;
-
-function isObject(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function asNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function oneLine(text: string, max: number): string {
-  const line = redactSecrets(text.replace(/\s+/g, " ").trim());
-  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
 
 /**
  * Reads `opencode run --format json`, one JSON object per line, into the

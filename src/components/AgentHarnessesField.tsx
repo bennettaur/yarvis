@@ -187,7 +187,7 @@ export default function AgentHarnessesField({
     try {
       const next = await setAgentHarnesses(drafts.map(fromDraft), defaultId);
       onSaved(next);
-      // The verification pickers list Claude Code and OpenCode harnesses.
+      // The verification pickers list Claude Code, OpenCode and Pi harnesses.
       invalidate(VERIFICATION_SETTINGS_KEY);
       const keyFor = new Map(drafts.map((d) => [d.id.trim(), d.rowKey]));
       setDrafts((next.agentHarnesses ?? []).map((h) => toDraft(h, keyFor.get(h.id))));

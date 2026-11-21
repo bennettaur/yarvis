@@ -66,7 +66,7 @@ export function createPrModelRoutes(_config: Config): Hono {
   });
 
   // The verification report's budget, each section's model and effort, the
-  // harness, and the OpenCode models an OpenCode harness runs each tier on.
+  // harness, and the models an OpenCode or Pi harness runs each tier on.
   router.get("/verification", async (c) =>
     c.json(await verificationView(await getVerificationRunConfig())),
   );
@@ -78,7 +78,7 @@ export function createPrModelRoutes(_config: Config): Hono {
     const { harness } = parsed.data;
     if (harness && !(await listVerificationHarnesses()).some((h) => h.id === harness)) {
       return c.json(
-        { error: `"${harness}" isn't a Claude Code or OpenCode harness a check can run with` },
+        { error: `"${harness}" isn't a Claude Code, OpenCode or Pi harness a check can run with` },
         400,
       );
     }
