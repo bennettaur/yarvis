@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { saveDeviceToken, signOut } from "../../lib/server";
+import { deviceToken, saveDeviceToken, signOut } from "../../lib/server";
 import { fakeSockets, installFakeSockets } from "../../test/fakeSocket";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { stubServerRoutes } from "../../test/serverRoutes";
@@ -8,15 +8,25 @@ import VaultGate from "./VaultGate";
 
 let vault = "locked";
 let recoveryKeyIsRight = true;
+let passphraseAnswer: "right" | "wrong" | "wait" = "right";
 const server = stubServerRoutes({
   "POST /api/vault/unlock": () => {
+    if (passphraseAnswer === "wrong") {
+      return Response.json({ error: "that doesn't open the vault" }, { status: 403 });
+    }
+    if (passphraseAnswer === "wait") {
+      return Response.json(
+        { error: "wait before trying again", detail: "4s left" },
+        { status: 429 },
+      );
+    }
     vault = "unlocked";
     return Response.json({ state: "unlocked" });
   },
-  "GET /api/auth/status": () => Response.json({ setupRequired: false, rpId: "localhost", vault }),
+  "GET /api/auth/status": () => Response.json({ setupRequired: false, vault }),
   "POST /api/vault/unlock/recovery": () => {
     if (!recoveryKeyIsRight) {
-      return Response.json({ error: "that recovery key doesn't open the vault" }, { status: 401 });
+      return Response.json({ error: "that doesn't open the vault" }, { status: 403 });
     }
     vault = "unlocked";
     return Response.json({ state: "unlocked" });
@@ -34,6 +44,7 @@ afterEach(() => {
   server.calls.length = 0;
   vault = "locked";
   recoveryKeyIsRight = true;
+  passphraseAnswer = "right";
 });
 
 const button = (host: HTMLElement, text: string) =>
@@ -121,7 +132,31 @@ describe("VaultGate", () => {
     );
     expect(mounted.host.textContent).not.toContain("the app");
     expect((mounted.host.querySelector("input") as HTMLInputElement).value).toBe("");
+    expect(await deviceToken()).toBe("tok-me");
   });
+
+  for (const [answer, shown] of [
+    ["wrong", "doesn't open"],
+    ["wait", "wait before trying again"],
+  ] as const) {
+    it(`keeps the device signed in when the server answers ${answer} to a passphrase`, async () => {
+      passphraseAnswer = answer;
+      saveDeviceToken("tok-me");
+      const mounted = await mountForInteraction(gate());
+      unmount = mounted.unmount;
+      await waitFor(
+        () => mounted.host.textContent?.includes("vault is locked") ?? false,
+        "the unlock screen",
+      );
+      await submit(mounted.host, "a guess", { recovery: false });
+      await waitFor(
+        () => mounted.host.querySelector('[role="alert"]')?.textContent?.includes(shown) ?? false,
+        "the refusal",
+      );
+      expect(mounted.host.textContent).toContain("vault is locked");
+      expect(await deviceToken()).toBe("tok-me");
+    });
+  }
 
   it("comes back when the server says the vault locked", async () => {
     const restoreSockets = installFakeSockets();
