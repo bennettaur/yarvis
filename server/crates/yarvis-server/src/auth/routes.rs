@@ -109,8 +109,8 @@ struct Status {
 
 async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
     let vault = match state.config.secrets.backend {
-        SecretBackendKind::Vault => state.vault.state().map_err(ApiError::internal)?.as_str(),
-        SecretBackendKind::Keychain | SecretBackendKind::OnePassword => "absent",
+        Some(SecretBackendKind::Vault) => state.vault.state().map_err(ApiError::internal)?.as_str(),
+        Some(SecretBackendKind::Keychain | SecretBackendKind::OnePassword) | None => "absent",
     };
     Ok(Json(Status {
         setup_required: state.passkeys.setup_required().await?,
