@@ -245,6 +245,17 @@ async fn a_route_that_reaches_a_worktree_needs_terminal() {
             "/api/sidecar/api/review-workspaces/w1/prs/p1/setup",
             json!({ "run": true }),
         ),
+        // The sidecar decodes `%77` to `w` before routing.
+        (
+            "PUT",
+            "/api/sidecar/api/%77orkspaces/w1/repos/r1/file",
+            json!({ "path": "x", "content": "" }),
+        ),
+        (
+            "POST",
+            "/api/sidecar/api/heads-down/messages",
+            json!({ "text": "push the branch" }),
+        ),
     ];
     for (method, path, body) in &routes {
         let (status, _) = send(&h.state, request(method, path, &chatter, body.clone())).await;
