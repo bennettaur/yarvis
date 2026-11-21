@@ -19,6 +19,7 @@ use yarvis_server::devices::add_token_device;
 use yarvis_server::secret_blob::SecretBlob;
 use yarvis_server::settings::SettingsStore;
 use yarvis_server::store::Store;
+use yarvis_server::vault::Vault;
 
 #[tokio::test]
 async fn setup_then_login_and_the_setup_code_cannot_be_replayed() {
@@ -167,6 +168,7 @@ async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.secrets.backend = Some(SecretBackendKind::Vault);
+    let created = Vault::init(dir.path(), false).unwrap();
     let mut h = Harness::with_config(config).await;
     h.state.settings = SettingsStore::new(dir.path().join("settings.json"));
     h.state.secrets = SecretBlob::from_config(
@@ -207,7 +209,10 @@ async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
         .await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
 
-    // The vault is locked, so the write fails, but past the scope check.
+    h.state
+        .vault
+        .unlock_with_recovery(&created.recovery_key)
+        .unwrap();
     let (st, body) = h
         .call(
             "POST",
@@ -216,8 +221,11 @@ async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
             Some(json!({ "key": "anthropic_api_key", "value": "sk-test" })),
         )
         .await;
-    assert_ne!(st, StatusCode::FORBIDDEN, "{body}");
-    assert_ne!(st, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(
+        h.state.secrets.read_root().unwrap()["anthropic_api_key"],
+        "sk-test"
+    );
 }
 
 #[tokio::test]

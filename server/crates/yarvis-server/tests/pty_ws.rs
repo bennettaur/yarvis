@@ -462,6 +462,10 @@ async fn a_chat_device_gets_no_shell() {
         ),
         ("pty_kill", json!({"id": "tab:terminal/t1/p1"})),
         (
+            "pty_resize",
+            json!({"id": "tab:terminal/t1/p1", "cols": 90, "rows": 25}),
+        ),
+        (
             "pty_start_claude",
             json!({"id": "ws-claude:w1", "cwd": "/tmp"}),
         ),
@@ -538,7 +542,7 @@ async fn an_exit_reaches_clients_after_the_last_byte_and_the_event_log() {
 #[tokio::test]
 async fn the_core_commands_drive_and_report_on_a_session() {
     let server = serve(PtyOptions::default()).await;
-    let (_, chat) = device(&server.state, &[Scope::Read, Scope::Terminal]).await;
+    let (_, terminal) = device(&server.state, &[Scope::Read, Scope::Terminal]).await;
     let (_, reader) = device(&server.state, &[Scope::Read]).await;
     let id = "tab:terminal/t1/p1";
 
@@ -546,7 +550,7 @@ async fn the_core_commands_drive_and_report_on_a_session() {
         core(&server, &reader, "pty_exists", json!({"id": id})).await,
         (200, json!(false))
     );
-    let mut client = Client::connect(&server, id, hello(&chat, &server)).await;
+    let mut client = Client::connect(&server, id, hello(&terminal, &server)).await;
     client.wait_for_text("attached").await;
     assert_eq!(
         core(&server, &reader, "pty_exists", json!({"id": id})).await,
@@ -580,7 +584,7 @@ async fn the_core_commands_drive_and_report_on_a_session() {
     assert_eq!(
         core(
             &server,
-            &chat,
+            &terminal,
             "pty_resize",
             json!({"id": id, "cols": 90, "rows": 25})
         )
@@ -597,7 +601,7 @@ async fn the_core_commands_drive_and_report_on_a_session() {
 
     let (status, body) = core(
         &server,
-        &chat,
+        &terminal,
         "pty_write",
         json!({"id": id, "data": "x".repeat(64 * 1024 + 1)}),
     )
@@ -609,13 +613,13 @@ async fn the_core_commands_drive_and_report_on_a_session() {
         core(&server, &reader, "pty_session_harness", json!({"id": id})).await,
         (200, Value::Null)
     );
-    let (status, config) = core(&server, &chat, "get_agent_config", json!({})).await;
+    let (status, config) = core(&server, &terminal, "get_agent_config", json!({})).await;
     assert_eq!(status, 200);
     assert_eq!(config["defaultHarness"], "claude");
     assert_eq!(config["harnesses"][0]["id"], "claude");
 
     assert_eq!(
-        core(&server, &chat, "pty_kill", json!({"id": id})).await,
+        core(&server, &terminal, "pty_kill", json!({"id": id})).await,
         (204, Value::Null)
     );
     client.wait_for_text("exit").await;
@@ -623,7 +627,7 @@ async fn the_core_commands_drive_and_report_on_a_session() {
         core(&server, &reader, "pty_exists", json!({"id": id})).await,
         (200, json!(false))
     );
-    let (status, _) = core(&server, &chat, "pty_attach", json!({"id": id})).await;
+    let (status, _) = core(&server, &terminal, "pty_attach", json!({"id": id})).await;
     assert_eq!(status, 404);
 }
 
@@ -662,7 +666,7 @@ async fn a_client_that_stops_reading_is_resynced_without_holding_up_the_other() 
 async fn every_core_command_needs_its_scope() {
     let server = serve(PtyOptions::default()).await;
     let (_, reader) = device(&server.state, &[Scope::Read]).await;
-    let (_, chat) = device(&server.state, &[Scope::Terminal]).await;
+    let (_, terminal) = device(&server.state, &[Scope::Terminal]).await;
     let id = json!({"id": "tab:terminal/t1/p1"});
     for command in [
         "pty_write",
@@ -675,7 +679,7 @@ async fn every_core_command_needs_its_scope() {
         assert_eq!(status, 403, "{command}");
     }
     for command in ["pty_exists", "pty_is_busy", "pty_session_harness"] {
-        let (status, _) = core(&server, &chat, command, id.clone()).await;
+        let (status, _) = core(&server, &terminal, command, id.clone()).await;
         assert_eq!(status, 403, "{command}");
         let (status, _) = core(&server, &reader, command, id.clone()).await;
         assert_eq!(status, 200, "{command}");
@@ -685,7 +689,7 @@ async fn every_core_command_needs_its_scope() {
 
     let (status, body) = core(
         &server,
-        &chat,
+        &terminal,
         "pty_write",
         json!({"id": "nope", "data": "x"}),
     )
@@ -696,7 +700,7 @@ async fn every_core_command_needs_its_scope() {
     );
     let (status, _) = core(
         &server,
-        &chat,
+        &terminal,
         "pty_resize",
         json!({"id": "nope", "cols": 0, "rows": 24}),
     )
@@ -704,7 +708,7 @@ async fn every_core_command_needs_its_scope() {
     assert_eq!(status, 400);
     let (status, body) = core(
         &server,
-        &chat,
+        &terminal,
         "pty_start_claude",
         json!({"workspaceId": "../x", "cwd": "/tmp", "name": "n", "remoteControl": false}),
     )
