@@ -3,7 +3,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
-use yarvis_server::auth::passkeys::PasskeyAuth;
 use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
@@ -14,7 +13,8 @@ use yarvis_server::vault::Vault;
 use yarvis_server::{AppState, app};
 
 const USAGE: &str = "usage: yarvis-server [--config PATH]
-       yarvis-server device add --name NAME --scopes read,chat,approve,admin [--config PATH]
+       yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin [--config PATH]
+       yarvis-server auth reset [--config PATH]
        yarvis-server vault init [--config PATH]";
 
 #[derive(Debug)]
@@ -28,6 +28,10 @@ enum Command {
     },
     /// Creates the vault and prints its recovery key, once.
     VaultInit,
+    /// Removes the account and prints a new setup code, for an owner who lost
+    /// both the authenticator and the backup codes. The same trust as
+    /// `device add`: whoever runs it can already read the database.
+    AuthReset,
 }
 
 #[tokio::main]
@@ -49,13 +53,11 @@ async fn main() {
         Command::Serve => serve(config, store).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
         Command::VaultInit => vault_init(&config),
+        Command::AuthReset => auth_reset(&config, store).await,
     }
 }
 
 async fn serve(config: Config, store: Store) {
-    if let Err(e) = PasskeyAuth::new(&config.auth, store.clone()) {
-        fail(e);
-    }
     #[cfg(unix)]
     if let Err(e) = yarvis_server::pty::process::raise_fd_limit() {
         tracing::warn!("couldn't raise the file descriptor limit: {e}");
@@ -71,12 +73,12 @@ async fn serve(config: Config, store: Store) {
     // stdout and a private file, never the log: whoever holds this code can
     // claim the server.
     match state
-        .passkeys
+        .account
         .issue_setup_code_if_needed(Some(&setup_code_file))
         .await
     {
         Ok(Some(code)) => println!(
-            "No passkey is registered yet. Setup code: {code} (also in {})",
+            "This server isn't set up yet. Setup code: {code} (also in {})",
             setup_code_file.display()
         ),
         Ok(None) => {}
@@ -169,6 +171,34 @@ fn vault_init(config: &Config) {
     }
 }
 
+/// The new setup code goes to stdout and to the private file the server
+/// would write, and the running server accepts it at once, since both read it
+/// from the database. Signed-in devices stay signed in.
+async fn auth_reset(config: &Config, store: Store) {
+    let code = store
+        .call(yarvis_server::auth::account::reset)
+        .await
+        .unwrap_or_else(|e| fail(e));
+    let file = config.server.data_dir.join("setup-code");
+    if let Err(e) = yarvis_server::auth::account::remove_if_present(&file)
+        .and_then(|()| yarvis_server::auth::account::write_private(&file, &format!("{code}\n")))
+    {
+        eprintln!("couldn't write {}: {e}", file.display());
+    }
+    let events = EventLog::new(store);
+    if let Err(e) = events
+        .append(None, "account.reset", serde_json::json!({}))
+        .await
+    {
+        eprintln!("couldn't record the reset: {e}");
+    }
+    eprintln!(
+        "The account is removed. Open the server and set it up again with this code (also in {}):",
+        file.display()
+    );
+    println!("{code}");
+}
+
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
@@ -192,6 +222,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
     let command = match words.as_slice() {
         [] if name.is_none() && scopes.is_none() => Command::Serve,
         [] => return Err("--name and --scopes go with `device add`".into()),
+        [auth, reset] if auth == "auth" && reset == "reset" => {
+            if name.is_some() || scopes.is_some() {
+                return Err("--name and --scopes go with `device add`".into());
+            }
+            Command::AuthReset
+        }
         [vault, init] if vault == "vault" && init == "init" => {
             if name.is_some() || scopes.is_some() {
                 return Err("--name and --scopes go with `device add`".into());
@@ -299,6 +335,15 @@ mod tests {
         );
         assert!(parse(&["device", "remove"]).is_err());
         assert!(matches!(parse(&[]).unwrap().0, Command::Serve));
+    }
+
+    #[test]
+    fn parses_auth_reset() {
+        assert!(matches!(
+            parse(&["auth", "reset", "--config", "x.toml"]).unwrap().0,
+            Command::AuthReset
+        ));
+        assert!(parse(&["auth", "reset", "--name", "x"]).is_err());
     }
 
     #[test]

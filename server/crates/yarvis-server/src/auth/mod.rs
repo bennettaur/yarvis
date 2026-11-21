@@ -21,10 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
+pub mod account;
 pub mod fresh;
-pub mod passkeys;
 pub mod routes;
-mod setup_code;
+pub mod setup_code;
+pub mod totp;
 
 use crate::error::ApiError;
 use crate::store::{Store, StoreError, now_ms};
@@ -90,8 +91,8 @@ pub struct DeviceContext {
     pub device_id: String,
     pub name: String,
     pub scopes: Vec<Scope>,
-    /// When this device last passed a passkey check, in ms since the epoch.
-    /// Admin actions want this to be recent.
+    /// When this device last signed in or entered a TOTP code, in ms since
+    /// the epoch. Admin actions want this to be recent.
     pub verified_at: Option<i64>,
 }
 

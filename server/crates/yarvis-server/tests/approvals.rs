@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{Harness, authenticator, until};
+use common::{Harness, until};
 use serde_json::json;
 use yarvis_server::approvals::{Approvals, Decision};
 use yarvis_server::events::EventLog;
@@ -49,9 +49,8 @@ async fn ask(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_answer_wins_and_the_event_names_its_device() {
     let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    let phone = h.login(&mut pk, "phone").await;
+    let laptop = h.setup().await;
+    let phone = h.login("phone").await;
     let laptop_id = h.device_id(&laptop).await;
     let phone_id = h.device_id(&phone).await;
 
@@ -71,6 +70,8 @@ async fn the_first_answer_wins_and_the_event_names_its_device() {
                 let h = Harness {
                     state,
                     setup_code: String::new(),
+                    totp_secret: Default::default(),
+                    backup_codes: Default::default(),
                 };
                 h.call(
                     "POST",
@@ -125,7 +126,7 @@ async fn the_first_answer_wins_and_the_event_names_its_device() {
 #[tokio::test]
 async fn no_answer_in_time_is_a_denial_and_later_answers_get_409() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let decision = h
         .state
         .approvals
@@ -162,7 +163,7 @@ async fn no_answer_in_time_is_a_denial_and_later_answers_get_409() {
 #[tokio::test]
 async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (_, reader) = h.mint(&laptop, "watch", json!(["read"])).await;
     let (id, requester) = ask(&h, "run rm -rf build/", Duration::from_secs(30)).await;
 
@@ -199,7 +200,7 @@ async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
 #[tokio::test]
 async fn an_approval_whose_requester_stopped_waiting_is_denied() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (id, requester) = ask(&h, "abandoned", Duration::from_secs(30)).await;
     requester.abort();
 
@@ -254,7 +255,7 @@ async fn approvals_left_pending_by_a_restart_are_denied() {
     assert_eq!(answered.len(), 1);
     assert_eq!(answered[0].data["reason"], "restart");
     let id = answered[0].data["id"].as_str().unwrap().to_string();
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (st, _) = h
         .call(
             "POST",
@@ -274,7 +275,7 @@ async fn approvals_left_pending_by_a_restart_are_denied() {
 #[tokio::test]
 async fn an_answer_after_the_deadline_is_refused_even_before_the_timeout_fires() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (id, requester) = ask(&h, "late", Duration::from_secs(30)).await;
     // Past its deadline in the database, while the requester still waits.
     let row_id = id.clone();
@@ -309,7 +310,7 @@ async fn an_answer_after_the_deadline_is_refused_even_before_the_timeout_fires()
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_requester_and_the_answer_agree_when_an_answer_races_the_timeout() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let laptop_id = h.device_id(&laptop).await;
     for round in 0..50u64 {
         let approvals = h.state.approvals.clone();

@@ -34,7 +34,7 @@ use axum::extract::FromRef;
 use axum::routing::{any, get, post};
 
 use crate::approvals::Approvals;
-use crate::auth::passkeys::PasskeyAuth;
+use crate::auth::account::Account;
 use crate::auth::{Auth, Authed, DeviceContext, Read};
 use crate::config::Config;
 use crate::events::EventLog;
@@ -47,8 +47,8 @@ use crate::ssh_agent::SshAgent;
 use crate::store::Store;
 use crate::vault::Vault;
 
-/// Enough for a person retrying a passkey prompt, few enough that a script
-/// can't fill the ceremony map.
+/// Enough for a person retyping a passphrase or code, few enough that a script
+/// gets nowhere before the account lockout.
 const AUTH_REQUESTS_PER_MINUTE: u32 = 30;
 
 /// State every route can reach. Modules that need their own state add a
@@ -59,11 +59,11 @@ pub struct AppState {
     pub store: Store,
     pub auth: Auth,
     pub events: EventLog,
-    pub passkeys: PasskeyAuth,
+    pub account: Account,
     pub approvals: Approvals,
     /// Shared by the routes that need no token.
     pub auth_limiter: RateLimiter,
-    /// Locked until a passkey or the recovery key opens it. Only used when
+    /// Locked until its passphrase or the recovery key opens it. Only used when
     /// `secrets.backend = "vault"`.
     pub vault: Vault,
     /// Runs only while the vault is unlocked, and never when
@@ -76,8 +76,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Panics on an `[auth]` config webauthn-rs refuses; `main` checks it
-    /// first with [`PasskeyAuth::new`] to exit with a message instead.
     pub fn new(config: Config, store: Store) -> Self {
         let events = EventLog::new(store.clone());
         // No I/O: settings are read on use, and the sidecar only starts when
@@ -104,8 +102,7 @@ impl AppState {
             mcp_token: Some(sidecar.mcp_token().to_string()),
         }));
         Self {
-            passkeys: PasskeyAuth::new(&config.auth, store.clone())
-                .unwrap_or_else(|e| panic!("invalid [auth] config: {e}")),
+            account: Account::new(store.clone()),
             approvals: Approvals::new(store.clone(), events.clone()),
             auth_limiter: RateLimiter::new(AUTH_REQUESTS_PER_MINUTE, Duration::from_secs(60)),
             vault,

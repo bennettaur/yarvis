@@ -1,7 +1,7 @@
 //! Actions that could give a stolen token a lasting foothold (minting tokens,
-//! adding a passkey, revoking devices) also need a passkey check from the last
-//! few minutes. Only passkey devices can pass one, so a token never qualifies,
-//! whatever its scopes.
+//! changing the passphrase, revoking devices) also need a TOTP code from the
+//! last few minutes. Only a device made by a passphrase sign-in can enter one,
+//! so a token never qualifies, whatever its scopes.
 
 use std::marker::PhantomData;
 
@@ -12,7 +12,7 @@ use super::{Auth, Authed, DeviceContext, ScopeMarker};
 use crate::error::ApiError;
 use crate::store::now_ms;
 
-/// How recent the passkey check must be.
+/// How recent the sign-in or TOTP code must be.
 pub const FRESH_WINDOW_MS: i64 = 10 * 60 * 1000;
 
 /// The error a client answers by running `/api/auth/reverify`.
@@ -22,7 +22,7 @@ pub fn is_fresh(verified_at: Option<i64>, now: i64) -> bool {
     verified_at.is_some_and(|at| now - at < FRESH_WINDOW_MS)
 }
 
-/// Like [`Authed`], and the device also passed a passkey check within
+/// Like [`Authed`], and the device also passed a login check within
 /// [`FRESH_WINDOW_MS`].
 pub struct Fresh<S: ScopeMarker> {
     pub device: DeviceContext,
@@ -50,9 +50,10 @@ where
                 })
             })
             .await?;
-        if kind != "passkey" || !is_fresh(device.verified_at, now_ms()) {
-            return Err(ApiError::forbidden(REAUTH_REQUIRED)
-                .with_detail("confirm with your passkey first: POST /api/auth/reverify/start"));
+        if kind != super::routes::LOGIN_DEVICE || !is_fresh(device.verified_at, now_ms()) {
+            return Err(ApiError::forbidden(REAUTH_REQUIRED).with_detail(
+                "enter a code from your authenticator app first: POST /api/auth/reverify",
+            ));
         }
         Ok(Self {
             device,

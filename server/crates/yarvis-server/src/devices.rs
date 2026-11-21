@@ -28,7 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/devices/{id}", delete(revoke))
 }
 
-/// A device or passkey name, trimmed and checked.
+/// A device name, trimmed and checked.
 pub fn device_name(raw: &str) -> ApiResult<String> {
     let name = raw.trim();
     if name.is_empty() {
@@ -50,7 +50,6 @@ struct DeviceRow {
     name: String,
     kind: String,
     scopes: Vec<Scope>,
-    passkey_id: Option<String>,
     created_by: Option<String>,
     user_agent: Option<String>,
     created_at: i64,
@@ -69,7 +68,7 @@ async fn list(
         .store
         .call(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, kind, scopes, passkey_id, created_by, user_agent,
+                "SELECT id, name, kind, scopes, created_by, user_agent,
                         created_at, last_seen_at, verified_at, revoked_at
                  FROM devices ORDER BY created_at",
             )?;
@@ -81,13 +80,12 @@ async fn list(
                     name: row.get(1)?,
                     kind: row.get(2)?,
                     scopes: decode_scopes(&row.get::<_, String>(3)?),
-                    passkey_id: row.get(4)?,
-                    created_by: row.get(5)?,
-                    user_agent: row.get(6)?,
-                    created_at: row.get(7)?,
-                    last_seen_at: row.get(8)?,
-                    verified_at: row.get(9)?,
-                    revoked_at: row.get(10)?,
+                    created_by: row.get(4)?,
+                    user_agent: row.get(5)?,
+                    created_at: row.get(6)?,
+                    last_seen_at: row.get(7)?,
+                    verified_at: row.get(8)?,
+                    revoked_at: row.get(9)?,
                 })
             })?;
             rows.collect()

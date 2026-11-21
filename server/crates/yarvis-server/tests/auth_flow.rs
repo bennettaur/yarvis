@@ -1,18 +1,15 @@
-//! Setup, sign-in, freshness, tokens and revocation, with real WebAuthn
-//! ceremonies.
+//! Setup, sign-in with the passphrase and a TOTP or backup code, freshness,
+//! the account, tokens and revocation.
 
 mod common;
 
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{Harness, answer_registration, authenticator};
+use common::{Harness, PASSPHRASE, base32_decode, code_now};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{RequestChallengeResponse, Url};
 use yarvis_server::auth::Scope;
 use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::add_token_device;
@@ -21,137 +18,97 @@ use yarvis_server::settings::SettingsStore;
 use yarvis_server::store::Store;
 use yarvis_server::vault::Vault;
 
-#[tokio::test]
-async fn setup_then_login_and_the_setup_code_cannot_be_replayed() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
+fn login_body(passphrase: &str, code: &str, name: &str) -> serde_json::Value {
+    json!({ "passphrase": passphrase, "code": code, "deviceName": name })
+}
 
+#[tokio::test]
+async fn setup_needs_the_code_a_passphrase_and_a_working_authenticator() {
+    let h = Harness::new().await;
     let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(status["setupRequired"], true);
-    assert_eq!(status["rpId"], "localhost");
-    let (st, _) = h.call("POST", "/api/auth/login/start", None, None).await;
-    assert_eq!(st, StatusCode::CONFLICT, "nothing to sign in with yet");
 
-    let wrong = json!({ "code": "WRONG-CODE0", "deviceName": "x" });
     let (st, body) = h
-        .call("POST", "/api/auth/setup/start", None, Some(wrong))
+        .call(
+            "POST",
+            "/api/auth/setup/start",
+            None,
+            Some(
+                json!({ "code": h.setup_code, "passphrase": "too short", "deviceName": "laptop" }),
+            ),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+
+    let enrollment = h.start_setup().await;
+    assert!(
+        enrollment["otpauthUri"]
+            .as_str()
+            .unwrap()
+            .starts_with("otpauth://totp/")
+    );
+    assert!(enrollment["qrSvg"].as_str().unwrap().contains("<svg"));
+    let secret = base32_decode(enrollment["secret"].as_str().unwrap());
+
+    // A wrong first code keeps the enrollment, so the user can try again.
+    let finish = |code: String| json!({ "enrollmentId": enrollment["enrollmentId"], "code": code });
+    let wrong = format!(
+        "{:06}",
+        (code_now(&secret).parse::<u32>().unwrap() + 1) % 1_000_000
+    );
+    let (st, _) = h
+        .call("POST", "/api/auth/setup/finish", None, Some(finish(wrong)))
         .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
-    assert_eq!(body["detail"], "4 tries left");
+    let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
+    assert_eq!(
+        status["setupRequired"], true,
+        "nothing is created before a good code"
+    );
 
     let (st, body) = h
-        .register(
-            &mut pk,
-            "/api/auth/setup",
+        .call(
+            "POST",
+            "/api/auth/setup/finish",
             None,
-            json!({ "code": h.setup_code.to_lowercase(), "deviceName": "laptop" }),
+            Some(finish(code_now(&secret))),
         )
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let laptop = body["token"].as_str().unwrap().to_string();
-    assert_eq!(body["device"]["name"], "laptop");
-    let (_, me) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    assert_eq!(body["backupCodes"].as_array().unwrap().len(), 10);
+    let token = body["token"].as_str().unwrap();
+    let (_, me) = h.call("GET", "/api/devices/me", Some(token), None).await;
     assert_eq!(
         me["scopes"],
         json!(["read", "chat", "terminal", "approve", "admin"])
     );
     assert!(me["verifiedAt"].is_i64());
 
-    let replay = json!({ "code": h.setup_code, "deviceName": "attacker" });
-    let (st, body) = h
-        .call("POST", "/api/auth/setup/start", None, Some(replay))
+    // Setup is closed now, and the code is spent.
+    let again = json!({ "code": h.setup_code, "passphrase": PASSPHRASE, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/setup/start", None, Some(again))
         .await;
     assert_eq!(st, StatusCode::CONFLICT);
-    assert_eq!(body["error"], "setup is done");
     let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
     assert_eq!(status["setupRequired"], false);
-
-    // Signing in with the same passkey makes a second, separate device.
-    let phone = h.login(&mut pk, "phone").await;
-    assert_ne!(phone, laptop);
-    let (_, devices) = h.call("GET", "/api/devices", Some(&phone), None).await;
-    let devices = devices.as_array().unwrap();
-    let names: Vec<_> = devices
-        .iter()
-        .map(|d| d["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["laptop", "phone"]);
-    assert!(devices.iter().all(|d| d["kind"] == "passkey"));
-    assert!(
-        devices
-            .iter()
-            .all(|d| d["passkeyId"] == devices[0]["passkeyId"])
-    );
-    assert_eq!(devices[1]["current"], true);
-    assert!(
-        devices.iter().all(|d| d["lastSeenAt"].is_i64()),
-        "both devices have been seen"
-    );
-}
-
-#[tokio::test]
-async fn two_ceremonies_racing_on_one_setup_code_get_only_one_passkey() {
-    let h = Harness::new().await;
-    let (mut a, mut b) = (authenticator(), authenticator());
-    let start = |name: &str| Some(json!({ "code": h.setup_code, "deviceName": name }));
-    let (_, ra) = h
-        .call("POST", "/api/auth/setup/start", None, start("a"))
-        .await;
-    let (_, rb) = h
-        .call("POST", "/api/auth/setup/start", None, start("b"))
-        .await;
-
-    let finish_a = answer_registration(&mut a, &ra);
-    let (st, _) = h
-        .call(
-            "POST",
-            "/api/auth/setup/finish",
-            None,
-            Some(finish_a.clone()),
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK);
-    let (st, body) = h
-        .call(
-            "POST",
-            "/api/auth/setup/finish",
-            None,
-            Some(answer_registration(&mut b, &rb)),
-        )
-        .await;
-    assert_eq!(st, StatusCode::CONFLICT, "{body}");
-    assert_eq!(h.state.passkeys.passkeys().await.unwrap().len(), 1);
-
-    // A finished ceremony can't be finished twice.
-    let (st, _) = h
-        .call("POST", "/api/auth/setup/finish", None, Some(finish_a))
-        .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn a_cancelled_prompt_does_not_use_up_the_setup_code() {
-    let h = Harness::new().await;
-    let start = json!({ "code": h.setup_code, "deviceName": "laptop" });
-    let (st, _) = h
-        .call("POST", "/api/auth/setup/start", None, Some(start))
-        .await;
-    assert_eq!(st, StatusCode::OK);
-    // The user dismissed the prompt, so no finish arrives. The code still works.
-    h.setup(&mut authenticator()).await;
+    assert!(status.get("rpId").is_none());
 }
 
 #[tokio::test]
 async fn the_setup_code_burns_after_five_wrong_guesses() {
     let h = Harness::new().await;
-    for _ in 0..5 {
-        let wrong = json!({ "code": "AAAAA-AAAAA", "deviceName": "x" });
-        let (st, _) = h
-            .call("POST", "/api/auth/setup/start", None, Some(wrong))
+    for left in (0..5).rev() {
+        let guess = json!({ "code": "AAAAA-AAAAA", "passphrase": PASSPHRASE, "deviceName": "x" });
+        let (st, body) = h
+            .call("POST", "/api/auth/setup/start", None, Some(guess))
             .await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
+        if left > 0 {
+            assert_eq!(body["detail"], format!("{left} tries left"));
+        }
     }
-    let right = json!({ "code": h.setup_code, "deviceName": "x" });
+    let right = json!({ "code": h.setup_code, "passphrase": PASSPHRASE, "deviceName": "x" });
     let (st, body) = h
         .call("POST", "/api/auth/setup/start", None, Some(right))
         .await;
@@ -159,11 +116,376 @@ async fn the_setup_code_burns_after_five_wrong_guesses() {
     assert_eq!(body["error"], "no setup code is outstanding");
 }
 
+#[tokio::test]
+async fn sign_in_needs_both_factors_and_never_says_which_was_wrong() {
+    let h = Harness::new().await;
+    h.setup().await;
+
+    let code = h.code().await;
+    let (st, wrong_passphrase) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body("not the passphrase", &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, wrong_code) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, "000000", "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        wrong_passphrase, wrong_code,
+        "the two refusals look the same"
+    );
+
+    let code = h.code().await;
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "phone")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["device"]["name"], "phone");
+
+    // The same code can't sign in twice.
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "again")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "a replayed code signed in");
+}
+
+#[tokio::test]
+async fn a_backup_code_signs_in_once() {
+    let h = Harness::new().await;
+    h.setup().await;
+    let backup = h.backup_codes.lock().unwrap()[0].clone();
+    let body = json!({ "passphrase": PASSPHRASE, "backupCode": backup.to_lowercase(), "deviceName": "spare" });
+    let (st, r) = h
+        .call("POST", "/api/auth/login", None, Some(body.clone()))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    let (st, _) = h.call("POST", "/api/auth/login", None, Some(body)).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "a backup code is single-use");
+    let used = h.events("account.backup_code_used").await;
+    assert_eq!(used[0].data["left"], 9);
+}
+
+#[tokio::test]
+async fn ten_failed_sign_ins_lock_the_account_even_for_the_right_passphrase() {
+    let h = Harness::new().await;
+    h.setup().await;
+    for _ in 0..10 {
+        let (st, _) = h
+            .call(
+                "POST",
+                "/api/auth/login",
+                None,
+                Some(login_body("wrong passphrase!", "000000", "x")),
+            )
+            .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+    let code = h.code().await;
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("minutes"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn admin_actions_need_a_recent_code() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let laptop_id = h.device_id(&laptop).await;
+    let body = json!({ "name": "cli", "scopes": ["read"] });
+
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/devices/tokens",
+            Some(&laptop),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "fresh right after setup");
+
+    // Age the last check past the window rather than waiting ten minutes.
+    let id = laptop_id.clone();
+    h.state
+        .store
+        .call(move |conn| conn.execute("UPDATE devices SET verified_at = 0 WHERE id = ?1", [id]))
+        .await
+        .unwrap();
+    let (st, r) = h
+        .call(
+            "POST",
+            "/api/devices/tokens",
+            Some(&laptop),
+            Some(body.clone()),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(r["error"], "reauth_required");
+
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/reverify",
+            Some(&laptop),
+            Some(json!({ "code": "000000" })),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a wrong code doesn't make it fresh"
+    );
+    let code = h.code().await;
+    let (st, r) = h
+        .call(
+            "POST",
+            "/api/auth/reverify",
+            Some(&laptop),
+            Some(json!({ "code": code })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    assert!(r["verifiedAt"].is_i64());
+    let (st, _) = h
+        .call("POST", "/api/devices/tokens", Some(&laptop), Some(body))
+        .await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn changing_the_passphrase_needs_the_old_one_and_can_sign_out_the_rest() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let phone = h.login("phone").await;
+    let new = "a whole new passphrase";
+
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/account/passphrase",
+            Some(&laptop),
+            Some(json!({ "currentPassphrase": "not it at all", "newPassphrase": new })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/account/passphrase",
+            Some(&laptop),
+            Some(json!({ "currentPassphrase": PASSPHRASE, "newPassphrase": new })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["revokedDevices"],
+        json!([]),
+        "other devices stay by default"
+    );
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&phone), None).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "x")),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "the old passphrase still works"
+    );
+    let code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(new, &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/account/passphrase",
+            Some(&laptop),
+            Some(json!({ "currentPassphrase": new, "newPassphrase": PASSPHRASE, "signOutOtherDevices": true })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revokedDevices"].as_array().unwrap().len(), 2);
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&phone), None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    assert_eq!(st, StatusCode::OK, "this device stays signed in");
+}
+
+#[tokio::test]
+async fn re_enrolling_totp_replaces_the_secret_once_a_code_confirms_it() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let (st, enrollment) = h
+        .call("POST", "/api/account/totp/start", Some(&laptop), None)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{enrollment}");
+    let new_secret = base32_decode(enrollment["secret"].as_str().unwrap());
+
+    // Another device can't finish this device's enrollment.
+    let phone = h.login("phone").await;
+    let finish =
+        json!({ "enrollmentId": enrollment["enrollmentId"], "code": code_now(&new_secret) });
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/account/totp/finish",
+            Some(&phone),
+            Some(finish.clone()),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/account/totp/finish",
+            Some(&laptop),
+            Some(finish),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+
+    let old_code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &old_code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "the old secret still works");
+    *h.totp_secret.lock().unwrap() = Some(new_secret);
+    h.login("with the new one").await;
+}
+
+#[tokio::test]
+async fn new_backup_codes_replace_the_old_ones() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let old = h.backup_codes.lock().unwrap()[0].clone();
+    let (st, body) = h
+        .call("POST", "/api/account/backup-codes", Some(&laptop), None)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let new = body["backupCodes"][0].as_str().unwrap().to_string();
+    let backup =
+        |code: &str| json!({ "passphrase": PASSPHRASE, "backupCode": code, "deviceName": "x" });
+    let (st, _) = h
+        .call("POST", "/api/auth/login", None, Some(backup(&old)))
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, _) = h
+        .call("POST", "/api/auth/login", None, Some(backup(&new)))
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, account) = h.call("GET", "/api/account", Some(&laptop), None).await;
+    assert_eq!(account["backupCodesLeft"], 9);
+}
+
+#[tokio::test]
+async fn signing_out_other_devices_keeps_only_this_one() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let phone = h.login("phone").await;
+    let (_, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
+    let (st, body) = h
+        .call("POST", "/api/account/sign-out-others", Some(&laptop), None)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revokedDevices"].as_array().unwrap().len(), 2);
+    for token in [&phone, &bot] {
+        let (st, _) = h.call("GET", "/api/devices/me", Some(token), None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(h.events("device.revoked").await.len(), 2);
+}
+
+/// `yarvis-server auth reset` removes the account and prints a new setup code
+/// the running server accepts; signed-in devices stay signed in.
+#[tokio::test]
+async fn auth_reset_reopens_setup_with_a_new_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    let data_dir = dir.path().join("data");
+    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
+    let db = data_dir.join("server.db");
+    let mut h = Harness::on(Store::open(&db).unwrap()).await;
+    let laptop = h.setup().await;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+        .args(["--config", config.to_str().unwrap(), "auth", "reset"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let code = String::from_utf8(output.stdout).unwrap().trim().to_string();
+    assert_eq!(
+        std::fs::read_to_string(data_dir.join("setup-code"))
+            .unwrap()
+            .trim(),
+        code
+    );
+
+    let (_, status) = h.call("GET", "/api/auth/status", None, None).await;
+    assert_eq!(status["setupRequired"], true);
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    assert_eq!(st, StatusCode::OK, "devices stay signed in");
+    h.setup_code = code;
+    h.setup().await;
+}
+
 /// Switching the secrets backend needs a fresh passkey; writing a secret needs
 /// only `admin`. With `secrets.backend` set in the config, a switch that gets
 /// past the check is refused with 409, so no real store is touched.
 #[tokio::test]
-async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
+async fn a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
@@ -176,7 +498,7 @@ async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
         h.state.settings.clone(),
         &h.state.vault,
     );
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let cli = add_token_device(
         &h.state.store,
         &h.state.events,
@@ -231,7 +553,7 @@ async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
 #[tokio::test]
 async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (_, reader) = h.mint(&laptop, "dashboard", json!(["read"])).await;
     // What `yarvis-server device add --scopes admin` makes.
     let admin = add_token_device(
@@ -294,25 +616,34 @@ async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
         "{body}"
     );
 
-    // An admin token can list devices, but nothing that needs a passkey check.
+    // An admin token can list devices, but nothing that needs a fresh device.
     let (st, _) = h.call("GET", "/api/devices", Some(&admin), None).await;
     assert_eq!(st, StatusCode::OK);
-    let body = json!({ "name": "x", "scopes": ["admin"], "label": "x" });
+    let body = json!({ "name": "x", "scopes": ["admin"] });
     for (method, path) in [
         ("POST", "/api/devices/tokens"),
-        ("POST", "/api/passkeys/register/start"),
         ("DELETE", "/api/devices/whatever"),
-        ("DELETE", "/api/passkeys/whatever"),
+        ("POST", "/api/account/passphrase"),
+        ("POST", "/api/account/totp/start"),
+        ("POST", "/api/account/backup-codes"),
+        ("POST", "/api/account/sign-out-others"),
     ] {
         let (st, r) = h.call(method, path, Some(&admin), Some(body.clone())).await;
         assert_eq!(st, StatusCode::FORBIDDEN, "{path} must refuse a token");
         assert_eq!(r["error"], "reauth_required", "{path}: {r}");
     }
+    // Not even with a good code: a token wasn't made by a sign-in.
+    let code = h.code().await;
     let (st, r) = h
-        .call("POST", "/api/auth/reverify/start", Some(&admin), None)
+        .call(
+            "POST",
+            "/api/auth/reverify",
+            Some(&admin),
+            Some(json!({ "code": code })),
+        )
         .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
-    assert!(r["error"].as_str().unwrap().contains("passkey"), "{r}");
+    assert!(r["error"].as_str().unwrap().contains("passphrase"), "{r}");
 
     let (st, _) = h
         .call("GET", "/api/devices/me", Some("made-up"), None)
@@ -321,86 +652,11 @@ async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
 }
 
 #[tokio::test]
-async fn admin_actions_need_a_recent_passkey_check() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    let laptop_id = h.device_id(&laptop).await;
-    let body = json!({ "name": "cli", "scopes": ["read"] });
-
-    let (st, _) = h
-        .call(
-            "POST",
-            "/api/devices/tokens",
-            Some(&laptop),
-            Some(body.clone()),
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK, "fresh right after setup");
-
-    // Age the last check past the window rather than waiting ten minutes.
-    let id = laptop_id.clone();
-    h.state
-        .store
-        .call(move |conn| conn.execute("UPDATE devices SET verified_at = 0 WHERE id = ?1", [id]))
-        .await
-        .unwrap();
-    let (st, r) = h
-        .call(
-            "POST",
-            "/api/devices/tokens",
-            Some(&laptop),
-            Some(body.clone()),
-        )
-        .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-    assert_eq!(r["error"], "reauth_required");
-
-    let (st, r) = h
-        .assert_with(&mut pk, "/api/auth/reverify", Some(&laptop), json!({}))
-        .await;
-    assert_eq!(st, StatusCode::OK, "{r}");
-    assert!(r["verifiedAt"].is_i64());
-    let (st, _) = h
-        .call("POST", "/api/devices/tokens", Some(&laptop), Some(body))
-        .await;
-    assert_eq!(st, StatusCode::OK);
-}
-
-#[tokio::test]
-async fn a_reverify_ceremony_belongs_to_the_device_that_started_it() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    let phone = h.login(&mut pk, "phone").await;
-
-    let (_, start) = h
-        .call("POST", "/api/auth/reverify/start", Some(&laptop), None)
-        .await;
-    let options: RequestChallengeResponse =
-        serde_json::from_value(start["options"].clone()).unwrap();
-    let credential = pk
-        .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
-        .unwrap();
-    let body = json!({ "ceremonyId": start["ceremonyId"], "credential": credential });
-    let (st, _) = h
-        .call(
-            "POST",
-            "/api/auth/reverify/finish",
-            Some(&phone),
-            Some(body),
-        )
-        .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-}
-
-#[tokio::test]
 async fn revoking_a_device_takes_effect_on_its_next_request() {
     let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
+    let laptop = h.setup().await;
     let laptop_id = h.device_id(&laptop).await;
-    let phone = h.login(&mut pk, "phone").await;
+    let phone = h.login("phone").await;
     let phone_id = h.device_id(&phone).await;
 
     let path = format!("/api/devices/{phone_id}");
@@ -430,7 +686,7 @@ async fn revoking_a_device_takes_effect_on_its_next_request() {
 #[tokio::test]
 async fn revocation_closes_an_open_event_stream() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let (bot_id, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
     let url = format!("ws://{}/api/events", h.serve().await);
 
@@ -478,72 +734,27 @@ async fn revocation_closes_an_open_event_stream() {
 }
 
 #[tokio::test]
-async fn add_a_passkey_from_a_signed_in_device() {
-    let h = Harness::new().await;
-    let (mut first, mut yubikey) = (authenticator(), authenticator());
-    let laptop = h.setup(&mut first).await;
-
-    let (st, body) = h
-        .register(
-            &mut yubikey,
-            "/api/passkeys/register",
-            Some(&laptop),
-            json!({ "label": "yubikey" }),
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK, "{body}");
-    let passkey_id = body["passkeyId"].as_str().unwrap().to_string();
-    let desktop = h.login(&mut yubikey, "desktop").await;
-
-    let (_, devices) = h.call("GET", "/api/devices", Some(&desktop), None).await;
-    let desktop_row = devices.as_array().unwrap().last().unwrap().clone();
-    assert_eq!(desktop_row["passkeyId"], passkey_id);
-
-    // Other modules find a passkey by the credential id an
-    // assertion reports.
-    let passkeys = h.state.passkeys.passkeys().await.unwrap();
-    assert_eq!(passkeys.len(), 2);
-    let record = &passkeys[1];
-    let found = h
-        .state
-        .passkeys
-        .passkey_by_credential_id(record.passkey.cred_id().as_slice())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(found.id, passkey_id);
-    assert_eq!(found.label, "yubikey");
-    assert!(
-        h.state
-            .passkeys
-            .passkey_by_credential_id(b"nope")
-            .await
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[tokio::test]
-async fn passkeys_and_devices_survive_a_restart() {
+async fn the_account_and_devices_survive_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("server.db");
-    let mut pk = authenticator();
-    let laptop = {
+    let (laptop, secret) = {
         let h = Harness::on(Store::open(&path).unwrap()).await;
-        h.setup(&mut pk).await
+        let laptop = h.setup().await;
+        (laptop, h.totp_secret.lock().unwrap().clone())
     };
 
     let h = Harness::on(Store::open(&path).unwrap()).await;
-    assert_eq!(h.setup_code, "", "no setup code once a passkey exists");
+    *h.totp_secret.lock().unwrap() = secret;
+    assert_eq!(h.setup_code, "", "no setup code once the account exists");
     let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
     assert_eq!(st, StatusCode::OK);
-    h.login(&mut pk, "phone").await;
+    h.login("phone").await;
 }
 
 #[tokio::test]
 async fn events_name_the_device_that_caused_them() {
     let h = Harness::new().await;
-    let laptop = h.setup(&mut authenticator()).await;
+    let laptop = h.setup().await;
     let laptop_id = h.device_id(&laptop).await;
     let (bot_id, _) = h
         .mint(&laptop, "telegram-bot", json!(["chat", "read"]))
@@ -565,14 +776,18 @@ async fn events_name_the_device_that_caused_them() {
 async fn the_sign_in_routes_are_rate_limited() {
     let h = Harness::with_default_limit(Store::open_in_memory().unwrap()).await;
     let mut last = StatusCode::OK;
+    let guess = json!({ "passphrase": "nobody knows this", "code": "000000", "deviceName": "x" });
     for _ in 0..40 {
-        last = h.call("POST", "/api/auth/login/start", None, None).await.0;
+        last = h
+            .call("POST", "/api/auth/login", None, Some(guess.clone()))
+            .await
+            .0;
         if last == StatusCode::TOO_MANY_REQUESTS {
             break;
         }
     }
     assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
-    let guess = json!({ "code": h.setup_code, "deviceName": "x" });
+    let guess = json!({ "code": h.setup_code, "passphrase": PASSPHRASE, "deviceName": "x" });
     let (st, _) = h
         .call("POST", "/api/auth/setup/start", None, Some(guess))
         .await;
@@ -584,137 +799,6 @@ async fn the_sign_in_routes_are_rate_limited() {
 }
 
 #[tokio::test]
-async fn a_login_assertion_finishes_only_its_own_ceremony_once() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    let (_, a) = h.call("POST", "/api/auth/login/start", None, None).await;
-    let (_, b) = h.call("POST", "/api/auth/login/start", None, None).await;
-
-    let options: RequestChallengeResponse = serde_json::from_value(a["options"].clone()).unwrap();
-    let answer_a = pk
-        .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
-        .unwrap();
-    let swapped =
-        json!({ "ceremonyId": b["ceremonyId"], "credential": answer_a, "deviceName": "x" });
-    let (st, _) = h
-        .call("POST", "/api/auth/login/finish", None, Some(swapped))
-        .await;
-    assert_eq!(
-        st,
-        StatusCode::UNAUTHORIZED,
-        "A's answer doesn't fit B's challenge"
-    );
-
-    let body = json!({ "ceremonyId": a["ceremonyId"], "credential": answer_a, "deviceName": "x" });
-    let (st, _) = h
-        .call("POST", "/api/auth/login/finish", None, Some(body.clone()))
-        .await;
-    assert_eq!(st, StatusCode::OK);
-    let (st, _) = h
-        .call("POST", "/api/auth/login/finish", None, Some(body))
-        .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST, "a ceremony finishes once");
-
-    // A reverify ceremony can't be finished as a login.
-    let (_, start) = h
-        .call("POST", "/api/auth/reverify/start", Some(&laptop), None)
-        .await;
-    let options: RequestChallengeResponse =
-        serde_json::from_value(start["options"].clone()).unwrap();
-    let credential = pk
-        .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
-        .unwrap();
-    let body =
-        json!({ "ceremonyId": start["ceremonyId"], "credential": credential, "deviceName": "x" });
-    let (st, _) = h
-        .call("POST", "/api/auth/login/finish", None, Some(body))
-        .await;
-    assert_eq!(st, StatusCode::BAD_REQUEST);
-
-    let (_, devices) = h.call("GET", "/api/devices", Some(&laptop), None).await;
-    assert_eq!(
-        devices.as_array().unwrap().len(),
-        2,
-        "exactly one login made a device"
-    );
-}
-
-#[tokio::test]
-async fn an_add_passkey_ceremony_belongs_to_the_device_that_started_it() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    let phone = h.login(&mut pk, "phone").await;
-    let (_, start) = h
-        .call(
-            "POST",
-            "/api/passkeys/register/start",
-            Some(&laptop),
-            Some(json!({ "label": "yubikey" })),
-        )
-        .await;
-    let body = answer_registration(&mut authenticator(), &start);
-    let (st, _) = h
-        .call(
-            "POST",
-            "/api/passkeys/register/finish",
-            Some(&phone),
-            Some(body),
-        )
-        .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-    assert_eq!(h.state.passkeys.passkeys().await.unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn a_flood_of_sign_in_starts_pushes_out_old_ones_but_not_signed_in_ones() {
-    let h = Harness::new().await;
-    let mut pk = authenticator();
-    let laptop = h.setup(&mut pk).await;
-    // The owner's re-check, started before the flood.
-    let (_, reverify) = h
-        .call("POST", "/api/auth/reverify/start", Some(&laptop), None)
-        .await;
-    let (_, first_login) = h.call("POST", "/api/auth/login/start", None, None).await;
-    for _ in 0..300 {
-        let (st, _) = h.call("POST", "/api/auth/login/start", None, None).await;
-        assert_eq!(st, StatusCode::OK, "new sign-ins are never refused");
-    }
-
-    let finish = |start: &serde_json::Value, pk: &mut SoftPasskey| {
-        let options: RequestChallengeResponse =
-            serde_json::from_value(start["options"].clone()).unwrap();
-        let credential = pk
-            .do_authentication(Url::parse(common::ORIGIN).unwrap(), options)
-            .unwrap();
-        json!({ "ceremonyId": start["ceremonyId"], "credential": credential, "deviceName": "x" })
-    };
-    let (st, _) = h
-        .call(
-            "POST",
-            "/api/auth/login/finish",
-            None,
-            Some(finish(&first_login, &mut pk)),
-        )
-        .await;
-    assert_eq!(
-        st,
-        StatusCode::BAD_REQUEST,
-        "the oldest sign-in was pushed out"
-    );
-    let (st, r) = h
-        .call(
-            "POST",
-            "/api/auth/reverify/finish",
-            Some(&laptop),
-            Some(finish(&reverify, &mut pk)),
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK, "{r}");
-}
-
-#[tokio::test]
 async fn the_setup_code_file_is_private_and_goes_once_the_code_is_used() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("setup-code");
@@ -723,7 +807,7 @@ async fn the_setup_code_file_is_private_and_goes_once_the_code_is_used() {
         Store::open_in_memory().unwrap(),
     );
     let code = state
-        .passkeys
+        .account
         .issue_setup_code_if_needed(Some(&file))
         .await
         .unwrap()
@@ -735,64 +819,20 @@ async fn the_setup_code_file_is_private_and_goes_once_the_code_is_used() {
         let mode = std::fs::metadata(&file).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }
-    let hash = state.passkeys.check_setup_code(&code).unwrap();
-    assert!(state.passkeys.consume_setup_code(&hash));
-    assert!(!file.exists());
-}
-
-#[tokio::test]
-async fn removing_a_passkey_signs_out_its_devices() {
-    let h = Harness::new().await;
-    let (mut first, mut yubikey) = (authenticator(), authenticator());
-    let laptop = h.setup(&mut first).await;
-    let laptop_passkey = h.state.passkeys.passkeys().await.unwrap()[0].id.clone();
-    let (_, body) = h
-        .register(
-            &mut yubikey,
-            "/api/passkeys/register",
-            Some(&laptop),
-            json!({ "label": "attacker" }),
-        )
-        .await;
-    let added = body["passkeyId"].as_str().unwrap().to_string();
-    let via_added = h.login(&mut yubikey, "attacker").await;
-    let via_added_id = h.device_id(&via_added).await;
-
-    let (_, list) = h.call("GET", "/api/passkeys", Some(&laptop), None).await;
-    let labels: Vec<_> = list
-        .as_array()
+    let enrollment = state
+        .account
+        .start_setup(&code, PASSPHRASE.to_string().into(), "laptop".into())
+        .await
         .unwrap()
-        .iter()
-        .map(|p| p["label"].clone())
-        .collect();
-    assert_eq!(labels, [json!("laptop"), json!("attacker")]);
-
-    let (st, body) = h
-        .call(
-            "DELETE",
-            &format!("/api/passkeys/{added}"),
-            Some(&laptop),
-            None,
-        )
-        .await;
-    assert_eq!(st, StatusCode::OK, "{body}");
-    assert_eq!(body["revokedDevices"], json!([via_added_id]));
-    let (st, _) = h
-        .call("GET", "/api/devices/me", Some(&via_added), None)
-        .await;
-    assert_eq!(st, StatusCode::UNAUTHORIZED);
-    let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
-    assert_eq!(st, StatusCode::OK, "other passkeys' devices stay");
-
-    let (st, _) = h
-        .call(
-            "DELETE",
-            &format!("/api/passkeys/{laptop_passkey}"),
-            Some(&laptop),
-            None,
-        )
-        .await;
-    assert_eq!(st, StatusCode::CONFLICT, "the last passkey stays");
+        .unwrap();
+    let secret = base32_decode(&enrollment.secret_base32);
+    state
+        .account
+        .finish_setup(&enrollment.id, &code_now(&secret))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!file.exists());
 }
 
 #[tokio::test]

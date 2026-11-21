@@ -1,6 +1,6 @@
 //! Shared by the integration tests: an app on an in-memory store, requests
-//! through `oneshot`, and real WebAuthn ceremonies answered by
-//! webauthn-authenticator-rs's software passkey.
+//! through `oneshot`, and the account's setup and sign-in, with TOTP codes
+//! computed from the secret setup returns.
 
 #![allow(dead_code)]
 
@@ -9,6 +9,7 @@ pub mod pty;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -16,9 +17,7 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use webauthn_authenticator_rs::WebauthnAuthenticator;
-use webauthn_authenticator_rs::softpasskey::SoftPasskey;
-use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse, Url};
+use yarvis_server::auth::totp;
 use yarvis_server::config::Config;
 use yarvis_server::rate_limit::RateLimiter;
 use yarvis_server::store::Store;
@@ -27,9 +26,16 @@ use yarvis_server::{AppState, app};
 /// The default config's origin.
 pub const ORIGIN: &str = "http://localhost:7878";
 
+/// The passphrase [`Harness::setup`] signs up with.
+pub const PASSPHRASE: &str = "correct horse battery staple";
+
 pub struct Harness {
     pub state: AppState,
     pub setup_code: String,
+    /// The TOTP secret, once setup has run.
+    pub totp_secret: Mutex<Option<Vec<u8>>>,
+    /// The backup codes setup returned.
+    pub backup_codes: Mutex<Vec<String>>,
 }
 
 impl Harness {
@@ -59,12 +65,17 @@ impl Harness {
     async fn build(config: Config, store: Store) -> Self {
         let state = AppState::new(config, store);
         let setup_code = state
-            .passkeys
+            .account
             .issue_setup_code_if_needed(None)
             .await
             .unwrap()
             .unwrap_or_default();
-        Self { state, setup_code }
+        Self {
+            state,
+            setup_code,
+            totp_secret: Mutex::default(),
+            backup_codes: Mutex::default(),
+        }
     }
 
     pub async fn call(
@@ -95,69 +106,93 @@ impl Harness {
         )
     }
 
-    /// Runs a registration: start, let the authenticator answer, finish.
-    pub async fn register(
-        &self,
-        pk: &mut SoftPasskey,
-        path: &str,
-        token: Option<&str>,
-        start_body: Value,
-    ) -> (StatusCode, Value) {
-        let (status, start) = self
-            .call("POST", &format!("{path}/start"), token, Some(start_body))
-            .await;
-        assert_eq!(status, StatusCode::OK, "{path}/start: {start}");
-        let body = answer_registration(pk, &start);
-        self.call("POST", &format!("{path}/finish"), token, Some(body))
-            .await
-    }
-
-    /// Runs an assertion at `path` (`/api/auth/login` or `/api/auth/reverify`).
-    /// `extra` is merged into the finish body.
-    pub async fn assert_with(
-        &self,
-        pk: &mut SoftPasskey,
-        path: &str,
-        token: Option<&str>,
-        extra: Value,
-    ) -> (StatusCode, Value) {
-        let (status, start) = self
-            .call("POST", &format!("{path}/start"), token, None)
-            .await;
-        assert_eq!(status, StatusCode::OK, "{path}/start: {start}");
-        let options: RequestChallengeResponse =
-            serde_json::from_value(start["options"].clone()).unwrap();
-        let credential = pk
-            .do_authentication(Url::parse(ORIGIN).unwrap(), options)
-            .unwrap();
-        let mut body = json!({ "ceremonyId": start["ceremonyId"], "credential": credential });
-        if let (Some(body), Some(extra)) = (body.as_object_mut(), extra.as_object()) {
-            body.extend(extra.clone());
-        }
-        self.call("POST", &format!("{path}/finish"), token, Some(body))
-            .await
-    }
-
-    /// Registers the first passkey with the setup code. Returns the token.
-    pub async fn setup(&self, pk: &mut SoftPasskey) -> String {
+    /// Starts setup with the setup code and [`PASSPHRASE`]. Returns the
+    /// enrollment body.
+    pub async fn start_setup(&self) -> Value {
         let (status, body) = self
-            .register(
-                pk,
-                "/api/auth/setup",
+            .call(
+                "POST",
+                "/api/auth/setup/start",
                 None,
-                json!({ "code": self.setup_code, "deviceName": "laptop" }),
+                Some(json!({
+                    "code": self.setup_code,
+                    "passphrase": PASSPHRASE,
+                    "deviceName": "laptop",
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// Runs setup to the end. Returns the first device's token.
+    pub async fn setup(&self) -> String {
+        let enrollment = self.start_setup().await;
+        let secret = base32_decode(enrollment["secret"].as_str().unwrap());
+        let code = code_now(&secret);
+        let (status, body) = self
+            .call(
+                "POST",
+                "/api/auth/setup/finish",
+                None,
+                Some(json!({ "enrollmentId": enrollment["enrollmentId"], "code": code })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        *self.totp_secret.lock().unwrap() = Some(secret);
+        *self.backup_codes.lock().unwrap() = body["backupCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c.as_str().unwrap().to_string())
+            .collect();
+        body["token"].as_str().unwrap().to_string()
+    }
+
+    /// A code the server will accept now. Each code is good once, and tests
+    /// use several within one 30-second step, so the last accepted step is
+    /// forgotten first.
+    pub async fn code(&self) -> String {
+        self.state
+            .store
+            .call(|conn| conn.execute("UPDATE account SET totp_last_step = NULL", []))
+            .await
+            .unwrap();
+        code_now(
+            self.totp_secret
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("setup ran"),
+        )
+    }
+
+    pub async fn login(&self, name: &str) -> String {
+        let code = self.code().await;
+        let (status, body) = self
+            .call(
+                "POST",
+                "/api/auth/login",
+                None,
+                Some(json!({ "passphrase": PASSPHRASE, "code": code, "deviceName": name })),
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         body["token"].as_str().unwrap().to_string()
     }
 
-    pub async fn login(&self, pk: &mut SoftPasskey, name: &str) -> String {
+    /// Makes `token`'s device fresh again with a code.
+    pub async fn reverify(&self, token: &str) {
+        let code = self.code().await;
         let (status, body) = self
-            .assert_with(pk, "/api/auth/login", None, json!({ "deviceName": name }))
+            .call(
+                "POST",
+                "/api/auth/reverify",
+                Some(token),
+                Some(json!({ "code": code })),
+            )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        body["token"].as_str().unwrap().to_string()
     }
 
     /// Mints a token device. Returns its id and token.
@@ -210,18 +245,26 @@ impl Harness {
     }
 }
 
-pub fn answer_registration(pk: &mut SoftPasskey, start: &Value) -> Value {
-    let options: CreationChallengeResponse =
-        serde_json::from_value(start["options"].clone()).unwrap();
-    let credential = pk
-        .do_registration(Url::parse(ORIGIN).unwrap(), options)
-        .unwrap();
-    json!({ "ceremonyId": start["ceremonyId"], "credential": credential })
+/// The 6-digit code for the current 30-second step.
+pub fn code_now(secret: &[u8]) -> String {
+    let step = totp::step_at(yarvis_server::store::now_ms());
+    format!("{:06}", totp::code_at(secret, step, totp::DIGITS))
 }
 
-/// A software passkey that claims user verification, as Touch ID would.
-pub fn authenticator() -> SoftPasskey {
-    SoftPasskey::new(true)
+/// RFC 4648 base32, as setup returns the secret.
+pub fn base32_decode(text: &str) -> Vec<u8> {
+    const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let (mut buffer, mut bits, mut out) = (0u32, 0u32, Vec::new());
+    for c in text.chars() {
+        let value = ALPHABET.find(c).expect("a base32 character") as u32;
+        buffer = (buffer << 5) | value;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+        }
+    }
+    out
 }
 
 /// How long a test waits for something it expects before failing. Generous,
