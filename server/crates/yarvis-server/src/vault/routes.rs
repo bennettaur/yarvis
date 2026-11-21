@@ -61,9 +61,9 @@ fn vault_error(e: VaultError) -> ApiError {
         VaultError::AlreadyUnlocked => ApiError::conflict("the vault is already unlocked"),
         VaultError::Uninitialized => ApiError::conflict("there is no vault yet")
             .with_detail("run `yarvis-server vault init` on the server"),
-        VaultError::WrongKey => {
-            ApiError::new(StatusCode::UNAUTHORIZED, "that key doesn't open the vault")
-        }
+        // 403, not 401: a 401 tells the client its token is no good, and it
+        // signs out.
+        VaultError::WrongKey => ApiError::new(StatusCode::FORBIDDEN, "that doesn't open the vault"),
         other => ApiError::internal(other),
     }
 }
