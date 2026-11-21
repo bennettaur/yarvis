@@ -355,3 +355,40 @@ async fn the_requester_and_the_answer_agree_when_an_answer_races_the_timeout() {
         }
     }
 }
+
+/// A second connection writing (a CLI run beside the server) makes the sweep
+/// wait for the lock rather than fail. A transaction that reads and then
+/// writes can't wait once it holds a read in WAL mode, so the sweep has to
+/// take the write lock up front.
+#[tokio::test]
+async fn the_restart_sweep_waits_for_another_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let store = Store::open(&path).unwrap();
+    let approvals = Approvals::new(store.clone(), EventLog::new(store));
+    let _pending = tokio::spawn({
+        let approvals = approvals.clone();
+        async move {
+            approvals
+                .request("test", "left over", json!({}), Duration::from_secs(600))
+                .await
+        }
+    });
+    until("the approval to be stored", || async {
+        (!approvals.pending().await.unwrap().is_empty()).then_some(())
+    })
+    .await;
+
+    let after = Store::open(&path).unwrap();
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let sweep = tokio::spawn(async move {
+        Approvals::new(after.clone(), EventLog::new(after))
+            .deny_orphaned()
+            .await
+    });
+    // Holds the lock long enough for the sweep to run into it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    writer.execute_batch("COMMIT").unwrap();
+    assert_eq!(sweep.await.unwrap().unwrap(), 1);
+}

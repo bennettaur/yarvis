@@ -231,7 +231,8 @@ impl Approvals {
         let ids: Vec<String> = self
             .store
             .call(move |conn| {
-                let tx = conn.transaction()?;
+                let tx =
+                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let ids = {
                     let mut stmt =
                         tx.prepare("SELECT id FROM approvals WHERE status = 'pending'")?;
