@@ -89,9 +89,10 @@ enum Methods {
 /// `terminal`: routes that write into worktrees, run git on them (merge,
 /// archive), clone a PR, or start a process there (a setup script, a Claude
 /// Code session or run). A planted file or script runs as the server's user,
-/// as a shell would. Workspace writes are `terminal` unless listed as `chat`
-/// first, so a route added later fails closed; the `chat` ones only change
-/// rows (names, links, comments).
+/// as a shell would, and so does text an agent reads as the user's request (a
+/// review comment, a heads-down pass's instructions). Workspace writes are
+/// `terminal` unless listed as `chat` first, so a route added later fails
+/// closed; the `chat` ones only change rows (names, links).
 ///
 /// `admin`: routes that change what the sidecar or its agents may do: MCP
 /// servers (a stdio server is a command the sidecar runs), LLM providers and
@@ -111,35 +112,40 @@ const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
         Methods::Writes,
         Scope::Terminal,
     ),
+    // Exact paths (`$`), so a route nested under one later still fails closed.
     ("/api/workspaces/*$", Methods::Writes, Scope::Chat),
     (
-        "/api/workspaces/*/ignore-error",
-        Methods::Writes,
-        Scope::Chat,
-    ),
-    ("/api/workspaces/*/prs/detect", Methods::Writes, Scope::Chat),
-    (
-        "/api/workspaces/*/repos/*/prs",
+        "/api/workspaces/*/prs/detect$",
         Methods::Writes,
         Scope::Chat,
     ),
     (
-        "/api/workspaces/*/review-comments",
+        "/api/workspaces/*/repos/*/prs$",
         Methods::Writes,
         Scope::Chat,
     ),
-    ("/api/workspaces/*/tasks", Methods::Writes, Scope::Chat),
-    ("/api/workspaces/*/issues", Methods::Writes, Scope::Chat),
-    ("/api/workspaces/*/agent/stop", Methods::Writes, Scope::Chat),
+    (
+        "/api/workspaces/*/repos/*/prs/*$",
+        Methods::Writes,
+        Scope::Chat,
+    ),
+    ("/api/workspaces/*/tasks$", Methods::Writes, Scope::Chat),
+    ("/api/workspaces/*/tasks/*$", Methods::Writes, Scope::Chat),
+    ("/api/workspaces/*/issues$", Methods::Writes, Scope::Chat),
+    (
+        "/api/workspaces/*/agent/stop$",
+        Methods::Writes,
+        Scope::Chat,
+    ),
     ("/api/workspaces", Methods::Writes, Scope::Terminal),
     ("/api/review-workspaces/*$", Methods::Writes, Scope::Chat),
     (
-        "/api/review-workspaces/*/open",
+        "/api/review-workspaces/*/open$",
         Methods::Writes,
         Scope::Chat,
     ),
     (
-        "/api/review-workspaces/*/prs/*/review-mark",
+        "/api/review-workspaces/*/prs/*/review-mark$",
         Methods::Writes,
         Scope::Chat,
     ),
@@ -159,6 +165,10 @@ const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
         Methods::Writes,
         Scope::Terminal,
     ),
+    // A heads-down pass sends instructions into workspace sessions unasked.
+    ("/api/heads-down/start", Methods::Writes, Scope::Terminal),
+    ("/api/heads-down/resume", Methods::Writes, Scope::Terminal),
+    ("/api/heads-down/messages", Methods::Writes, Scope::Terminal),
     ("/api/chat/approvals", Methods::Writes, Scope::Approve),
     (
         "/api/attention/permissions",
@@ -241,11 +251,10 @@ pub async fn proxy(State(state): State<AppState>, request: Request) -> Response 
 
 async fn forward(state: AppState, request: Request) -> Result<Response, ApiError> {
     let path_and_query = upstream_path(request.uri()).ok_or_else(ApiError::not_found)?;
-    let path = path_and_query
-        .split('?')
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    // Scopes are matched on the decoded path, since the sidecar's router
+    // decodes it before routing: `/api/%77orkspaces` reaches `/api/workspaces`.
+    let raw_path = path_and_query.split('?').next().unwrap_or_default();
+    let path = decoded_path(raw_path).ok_or_else(ApiError::not_found)?;
     let (mut parts, body) = request.into_parts();
     if is_websocket_upgrade(&parts.headers) {
         let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &state)
@@ -350,19 +359,44 @@ async fn until_revoked(mut revoked: broadcast::Receiver<String>, device_id: Stri
 fn upstream_path(uri: &Uri) -> Option<String> {
     let rest = uri.path().strip_prefix("/api/sidecar")?;
     let allowed = rest == "/health" || rest.starts_with("/api/");
-    let lowered = rest.to_ascii_lowercase();
-    let dotted = lowered.split('/').any(|segment| {
-        let decoded = segment.replace("%2e", ".");
-        decoded == "." || decoded == ".."
-    });
-    let encoded_separator = lowered.contains("%2f") || lowered.contains("%5c");
-    if !allowed || dotted || encoded_separator || rest.contains('\\') || rest.contains("//") {
+    if !allowed || rest.contains("//") || decoded_path(rest).is_none() {
         return None;
     }
     Some(match uri.query() {
         Some(query) => format!("{rest}?{query}"),
         None => rest.to_string(),
     })
+}
+
+/// `path` with each segment percent-decoded, or `None` for an encoding that
+/// isn't valid UTF-8, a dot segment, or a separator hidden inside a segment.
+fn decoded_path(path: &str) -> Option<String> {
+    let segments = path
+        .split('/')
+        .map(|segment| {
+            let decoded = percent_decode(segment)?;
+            let hidden_separator = decoded.contains('/') || decoded.contains('\\');
+            (!hidden_separator && decoded != "." && decoded != "..").then_some(decoded)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(segments.join("/"))
+}
+
+fn percent_decode(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
@@ -718,6 +752,13 @@ mod tests {
             (Method::POST, "/api/issues/github/start-work"),
             (Method::POST, "/api/jira/start-work"),
             (Method::POST, "/api/azure-boards/start-work"),
+            (Method::POST, "/api/workspaces/w1/ignore-error"),
+            (Method::POST, "/api/workspaces/w1/review-comments"),
+            (Method::PATCH, "/api/workspaces/w1/review-comments/c1"),
+            (Method::POST, "/api/workspaces/w1/repos/r1/prs/12/checkout"),
+            (Method::POST, "/api/heads-down/start"),
+            (Method::POST, "/api/heads-down/resume"),
+            (Method::POST, "/api/heads-down/messages"),
         ] {
             assert_eq!(required_scope(&method, path), Scope::Terminal, "{path}");
         }
@@ -728,13 +769,11 @@ mod tests {
     fn workspace_bookkeeping_stays_chat() {
         for (method, path) in [
             (Method::PATCH, "/api/workspaces/w1"),
-            (Method::POST, "/api/workspaces/w1/ignore-error"),
             (Method::POST, "/api/workspaces/w1/prs/detect"),
             (Method::POST, "/api/workspaces/w1/repos/r1/prs"),
             (Method::DELETE, "/api/workspaces/w1/repos/r1/prs/12"),
-            (Method::POST, "/api/workspaces/w1/review-comments"),
-            (Method::DELETE, "/api/workspaces/w1/review-comments/c1"),
             (Method::POST, "/api/workspaces/w1/tasks"),
+            (Method::DELETE, "/api/workspaces/w1/tasks/t1"),
             (Method::DELETE, "/api/workspaces/w1/issues"),
             (Method::POST, "/api/workspaces/w1/agent/stop"),
             (Method::PATCH, "/api/review-workspaces/w1"),
@@ -756,6 +795,31 @@ mod tests {
             required_scope(&Method::POST, "/api/jira/issue/K-1/comment"),
             Scope::Chat
         );
+    }
+
+    /// The sidecar's router decodes the path before routing, so an encoded
+    /// letter must not slip a request past its rule.
+    #[test]
+    fn rules_match_the_decoded_path() {
+        assert_eq!(
+            decoded_path("/api/%77orkspaces/w1/archive").as_deref(),
+            Some("/api/workspaces/w1/archive")
+        );
+        assert_eq!(
+            decoded_path("/api/%6dcp/servers").as_deref(),
+            Some("/api/mcp/servers")
+        );
+        // Bad encodings, hidden separators and dot segments are refused.
+        for bad in [
+            "/api/x%zz",
+            "/api/x%e2",
+            "/api/a%2fb",
+            "/api/a%5Cb",
+            "/api/%2e%2e/x",
+            "/api/./x",
+        ] {
+            assert_eq!(decoded_path(bad), None, "{bad}");
+        }
     }
 
     #[test]
