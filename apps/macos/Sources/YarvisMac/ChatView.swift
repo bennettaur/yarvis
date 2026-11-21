@@ -61,7 +61,7 @@ struct ChatView: View {
                     .padding(.horizontal, 16).padding(.bottom, 4)
             }
             if let front = chat.approvals.first {
-                ToolApprovalBar(request: front, waiting: chat.approvals.count - 1) { approved in
+                ToolApprovalBar(request: front, waitingCount: chat.approvals.count - 1) { approved in
                     chat.answer(front, approved: approved)
                 }
             }
@@ -171,9 +171,11 @@ struct ToolActivityList: View {
 /// The front of the approval queue, like the web's `ToolApprovalBar`.
 struct ToolApprovalBar: View {
     let request: ToolApprovalRequest
-    let waiting: Int
+    let waitingCount: Int
     let answer: (Bool) -> Void
     @State private var showArgs = false
+
+    private var hasReason: Bool { !(request.reason ?? "").isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -181,19 +183,24 @@ struct ToolApprovalBar: View {
                 Text("Approve?").bold()
                 Text(request.name).font(.body.monospaced())
                 if let server = request.server, !server.isEmpty { Text("on \(server)").foregroundStyle(.secondary) }
-                if waiting > 0 { Text("+\(waiting) waiting").font(.caption).foregroundStyle(.secondary) }
+                if waitingCount > 0 { Text("+\(waitingCount) waiting").font(.caption).foregroundStyle(.secondary) }
                 Spacer()
-                Button("Deny") { answer(false) }
-                Button("Approve") { answer(true) }.buttonStyle(.borderedProminent)
+                Group {
+                    Button("Deny") { answer(false) }
+                    Button("Approve") { answer(true) }.buttonStyle(.borderedProminent)
+                }
+                .armedAfterAppearing(id: request.id)
             }
             // A URL is shown in full, since where a call goes is what matters most.
             if let url = request.args?["url"]?.stringValue {
                 Text(url).font(.caption.monospaced()).textSelection(.enabled)
             }
-            if let reason = request.reason, !reason.isEmpty {
+            if hasReason, let reason = request.reason {
                 Text("The assistant says: \(reason)").font(.callout).foregroundStyle(.secondary)
             }
-            DisclosureGroup("Arguments", isExpanded: Binding(get: { showArgs || request.reason != nil },
+            // A stated reason is the model's claim, so the arguments it
+            // describes stay in view to check it against.
+            DisclosureGroup("Arguments", isExpanded: Binding(get: { showArgs || hasReason },
                                                              set: { showArgs = $0 })) {
                 ScrollView {
                     Text(request.args?.prettyPrinted ?? "{}").font(.caption.monospaced()).textSelection(.enabled)
@@ -205,5 +212,29 @@ struct ToolApprovalBar: View {
         .padding(12)
         .background(.yellow.opacity(0.12))
         .id(request.id)
+    }
+}
+
+extension View {
+    /// Disables approve and deny buttons for a moment after a new request
+    /// takes their place, as the web's bar arms its keys, so a double click
+    /// can't answer one the user never saw.
+    func armedAfterAppearing(id: String) -> some View {
+        modifier(ArmedAfterAppearing(id: id))
+    }
+}
+
+private struct ArmedAfterAppearing: ViewModifier {
+    let id: String
+    @State private var armed = false
+
+    func body(content: Content) -> some View {
+        content
+            .disabled(!armed)
+            .task(id: id) {
+                armed = false
+                try? await Task.sleep(for: .milliseconds(400))
+                armed = true
+            }
     }
 }

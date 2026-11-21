@@ -42,6 +42,7 @@ final class AppModel {
     private var eventsTask: Task<Void, Never>?
 
     private static let serverKey = "serverURL"
+    static let revokedMessage = "This device was signed out by the server."
 
     var lastServer: String { UserDefaults.standard.string(forKey: Self.serverKey) ?? "" }
 
@@ -65,7 +66,7 @@ final class AppModel {
 
     private func connect(server: URL, token: String, device: Device?) {
         let client = YarvisClient(baseURL: server, token: token) { [weak self] in
-            Task { @MainActor in self?.signOut(reason: "This device was signed out by the server.") }
+            Task { @MainActor in self?.signOut(reason: Self.revokedMessage) }
         }
         self.server = server
         self.client = client
@@ -90,7 +91,7 @@ final class AppModel {
                 switch update {
                 case .event(let e): self.handle(e)
                 case .lagged: self.attention?.reloadApprovals()
-                case .signedOut: self.signOut(reason: "This device was signed out by the server.")
+                case .signedOut: self.signOut(reason: Self.revokedMessage)
                 case .refused, .disconnected: break
                 }
             }
@@ -149,7 +150,7 @@ final class AppModel {
 
     /// Runs an action, asking for a code and retrying once if the server
     /// wants a fresh check.
-    func fresh<T: Sendable>(_ action: @Sendable () async throws -> T) async throws -> T {
+    func withFreshCode<T: Sendable>(_ action: @Sendable () async throws -> T) async throws -> T {
         guard let client else { throw YarvisError.unauthorized }
         return try await client.withFreshCode({ await self.askForCode(refusal: $0) }, action)
     }

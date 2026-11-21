@@ -36,6 +36,19 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
             return Self.handlers[id]
         }
         let (status, data) = handler?(request, body) ?? (500, Data())
+        // A 3xx whose body is a URL redirects there, so the session's
+        // redirect policy runs as it would for a real server.
+        if (300..<400).contains(status), let target = URL(string: String(decoding: data, as: UTF8.self)) {
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                                           headerFields: ["Location": target.absoluteString])!
+            var next = URLRequest(url: target)
+            next.allHTTPHeaderFields = request.allHTTPHeaderFields
+            client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: response)
+            // A refused redirect ends with the 3xx itself, as a real load would.
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
                                        headerFields: ["Content-Type": "application/json"])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)

@@ -124,6 +124,7 @@ final class Recorder: @unchecked Sendable {
         let client = YarvisClient(baseURL: base, token: "t", session: session)
         let approvals = try await client.withFreshCode({ _ in "654321" }) { try await client.approvals() }
         #expect(approvals.isEmpty)
+        #expect(calls.value == 2)
         let paths = StubProtocol.recorded(id).map { $0.0.url!.path }
         #expect(paths == ["/api/approvals", "/api/auth/reverify", "/api/approvals"])
         #expect(bodyJSON(StubProtocol.recorded(id)[1].1) == .object(["code": .string("654321")]))
@@ -151,6 +152,71 @@ final class Recorder: @unchecked Sendable {
         }) { try await client.approvals() }
         #expect(refusals.values == [nil, "wrong code: enter the code your authenticator app shows now"])
         #expect(lost.value == 0)
+    }
+
+    @Test func cancellingTheSecondPromptKeepsTheRefusal() async throws {
+        let (session, id) = StubProtocol.session { req, _ in
+            req.url?.path == "/api/auth/reverify"
+                ? (403, json(#"{"error":"wrong code"}"#))
+                : (403, json(#"{"error":"reauth_required"}"#))
+        }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        let prompts = Recorder()
+        await #expect(throws: YarvisError.reauthRequired) {
+            try await client.withFreshCode({ refusal in
+                prompts.add(refusal)
+                return refusal == nil ? "111111" : nil
+            }) { try await client.approvals() }
+        }
+        #expect(prompts.values == [nil, "wrong code"])
+        #expect(StubProtocol.recorded(id).map { $0.0.url!.path } == ["/api/approvals", "/api/auth/reverify"])
+    }
+
+    @Test func otherReverifyRefusalsDontAskAgain() async throws {
+        let (session, _) = StubProtocol.session { req, _ in
+            req.url?.path == "/api/auth/reverify"
+                ? (429, json(#"{"error":"too many tries"}"#))
+                : (403, json(#"{"error":"reauth_required"}"#))
+        }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        let prompts = Recorder()
+        await #expect(throws: YarvisError.http(status: 429, error: "too many tries", detail: nil)) {
+            try await client.withFreshCode({ refusal in
+                prompts.add(refusal)
+                return "111111"
+            }) { try await client.approvals() }
+        }
+        #expect(prompts.values.count == 1)
+    }
+
+    @Test func keepsQueryStringsAndEncodesSessionKeys() async throws {
+        let (session, id) = StubProtocol.session { _, _ in (200, json("[]")) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        _ = try await client.attentionItems()
+        _ = try await client.chatProviders()
+        _ = try await client.permissionRequests(sessionKey: "ws:w1/t1 p")
+        let urls = StubProtocol.recorded(id).map { $0.0.url! }
+        #expect(urls[0].query == "status=pending")
+        #expect(urls[1].query == "capability=chat")
+        #expect(urls[2].path == "/api/sidecar/api/attention/permissions")
+        #expect(urls[2].query == "sessionKey=ws%3Aw1%2Ft1%20p")
+    }
+
+    @Test func followsRedirectsOnlyWithinTheServersOrigin() async throws {
+        let me = json(#"{"deviceId":"d","name":"n","scopes":[]}"#)
+        let (session, id) = StubProtocol.session { req, _ in
+            switch req.url?.path {
+            case "/api/devices/me": return (307, Data("https://yarvis.example.ts.net/api/devices/me2".utf8))
+            case "/api/devices/me2": return (200, me)
+            default: return (307, Data("https://elsewhere.example/steal".utf8))
+            }
+        }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        #expect(try await client.me().deviceId == "d")
+        await #expect(throws: YarvisError.self) { try await client.approvals() }
+        let hosts = StubProtocol.recorded(id).map { $0.0.url!.host! }
+        #expect(hosts.count == 3)
+        #expect(hosts.allSatisfy { $0 == "yarvis.example.ts.net" })
     }
 
     @Test func cancellingTheCodePromptKeepsTheRefusal() async throws {
@@ -286,9 +352,13 @@ final class Recorder: @unchecked Sendable {
         for try await e in try client.sendChat(ChatTurn(sessionId: "s1", message: "hi", provider: "anthropic", model: "m")) {
             events.append(e)
         }
-        #expect(events.first == .delta("Hel"))
-        #expect(events.last == .done)
-        #expect(events.count == 5)
+        #expect(events == [
+            .delta("Hel"),
+            .toolCall(ToolActivity(id: "c1", name: "recall", args: .object([:]), status: "pending")),
+            .toolResult(id: "c1", status: "ok", result: "none", durationMs: nil),
+            .delta("lo"),
+            .done,
+        ])
         let (req, body) = try #require(StubProtocol.recorded(id).first)
         #expect(req.url?.path == "/api/sidecar/api/chat")
         #expect(req.value(forHTTPHeaderField: "Accept") == "text/event-stream")
@@ -318,5 +388,206 @@ final class Recorder: @unchecked Sendable {
         #expect(defaultChatModel(providers, savedProvider: "gone", savedModel: "a2")! == ("anthropic", "a2"))
         #expect(defaultChatModel(providers, savedProvider: "gone", savedModel: "b1")! == ("anthropic", "a1"))
         #expect(defaultChatModel([], savedProvider: nil, savedModel: nil) == nil)
+    }
+}
+
+@Suite struct QuestionLookupTests {
+    func item(sessionKey: String?, payload: JSONValue?) -> AttentionItem {
+        AttentionItem(id: "i", seq: 1, source: "system", sessionKey: sessionKey, workspaceId: nil, kind: "question",
+                      title: "t", body: nil, status: "pending", navTarget: nil, payload: payload,
+                      createdAt: "a", updatedAt: "b")
+    }
+
+    static let question = #"{"id":"q1","sessionKey":null,"workspaceId":null,"context":{"task":"x"},"questions":[],"status":"STATUS","createdAt":"a"}"#
+
+    @Test func bySessionKey() async throws {
+        let (session, id) = StubProtocol.session { _, _ in (200, json("[\(Self.question.replacingOccurrences(of: "STATUS", with: "pending"))]")) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        let found = try await client.questions(for: item(sessionKey: "ws-claude:w1", payload: nil))
+        #expect(found.map(\.id) == ["q1"])
+        #expect(StubProtocol.recorded(id).first?.0.url?.query == "sessionKey=ws%2Dclaude%3Aw1")
+    }
+
+    @Test func byPayloadIdOnlyWhilePending() async throws {
+        for (status, expected) in [("pending", ["q1"]), ("answered", [])] {
+            let (session, id) = StubProtocol.session { _, _ in (200, json(Self.question.replacingOccurrences(of: "STATUS", with: status))) }
+            let client = YarvisClient(baseURL: base, token: "t", session: session)
+            let found = try await client.questions(for: item(sessionKey: nil, payload: .object(["questionId": .string("q1")])))
+            #expect(found.map(\.id) == expected)
+            #expect(StubProtocol.recorded(id).first?.0.url?.path == "/api/sidecar/api/questions/q1")
+        }
+    }
+
+    @Test func nothingToLookUp() async throws {
+        let (session, id) = StubProtocol.session { _, _ in (500, Data()) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        #expect(try await client.questions(for: item(sessionKey: nil, payload: nil)).isEmpty)
+        #expect(StubProtocol.recorded(id).isEmpty)
+    }
+}
+
+@Suite struct StreamAuthTests {
+    @Test func a401OnAStreamSignsOut() async throws {
+        let (session, _) = StubProtocol.session { _, _ in (401, json(#"{"error":"sign in first"}"#)) }
+        let lost = Counter()
+        let client = YarvisClient(baseURL: base, token: "t", session: session, onUnauthorized: { lost.bump() })
+        await #expect(throws: YarvisError.unauthorized) {
+            for try await _ in try client.attentionStream() {}
+        }
+        #expect(lost.value == 1)
+    }
+
+    /// Stop works by cancelling the consumer; the stream must then end
+    /// quietly, which is how the app tells a stop from a failure.
+    @Test(.timeLimit(.minutes(1))) func cancellingAStreamEndsItWithoutAnError() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NeverEndingSSE.self]
+        let client = YarvisClient(baseURL: base, token: "t", session: URLSession(configuration: config))
+        let stream = try client.sendChat(ChatTurn(sessionId: "s", message: "m", provider: "p", model: "x"))
+        let (firstSeen, seen) = AsyncStream.makeStream(of: Void.self)
+        let consumer = Task {
+            var events: [ChatStreamEvent] = []
+            for try await e in stream {
+                events.append(e)
+                seen.yield()
+            }
+            return events
+        }
+        for await _ in firstSeen { break }
+        consumer.cancel()
+        #expect(try await consumer.value == [.delta("Hel")])
+    }
+}
+
+/// Sends one SSE event and then holds the response open.
+final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "text/event-stream"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("data: {\"type\":\"delta\",\"text\":\"Hel\"}\n\n".utf8))
+    }
+    override func stopLoading() {}
+}
+
+@Suite struct LiveTurnTests {
+    @Test func toolResultsUpdateTheirCall() {
+        var t = LiveTurn()
+        t.apply(.toolCall(ToolActivity(id: "c1", name: "recall", status: "pending")))
+        t.apply(.toolResult(id: "c1", status: "ok", result: "3 hits", durationMs: 4))
+        t.apply(.toolResult(id: "nope", status: "error", result: nil, durationMs: nil))
+        #expect(t.tools == [ToolActivity(id: "c1", name: "recall", status: "ok", result: "3 hits", durationMs: 4)])
+    }
+
+    @Test func aSavedTurnKeepsItsReplyUntilReloaded() {
+        var t = LiveTurn()
+        t.apply(.delta("Hi"))
+        t.apply(.approvalRequest(ToolApprovalRequest(id: "a", name: "merge")))
+        #expect(t.finish(cancelled: false) == .saved)
+        #expect(t.reply == "Hi")
+        #expect(t.approvals.isEmpty)
+    }
+
+    @Test func aFailedTurnDropsTheReplyAndKeepsTheTools() {
+        var t = LiveTurn()
+        t.apply(.toolCall(ToolActivity(id: "c1", name: "recall", status: "pending")))
+        t.apply(.delta("partial"))
+        t.apply(.error(message: "The model refused.", detail: "Try another."))
+        #expect(t.finish(cancelled: false) == .failed("The model refused. Try another."))
+        #expect(t.reply.isEmpty)
+        #expect(t.tools.count == 1)
+    }
+
+    @Test func aStoppedTurnIsANoticeNotAFailure() {
+        var t = LiveTurn()
+        t.apply(.delta("partial"))
+        #expect(t.finish(cancelled: true) == .stopped)
+        #expect(t.reply.isEmpty)
+    }
+
+    @Test func answeringRemovesFromTheFront() {
+        var t = LiveTurn()
+        t.apply(.approvalRequest(ToolApprovalRequest(id: "a", name: "x")))
+        t.apply(.approvalRequest(ToolApprovalRequest(id: "b", name: "y")))
+        t.answered("a")
+        #expect(t.approvals.map(\.id) == ["b"])
+    }
+}
+
+@Suite struct AttentionInboxTests {
+    func item(_ id: String, seq: Int64, status: String = "pending") -> AttentionItem {
+        AttentionItem(id: id, seq: seq, source: "claude-hook", sessionKey: nil, workspaceId: nil, kind: "idle",
+                      title: id, body: nil, status: status, navTarget: nil, payload: nil, createdAt: "a", updatedAt: "b")
+    }
+
+    func approval(_ id: String) -> Approval {
+        Approval(id: id, kind: "git.sign", summary: "Sign", data: .object([:]), createdAt: 1, expiresAt: 2)
+    }
+
+    @Test func whatWasWaitingAtLaunchIsNotNews() {
+        var inbox = AttentionInbox()
+        #expect(inbox.loadItems([item("a", seq: 1)]).isEmpty)
+        #expect(inbox.loadApprovals([approval("g1")]).isEmpty)
+        #expect(inbox.loadItems([item("a", seq: 1), item("b", seq: 2)]).map(\.id) == ["b"])
+        #expect(inbox.loadApprovals([approval("g1"), approval("g2")]).map(\.id) == ["g2"])
+        #expect(inbox.count == 4)
+    }
+
+    @Test func aRepromptUpdatesTheRowWithoutNotifyingTwice() {
+        var inbox = AttentionInbox()
+        _ = inbox.loadItems([])
+        #expect(inbox.apply(item("a", seq: 3))?.id == "a")
+        var again = item("a", seq: 3)
+        again.body = "asked again"
+        #expect(inbox.apply(again) == nil)
+        #expect(inbox.items.map(\.body) == ["asked again"])
+    }
+
+    @Test func aRowThatIsNoLongerPendingLeaves() {
+        var inbox = AttentionInbox()
+        _ = inbox.loadItems([item("a", seq: 1), item("b", seq: 2)])
+        #expect(inbox.apply(item("a", seq: 1, status: "resolved")) == nil)
+        #expect(inbox.items.map(\.id) == ["b"])
+    }
+
+    @Test func newestFirst() {
+        var inbox = AttentionInbox()
+        _ = inbox.loadItems([item("a", seq: 1), item("c", seq: 5)])
+        _ = inbox.apply(item("b", seq: 3))
+        #expect(inbox.items.map(\.id) == ["c", "b", "a"])
+    }
+}
+
+@Suite struct MarkdownBlockTests {
+    @Test func splitsCodeHeadingsAndText() {
+        let blocks = MarkdownBlock.parse("""
+        ## Plan
+        Run **this**:
+
+          ```sh
+        make test
+        ```
+        #notaheading stays text
+        """)
+        #expect(blocks == [.heading("Plan"), .text("Run **this**:"), .code("make test"), .text("#notaheading stays text")])
+    }
+
+    @Test func anUnclosedFenceIsStillCode() {
+        #expect(MarkdownBlock.parse("Here:\n```\nlet x") == [.text("Here:"), .code("let x")])
+    }
+}
+
+@Suite struct SessionIdTests {
+    @Test func paneIdsHaveAKnownShape() {
+        #expect(isTerminalPaneId("tab:terminal/t1/p1", workspaceIds: []))
+        #expect(isTerminalPaneId("ws:w1/t1/p1", workspaceIds: ["w1"]))
+        #expect(!isTerminalPaneId("ws:w2/t1/p1", workspaceIds: ["w1"]))
+        #expect(!isTerminalPaneId("ws-claude:w1", workspaceIds: ["w1"]))
+        #expect(!isTerminalPaneId("tab:terminal/t1", workspaceIds: []))
+        #expect(!isTerminalPaneId("tab:terminal//p1", workspaceIds: []))
+        #expect(!isTerminalPaneId("review-claude:x/y/z", workspaceIds: []))
+        #expect(WorkspaceSummary.agentSessionId(workspaceId: "w1") == "ws-claude:w1")
     }
 }

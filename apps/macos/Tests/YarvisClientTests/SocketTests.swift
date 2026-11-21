@@ -38,6 +38,16 @@ import Testing
         #expect(first.hello == .object(["type": .string("auth"), "token": .string("tok")]))
         #expect(second.hello?["since"] == .number(6))
         #expect(sleeper.waits == [.seconds(1)])
+        #expect(opener.urls.count == 2)
+    }
+
+    @Test func startsFromAGivenSeq() async throws {
+        let socket = FakeSocket([.close(4401)])
+        let stream = EventStream(baseURL: base, token: "t", since: 41, opener: FakeOpener([socket]),
+                                 sleep: RecordingSleeper().sleeper)
+        await stream.start()
+        _ = await collect(stream.updates)
+        #expect(socket.hello?["since"] == .number(41))
     }
 
     @Test func laggedReloadsAndReconnectsFromNow() async throws {
@@ -55,6 +65,7 @@ import Testing
         #expect(second.hello?["since"] == nil)
         // A lagged reconnect is immediate; there's nothing to back off from.
         #expect(sleeper.waits.isEmpty)
+        #expect(opener.urls.count == 2)
     }
 
     @Test func backsOffLongerOnEachFailureUntilAnEventArrives() async throws {
@@ -65,11 +76,13 @@ import Testing
             FakeSocket([.close(4400)]),
         ]
         let sleeper = RecordingSleeper()
-        let stream = EventStream(baseURL: base, token: "t", opener: FakeOpener(sockets), sleep: sleeper.sleeper)
+        let opener = FakeOpener(sockets)
+        let stream = EventStream(baseURL: base, token: "t", opener: opener, sleep: sleeper.sleeper)
         await stream.start()
         let updates = await collect(stream.updates)
 
         #expect(sleeper.waits == [.seconds(1), .seconds(2), .seconds(1)])
+        #expect(opener.urls.count == 4)
         #expect(updates.last == .refused(code: 4400))
     }
 }
@@ -151,13 +164,51 @@ private func output(_ offset: UInt64, _ s: String) -> FakeSocket.Step {
         #expect(second.hello?["offset"] == .number(9))
     }
 
+    @Test func aSnapshotOnReconnectResetsTheScreenAgain() async throws {
+        let first = FakeSocket([attached("snapshot", start: 0, end: 3), output(0, "old")])
+        // The server lost offset 3, so it sends what it kept instead.
+        let second = FakeSocket([
+            attached("snapshot", start: 50, end: 53), output(50, "new"),
+            .message(.text(#"{"type":"exit","code":null}"#)), .close(1000),
+        ])
+        let pty = PtyConnection(baseURL: base, token: "t", sessionId: "x", cols: 80, rows: 24,
+                                opener: FakeOpener([first, second]), sleep: RecordingSleeper().sleeper)
+        await pty.start()
+        let updates = await collect(pty.updates)
+        #expect(updates == [.reset, .output(Data("old".utf8)), .reconnecting, .reset, .output(Data("new".utf8)),
+                            .exit(code: nil)])
+        #expect(second.hello?["offset"] == .number(3))
+    }
+
+    @Test func aResyncMidStreamReplacesTheScreen() async throws {
+        let socket = FakeSocket([
+            attached("resume", start: 0, end: 2), output(0, "ab"),
+            .message(.text(#"{"type":"resync","clientId":1,"mode":"snapshot","startOffset":90,"endOffset":92,"lostBytes":88,"cols":80,"rows":24,"owner":1}"#)),
+            output(90, "yz"), .message(.text(#"{"type":"exit","code":0}"#)), .close(1000),
+        ])
+        let pty = PtyConnection(baseURL: base, token: "t", sessionId: "x", cols: 80, rows: 24,
+                                opener: FakeOpener([socket]), sleep: RecordingSleeper().sleeper)
+        await pty.start()
+        #expect(await collect(pty.updates) == [.output(Data("ab".utf8)), .reset, .output(Data("yz".utf8)), .exit(code: 0)])
+    }
+
+    @Test func anAgentThatStoppedIsNotReattached() async throws {
+        let opener = FakeOpener([FakeSocket([attached("snapshot", start: 0, end: 2), output(0, "hi")])])
+        let pty = PtyConnection(baseURL: base, token: "t", sessionId: "ws-claude:w1", cols: 80, rows: 24,
+                                mayReconnect: { false }, opener: opener, sleep: RecordingSleeper().sleeper)
+        await pty.start()
+        let updates = await collect(pty.updates)
+        #expect(updates == [.reset, .output(Data("hi".utf8)), .reconnecting, .refused(code: 1000)])
+        #expect(opener.urls.count == 1)
+    }
+
     @Test func aRefusalEndsTheConnection() async throws {
         let socket = FakeSocket([.message(.text(#"{"type":"error","error":"too many sessions"}"#)), .close(4400)])
         let pty = PtyConnection(baseURL: base, token: "t", sessionId: "x", cols: 80, rows: 24,
                                 opener: FakeOpener([socket]), sleep: RecordingSleeper().sleeper)
         await pty.start()
         let updates = await collect(pty.updates)
-        #expect(updates == [.error("too many sessions"), .closed(code: 4400)])
+        #expect(updates == [.error("too many sessions"), .refused(code: 4400)])
     }
 
     @Test func a4401SignsOut() async throws {

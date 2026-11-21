@@ -143,10 +143,11 @@ public actor PtyConnection {
         case output(Data)
         case size(cols: UInt16, rows: UInt16, owner: UInt64?)
         case exit(code: Int?)
-        /// The server refused the attach. The connection has ended.
+        /// The server refused the attach; `refused(4400)` follows.
         case error(String)
         case signedOut
-        case closed(code: Int)
+        /// 4400 or 4403. The connection has ended.
+        case refused(code: Int)
         case reconnecting
     }
 
@@ -163,10 +164,15 @@ public actor PtyConnection {
     private var socket: (any WebSocketConnection)?
     private var task: Task<Void, Never>?
     private var exited = false
+    private let mayReconnect: (@Sendable () async -> Bool)?
+    /// The server closes a socket that sends more than this in one message.
+    static let maxInputBytes = 64 * 1024
 
+    /// `mayReconnect` runs before each reconnect; false ends the connection.
     public init(baseURL: URL, token: String, sessionId: String, cols: UInt16, rows: UInt16,
-                cwd: String? = nil, opener: any WebSocketOpener = URLSessionWebSocketOpener(),
-                sleep: @escaping Sleeper = realSleep) {
+                cwd: String? = nil, mayReconnect: (@Sendable () async -> Bool)? = nil,
+                opener: any WebSocketOpener = URLSessionWebSocketOpener(), sleep: @escaping Sleeper = realSleep) {
+        self.mayReconnect = mayReconnect
         self.url = baseURL.webSocketURL(path: "/api/pty/\(encodePathSegment(sessionId))") ?? baseURL
         self.token = token
         self.cols = cols
@@ -190,8 +196,8 @@ public actor PtyConnection {
         continuation.finish()
     }
 
-    /// Keystrokes, as a binary frame. More than 64 KiB in one message closes
-    /// the socket, so large pastes are split.
+    /// Keystrokes, as binary frames, split so a large paste stays under
+    /// `maxInputBytes` a message.
     public func send(input: Data) async {
         guard let socket else { return }
         var rest = input[...]
@@ -201,8 +207,6 @@ public actor PtyConnection {
             try? await socket.send(.data(Data(chunk)))
         }
     }
-
-    static let maxInputBytes = 64 * 1024
 
     public func resize(cols: UInt16, rows: UInt16) async {
         guard cols > 0, rows > 0 else { return }
@@ -227,7 +231,7 @@ public actor PtyConnection {
     }
 
     private func run() async {
-        while !Task.isCancelled {
+        connecting: while !Task.isCancelled {
             let socket = opener.open(url)
             self.socket = socket
             do {
@@ -252,26 +256,34 @@ public actor PtyConnection {
                     }
                 }
             } catch let closed as WebSocketClosed {
-                if exited { break }
+                if exited { break connecting }
                 switch closeAction(for: closed.code) {
                 case .signOut:
                     continuation.yield(.signedOut)
                     continuation.finish()
                     return
                 case .stop:
-                    continuation.yield(.closed(code: closed.code))
+                    continuation.yield(.refused(code: closed.code))
                     continuation.finish()
                     return
                 case .retry:
                     break
                 }
             } catch {
-                if exited { break }
+                if exited { break connecting }
             }
             self.socket = nil
             if Task.isCancelled { return }
             continuation.yield(.reconnecting)
+            // A flat second, as the web does: a terminal someone is looking
+            // at should come back quickly, and a refusal never retries.
             do { try await sleep(.seconds(1)) } catch { return }
+            // Attaching to an id with nothing running spawns a plain shell
+            // there, which must not happen under an agent session's id.
+            if let mayReconnect, await !mayReconnect() {
+                continuation.yield(.refused(code: 1000))
+                break connecting
+            }
         }
         continuation.finish()
     }

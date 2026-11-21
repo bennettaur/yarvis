@@ -15,8 +15,11 @@ struct AttentionView: View {
                                 Text(a.kind).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Button("Deny") { model.answer(a, approve: false) }
-                            Button("Approve") { model.answer(a, approve: true) }.buttonStyle(.borderedProminent)
+                            Group {
+                                Button("Deny") { model.answer(a, approve: false) }
+                                Button("Approve") { model.answer(a, approve: true) }.buttonStyle(.borderedProminent)
+                            }
+                            .armedAfterAppearing(id: a.id)
                         }
                     }
                 }
@@ -85,7 +88,7 @@ struct AnswerSheet: View {
                 ProgressView()
             } else if let permission {
                 PermissionForm(request: permission) { decision in
-                    submit { [client = app.client!] in
+                    submit { client in
                         if try await !client.answerPermission(id: permission.id, decision) {
                             throw Gone()
                         }
@@ -93,9 +96,9 @@ struct AnswerSheet: View {
                 }
             } else if let q = questions.first {
                 QuestionForm(question: q) { answers in
-                    submit { [client = app.client!] in try await client.answerQuestion(id: q.id, answers) }
+                    submit { client in try await client.answerQuestion(id: q.id, answers) }
                 } decline: {
-                    submit { [client = app.client!] in try await client.declineQuestion(id: q.id) }
+                    submit { client in try await client.declineQuestion(id: q.id) }
                 }
             } else {
                 Text("This isn't waiting for an answer any more.").foregroundStyle(.secondary)
@@ -119,9 +122,11 @@ struct AnswerSheet: View {
         guard let client = app.client else { return }
         do {
             if item.isHookPermission {
+                // Only the prompt this item names: a session can have several
+                // waiting, and Allow must answer the one the user opened.
                 let requestId = item.payload?["requestId"]?.stringValue
                 let all = try await client.permissionRequests(sessionKey: item.sessionKey)
-                permission = all.first { $0.id == requestId } ?? all.first
+                permission = all.first { $0.id == requestId }
             } else {
                 questions = try await client.questions(for: item)
             }
@@ -131,11 +136,13 @@ struct AnswerSheet: View {
         loaded = true
     }
 
-    private func submit(_ action: @escaping @Sendable () async throws -> Void) {
+    private func submit(_ action: @escaping @Sendable (YarvisClient) async throws -> Void) {
+        // Signed out while the sheet was open: there's nothing to answer with.
+        guard let client = app.client else { return }
         Task {
             do {
-                try await app.fresh(action)
-                model.finished(item)
+                try await app.withFreshCode { try await action(client) }
+                model.markAnswered(item)
             } catch {
                 self.error = error.localizedDescription
             }

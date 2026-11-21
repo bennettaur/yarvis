@@ -2,7 +2,8 @@
 
 A native SwiftUI client for your own `yarvis-server`. It signs in with the
 server's passphrase and an authenticator code, and covers chat, the attention
-bell and approvals, and terminals natively. Everything else opens in a web
+bell and approvals, and terminals natively (chat and attention are so far
+tested only against stubs; see Test). Everything else opens in a web
 view of the full web UI. The API it uses is in
 [docs/client-server.md](../../docs/client-server.md), and
 [docs/native-macos.md](../../docs/native-macos.md) maps it to Swift.
@@ -13,9 +14,11 @@ asks for 6.2).
 
 ## Layout
 
-- `Sources/YarvisClient`: networking and API models, no UI. Sign-in, the
-  `/api/events` socket, the PTY attach protocol, chat and attention over the
-  sidecar proxy. An iOS app or the Android client can mirror this module.
+- `Sources/YarvisClient`: networking, API models and the state rules a
+  client keeps, with no UI. Sign-in, the `/api/events` socket, the PTY
+  attach protocol, chat and attention over the sidecar proxy, a streaming
+  chat turn (`LiveTurn`) and the bell (`AttentionInbox`). An iOS app or the
+  Android client can mirror this module.
 - `Sources/YarvisMac`: the app. Views, the Keychain store, notifications.
 - `Tests/YarvisClientTests`: tests for the client module (swift-testing).
 
@@ -72,9 +75,12 @@ they're tested only against stubs.
 
 Enter the server's URL, the passphrase, and the code from your authenticator
 app (or a backup code). The URL must be `https`, or `http` on loopback
-(`localhost`, `127.0.0.1`, `::1`). The device token goes in the login
+(`localhost`, any `127.x.x.x`, `::1`). Requests don't follow a redirect off
+the server's origin. The device token goes in the login
 Keychain as a generic password, service `dev.yarvis.mac.device-token`,
-account = the server URL. Sign Out (in the app menu) deletes it.
+account = the server URL. Sign Out (in the app menu) deletes it from this
+Mac. The device stays valid on the server until you revoke it in the web
+UI's Settings → Devices.
 
 A server that isn't set up yet needs the web UI first: setup (the setup
 code, the passphrase, the authenticator, the backup codes) isn't built here.
@@ -98,8 +104,11 @@ Native:
   New items post a macOS notification from the wrapped app.
 - **Terminals.** Each active workspace's agent session (`ws-claude:<id>`),
   with Start when none is running, and terminals opened from this app, in
-  SwiftTerm. They resume where they left off after a dropped connection.
-  The server has no route that lists live PTYs, so the app lists only those.
+  SwiftTerm. They resume where they left off after a dropped connection; an
+  agent session that ended meanwhile isn't reattached, since that would
+  start a plain shell under its id. The server has no route that lists live
+  PTYs, so the app lists only those. Programs in a terminal can't write the
+  clipboard (OSC 52 is ignored), and only http(s) links open.
 
 Web (Show Web UI, Shift-Cmd-U, or the globe button):
 

@@ -9,22 +9,7 @@ extension YarvisClient {
     /// The live attention stream. It sends every change as a full row and
     /// replays nothing, so reload the list after it drops.
     public func attentionStream() throws -> AsyncThrowingStream<AttentionStreamEvent, Error> {
-        let raw = eventStream(try request("GET", Self.sidecar("/api/attention/stream")))
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    for try await data in raw {
-                        if let event = try? AttentionStreamEvent.decode(data) {
-                            continuation.yield(event)
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        decodedEventStream(try request("GET", Self.sidecar("/api/attention/stream")), AttentionStreamEvent.decode)
     }
 
     /// Marks an item `read`, `resolved` or `dismissed`.
@@ -36,7 +21,7 @@ extension YarvisClient {
     public func permissionRequests(sessionKey: String? = nil) async throws -> [PermissionRequest] {
         var path = "/api/attention/permissions"
         if let sessionKey {
-            path += "?sessionKey=\(sessionKey.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "")"
+            path += "?sessionKey=\(encodeQueryValue(sessionKey))"
         }
         return try await get([PermissionRequest].self, Self.sidecar(path))
     }
@@ -58,8 +43,8 @@ extension YarvisClient {
     /// payload names.
     public func questions(for item: AttentionItem) async throws -> [AgentQuestion] {
         if let key = item.sessionKey {
-            let q = key.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-            return try await get([AgentQuestion].self, Self.sidecar("/api/questions?sessionKey=\(q)"))
+            return try await get([AgentQuestion].self,
+                                 Self.sidecar("/api/questions?sessionKey=\(encodeQueryValue(key))"))
         }
         guard let id = item.payload?["questionId"]?.stringValue else { return [] }
         let one = try await get(AgentQuestion.self, Self.sidecar("/api/questions/\(encodePathSegment(id))"))
@@ -67,6 +52,7 @@ extension YarvisClient {
     }
 
     public func answerQuestion(id: String, _ answers: [QuestionAnswer]) async throws {
+        // Through `JSONValue` because every request body is one.
         let body = try JSONDecoder().decode(JSONValue.self,
                                             from: JSONEncoder().encode(["answers": answers]))
         try await send("POST", Self.sidecar("/api/questions/\(encodePathSegment(id))/answer"), body: body)

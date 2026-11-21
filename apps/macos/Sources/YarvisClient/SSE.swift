@@ -25,6 +25,26 @@ public struct SSEParser: Sendable {
 }
 
 extension YarvisClient {
+    /// `eventStream`, with each event decoded. An event this build can't
+    /// parse is skipped rather than ending a stream that is otherwise fine.
+    func decodedEventStream<T: Sendable>(_ request: URLRequest, _ decode: @escaping @Sendable (Data) throws -> T)
+        -> AsyncThrowingStream<T, Error> {
+        let raw = eventStream(request)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await data in raw {
+                        if let event = try? decode(data) { continuation.yield(event) }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     /// Opens an SSE request and yields each event's data. Cancelling the
     /// consuming task closes the connection, which is how a chat turn is stopped.
     func eventStream(_ request: URLRequest) -> AsyncThrowingStream<Data, Error> {
@@ -34,7 +54,7 @@ extension YarvisClient {
                     var req = request
                     req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     req.timeoutInterval = 24 * 60 * 60
-                    let (bytes, res) = try await session.bytes(for: req)
+                    let (bytes, res) = try await session.bytes(for: req, delegate: SameOriginRedirects(origin: baseURL))
                     if let http = res as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                         var body = Data()
                         for try await b in bytes { body.append(b) }

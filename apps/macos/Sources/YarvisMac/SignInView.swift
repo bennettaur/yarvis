@@ -8,7 +8,7 @@ struct SignInView: View {
     @State private var code = ""
     @State private var useBackupCode = false
     @State private var deviceName = Host.current().localizedName ?? "Mac"
-    @State private var error: String?
+    @State private var errorMessage: String?
     @State private var busy = false
     @State private var needsSetup = false
 
@@ -34,8 +34,8 @@ struct SignInView: View {
                     if let url = try? parseServerURL(server) { NSWorkspace.shared.open(url) }
                 }
             }
-            if let error {
-                Text(error).foregroundStyle(.red).textSelection(.enabled)
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red).textSelection(.enabled)
             }
             HStack {
                 Spacer()
@@ -59,7 +59,7 @@ struct SignInView: View {
     private func signIn() async {
         busy = true
         defer { busy = false }
-        error = nil
+        errorMessage = nil
         do {
             try await app.signIn(serverInput: server, SignInRequest(
                 passphrase: passphrase, code: code.trimmingCharacters(in: .whitespaces),
@@ -67,9 +67,9 @@ struct SignInView: View {
             passphrase = ""
             code = ""
         } catch YarvisError.unauthorized {
-            error = "Wrong passphrase or code."
+            errorMessage = "Wrong passphrase or code."
         } catch {
-            self.error = error.localizedDescription
+            errorMessage = error.localizedDescription
             await checkStatus()
         }
     }

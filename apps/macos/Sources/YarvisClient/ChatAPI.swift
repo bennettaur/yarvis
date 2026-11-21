@@ -43,24 +43,7 @@ extension YarvisClient {
             "provider": .string(turn.provider),
             "model": .string(turn.model),
         ]))
-        let raw = eventStream(req)
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    for try await data in raw {
-                        // An event this build can't parse is skipped rather
-                        // than ending a turn that is otherwise fine.
-                        if let event = try? ChatStreamEvent.decode(data) {
-                            continuation.yield(event)
-                        }
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+        return decodedEventStream(req, ChatStreamEvent.decode)
     }
 
     /// Answers a tool approval from a chat turn. False means nothing was

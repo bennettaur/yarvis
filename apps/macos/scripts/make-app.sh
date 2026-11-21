@@ -35,6 +35,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --sign - --timestamp=none "$app"
+# The hardened runtime stops another process from loading code into the app
+# and reading the token through its Keychain access.
+codesign --force --sign - --options runtime --timestamp=none "$app"
 codesign --verify --strict "$app"
 echo "Built $app"

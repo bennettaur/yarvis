@@ -10,18 +10,15 @@ final class AttentionModel {
     private unowned let app: AppModel
     private let client: YarvisClient
 
-    var items: [AttentionItem] = []
-    var approvals: [Approval] = []
+    private(set) var inbox = AttentionInbox()
+    var items: [AttentionItem] { inbox.items }
+    var approvals: [Approval] { inbox.approvals }
+    var count: Int { inbox.count }
     var error: String?
     /// The item whose answer sheet is open.
     var answering: AttentionItem?
 
-    var count: Int { items.count + approvals.count }
-
     private var streamTask: Task<Void, Never>?
-    /// Ids already announced, so a re-prompt that updates a row doesn't notify twice.
-    private var announced = Set<String>()
-    private var loadedOnce = false
 
     init(app: AppModel, client: YarvisClient) {
         self.app = app
@@ -61,15 +58,7 @@ final class AttentionModel {
 
     private func reloadItems() async {
         do {
-            let pending = try await client.attentionItems()
-            items = pending
-            if loadedOnce {
-                pending.forEach(announce)
-            } else {
-                // Items already waiting at launch aren't news.
-                announced.formUnion(pending.map(\.id))
-                loadedOnce = true
-            }
+            for item in inbox.loadItems(try await client.attentionItems()) { announce(item) }
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -77,26 +66,19 @@ final class AttentionModel {
     }
 
     private func apply(_ item: AttentionItem) {
-        items.removeAll { $0.id == item.id }
-        guard item.status == "pending" else { return }
-        items.insert(item, at: 0)
-        items.sort { $0.seq > $1.seq }
-        announce(item)
+        if let news = inbox.apply(item) { announce(news) }
     }
 
     private func announce(_ item: AttentionItem) {
-        guard announced.insert(item.id).inserted else { return }
         Notifier.post(id: item.id, title: item.title, body: item.body ?? "")
     }
 
     func reloadApprovals() {
         Task {
             do {
-                let fresh = try await client.approvals()
-                for a in fresh where announced.insert(a.id).inserted {
+                for a in inbox.loadApprovals(try await client.approvals()) {
                     Notifier.post(id: a.id, title: "Approval needed", body: a.summary)
                 }
-                approvals = fresh
             } catch {
                 self.error = error.localizedDescription
             }
@@ -104,13 +86,13 @@ final class AttentionModel {
     }
 
     func answer(_ approval: Approval, approve: Bool) {
-        approvals.removeAll { $0.id == approval.id }
-        act { [client] in try await client.answerApproval(id: approval.id, approve: approve) }
+        inbox.remove(approvalId: approval.id)
+        perform { [client] in try await client.answerApproval(id: approval.id, approve: approve) }
     }
 
     func dismiss(_ item: AttentionItem) {
-        items.removeAll { $0.id == item.id }
-        act { [client] in try await client.setAttentionStatus(id: item.id, "dismissed") }
+        inbox.remove(itemId: item.id)
+        perform { [client] in try await client.setAttentionStatus(id: item.id, "dismissed") }
     }
 
     /// Opens an item: an answer sheet for questions and permission prompts,
@@ -124,8 +106,8 @@ final class AttentionModel {
             app.showWebUI()
             return
         }
-        items.removeAll { $0.id == item.id }
-        act { [client] in try await client.setAttentionStatus(id: item.id, "read") }
+        inbox.remove(itemId: item.id)
+        perform { [client] in try await client.setAttentionStatus(id: item.id, "read") }
         navigate(item.navTarget)
     }
 
@@ -137,12 +119,13 @@ final class AttentionModel {
         case "workspace-claude":
             if let ws = target?["workspaceId"]?.stringValue {
                 app.section = .terminals
-                app.terminals?.select("ws-claude:\(ws)")
+                app.terminals?.select(WorkspaceSummary.agentSessionId(workspaceId: ws))
             }
         case "terminal":
-            if let key = target?["sessionKey"]?.stringValue {
+            if let key = target?["sessionKey"]?.stringValue, app.terminals?.select(key) == true {
                 app.section = .terminals
-                app.terminals?.select(key)
+            } else {
+                app.showWebUI()
             }
         default:
             app.showWebUI()
@@ -150,15 +133,15 @@ final class AttentionModel {
     }
 
     /// Called after a question or prompt is answered elsewhere in the app.
-    func finished(_ item: AttentionItem) {
-        items.removeAll { $0.id == item.id }
+    func markAnswered(_ item: AttentionItem) {
+        inbox.remove(itemId: item.id)
         answering = nil
     }
 
-    func act(_ action: @escaping @Sendable () async throws -> Void) {
+    func perform(_ action: @escaping @Sendable () async throws -> Void) {
         Task {
             do {
-                try await app.fresh(action)
+                try await app.withFreshCode(action)
             } catch {
                 self.error = error.localizedDescription
             }

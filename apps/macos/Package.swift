@@ -12,8 +12,9 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.99.3"),
     ],
     targets: [
-        // Networking and API models only, no UI, so an iOS app (or the
-        // Android client's authors) can read and reuse it as the reference.
+        // Networking, API models and the state rules every client shares
+        // (a chat turn, the bell), with no UI, so an iOS app or the Android
+        // client's authors can read and reuse it as the reference.
         .target(name: "YarvisClient"),
         .executableTarget(
             name: "YarvisMac",

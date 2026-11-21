@@ -34,7 +34,10 @@ struct WebUIView: NSViewRepresentable {
             if sameOrigin || target.scheme == "about" || target.scheme == "blob" {
                 decisionHandler(.allow)
             } else {
-                if ["http", "https"].contains(target.scheme ?? "") { NSWorkspace.shared.open(target) }
+                // Only a link the user clicked leaves the app; a script or an
+                // iframe navigating on its own is just stopped.
+                let clicked = action.navigationType == .linkActivated && (action.targetFrame?.isMainFrame ?? true)
+                if clicked, ["http", "https"].contains(target.scheme ?? "") { NSWorkspace.shared.open(target) }
                 decisionHandler(.cancel)
             }
         }

@@ -5,7 +5,7 @@ import Testing
 
 /// Runs against a real `yarvis-server` when `YARVIS_E2E_URL` and
 /// `YARVIS_E2E_TOKEN` are set (a token from `yarvis-server device add` with
-/// `read,terminal`). `YARVIS_E2E_READ_TOKEN`, a `read`-only token, adds the
+/// at least `read,terminal`). `YARVIS_E2E_READ_TOKEN`, a `read`-only token, adds the
 /// scope check. The sidecar can be off: these cover only the server's own
 /// routes. See `apps/macos/README.md`.
 enum Live {
@@ -37,7 +37,7 @@ struct LiveServerTests {
     @Test(.enabled(if: Live.readToken != nil)) func aTerminalWithoutTheScopeGets4403() async throws {
         let pty = PtyConnection(baseURL: url, token: Live.readToken!, sessionId: "e2e/\(UUID())", cols: 80, rows: 24)
         await pty.start()
-        #expect(await collect(pty.updates) == [.closed(code: 4403)])
+        #expect(await collect(pty.updates) == [.refused(code: 4403)])
     }
 
     /// Spawns a shell, types into it, and watches its exit arrive both on the

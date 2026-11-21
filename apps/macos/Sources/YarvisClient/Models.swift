@@ -237,7 +237,8 @@ public struct AttentionItem: Codable, Sendable, Identifiable, Equatable {
     public var createdAt: String
     public var updatedAt: String
 
-    /// Heads-down questions are answered on the web's Heads down page.
+    /// A heads-down pass's question. It has its own kind and its own answer
+    /// routes, on the web's Heads down page, so it isn't a `question` item.
     public var isHeadsDown: Bool {
         source == "system" && kind != "question" && (sessionKey?.hasPrefix("heads-down:") ?? false)
     }
@@ -248,7 +249,7 @@ public struct AttentionItem: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
-/// What an attention item's stream sends: a full row on every change.
+/// What the attention stream sends: a full row on every change.
 public enum AttentionStreamEvent: Sendable, Equatable {
     case item(AttentionItem)
     case ping
@@ -341,6 +342,17 @@ public struct QuestionAnswer: Codable, Sendable, Equatable {
 
 // MARK: - Workspaces
 
+public let agentSessionPrefix = "ws-claude:"
+
+/// True for a terminal pane's PTY id: `tab:terminal/<tab>/<pane>` (the
+/// Terminal tab's), or `ws:<workspace>/<tab>/<pane>` for one of `workspaceIds`.
+public func isTerminalPaneId(_ id: String, workspaceIds: [String]) -> Bool {
+    let parts = id.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 3, !parts[1].isEmpty, !parts[2].isEmpty else { return false }
+    if parts[0] == "tab:terminal" { return true }
+    return workspaceIds.contains { parts[0] == "ws:\($0)" }
+}
+
 public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var id: String
     public var name: String
@@ -349,6 +361,8 @@ public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hash
     public var rootPath: String
     public var repoNames: [String]?
 
-    /// The PTY id of the workspace's agent session.
-    public var agentSessionId: String { "ws-claude:\(id)" }
+    public var agentSessionId: String { Self.agentSessionId(workspaceId: id) }
+
+    /// The PTY id of a workspace's agent session.
+    public static func agentSessionId(workspaceId: String) -> String { "\(agentSessionPrefix)\(workspaceId)" }
 }

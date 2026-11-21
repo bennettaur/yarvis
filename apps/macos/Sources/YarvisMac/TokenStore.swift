@@ -31,7 +31,6 @@ enum TokenStore {
         if status == errSecItemNotFound {
             var add = query(server)
             add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             add[kSecAttrLabel as String] = "Yarvis device token (\(server.host ?? server.absoluteString))"
             let added = SecItemAdd(add as CFDictionary, nil)
             guard added == errSecSuccess else { throw KeychainError(status: added) }

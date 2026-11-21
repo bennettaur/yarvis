@@ -27,7 +27,7 @@ final class TerminalsModel {
     var error: String?
     /// One live view per attached session, so switching keeps scrollback and
     /// the socket.
-    private var hosts: [String: TerminalController] = [:]
+    private var controllers: [String: TerminalController] = [:]
 
     private var tabsKey: String { "terminals.\(client.baseURL.absoluteString)" }
 
@@ -42,8 +42,8 @@ final class TerminalsModel {
     }
 
     func stop() {
-        hosts.values.forEach { $0.stop() }
-        hosts = [:]
+        controllers.values.forEach { $0.stop() }
+        controllers = [:]
     }
 
     func reload() {
@@ -60,13 +60,21 @@ final class TerminalsModel {
         }
     }
 
-    func select(_ id: String) {
+    /// Opens a session by id. Returns false for an id that isn't a known
+    /// agent session or shaped like a terminal pane: the id can come from an
+    /// attention item, and attaching to an unknown one spawns a shell there.
+    @discardableResult
+    func select(_ id: String) -> Bool {
+        let known = tabs.contains { $0.id == id } || workspaces.contains { $0.agentSessionId == id }
+        guard known || isTerminalPaneId(id, workspaceIds: workspaces.map(\.id)) else { return false }
         selectedId = id
-        if id.hasPrefix("tab:terminal/"), !tabs.contains(where: { $0.id == id }) {
+        if !known, id.hasPrefix("tab:terminal/") {
             tabs.append(TerminalTab(id: id, title: "Terminal"))
             saveTabs()
         }
+        return true
     }
+
 
     func newTerminal() {
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000), radix: 36)
@@ -79,7 +87,7 @@ final class TerminalsModel {
     func close(_ tab: TerminalTab) {
         tabs.removeAll { $0.id == tab.id }
         saveTabs()
-        hosts.removeValue(forKey: tab.id)?.stop()
+        controllers.removeValue(forKey: tab.id)?.stop()
         if selectedId == tab.id { selectedId = nil }
         Task { try? await client.ptyKill(tab.id) }
     }
@@ -87,7 +95,7 @@ final class TerminalsModel {
     func startAgent(_ ws: WorkspaceSummary) {
         Task {
             do {
-                try await app.fresh { [client] in try await client.startAgentSession(workspace: ws) }
+                try await app.withFreshCode { [client] in try await client.startAgentSession(workspace: ws) }
                 agentRunning[ws.agentSessionId] = true
                 selectedId = ws.agentSessionId
             } catch {
@@ -103,15 +111,17 @@ final class TerminalsModel {
     /// Attaching to an agent id with nothing running would spawn a plain
     /// shell under it, so a stopped agent shows a Start button instead.
     func canAttach(_ id: String) -> Bool {
-        !id.hasPrefix("ws-claude:") || agentRunning[id] == true
+        !id.hasPrefix(agentSessionPrefix) || agentRunning[id] == true
     }
 
     func controller(for id: String) -> TerminalController {
-        if let host = hosts[id] { return host }
-        let host = TerminalController(app: app, client: client, sessionId: id,
-                                      cwd: FileManager.default.homeDirectoryForCurrentUser.path)
-        hosts[id] = host
-        return host
+        if let existing = controllers[id] { return existing }
+        // No `cwd`: the server may be another machine, so a shell it spawns
+        // opens in its own default folder.
+        let controller = TerminalController(app: app, client: client, sessionId: id,
+                                            agentSession: id.hasPrefix(agentSessionPrefix))
+        controllers[id] = controller
+        return controller
     }
 
     private func saveTabs() {
@@ -126,14 +136,19 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     private let pty: PtyConnection
     private var pump: Task<Void, Never>?
     private unowned let app: AppModel
-    var status: String?
 
-    init(app: AppModel, client: YarvisClient, sessionId: String, cwd: String?) {
+    /// `agentSession` reconnects only while the agent still runs.
+    init(app: AppModel, client: YarvisClient, sessionId: String, agentSession: Bool) {
         self.app = app
         view = TerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         let terminal = view.terminalDimensions
+        var mayReconnect: (@Sendable () async -> Bool)?
+        if agentSession {
+            mayReconnect = { (try? await client.ptyExists(sessionId)) ?? false }
+        }
         pty = PtyConnection(baseURL: client.baseURL, token: client.token, sessionId: sessionId,
-                            cols: UInt16(clamping: terminal.cols), rows: UInt16(clamping: terminal.rows), cwd: cwd)
+                            cols: UInt16(clamping: terminal.cols), rows: UInt16(clamping: terminal.rows),
+                            mayReconnect: mayReconnect)
         super.init()
         view.terminalDelegate = self
         let pty = self.pty
@@ -162,10 +177,10 @@ final class TerminalController: NSObject, TerminalViewDelegate {
             view.feed(text: "\r\n[process exited\(code.map { " with code \($0)" } ?? "")]\r\n")
         case .error(let message):
             view.feed(text: "\r\n[\(message)]\r\n")
-        case .closed(let code):
+        case .refused(let code):
             view.feed(text: "\r\n[the server closed the terminal (\(code))]\r\n")
         case .signedOut:
-            app.signOut(reason: "This device was signed out by the server.")
+            app.signOut(reason: AppModel.revokedMessage)
         case .reconnecting, .size:
             break
         }
@@ -190,13 +205,9 @@ final class TerminalController: NSObject, TerminalViewDelegate {
         Task { @MainActor in NSSound.beep() }
     }
 
-    nonisolated func clipboardCopy(source: TerminalView, content: Data) {
-        guard let text = String(data: content, encoding: .utf8) else { return }
-        Task { @MainActor in
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        }
-    }
+    /// OSC 52 writes are ignored: any program in the session, or a file it
+    /// prints, could put a command on the clipboard for the next paste.
+    nonisolated func clipboardCopy(source: TerminalView, content: Data) {}
 
     /// Only web links open: terminal output can come from anywhere.
     nonisolated func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {

@@ -15,17 +15,20 @@ final class ChatModel {
     var providers: [ProviderInfo] = []
     var provider: String?
     var model: String?
-    /// The reply as it streams; dropped if the turn fails or is stopped.
-    var reply = ""
-    var liveTools: [ToolActivity] = []
-    /// Tool calls waiting on the user, front first.
-    var approvals: [ToolApprovalRequest] = []
+    /// The turn on screen: streaming, or failed with its tool activity kept.
+    private(set) var live = LiveTurn()
+    var reply: String { live.reply }
+    var liveTools: [ToolActivity] { live.tools }
+    var approvals: [ToolApprovalRequest] { live.approvals }
     var isStreaming: Bool { turn != nil }
     var error: String?
     /// Something the user did, such as stopping a turn. Not an error.
     var notice: String?
 
     private var turn: Task<Void, Never>?
+    /// Which turn owns `live`, so a turn cancelled by opening another thread
+    /// leaves that thread alone.
+    private var turnId = UUID()
     private static let providerKey = "chat.provider"
     private static let modelKey = "chat.model"
 
@@ -73,11 +76,10 @@ final class ChatModel {
     func open(_ id: String?) {
         guard id != selectedId else { return }
         turn?.cancel()
+        turnId = UUID()
         selectedId = id
         messages = []
-        reply = ""
-        liveTools = []
-        approvals = []
+        live = LiveTurn()
         error = nil
         notice = nil
         guard let id else { return }
@@ -107,11 +109,13 @@ final class ChatModel {
         draft = ""
         error = nil
         notice = nil
-        turn = Task { await run(text: text, provider: provider, model: model) }
+        let id = UUID()
+        turnId = id
+        turn = Task { await runTurn(id: id, text: text, provider: provider, model: model) }
     }
 
-    private func run(text: String, provider: String, model: String) async {
-        defer { turn = nil }
+    private func runTurn(id: UUID, text: String, provider: String, model: String) async {
+        defer { if turnId == id { turn = nil } }
         do {
             let sessionId: String
             if let selectedId {
@@ -123,59 +127,48 @@ final class ChatModel {
                 sessions.insert(created, at: 0)
             }
             messages.append(ChatMessage(id: "local-\(UUID())", sessionId: sessionId, role: "user", content: text,
-                                        toolCalls: nil, createdAt: ISO8601DateFormatter().string(from: Date())))
-            reply = ""
-            liveTools = []
-            var failed = false
+                                        createdAt: ISO8601DateFormatter().string(from: Date())))
+            live = LiveTurn()
             let stream = try client.sendChat(ChatTurn(sessionId: sessionId, message: text, provider: provider, model: model))
-            for try await event in stream {
-                switch event {
-                case .delta(let t): reply += t
-                case .toolCall(let call): liveTools.append(call)
-                case .toolResult(let id, let status, let result, let ms):
-                    if let i = liveTools.firstIndex(where: { $0.id == id }) {
-                        liveTools[i].status = status
-                        liveTools[i].result = result
-                        liveTools[i].durationMs = ms
-                    }
-                case .approvalRequest(let request): approvals.append(request)
-                case .error(let message, let detail):
-                    failed = true
-                    error = detail.map { "\(message) \($0)" } ?? message
-                case .done, .reasoning, .attention, .ping, .unknown: break
-                }
+            for try await event in stream where turnId == id {
+                live.apply(event)
             }
-            approvals = []
-            // A failed turn saved no reply; its tool activity stays on screen.
-            if failed { reply = "" }
-            if !failed {
-                await loadMessages(sessionId)
-                reply = ""
-                liveTools = []
-            }
-            sessions = (try? await client.chatSessions()) ?? sessions
-        } catch is CancellationError {
-            stopped()
+            // Cancelling the consumer ends the stream without an error, so a
+            // stop is told apart here.
+            finish(id: id, sessionId: sessionId, cancelled: Task.isCancelled)
         } catch let e as URLError where e.code == .cancelled {
-            stopped()
+            finish(id: id, sessionId: nil, cancelled: true)
+        } catch is CancellationError {
+            finish(id: id, sessionId: nil, cancelled: true)
         } catch {
-            approvals = []
+            guard turnId == id else { return }
+            _ = live.finish(cancelled: false)
             self.error = error.localizedDescription
         }
     }
 
-    /// The sidecar saves nothing for a stopped turn, so the partial reply goes too.
-    private func stopped() {
-        reply = ""
-        approvals = []
-        notice = "Stopped. Nothing was saved for that turn."
+    private func finish(id: UUID, sessionId: String?, cancelled: Bool) {
+        guard turnId == id else { return }
+        switch live.finish(cancelled: cancelled) {
+        case .stopped:
+            notice = "Stopped. Nothing was saved for that turn."
+        case .failed(let reason):
+            error = reason
+        case .saved:
+            guard let sessionId else { return }
+            Task {
+                await loadMessages(sessionId)
+                if turnId == id { live = LiveTurn() }
+                sessions = (try? await client.chatSessions()) ?? sessions
+            }
+        }
     }
 
     func answer(_ request: ToolApprovalRequest, approved: Bool) {
-        approvals.removeAll { $0.id == request.id }
+        live.answered(request.id)
         Task {
             do {
-                _ = try await app.fresh { [client] in
+                _ = try await app.withFreshCode { [client] in
                     try await client.answerToolApproval(id: request.id, approved: approved)
                 }
             } catch {

@@ -7,6 +7,8 @@ public enum YarvisError: Error, Equatable, LocalizedError {
     case reauthRequired
     case http(status: Int, error: String, detail: String?)
     case badResponse
+    /// A path that doesn't make a valid URL on the server's origin.
+    case invalidURL
 
     public var errorDescription: String? {
         switch self {
@@ -15,6 +17,7 @@ public enum YarvisError: Error, Equatable, LocalizedError {
         case .http(_, let error, let detail):
             return detail.map { "\(error): \($0)" } ?? error
         case .badResponse: return "The server sent something this app can't read."
+        case .invalidURL: return "Couldn't build a request URL for that server."
         }
     }
 }
@@ -57,7 +60,7 @@ public final class YarvisClient: Sendable {
     public static func status(baseURL: URL, session: URLSession = .shared) async throws -> AuthStatus {
         var req = URLRequest(url: try url(baseURL, "/api/auth/status"))
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, res) = try await session.data(for: req)
+        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
         try check(data, res)
         return try decode(AuthStatus.self, data)
     }
@@ -75,13 +78,30 @@ public final class YarvisClient: Sendable {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(JSONValue.object(body))
-        let (data, res) = try await session.data(for: req)
+        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
         // A 401 here is a wrong passphrase or code, not a lost device.
         try check(data, res)
         return try decode(SignedIn.self, data)
     }
 
     // MARK: Requests
+
+    /// Refuses a redirect off the server's origin, which would carry the
+    /// bearer header, or a sign-in's passphrase, somewhere else.
+    final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+        let origin: URL
+
+        init(origin: URL) {
+            self.origin = origin
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let target = request.url, target.scheme == origin.scheme, target.host == origin.host,
+                  target.port == origin.port else { return nil }
+            return request
+        }
+    }
 
     func request(_ method: String, _ path: String, body: JSONValue? = nil) throws -> URLRequest {
         var req = URLRequest(url: try Self.url(baseURL, path))
@@ -98,7 +118,8 @@ public final class YarvisClient: Sendable {
     /// Sends a request and returns the body of a 2xx answer.
     @discardableResult
     func send(_ method: String, _ path: String, body: JSONValue? = nil) async throws -> Data {
-        let (data, res) = try await session.data(for: request(method, path, body: body))
+        let (data, res) = try await session.data(for: request(method, path, body: body),
+                                                 delegate: SameOriginRedirects(origin: baseURL))
         try checkAuthed(data, res)
         return data
     }
@@ -121,7 +142,7 @@ public final class YarvisClient: Sendable {
     }
 
     static func url(_ base: URL, _ path: String) throws -> URL {
-        guard let url = base.appendingAPIPath(path) else { throw YarvisError.badResponse }
+        guard let url = base.appendingAPIPath(path) else { throw YarvisError.invalidURL }
         return url
     }
 
@@ -157,8 +178,8 @@ public final class YarvisClient: Sendable {
 
     /// Runs `action`. If the server answers `reauth_required`, asks `code`
     /// for an authenticator code, reverifies and runs `action` once more. A
-    /// wrong code (403) asks again, passing the server's words for the
-    /// refusal. A nil code cancels and rethrows the refusal.
+    /// wrong code asks again, passing the server's words for the refusal.
+    /// A nil code cancels and rethrows the refusal.
     public func withFreshCode<T: Sendable>(
         _ code: @Sendable (_ refusal: String?) async -> String?,
         _ action: @Sendable () async throws -> T
@@ -172,7 +193,7 @@ public final class YarvisClient: Sendable {
                 do {
                     try await reverify(code: entered)
                     break
-                } catch let YarvisError.http(status, error, detail) where status == 403 {
+                } catch let YarvisError.http(403, error, detail) where error == "wrong code" {
                     refusal = detail.map { "\(error): \($0)" } ?? error
                 }
             }

@@ -39,7 +39,10 @@ public func parseServerURL(_ input: String) throws -> URL {
 
 func isLoopback(_ host: String) -> Bool {
     let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-    if h == "localhost" || h.hasSuffix(".localhost") || h == "::1" { return true }
+    // Names under `.localhost` aren't trusted: whether they resolve to
+    // loopback is up to the resolver, and plain http would send the
+    // passphrase in the clear if one didn't.
+    if h == "localhost" || h == "::1" { return true }
     let octets = h.split(separator: ".", omittingEmptySubsequences: false)
     return octets.count == 4 && octets[0] == "127" && octets.allSatisfy { UInt8($0) != nil }
 }
@@ -56,17 +59,15 @@ extension URL {
 
     func appendingAPIPath(_ path: String) -> URL? {
         guard var parts = URLComponents(url: self, resolvingAgainstBaseURL: false) else { return nil }
-        let (p, q) = path.split(separator: "?", maxSplits: 1).map(String.init).splitPair()
-        parts.percentEncodedPath = p
-        parts.percentEncodedQuery = q
+        let pieces = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        parts.percentEncodedPath = String(pieces[0])
+        parts.percentEncodedQuery = pieces.count > 1 ? String(pieces[1]) : nil
         return parts.url
     }
 }
 
-private extension Array where Element == String {
-    func splitPair() -> (String, String?) {
-        (self.first ?? "", self.count > 1 ? self[1] : nil)
-    }
+func encodeQueryValue(_ s: String) -> String {
+    s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
 }
 
 /// Percent-encodes one path segment. Ids such as `ws:<id>/<tab>/<pane>` hold
