@@ -41,6 +41,7 @@ bun run tauri dev                 # the full app: builds server/, starts Vite, t
 bun run tauri:build               # a release bundle with the server and compiled sidecar (see Nightly builds)
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
+bun run e2e                       # the server and built UI in Chromium (see docs/client-server.md)
 bun run demo                      # record screenshots and video of the UI (see demo/README.md)
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
