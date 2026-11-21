@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import BootGate from "./components/shell/BootGate";
 import SignInGate from "./components/shell/SignInGate";
+import VaultGate from "./components/shell/VaultGate";
 import "./index.css";
 import { loadAttentionAnimation } from "./lib/attentionAnimation";
 import { getSettings } from "./lib/settings";
@@ -13,9 +14,11 @@ function render() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <SignInGate>
-        <BootGate>
-          <App />
-        </BootGate>
+        <VaultGate>
+          <BootGate>
+            <App />
+          </BootGate>
+        </VaultGate>
       </SignInGate>
     </React.StrictMode>,
   );
