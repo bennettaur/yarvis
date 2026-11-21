@@ -51,10 +51,9 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthConfig {
-    /// The WebAuthn relying party ID. Passkeys are bound to it for good, so
-    /// changing it later means registering every passkey again.
-    pub rp_id: String,
-    /// The origins a browser may sign in from, such as `https://yarvis.example.com`.
+    /// The origins clients reach the server on, such as
+    /// `https://mini.example.ts.net`. Requests for any other host are refused,
+    /// and the first `https` one off loopback is where OAuth redirects land.
     pub origins: Vec<String>,
 }
 
@@ -99,7 +98,6 @@ fn is_loopback_host(host: &str) -> bool {
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            rp_id: "localhost".into(),
             origins: vec!["http://localhost:7878".into()],
         }
     }
@@ -109,7 +107,7 @@ impl Default for AuthConfig {
 #[serde(rename_all = "lowercase")]
 pub enum SecretBackendKind {
     // `keychain` and `onepassword` need a logged-in macOS session.
-    /// The server's own encrypted vault, unlocked with a passkey. The only
+    /// The server's own encrypted vault, unlocked with its passphrase. The only
     /// choice that works for a server started before anyone logs in.
     Vault,
     #[default]
@@ -248,7 +246,6 @@ mod tests {
     #[test]
     fn the_public_origin_is_the_first_https_one_off_loopback() {
         let auth = |origins: &[&str]| AuthConfig {
-            rp_id: "x".into(),
             origins: origins.iter().map(|o| o.to_string()).collect(),
         };
         assert_eq!(auth(&["http://localhost:7878"]).public_origin(), None);

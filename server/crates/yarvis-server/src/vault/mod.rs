@@ -1,8 +1,8 @@
 //! The server's encrypted vault: the secrets blob and the git signing key,
 //! encrypted at rest in `vault.json` in the data dir.
 //!
-//! The vault starts locked on every boot. A passkey (through its PRF output)
-//! or the recovery key unwraps the vault key, and the decrypted secrets stay
+//! The vault starts locked on every boot. Its passphrase or the recovery key
+//! unwraps the vault key, and the decrypted secrets stay
 //! in memory until it is locked again. Nothing is cached on disk in the clear.
 //! The format and its reasoning are in `file.rs`; `spikes/vault/FINDINGS.md`
 //! has the trade-offs behind it.
@@ -141,24 +141,6 @@ impl Vault {
         Ok(())
     }
 
-    pub fn unlock_with_passkey(
-        &self,
-        credential_id: &str,
-        prf_output: &UnwrapSecret,
-    ) -> Result<(), VaultError> {
-        let mut state = self.lock_state();
-        if state.is_some() {
-            return Err(VaultError::AlreadyUnlocked);
-        }
-        *state = Some(
-            self.load()?
-                .unlock_with_passkey(credential_id, prf_output)?,
-        );
-        drop(state);
-        self.0.unlocked_signal.send_replace(true);
-        Ok(())
-    }
-
     /// Drops the vault key and the decrypted secrets, which zeroize on drop.
     /// Returns whether it was unlocked.
     pub fn lock(&self) -> bool {
@@ -169,24 +151,16 @@ impl Vault {
         was_unlocked
     }
 
-    /// Adds a wrapper that the PRF output of one passkey opens. Needs the
-    /// vault unlocked, since wrapping takes the vault key.
-    pub fn add_passkey_wrapper(
-        &self,
-        credential_id: &str,
-        prf_salt: &str,
-        label: &str,
-        prf_output: &UnwrapSecret,
-    ) -> Result<(), VaultError> {
+    /// Replaces the recovery key. The old one stops opening the vault once the
+    /// file is written. Needs the vault unlocked, since wrapping takes the
+    /// vault key.
+    pub fn rotate_recovery_key(&self) -> Result<RecoveryKey, VaultError> {
+        let mut new_key = None;
         self.change(|unlocked| {
-            unlocked.add_passkey_wrapper(credential_id, prf_salt, label, prf_output)
-        })
-    }
-
-    /// Removes a wrapper. The last one is refused, since nothing could open
-    /// the vault after it.
-    pub fn remove_wrapper(&self, wrapper_id: &str) -> Result<(), VaultError> {
-        self.change(|unlocked| unlocked.remove_wrapper(wrapper_id))
+            new_key = Some(unlocked.rotate_recovery_key());
+            Ok(())
+        })?;
+        Ok(new_key.expect("set by the change"))
     }
 
     /// One decrypted secret, or `None` when the vault has no such secret.
@@ -268,24 +242,6 @@ impl Vault {
             .unlocked
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-}
-
-/// Removes the wrapper of a passkey that was just removed, so the vault file
-/// stops opening with it. A locked vault can't be changed, so there the
-/// wrapper stays until the owner removes it; the status route lists it with no
-/// `passkeyId`.
-pub fn forget_passkey(vault: &Vault, credential_id: &[u8]) {
-    use base64::Engine;
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id);
-    match vault.remove_wrapper(&file::passkey_wrapper_id(&encoded)) {
-        Ok(()) | Err(VaultError::NoMatchingWrapper | VaultError::Locked) => {}
-        Err(VaultError::LastWrapper) => {
-            tracing::warn!(
-                "a removed passkey's vault wrapper is the vault's last one, so it stays"
-            );
-        }
-        Err(e) => tracing::error!("couldn't remove a removed passkey's vault wrapper: {e}"),
     }
 }
 

@@ -1,24 +1,18 @@
-//! `/api/auth/*` and `/api/passkeys/*`: setup with the one-time code, passkey
-//! sign-in, the freshness check, and managing passkeys.
-//!
-//! Every WebAuthn exchange is two requests. `start` stores the ceremony and
-//! returns `{ ceremonyId, options }`; `finish` names the ceremony and carries
-//! the authenticator's answer. A ceremony can be finished once.
+//! `/api/auth/*` and `/api/account/*`: setup with the one-time code, sign-in
+//! with the passphrase and a TOTP or backup code, the freshness check, and
+//! managing the account.
 
-use axum::extract::Path;
 use axum::extract::State;
 use axum::http::header::USER_AGENT;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use webauthn_rs::prelude::{
-    PasskeyAuthentication, PublicKeyCredential, RegisterPublicKeyCredential, WebauthnError,
-};
+use zeroize::Zeroizing;
 
+use super::account::{AccountError, Enrollment, SecondFactor, SetupError, check_passphrase_shape};
 use super::fresh::Fresh;
-use super::passkeys::{Ceremony, RemovePasskey};
 use super::setup_code::CodeError;
 use super::{Admin, Authed, DeviceContext, Scope, create_device};
 use crate::AppState;
@@ -28,35 +22,37 @@ use crate::error::{ApiError, ApiResult};
 use crate::rate_limit;
 use crate::store::now_ms;
 
+/// The kind of device a sign-in makes. Only these can be fresh.
+pub const LOGIN_DEVICE: &str = "login";
+
 pub fn router(state: &AppState) -> Router<AppState> {
-    // These need no token and each can start a ceremony or spend a setup
-    // code guess, so they are rate-limited per address. Status is left out so
-    // a client polling it can't use up the owner's budget.
+    // These need no token and each spends a setup code guess or a sign-in
+    // attempt, so they are rate-limited per address. Status is left out so a
+    // client polling it can't use up the owner's budget.
     let open = Router::new()
         .route("/api/auth/setup/start", post(setup_start))
         .route("/api/auth/setup/finish", post(setup_finish))
-        .route("/api/auth/login/start", post(login_start))
-        .route("/api/auth/login/finish", post(login_finish))
+        .route("/api/auth/login", post(login))
         .route_layer(middleware::from_fn_with_state(
             state.auth_limiter.clone(),
             rate_limit::limit,
         ));
     Router::new()
         .route("/api/auth/status", get(status))
-        .route("/api/auth/reverify/start", post(reverify_start))
-        .route("/api/auth/reverify/finish", post(reverify_finish))
-        .route("/api/passkeys/register/start", post(register_start))
-        .route("/api/passkeys/register/finish", post(register_finish))
-        .route("/api/passkeys", get(list_passkeys))
-        .route("/api/passkeys/{id}", delete(remove_passkey))
+        .route("/api/auth/reverify", post(reverify))
+        .route("/api/account", get(account))
+        .route("/api/account/passphrase", post(change_passphrase))
+        .route("/api/account/totp/start", post(reenroll_start))
+        .route("/api/account/totp/finish", post(reenroll_finish))
+        .route("/api/account/backup-codes", post(regenerate_backup_codes))
+        .route("/api/account/sign-out-others", post(sign_out_others))
         .merge(open)
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Started<T: Serialize> {
-    ceremony_id: String,
-    options: T,
+impl From<AccountError> for ApiError {
+    fn from(e: AccountError) -> Self {
+        ApiError::internal(e)
+    }
 }
 
 /// A device's token, shown once. Only its hash is kept.
@@ -66,44 +62,57 @@ pub struct SignedIn {
     pub device: DeviceContext,
 }
 
-fn start_ceremony<T: Serialize>(
-    state: &AppState,
-    ceremony: Ceremony,
-    options: T,
-) -> ApiResult<Json<Started<T>>> {
-    let ceremony_id = state.passkeys.start_ceremony(ceremony).ok_or_else(|| {
-        ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "too many sign-ins in progress",
-        )
-        .with_detail("try again in a few minutes")
-    })?;
-    Ok(Json(Started {
-        ceremony_id,
-        options,
-    }))
+/// One message for every wrong passphrase, code or backup code, so a caller
+/// can't learn which part was right.
+fn wrong_credentials() -> ApiError {
+    ApiError::new(StatusCode::UNAUTHORIZED, "wrong passphrase or code")
 }
 
-/// The cause goes to the debug log only. These routes answer callers with no
-/// token, who don't need to learn which check failed.
-fn passkey_check_failed(e: WebauthnError) -> ApiError {
-    tracing::debug!("passkey check failed: {e}");
-    ApiError::new(StatusCode::UNAUTHORIZED, "passkey check failed")
+fn wrong_code() -> ApiError {
+    ApiError::new(StatusCode::UNAUTHORIZED, "wrong code")
+        .with_detail("enter the code your authenticator app shows now")
+}
+
+fn locked(left: std::time::Duration) -> ApiError {
+    let minutes = left.as_secs().div_ceil(60).max(1);
+    ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins")
+        .with_detail(format!("try again in {minutes} minutes"))
 }
 
 fn setup_done() -> ApiError {
-    ApiError::conflict("setup is done").with_detail("sign in with a passkey instead")
+    ApiError::conflict("setup is done").with_detail("sign in instead")
 }
 
-fn unknown_ceremony() -> ApiError {
-    ApiError::bad_request("unknown or expired ceremony").with_detail("start again")
+fn bad_passphrase(reason: String) -> ApiError {
+    ApiError::bad_request(reason)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnrollmentBody {
+    enrollment_id: String,
+    /// The secret in base32, for typing into an app by hand.
+    secret: String,
+    otpauth_uri: String,
+    /// The URI as a QR code, an SVG document.
+    qr_svg: String,
+}
+
+impl From<Enrollment> for EnrollmentBody {
+    fn from(e: Enrollment) -> Self {
+        Self {
+            enrollment_id: e.id,
+            secret: e.secret_base32,
+            otpauth_uri: e.otpauth_uri,
+            qr_svg: e.qr_svg,
+        }
+    }
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Status {
     setup_required: bool,
-    rp_id: String,
     vault: &'static str,
 }
 
@@ -113,8 +122,7 @@ async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
         Some(SecretBackendKind::Keychain | SecretBackendKind::OnePassword) | None => "absent",
     };
     Ok(Json(Status {
-        setup_required: state.passkeys.setup_required().await?,
-        rp_id: state.passkeys.rp_id().to_string(),
+        setup_required: state.account.setup_required().await?,
         vault,
     }))
 }
@@ -125,169 +133,154 @@ async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
 #[serde(rename_all = "camelCase")]
 struct SetupStart {
     code: String,
+    passphrase: Zeroizing<String>,
     device_name: String,
 }
 
 async fn setup_start(
     State(state): State<AppState>,
     Json(body): Json<SetupStart>,
-) -> ApiResult<Json<Started<impl Serialize>>> {
+) -> ApiResult<Json<EnrollmentBody>> {
     let device_name = device_name(&body.device_name)?;
-    if !state.passkeys.setup_required().await? {
+    if !state.account.setup_required().await? {
         return Err(setup_done());
     }
-    let wrong_code = || ApiError::new(StatusCode::UNAUTHORIZED, "wrong setup code");
-    let code = state
-        .passkeys
-        .check_setup_code(&body.code)
-        .map_err(|e| match e {
-            CodeError::NoCode => {
-                ApiError::new(StatusCode::UNAUTHORIZED, "no setup code is outstanding")
-                    .with_detail("restart the server to get a new one")
-            }
-            CodeError::Wrong { attempts_left: 0 } => wrong_code()
-                .with_detail("that was the last try; restart the server to get a new code"),
-            CodeError::Wrong { attempts_left } => {
-                wrong_code().with_detail(format!("{attempts_left} tries left"))
-            }
-        })?;
-    let (options, reg) = state.passkeys.start_registration().await?;
-    start_ceremony(
-        &state,
-        Ceremony::Setup {
-            reg,
-            code,
-            device_name,
-        },
-        options,
-    )
+    check_passphrase_shape(&body.passphrase).map_err(bad_passphrase)?;
+    let wrong = || ApiError::new(StatusCode::UNAUTHORIZED, "wrong setup code");
+    match state
+        .account
+        .start_setup(&body.code, body.passphrase, device_name)
+        .await?
+    {
+        Ok(enrollment) => Ok(Json(enrollment.into())),
+        Err(CodeError::NoCode) => Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "no setup code is outstanding",
+        )
+        .with_detail("restart the server, or run `yarvis-server auth reset`, to get a new one")),
+        Err(CodeError::Wrong { attempts_left: 0 }) => {
+            Err(wrong().with_detail("that was the last try; restart the server to get a new code"))
+        }
+        Err(CodeError::Wrong { attempts_left }) => {
+            Err(wrong().with_detail(format!("{attempts_left} tries left")))
+        }
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RegisterFinish {
-    ceremony_id: String,
-    credential: RegisterPublicKeyCredential,
+struct SetupFinish {
+    enrollment_id: String,
+    code: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetUpBody {
+    token: String,
+    device: DeviceContext,
+    /// Shown once; only hashes are kept.
+    backup_codes: Vec<String>,
 }
 
 async fn setup_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<RegisterFinish>,
-) -> ApiResult<Json<SignedIn>> {
-    let Some(Ceremony::Setup {
-        reg,
-        code,
-        device_name,
-    }) = state.passkeys.take_ceremony(&body.ceremony_id)
-    else {
-        return Err(unknown_ceremony());
+    Json(body): Json<SetupFinish>,
+) -> ApiResult<Json<SetUpBody>> {
+    let set_up = match state
+        .account
+        .finish_setup(&body.enrollment_id, &body.code)
+        .await?
+    {
+        Ok(set_up) => set_up,
+        Err(SetupError::WrongCode) => return Err(wrong_code()),
+        Err(SetupError::UnknownEnrollment) => {
+            return Err(
+                ApiError::bad_request("unknown or expired setup").with_detail("start again")
+            );
+        }
+        Err(SetupError::CodeGone) => {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "the setup code was already used",
+            ));
+        }
+        Err(SetupError::Done) => return Err(setup_done()),
     };
-    if !state.passkeys.setup_required().await? {
-        return Err(setup_done());
-    }
-    let passkey = state
-        .passkeys
-        .webauthn()
-        .finish_passkey_registration(&body.credential, &reg)
-        .map_err(passkey_check_failed)?;
-    // Only a verified registration uses the code, so a cancelled prompt
-    // doesn't cost the owner their code. A second ceremony racing on the same
-    // code finds it gone here.
-    if !state.passkeys.consume_setup_code(&code) {
-        return Err(ApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "the setup code was already used",
-        ));
-    }
-    let passkey_id = state.passkeys.add_passkey(&device_name, passkey).await?;
     state
         .events
-        .append(
-            None,
-            "passkey.added",
-            json!({ "passkeyId": passkey_id, "via": "setup" }),
-        )
+        .append(None, "account.created", json!({}))
         .await?;
-    Ok(Json(
-        sign_in(&state, &device_name, &passkey_id, &headers).await?,
-    ))
+    let signed_in = sign_in(&state, &set_up.device_name, &headers).await?;
+    Ok(Json(SetUpBody {
+        token: signed_in.token,
+        device: signed_in.device,
+        backup_codes: set_up.backup_codes,
+    }))
 }
 
 // ---- login ----
 
-async fn login_start(State(state): State<AppState>) -> ApiResult<Json<Started<impl Serialize>>> {
-    let (options, auth) = state.passkeys.start_assertion().await?;
-    start_ceremony(&state, Ceremony::Login { auth }, options)
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LoginFinish {
-    ceremony_id: String,
-    credential: PublicKeyCredential,
+struct Login {
+    passphrase: Zeroizing<String>,
+    code: Option<String>,
+    backup_code: Option<String>,
     device_name: String,
 }
 
 /// Every sign-in makes a new device. A client that is still signed in has no
 /// reason to sign in again, and one that lost its token is, as far as the
 /// server can tell, a new device.
-async fn login_finish(
+async fn login(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<LoginFinish>,
+    Json(body): Json<Login>,
 ) -> ApiResult<Json<SignedIn>> {
     let device_name = device_name(&body.device_name)?;
-    let Some(Ceremony::Login { auth }) = state.passkeys.take_ceremony(&body.ceremony_id) else {
-        return Err(unknown_ceremony());
+    if state.account.setup_required().await? {
+        return Err(ApiError::conflict("this server isn't set up yet")
+            .with_detail("enter the setup code it printed"));
+    }
+    if let Some(left) = state.account.locked_for() {
+        return Err(locked(left));
+    }
+    let factor = match (&body.code, &body.backup_code) {
+        (Some(code), None) => SecondFactor::Totp(code),
+        (None, Some(code)) => SecondFactor::Backup(code),
+        _ => return Err(ApiError::bad_request("send a code or a backup code")),
     };
-    let passkey_id = finish_assertion(&state, &body.credential, &auth).await?;
-    Ok(Json(
-        sign_in(&state, &device_name, &passkey_id, &headers).await?,
-    ))
+    if !state.account.check_login(body.passphrase, factor).await? {
+        return Err(wrong_credentials());
+    }
+    if body.backup_code.is_some() {
+        let left = state.account.backup_codes_left().await?;
+        state
+            .events
+            .append(None, "account.backup_code_used", json!({ "left": left }))
+            .await?;
+    }
+    Ok(Json(sign_in(&state, &device_name, &headers).await?))
 }
 
-/// Verifies an assertion and stores the passkey's new sign count. Returns the
-/// id of the passkey that signed.
-async fn finish_assertion(
-    state: &AppState,
-    credential: &PublicKeyCredential,
-    auth: &PasskeyAuthentication,
-) -> ApiResult<String> {
-    let result = state
-        .passkeys
-        .webauthn()
-        .finish_passkey_authentication(credential, auth)
-        .map_err(passkey_check_failed)?;
-    state
-        .passkeys
-        .record_use(&result)
-        .await?
-        .ok_or_else(|| ApiError::new(StatusCode::UNAUTHORIZED, "that passkey was removed"))
-}
-
-/// Creates a device signed in with a passkey: every scope, and fresh.
-async fn sign_in(
-    state: &AppState,
-    name: &str,
-    passkey_id: &str,
-    headers: &HeaderMap,
-) -> ApiResult<SignedIn> {
+/// Creates a signed-in device: every scope, and fresh.
+async fn sign_in(state: &AppState, name: &str, headers: &HeaderMap) -> ApiResult<SignedIn> {
     let (device_id, token) =
-        create_device(&state.store, name, "passkey", &Scope::ALL, None).await?;
+        create_device(&state.store, name, LOGIN_DEVICE, &Scope::ALL, None).await?;
     let user_agent: Option<String> = headers
         .get(USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.chars().take(200).collect());
     let verified_at = now_ms();
-    let (row_id, row_passkey_id) = (device_id.clone(), passkey_id.to_string());
+    let row_id = device_id.clone();
     state
         .store
         .call(move |conn| {
             conn.execute(
-                "UPDATE devices SET passkey_id = ?1, user_agent = ?2, verified_at = ?3
-                 WHERE id = ?4",
-                rusqlite::params![row_passkey_id, user_agent, verified_at, row_id],
+                "UPDATE devices SET user_agent = ?1, verified_at = ?2 WHERE id = ?3",
+                rusqlite::params![user_agent, verified_at, row_id],
             )
         })
         .await?;
@@ -299,9 +292,8 @@ async fn sign_in(
             json!({
                 "deviceId": device_id,
                 "name": name,
-                "kind": "passkey",
+                "kind": LOGIN_DEVICE,
                 "scopes": Scope::ALL,
-                "passkeyId": passkey_id,
             }),
         )
         .await?;
@@ -318,42 +310,9 @@ async fn sign_in(
 
 // ---- reverify ----
 
-async fn reverify_start(
-    State(state): State<AppState>,
-    Authed { device, .. }: Authed<Admin>,
-) -> ApiResult<Json<Started<impl Serialize>>> {
-    let id = device.device_id.clone();
-    let kind: String = state
-        .store
-        .call(move |conn| {
-            conn.query_row("SELECT kind FROM devices WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
-        })
-        .await?;
-    // A token has no passkey behind it. If it could reverify, a stolen admin
-    // token could become fresh by getting the owner to approve one prompt.
-    if kind != "passkey" {
-        return Err(ApiError::forbidden(
-            "only a device signed in with a passkey can confirm with one",
-        ));
-    }
-    let (options, auth) = state.passkeys.start_assertion().await?;
-    start_ceremony(
-        &state,
-        Ceremony::Reverify {
-            auth,
-            device_id: device.device_id,
-        },
-        options,
-    )
-}
-
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AssertionFinish {
-    ceremony_id: String,
-    credential: PublicKeyCredential,
+struct Reverify {
+    code: String,
 }
 
 #[derive(Serialize)]
@@ -362,23 +321,39 @@ struct Verified {
     verified_at: i64,
 }
 
-async fn reverify_finish(
+async fn device_kind(state: &AppState, device_id: &str) -> ApiResult<String> {
+    let id = device_id.to_string();
+    Ok(state
+        .store
+        .call(move |conn| {
+            conn.query_row("SELECT kind FROM devices WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+        })
+        .await?)
+}
+
+/// A code from the authenticator app makes this device fresh.
+async fn reverify(
     State(state): State<AppState>,
     Authed { device, .. }: Authed<Admin>,
-    Json(body): Json<AssertionFinish>,
+    Json(body): Json<Reverify>,
 ) -> ApiResult<Json<Verified>> {
-    let Some(Ceremony::Reverify { auth, device_id }) =
-        state.passkeys.take_ceremony(&body.ceremony_id)
-    else {
-        return Err(unknown_ceremony());
-    };
-    if device_id != device.device_id {
+    // A token wasn't made by a sign-in. If it could reverify, a stolen admin
+    // token plus one shoulder-surfed code would make it fresh.
+    if device_kind(&state, &device.device_id).await? != LOGIN_DEVICE {
         return Err(ApiError::forbidden(
-            "this ceremony belongs to another device",
+            "only a device that signed in with the passphrase can confirm with a code",
         ));
     }
-    finish_assertion(&state, &body.credential, &auth).await?;
+    if let Some(left) = state.account.locked_for() {
+        return Err(locked(left));
+    }
+    if !state.account.check_code(&body.code).await? {
+        return Err(wrong_code());
+    }
     let verified_at = now_ms();
+    let device_id = device.device_id;
     state
         .store
         .call(move |conn| {
@@ -391,156 +366,180 @@ async fn reverify_finish(
     Ok(Json(Verified { verified_at }))
 }
 
-// ---- more passkeys ----
+// ---- the account ----
 
-#[derive(Deserialize)]
-struct RegisterStart {
-    label: String,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountBody {
+    backup_codes_left: i64,
 }
 
-/// Adds another passkey from a signed-in device, such as a security key as a
-/// backup.
-async fn register_start(
-    State(state): State<AppState>,
-    Fresh { device, .. }: Fresh<Admin>,
-    Json(body): Json<RegisterStart>,
-) -> ApiResult<Json<Started<impl Serialize>>> {
-    let label = device_name(&body.label)?;
-    let (options, reg) = state.passkeys.start_registration().await?;
-    start_ceremony(
-        &state,
-        Ceremony::AddPasskey {
-            reg,
-            device_id: device.device_id,
-            label,
-        },
-        options,
-    )
+async fn account(State(state): State<AppState>, _: Authed<Admin>) -> ApiResult<Json<AccountBody>> {
+    Ok(Json(AccountBody {
+        backup_codes_left: state.account.backup_codes_left().await?,
+    }))
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Added {
-    passkey_id: String,
-}
-
-async fn register_finish(
-    State(state): State<AppState>,
-    Fresh { device, .. }: Fresh<Admin>,
-    Json(body): Json<RegisterFinish>,
-) -> ApiResult<Json<Added>> {
-    let Some(Ceremony::AddPasskey {
-        reg,
-        device_id,
-        label,
-    }) = state.passkeys.take_ceremony(&body.ceremony_id)
-    else {
-        return Err(unknown_ceremony());
-    };
-    if device_id != device.device_id {
-        return Err(ApiError::forbidden(
-            "this ceremony belongs to another device",
-        ));
-    }
-    let passkey = state
-        .passkeys
-        .webauthn()
-        .finish_passkey_registration(&body.credential, &reg)
-        .map_err(passkey_check_failed)?;
-    let passkey_id = state.passkeys.add_passkey(&label, passkey).await?;
-    state
-        .events
-        .append(
-            Some(&device.device_id),
-            "passkey.added",
-            json!({ "passkeyId": passkey_id, "via": "signedInDevice" }),
-        )
-        .await?;
-    Ok(Json(Added { passkey_id }))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PasskeyRow {
-    id: String,
-    label: String,
-    created_at: i64,
-}
-
-async fn list_passkeys(
-    State(state): State<AppState>,
-    _: Authed<Admin>,
-) -> ApiResult<Json<Vec<PasskeyRow>>> {
-    let rows = state
-        .passkeys
-        .passkeys()
-        .await?
-        .into_iter()
-        .map(|p| PasskeyRow {
-            id: p.id,
-            label: p.label,
-            created_at: p.created_at,
-        })
-        .collect();
-    Ok(Json(rows))
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Removed {
+struct SignedOut {
     revoked_devices: Vec<String>,
 }
 
-/// Removes a passkey and signs out every device it signed in. A passkey added
-/// from a stolen device stays usable until this runs, so revoking the device
-/// alone isn't enough.
-async fn remove_passkey(
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChangePassphrase {
+    current_passphrase: Zeroizing<String>,
+    new_passphrase: Zeroizing<String>,
+    #[serde(default)]
+    sign_out_other_devices: bool,
+}
+
+async fn change_passphrase(
     State(state): State<AppState>,
     Fresh { device, .. }: Fresh<Admin>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Removed>> {
-    let credential_id = state
-        .passkeys
-        .passkeys()
+    Json(body): Json<ChangePassphrase>,
+) -> ApiResult<Json<SignedOut>> {
+    check_passphrase_shape(&body.new_passphrase).map_err(bad_passphrase)?;
+    if let Some(left) = state.account.locked_for() {
+        return Err(locked(left));
+    }
+    if !state
+        .account
+        .check_current_passphrase(body.current_passphrase)
         .await?
-        .into_iter()
-        .find(|p| p.id == id)
-        .map(|p| p.passkey.cred_id().to_vec());
-    let revoked = match state.passkeys.remove_passkey(&id).await? {
-        RemovePasskey::Removed { revoked } => {
-            if let Some(credential_id) = credential_id {
-                crate::vault::forget_passkey(&state.vault, &credential_id);
-            }
-            revoked
-        }
-        RemovePasskey::LastOne => {
-            return Err(ApiError::conflict("that is the last passkey")
-                .with_detail("add another before removing this one"));
-        }
-        RemovePasskey::NotFound => return Err(ApiError::not_found()),
+    {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "that isn't the current passphrase",
+        ));
+    }
+    state.account.set_passphrase(body.new_passphrase).await?;
+    state
+        .events
+        .append(
+            Some(&device.device_id),
+            "account.changed",
+            json!({ "what": "passphrase" }),
+        )
+        .await?;
+    let revoked_devices = if body.sign_out_other_devices {
+        revoke_others(&state, &device.device_id).await?
+    } else {
+        Vec::new()
     };
-    for revoked_id in &revoked {
-        state.auth.announce_revocation(revoked_id);
+    Ok(Json(SignedOut { revoked_devices }))
+}
+
+async fn reenroll_start(
+    State(state): State<AppState>,
+    Fresh { device, .. }: Fresh<Admin>,
+) -> ApiResult<Json<EnrollmentBody>> {
+    Ok(Json(state.account.start_reenroll(&device.device_id).into()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReenrollFinish {
+    enrollment_id: String,
+    code: String,
+    #[serde(default)]
+    sign_out_other_devices: bool,
+}
+
+async fn reenroll_finish(
+    State(state): State<AppState>,
+    Fresh { device, .. }: Fresh<Admin>,
+    Json(body): Json<ReenrollFinish>,
+) -> ApiResult<Json<SignedOut>> {
+    match state
+        .account
+        .finish_reenroll(&body.enrollment_id, &device.device_id, &body.code)
+        .await?
+    {
+        Ok(()) => {}
+        Err(SetupError::WrongCode) => return Err(wrong_code()),
+        Err(_) => {
+            return Err(
+                ApiError::bad_request("unknown or expired enrollment").with_detail("start again")
+            );
+        }
     }
     state
         .events
         .append(
             Some(&device.device_id),
-            "passkey.removed",
-            json!({ "passkeyId": id, "revokedDevices": revoked }),
+            "account.changed",
+            json!({ "what": "totp" }),
         )
         .await?;
-    for revoked_id in &revoked {
+    let revoked_devices = if body.sign_out_other_devices {
+        revoke_others(&state, &device.device_id).await?
+    } else {
+        Vec::new()
+    };
+    Ok(Json(SignedOut { revoked_devices }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupCodes {
+    backup_codes: Vec<String>,
+}
+
+async fn regenerate_backup_codes(
+    State(state): State<AppState>,
+    Fresh { device, .. }: Fresh<Admin>,
+) -> ApiResult<Json<BackupCodes>> {
+    let backup_codes = state.account.regenerate_backup_codes().await?;
+    state
+        .events
+        .append(
+            Some(&device.device_id),
+            "account.changed",
+            json!({ "what": "backupCodes" }),
+        )
+        .await?;
+    Ok(Json(BackupCodes { backup_codes }))
+}
+
+async fn sign_out_others(
+    State(state): State<AppState>,
+    Fresh { device, .. }: Fresh<Admin>,
+) -> ApiResult<Json<SignedOut>> {
+    Ok(Json(SignedOut {
+        revoked_devices: revoke_others(&state, &device.device_id).await?,
+    }))
+}
+
+/// Revokes every live device but `keep`, tokens included, and closes their
+/// connections.
+async fn revoke_others(state: &AppState, keep: &str) -> ApiResult<Vec<String>> {
+    let keep_id = keep.to_string();
+    let revoked: Vec<String> = state
+        .store
+        .call(move |conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let ids = {
+                let mut stmt =
+                    tx.prepare("SELECT id FROM devices WHERE id != ?1 AND revoked_at IS NULL")?;
+                stmt.query_map([&keep_id], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?
+            };
+            tx.execute(
+                "UPDATE devices SET revoked_at = ?1 WHERE id != ?2 AND revoked_at IS NULL",
+                rusqlite::params![now_ms(), keep_id],
+            )?;
+            tx.commit()?;
+            Ok(ids)
+        })
+        .await?;
+    for id in &revoked {
+        state.auth.announce_revocation(id);
         state
             .events
-            .append(
-                Some(&device.device_id),
-                "device.revoked",
-                json!({ "deviceId": revoked_id }),
-            )
+            .append(Some(keep), "device.revoked", json!({ "deviceId": id }))
             .await?;
     }
-    Ok(Json(Removed {
-        revoked_devices: revoked,
-    }))
+    Ok(revoked)
 }

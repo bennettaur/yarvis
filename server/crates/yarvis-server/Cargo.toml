@@ -17,10 +17,13 @@ hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 libc = "0.2"
 portable-pty = "0.9"
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rand = "0.9"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.10"
 sha2 = "0.10"
 signature = "2"
 ssh-agent-lib = "0.6"
@@ -33,7 +36,6 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-webauthn-rs = "0.6.2"
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -41,4 +43,3 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [dev-dependencies]
 tempfile = "3"
-webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }

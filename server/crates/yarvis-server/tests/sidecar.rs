@@ -59,10 +59,10 @@ fn test_server(config: Config, backend: Arc<dyn SecretBackend>, port: u16) -> Te
     TestServer { state, dir }
 }
 
-/// A passkey device that checked its passkey just now, as a sign-in leaves
-/// it, for the commands that need `Fresh<Admin>`.
-async fn fresh_passkey_device(state: &AppState) -> String {
-    let (id, token) = create_device(&state.store, "laptop", "passkey", &Scope::ALL, None)
+/// A signed-in device that entered a code just now, as a sign-in leaves it,
+/// for the commands that need `Fresh<Admin>`.
+async fn fresh_login_device(state: &AppState) -> String {
+    let (id, token) = create_device(&state.store, "laptop", "login", &Scope::ALL, None)
         .await
         .unwrap();
     state
@@ -698,7 +698,7 @@ async fn switching_to_a_backend_server_toml_did_not_choose_is_a_409() {
     let mut config = Config::default();
     config.secrets.backend = Some(SecretBackendKind::Keychain);
     let h = test_server(config, MemoryBackend::empty(), 1);
-    let admin = fresh_passkey_device(&h.state).await;
+    let admin = fresh_login_device(&h.state).await;
     let (status, body) = send(
         &h.state,
         request(

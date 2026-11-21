@@ -28,17 +28,16 @@ pub enum StoreError {
 
 /// Migrations run in order, once each. Append to the end; never edit one that
 /// has shipped, since `user_version` records how many have already run.
-/// A module that owns tables adds its own entry here.
+/// A module that owns tables adds its own entry here. None has shipped yet.
 const MIGRATIONS: &[&str] = &[
     // 1: devices and the event log.
     r#"
     CREATE TABLE devices (
         id            TEXT PRIMARY KEY,
         name          TEXT NOT NULL,
-        kind          TEXT NOT NULL CHECK (kind IN ('passkey', 'token')),
+        kind          TEXT NOT NULL CHECK (kind IN ('login', 'token')),
         scopes        TEXT NOT NULL,
         token_hash    BLOB NOT NULL UNIQUE,
-        passkey_id    TEXT,
         created_by    TEXT,
         user_agent    TEXT,
         created_at    INTEGER NOT NULL,
@@ -54,15 +53,24 @@ const MIGRATIONS: &[&str] = &[
         data       TEXT NOT NULL
     );
     "#,
-    // 2: passkeys and approvals.
+    // 2: the account, its backup codes, the setup code, and approvals.
     r#"
-    CREATE TABLE passkeys (
-        id             TEXT PRIMARY KEY,
-        credential_id  BLOB NOT NULL UNIQUE,
-        label          TEXT NOT NULL,
-        passkey        TEXT NOT NULL,
-        created_at     INTEGER NOT NULL,
-        last_used_at   INTEGER
+    CREATE TABLE account (
+        id               INTEGER PRIMARY KEY CHECK (id = 1),
+        passphrase_hash  TEXT NOT NULL,
+        totp_secret      BLOB NOT NULL,
+        totp_last_step   INTEGER,
+        created_at       INTEGER NOT NULL
+    );
+    CREATE TABLE backup_codes (
+        hash        BLOB PRIMARY KEY,
+        created_at  INTEGER NOT NULL,
+        used_at     INTEGER
+    );
+    CREATE TABLE setup_code (
+        id             INTEGER PRIMARY KEY CHECK (id = 1),
+        hash           BLOB NOT NULL,
+        attempts_left  INTEGER NOT NULL
     );
     CREATE TABLE approvals (
         id           TEXT PRIMARY KEY,

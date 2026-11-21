@@ -7,7 +7,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::git::Repo;
-use common::{Harness, authenticator, until};
+use common::{Harness, until};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use yarvis_server::config::{Config, SecretBackendKind};
@@ -33,7 +33,7 @@ async fn signer() -> Signer {
     config.ssh_agent.enabled = true;
     let created = Vault::init(dir.path(), true).unwrap();
     let harness = Harness::with_config(config).await;
-    let token = harness.setup(&mut authenticator()).await;
+    let token = harness.setup().await;
     let (status, body) = harness
         .call(
             "POST",

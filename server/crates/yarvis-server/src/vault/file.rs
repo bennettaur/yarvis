@@ -3,7 +3,7 @@
 //! One random 256-bit vault key encrypts the secrets blob with
 //! XChaCha20-Poly1305. The vault key itself is never stored in the clear.
 //! Each wrapper holds a copy of the vault key, encrypted under a key derived
-//! from a secret the server does not keep: a passkey's PRF output, or a
+//! from a secret the server does not keep: the vault passphrase, or a
 //! recovery key the user writes down. Any one wrapper unlocks the vault.
 
 use std::collections::BTreeMap;
@@ -64,7 +64,7 @@ impl VaultKey {
     }
 }
 
-/// A secret that unwraps the vault key: a passkey PRF output or a recovery key.
+/// A secret that unwraps the vault key: a passphrase's derived key or a recovery key.
 /// Held in a zeroizing buffer and never serialized.
 pub struct UnwrapSecret(Zeroizing<Vec<u8>>);
 
@@ -110,12 +110,6 @@ impl RecoveryKey {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WrapperKind {
-    /// Unwrapped by the PRF output of one WebAuthn credential. `prf_salt` is the
-    /// PRF input the client sends to the authenticator; it's public.
-    PasskeyPrf {
-        credential_id: String,
-        prf_salt: String,
-    },
     Recovery,
 }
 
@@ -172,11 +166,6 @@ pub struct Unlocked {
     pub file: VaultFile,
     key: VaultKey,
     pub secrets: Secrets,
-}
-
-/// The id of the wrapper for one passkey credential (base64url).
-pub fn passkey_wrapper_id(credential_id: &str) -> String {
-    format!("passkey:{credential_id}")
 }
 
 fn random_b64(len: usize) -> String {
@@ -365,25 +354,6 @@ impl VaultFile {
         Ok(tmp)
     }
 
-    pub fn passkey_wrapper(&self, credential_id: &str) -> Option<&Wrapper> {
-        self.wrappers.iter().find(|w| {
-            matches!(&w.kind, WrapperKind::PasskeyPrf { credential_id: c, .. } if c == credential_id)
-        })
-    }
-
-    /// Unlocks with a passkey's PRF output.
-    pub fn unlock_with_passkey(
-        self,
-        credential_id: &str,
-        prf_output: &UnwrapSecret,
-    ) -> Result<Unlocked, VaultError> {
-        let w = self
-            .passkey_wrapper(credential_id)
-            .ok_or(VaultError::NoMatchingWrapper)?;
-        let key = try_unwrap(&self.vault_id, w, prf_output).ok_or(VaultError::WrongKey)?;
-        self.finish_unlock(key)
-    }
-
     pub fn unlock_with_recovery(self, recovery: &RecoveryKey) -> Result<Unlocked, VaultError> {
         let secret = recovery.as_unwrap_secret();
         let key = self
@@ -414,34 +384,6 @@ impl Unlocked {
         let plaintext =
             Zeroizing::new(serde_json::to_vec(&self.secrets).expect("secrets serialize"));
         self.file.secrets = seal(&self.key.0, &secrets_aad(&self.file.vault_id), &plaintext);
-    }
-
-    /// Adds a wrapper for a passkey. Only possible while unlocked, because it
-    /// needs the vault key.
-    pub fn add_passkey_wrapper(
-        &mut self,
-        credential_id: &str,
-        prf_salt: &str,
-        label: &str,
-        prf_output: &UnwrapSecret,
-    ) -> Result<(), VaultError> {
-        let id = passkey_wrapper_id(credential_id);
-        if self.file.wrappers.iter().any(|w| w.id == id) {
-            return Err(VaultError::DuplicateWrapper(id));
-        }
-        let w = make_wrapper(
-            &self.file.vault_id,
-            &self.key,
-            id,
-            label.into(),
-            WrapperKind::PasskeyPrf {
-                credential_id: credential_id.into(),
-                prf_salt: prf_salt.into(),
-            },
-            prf_output,
-        );
-        self.file.wrappers.push(w);
-        Ok(())
     }
 
     /// Replaces the recovery wrapper with a new recovery key.
@@ -483,11 +425,6 @@ impl Unlocked {
 mod tests {
     use super::*;
 
-    fn stand_in_prf(seed: u8) -> UnwrapSecret {
-        // Real PRF outputs are 32 bytes from HMAC-SHA256 on the authenticator.
-        UnwrapSecret::from_bytes(vec![seed; 32])
-    }
-
     fn sample_secrets() -> Secrets {
         let mut s = Secrets::default();
         s.insert("anthropic_api_key", b"sk-test-not-real".to_vec());
@@ -523,74 +460,6 @@ mod tests {
     }
 
     #[test]
-    fn passkey_wrapper_round_trip_and_wrong_prf() {
-        let (mut unlocked, _recovery) = VaultFile::create(sample_secrets());
-        unlocked
-            .add_passkey_wrapper("cred-A", "salt-A", "Laptop Touch ID", &stand_in_prf(7))
-            .unwrap();
-        unlocked
-            .add_passkey_wrapper("cred-B", "salt-B", "YubiKey", &stand_in_prf(9))
-            .unwrap();
-        let locked = unlocked.lock();
-
-        let a = locked
-            .clone()
-            .unlock_with_passkey("cred-A", &stand_in_prf(7))
-            .unwrap();
-        assert!(a.secrets.get("anthropic_api_key").is_some());
-        let b = locked
-            .clone()
-            .unlock_with_passkey("cred-B", &stand_in_prf(9))
-            .unwrap();
-        assert!(b.secrets.get("anthropic_api_key").is_some());
-
-        // B's PRF output must not open A's wrapper.
-        assert!(matches!(
-            locked
-                .clone()
-                .unlock_with_passkey("cred-A", &stand_in_prf(9)),
-            Err(VaultError::WrongKey)
-        ));
-        assert!(matches!(
-            locked.unlock_with_passkey("cred-unknown", &stand_in_prf(7)),
-            Err(VaultError::NoMatchingWrapper)
-        ));
-    }
-
-    #[test]
-    fn duplicate_passkey_wrapper_is_rejected() {
-        let (mut unlocked, _) = VaultFile::create(sample_secrets());
-        unlocked
-            .add_passkey_wrapper("cred-A", "s", "one", &stand_in_prf(1))
-            .unwrap();
-        assert!(matches!(
-            unlocked.add_passkey_wrapper("cred-A", "s", "two", &stand_in_prf(2)),
-            Err(VaultError::DuplicateWrapper(_))
-        ));
-    }
-
-    #[test]
-    fn remove_wrapper_revokes_it_and_last_wrapper_is_protected() {
-        let (mut unlocked, recovery) = VaultFile::create(sample_secrets());
-        unlocked
-            .add_passkey_wrapper("cred-A", "s", "laptop", &stand_in_prf(7))
-            .unwrap();
-        unlocked.remove_wrapper("passkey:cred-A").unwrap();
-        assert!(matches!(
-            unlocked.remove_wrapper("recovery"),
-            Err(VaultError::LastWrapper)
-        ));
-        let locked = unlocked.lock();
-        assert!(matches!(
-            locked
-                .clone()
-                .unlock_with_passkey("cred-A", &stand_in_prf(7)),
-            Err(VaultError::NoMatchingWrapper)
-        ));
-        locked.unlock_with_recovery(&recovery).unwrap();
-    }
-
-    #[test]
     fn rotating_recovery_key_invalidates_the_old_one() {
         let (mut unlocked, old) = VaultFile::create(sample_secrets());
         let new = unlocked.rotate_recovery_key();
@@ -612,76 +481,6 @@ mod tests {
         assert!(matches!(
             locked.unlock_with_recovery(&recovery),
             Err(VaultError::CorruptSecrets)
-        ));
-    }
-
-    #[test]
-    fn a_changed_wrapper_does_not_open() {
-        let (mut unlocked, _) = VaultFile::create(sample_secrets());
-        unlocked
-            .add_passkey_wrapper("cred-A", "salt-A", "laptop", &stand_in_prf(7))
-            .unwrap();
-        let locked = unlocked.lock();
-        let tampered = |change: &dyn Fn(&mut VaultFile)| {
-            let mut file = locked.clone();
-            change(&mut file);
-            file.unlock_with_passkey("cred-A", &stand_in_prf(7))
-        };
-        let passkey = |file: &mut VaultFile| -> usize {
-            file.wrappers
-                .iter()
-                .position(|w| w.id == "passkey:cred-A")
-                .unwrap()
-        };
-
-        let flip_key = |file: &mut VaultFile| {
-            let i = passkey(file);
-            let mut ct = decode(&file.wrappers[i].wrapped_key).unwrap();
-            ct[0] ^= 1;
-            file.wrappers[i].wrapped_key = B64.encode(ct);
-        };
-        let change_salt = |file: &mut VaultFile| {
-            let i = passkey(file);
-            file.wrappers[i].kind = WrapperKind::PasskeyPrf {
-                credential_id: "cred-A".into(),
-                prf_salt: "salt-B".into(),
-            };
-        };
-        let rename = |file: &mut VaultFile| {
-            let i = passkey(file);
-            file.wrappers[i].id = "passkey:cred-A2".into();
-            file.wrappers[i].kind = WrapperKind::PasskeyPrf {
-                credential_id: "cred-A".into(),
-                prf_salt: "salt-A".into(),
-            };
-        };
-        let change_vault_id = |file: &mut VaultFile| file.vault_id = "another".into();
-        for change in [
-            &flip_key as &dyn Fn(&mut VaultFile),
-            &change_salt,
-            &rename,
-            &change_vault_id,
-        ] {
-            assert!(matches!(tampered(change), Err(VaultError::WrongKey)));
-        }
-        locked
-            .unlock_with_passkey("cred-A", &stand_in_prf(7))
-            .unwrap();
-    }
-
-    #[test]
-    fn wrapper_moved_between_vaults_does_not_open() {
-        let (mut a, _) = VaultFile::create(sample_secrets());
-        a.add_passkey_wrapper("cred-A", "s", "laptop", &stand_in_prf(7))
-            .unwrap();
-        let a_wrapper = a.file.passkey_wrapper("cred-A").unwrap().clone();
-
-        let (b, _) = VaultFile::create(sample_secrets());
-        let mut b = b.lock();
-        b.wrappers.push(a_wrapper);
-        assert!(matches!(
-            b.unlock_with_passkey("cred-A", &stand_in_prf(7)),
-            Err(VaultError::WrongKey)
         ));
     }
 

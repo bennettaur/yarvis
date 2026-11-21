@@ -624,14 +624,18 @@ mod tests {
             bind = "127.0.0.1:1"
             [secrets]
             backend = "onepassword"
+            [ssh_agent]
+            upstream_socket = "/tmp/mine.sock"
             [auth]
-            rp_id = "yarvis.example.com"
             origins = ["https://yarvis.example.com"]
         "#;
         let text = render_server_config(existing, &inputs(&paths(true))).unwrap();
         let doc = parse(&text);
         assert_eq!(doc["secrets"]["backend"].as_str(), Some("onepassword"));
-        assert_eq!(doc["auth"]["rp_id"].as_str(), Some("yarvis.example.com"));
+        assert_eq!(
+            doc["ssh_agent"]["upstream_socket"].as_str(),
+            Some("/tmp/mine.sock")
+        );
         assert_eq!(
             doc["server"]["data_dir"].as_str(),
             Some("/Volumes/Data/yarvis")
