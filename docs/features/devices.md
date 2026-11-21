@@ -70,8 +70,9 @@ disappears from the list.
 Everything works in a browser except what belongs to the machine in front of
 you:
 
-- Clipboard history. The [clipboard palette](clipboard.md) in a browser has
-  only your saved entries.
+- Clipboard history. The [clipboard palette](clipboard.md) in a browser, or in
+  a desktop app connected to a server on another machine, has only your saved
+  entries.
 - Global shortcuts, such as the ones that open
   [Quick Chat](quick-chat.md) and the clipboard palette from another app.
 - An alarm bringing the window to the front over your other apps. In a

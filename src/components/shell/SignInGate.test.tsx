@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { saveDeviceToken, signOut } from "../../lib/server";
+import { saveDeviceToken, serverFetch, signOut } from "../../lib/server";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { stubServerRoutes } from "../../test/serverRoutes";
 import SignInGate from "./SignInGate";
@@ -9,6 +9,7 @@ let setupRequired = false;
 const server = stubServerRoutes({
   "GET /api/auth/status": () =>
     Response.json({ setupRequired, rpId: "localhost", vault: "absent" }),
+  "GET /api/devices/me": () => Response.json({ error: "sign in first" }, { status: 401 }),
 });
 afterAll(() => {
   server.restore();
@@ -31,12 +32,15 @@ describe("SignInGate", () => {
     unmount = mounted.unmount;
     await waitFor(() => mounted.host.textContent === "the app", "the app");
 
-    signOut();
+    await serverFetch("/api/devices/me");
 
+    // Enabled once the server's status has arrived, so no request is left in flight.
     await waitFor(
-      () => mounted.host.textContent?.includes("Sign in with your passkey") ?? false,
-      "sign-in",
+      () =>
+        mounted.host.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled === false,
+      "the sign-in form",
     );
+    expect(mounted.host.textContent).toContain("Sign in with your passkey");
   });
 
   it("asks for the setup code on a server nobody has set up", async () => {

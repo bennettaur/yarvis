@@ -142,13 +142,20 @@ export async function scanClipboardTexts(
 }
 
 /**
- * Puts text on the system clipboard. The desktop app writes it natively; a
- * browser uses its own clipboard API, which needs the page focused.
+ * Puts text on the system clipboard. The desktop app writes it natively when
+ * it may (not when it points at a remote server); otherwise the browser's own
+ * clipboard API does, which needs the page focused.
  */
-export const writeClipboard = (text: string): Promise<void> =>
-  localFeaturesAvailable()
-    ? core("clipboard_write", { text })
-    : navigator.clipboard.writeText(text);
+export async function writeClipboard(text: string): Promise<void> {
+  if (localFeaturesAvailable()) {
+    try {
+      return await core("clipboard_write", { text });
+    } catch {
+      // Not granted to this window; the web API below still works.
+    }
+  }
+  await navigator.clipboard.writeText(text);
+}
 
 /**
  * Strips control and formatting characters from text bound for the clipboard.

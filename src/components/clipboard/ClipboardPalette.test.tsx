@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from "bun:test";
 import { createElement } from "react";
 import type { ClipboardEntry } from "../../lib/clipboard";
+import { resetCore, stubCore } from "../../test/coreApi";
 import { actAsDesktopApp } from "../../test/desktopApp";
 import { nativeInvoke } from "../../test/nativeInvoke";
 import { mountForInteraction, renderToHtml } from "../../test/render";
@@ -159,6 +160,26 @@ describe("ClipboardPalette in a browser", () => {
     } finally {
       restoreBrowser = actAsDesktopApp();
     }
+  });
+});
+
+describe("ClipboardPalette in a desktop app pointed at a remote server", () => {
+  afterAll(resetCore);
+
+  it("drops the History tab when the app won't hand over its history", async () => {
+    stubCore({
+      core: async (command: string) => {
+        if (command === "clipboard_history") throw new Error("not allowed from this origin");
+        return nativeInvoke(command);
+      },
+    });
+    const { host, unmount } = await mountForInteraction(
+      createElement(ClipboardPalette, { open: true, onClose: () => {} }),
+      SETTLE_MS,
+    );
+    const tabs = [...host.querySelectorAll("button[aria-pressed]")].map((el) => el.textContent);
+    unmount();
+    expect(tabs).toEqual(["Saved"]);
   });
 });
 

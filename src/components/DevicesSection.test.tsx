@@ -99,6 +99,10 @@ describe("DevicesSection", () => {
     await waitFor(() => clipboardWrites().length === 1, "the copy");
     expect(clipboardWrites()).toEqual(["yv_secret_once"]);
 
+    // The list reloads with the new device, which also settles the refetch
+    // before the next test reads the calls.
+    await waitFor(() => mounted.host.textContent?.includes("CI bot") ?? false, "the new device");
+
     buttonNamed(mounted.host, "Done")?.click();
     await waitFor(
       () => !(mounted.host.textContent?.includes("yv_secret_once") ?? true),
