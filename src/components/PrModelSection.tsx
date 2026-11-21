@@ -122,6 +122,8 @@ function ClaudeRunRow({
   );
 }
 
+const NO_MODELS: HarnessModels = {};
+
 /** Each tier's name and what it stands for, so an OpenCode model can be picked to match it. */
 const TIERS: Record<VerificationModel, { name: string; hint: string }> = {
   opus: { name: "Opus", hint: "the hardest checks (risk, malicious intent)" },
@@ -144,8 +146,18 @@ function OpenCodeTierModels({
   onSave: (patch: VerificationRunConfigPatch) => void;
 }) {
   const [drafts, setDrafts] = useState<HarnessModels>(models);
-  useEffect(() => setDrafts(models), [models]);
+  const [editing, setEditing] = useState<VerificationModel | null>(null);
+  // Saved values replace the drafts, but never the one being typed in.
+  const saved = JSON.stringify(models);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the saved values, not the object
+  useEffect(() => {
+    setDrafts((prev) => ({
+      ...models,
+      ...(editing && prev[editing] !== undefined && { [editing]: prev[editing] }),
+    }));
+  }, [saved]);
   const commit = (tier: VerificationModel) => {
+    setEditing(null);
     const draft = drafts[tier]?.trim() ?? "";
     if (draft === (models[tier] ?? "")) return;
     if (draft && !OPENCODE_MODEL_PATTERN.test(draft)) return;
@@ -177,8 +189,14 @@ function OpenCodeTierModels({
                 placeholder="provider/model"
                 value={draft}
                 onChange={(e) => setDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
+                onFocus={() => setEditing(tier)}
                 onBlur={() => commit(tier)}
               />
+              {invalid && (
+                <span className="col-start-2 text-xs text-red-400">
+                  Not saved: write it as provider/model
+                </span>
+              )}
             </label>
           );
         })}
@@ -232,14 +250,17 @@ function VerificationSectionRuns({
       )}
       {picked?.kind === "opencode" && (
         <OpenCodeTierModels
+          key={picked.id}
           harness={picked.id}
-          models={value.harnessModels?.[picked.id] ?? {}}
+          models={value.harnessModels?.[picked.id] ?? NO_MODELS}
           onSave={onSave}
         />
       )}
       <p className="text-xs text-zinc-500">
-        Each check's Claude model and effort. A run started from the checklist or the assistant can
-        override them for that run.
+        {picked?.kind === "opencode"
+          ? "Each check's tier, which runs on the OpenCode model above, and effort, which applies only to Claude Code."
+          : "Each check's Claude model and effort."}{" "}
+        A run started from the checklist or the assistant can override them for that run.
       </p>
       <div className="grid grid-cols-[1fr_1fr_1fr] items-center gap-x-2 gap-y-1">
         {value.sectionDefaults.map((check) => {
@@ -344,6 +365,13 @@ export default function PrModelSection() {
           ...prev,
           ...(patch.maxBudgetUsd !== undefined && { maxBudgetUsd: patch.maxBudgetUsd }),
           sections: { ...prev.sections, ...patch.sections },
+          ...(patch.harnessModels && {
+            harnessModels: Object.fromEntries(
+              Object.entries({ ...prev.harnessModels, ...patch.harnessModels }).filter(
+                (entry): entry is [string, HarnessModels] => entry[1] !== null,
+              ),
+            ),
+          }),
         },
     );
     try {
@@ -431,7 +459,7 @@ export default function PrModelSection() {
         {verification && (
           <ClaudeRunRow
             label="Verification report"
-            hint="Runs on Claude Code. The assistant asks before starting a report estimated over the budget."
+            hint="Runs on Claude Code, or the OpenCode harness picked below. The assistant asks before starting a report estimated over the budget."
             value={{ maxBudgetUsd: verification.maxBudgetUsd }}
             onSave={({ maxBudgetUsd }) => void saveVerification({ maxBudgetUsd })}
             onError={setError}

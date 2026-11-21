@@ -34,7 +34,8 @@ Three processes, each with a clean ownership boundary:
   starts use the Settings one. The values go only into the run's
   environment, never a log or a row, and a harness setting a variable that
   would move what the run may not read (`HOME`, `CLAUDE_CONFIG_DIR`, the
-  `XDG_*_HOME` folders, `OPENCODE_CONFIG*`) is refused. Like every method it trusts any
+  `XDG_*_HOME` folders) or change how OpenCode runs (any `OPENCODE_*` or
+  `BUN_*`) is refused. Like every method it trusts any
   process running as the user, so such a process can read those secrets
   through the socket; that was accepted rather than tying the socket to the
   sidecar's pid.
@@ -776,15 +777,21 @@ report there and leaves the fixes to the author.
   for an OpenCode harness, held to the same rules its own way. Each process
   starts `opencode run --standalone` (without it the session goes to a
   background service the user's own sessions share) in a private folder
-  holding only the run's `opencode.json`, with `XDG_*_HOME` pointed at
-  folders of its own, since OpenCode loads config, plugins and MCP servers
-  from every folder between its working directory and `/` and a checkout's
-  plugin runs code the moment it loads. Its one agent is the plugin agent's
-  prompt with every tool denied but read, grep and glob, and reads outside
-  its folder allowed only in the checkout and the context folder. It runs
-  under a `sandbox-exec` profile that allows writes only to its folder and
-  denies `SECRET_HOME_PATHS` and the user's own OpenCode folders, which hold
-  provider logins: keys come from the harness's secret environment only.
+  holding only the run's `opencode.json`, with `HOME` and `XDG_*_HOME`
+  pointed at folders of its own, since OpenCode loads config, plugins and MCP
+  servers from every folder between its working directory and `/` (a
+  checkout's plugin runs code the moment it loads), and with no global
+  `AGENTS.md` of its own it reads `~/.claude/CLAUDE.md` as instructions. Its
+  Claude Code compatibility and language servers are off. Its one agent is
+  the plugin agent's prompt with every tool denied but read, grep and glob,
+  and reads outside its folder allowed only in the checkout and the context
+  folder; a part that uses any other tool fails. It runs under a
+  `sandbox-exec` profile, so a build that ignored those permissions still
+  couldn't do much: it writes only to its folder, reads nothing in the home
+  folder but the checkout and context folder (never `SECRET_HOME_PATHS`,
+  `.claude` or the user's own OpenCode folders, which hold provider logins),
+  and runs only OpenCode, ripgrep and what it put in its folder. Keys come
+  from the harness's secret environment only.
   OpenCode has no structured-output tool, so the agent is given the JSON
   schema and its last message is parsed, then checked like any part's
   answer. The models.dev catalog is downloaded by the sidecar once a day and

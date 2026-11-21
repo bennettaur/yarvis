@@ -1,5 +1,13 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -18,6 +26,7 @@ import {
   pruneAgentRunEvents,
   RUN_GUARDRAIL,
   type RunActivity,
+  SECRET_HOME_PATHS,
   spotlight,
   startClaudeFanOutRun,
   startClaudeRun,
@@ -831,7 +840,13 @@ describe("a fan-out run on OpenCode", () => {
   const catalog = join(dir, "oc-catalog.json");
   writeFileSync(catalog, "{}");
   // Stands in for sandbox-exec, which CI's Linux runners don't have: drops `-p <profile>`.
-  const sandboxExec = fakeClaude(dir, "oc-sandbox", 'shift 2\nexec "$@"');
+  // Records the profile it was given, under its pid, which the exec keeps for the fake opencode.
+  const profiles = makeTempDir("yarvis-oc-profiles-");
+  const sandboxExec = fakeClaude(
+    dir,
+    "oc-sandbox",
+    `printf '%s' "$2" > "${profiles}/$$"\nshift 2\nexec "$@"`,
+  );
   const base = {
     kind: "test-kind",
     targetKey: "gh:o/r/1",
@@ -992,6 +1007,19 @@ describe("a fan-out run on OpenCode", () => {
       expect(agent.system).toContain(jsonSchemaArg(countSchema));
     }
     expect([...roots].every((root) => !existsSync(root))).toBe(true);
+    // Each process ran under a profile for its own folder.
+    for (const pid of readdirSync(record)) {
+      const profile = readFileSync(join(profiles, pid), "utf8");
+      const root = readFileSync(join(record, pid, "cwd"), "utf8")
+        .trim()
+        .replace(/\/project$/, "");
+      expect(profile).toContain(`(allow file-write* (subpath "${root}")`);
+      expect(profile).toContain(`(subpath "${realpathSync(checkout)}")`);
+      expect(profile).toContain(`(subpath "${realpathSync(context)}")`);
+      expect(profile).toContain(`/${SECRET_HOME_PATHS[0]}")`);
+      expect(profile).toContain("(deny process-exec)");
+      expect(profile).toContain(`(allow process-exec (literal "${program}")`);
+    }
     expect(runs.map((r) => r.argv[5]).sort()).toEqual(["risk-reviewer", "test-reviewer"]);
     rmSync(record, { recursive: true, force: true });
   });
@@ -1038,6 +1066,52 @@ describe("a fan-out run on OpenCode", () => {
     const outcome = await handle.done;
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toContain("Model unavailable: nonexistent-provider/nonexistent-model");
+  });
+
+  it("removes a process's folder when the run is cancelled", async () => {
+    const record = makeTempDir("yarvis-oc-record-");
+    const program = fakeOpenCode("oc-hang", record, { one: "sleep 30" });
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("risk-reviewer", "one")] },
+      ocDeps(program),
+    );
+    let root = "";
+    for (let i = 0; i < 400 && !root; i++) {
+      const [pid] = readdirSync(record);
+      const cwd = pid ? join(record, pid, "cwd") : "";
+      if (cwd && existsSync(cwd))
+        root = readFileSync(cwd, "utf8")
+          .trim()
+          .replace(/\/project$/, "");
+      else await Bun.sleep(25);
+    }
+    expect(existsSync(root)).toBe(true);
+    registry.cancel(handle.id);
+    expect((await handle.done).status).toBe("cancelled");
+    expect(existsSync(root)).toBe(false);
+    rmSync(record, { recursive: true, force: true });
+  });
+
+  it("fails a part it can't set up, frees its slot for the rest, and leaves no folder", async () => {
+    const record = makeTempDir("yarvis-oc-record-");
+    const answered = join(dir, "oc-answered.jsonl");
+    writeFileSync(answered, `${answer('{"count": 5}')}\n`);
+    const program = fakeOpenCode("oc-one-good", record, { good: `cat "${answered}"` });
+    const before = new Set(readdirSync(tmpdir()).filter((f) => f.startsWith("yarvis-opencode-")));
+    const handle = await startClaudeFanOutRun(
+      db,
+      // One slot: had the failed part kept it, the other could never start.
+      { ...base, parts: [part("no-such-agent", "bad"), part("risk-reviewer", "good")] },
+      { ...ocDeps(program), slots: new ProcessSlots(1) },
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [-1, 5] } });
+    const left = readdirSync(tmpdir()).filter(
+      (f) => f.startsWith("yarvis-opencode-") && !before.has(f),
+    );
+    expect(left).toEqual([]);
+    rmSync(record, { recursive: true, force: true });
   });
 
   it("refuses a run it can't set up before writing anything", async () => {

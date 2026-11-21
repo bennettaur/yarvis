@@ -680,7 +680,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             {harnesses.length > 1 && (
               <select
                 aria-label="Harness for the checks you run"
-                title="Run the checks you start with another Claude Code harness than the one set in Settings"
+                title="Run the checks you start with another Claude Code or OpenCode harness than the one set in Settings"
                 value={runHarness}
                 onChange={(e) => setRunHarness(e.target.value)}
                 className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
