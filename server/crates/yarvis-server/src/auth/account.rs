@@ -60,6 +60,10 @@ pub enum AccountError {
     File(#[from] std::io::Error),
     #[error("passphrase hashing failed: {0}")]
     Hash(String),
+    #[error("too many failed sign-ins")]
+    Locked(Duration),
+    #[error("the account no longer exists")]
+    Gone,
 }
 
 impl From<rusqlite::Error> for AccountError {
@@ -165,6 +169,31 @@ pub enum SecondFactor<'a> {
 struct Lockout {
     failures: VecDeque<Instant>,
     until: Option<Instant>,
+    /// Attempts still being checked. Each holds a place under the limit, so
+    /// requests sent together can't all start before any failure counts.
+    in_flight: usize,
+}
+
+/// A place under the lockout limit for one check, from
+/// [`Account::begin_attempt`]. Dropped without [`Attempt::finish`] (a store
+/// error, say), it counts as nothing.
+struct Attempt<'a>(&'a Account);
+
+impl Attempt<'_> {
+    fn finish(self, ok: bool) {
+        if ok {
+            self.0.record_success();
+        } else {
+            self.0.record_failure();
+        }
+    }
+}
+
+impl Drop for Attempt<'_> {
+    fn drop(&mut self) {
+        let mut lockout = lock(&self.0.0.lockout);
+        lockout.in_flight = lockout.in_flight.saturating_sub(1);
+    }
 }
 
 #[derive(Clone)]
@@ -190,11 +219,7 @@ impl Account {
     pub async fn setup_required(&self) -> Result<bool, StoreError> {
         self.0
             .store
-            .call(|conn| {
-                conn.query_row("SELECT NOT EXISTS (SELECT 1 FROM account)", [], |row| {
-                    row.get(0)
-                })
-            })
+            .call(|conn| has_account(conn).map(|has| !has))
             .await
     }
 
@@ -215,11 +240,7 @@ impl Account {
             .0
             .store
             .call(|conn| {
-                let none: bool =
-                    conn.query_row("SELECT NOT EXISTS (SELECT 1 FROM account)", [], |row| {
-                        row.get(0)
-                    })?;
-                if none {
+                if !has_account(conn)? {
                     setup_code::issue(conn).map(Some)
                 } else {
                     setup_code::clear(conn).map(|()| None)
@@ -293,9 +314,7 @@ impl Account {
             .store
             .call(move |conn| {
                 let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let exists: bool =
-                    tx.query_row("SELECT EXISTS (SELECT 1 FROM account)", [], |row| row.get(0))?;
-                if exists {
+                if has_account(&tx)? {
                     return Ok(Err(SetupError::Done));
                 }
                 if !setup_code::consume(&tx, &setup_code)? {
@@ -329,19 +348,33 @@ impl Account {
             .and_then(|until| until.checked_duration_since(Instant::now()))
     }
 
+    /// Claims a place for one check, or says the account is locked. With
+    /// every place under the limit taken by checks still running, the caller
+    /// waits a moment rather than adding an eleventh guess.
+    fn begin_attempt(&self) -> Result<Attempt<'_>, AccountError> {
+        let mut lockout = lock(&self.0.lockout);
+        let now = Instant::now();
+        if let Some(left) = lockout
+            .until
+            .and_then(|until| until.checked_duration_since(now))
+        {
+            return Err(AccountError::Locked(left));
+        }
+        prune(&mut lockout.failures, now);
+        if lockout.failures.len() + lockout.in_flight >= MAX_FAILURES {
+            return Err(AccountError::Locked(Duration::from_secs(1)));
+        }
+        lockout.in_flight += 1;
+        Ok(Attempt(self))
+    }
+
     /// Counts a failed passphrase or code, from anywhere. Past the limit the
     /// account locks: that lets anyone who can reach the server keep the owner
     /// out, which is accepted, since it also caps guessing.
     pub fn record_failure(&self) {
         let mut lockout = lock(&self.0.lockout);
         let now = Instant::now();
-        while lockout
-            .failures
-            .front()
-            .is_some_and(|at| now.duration_since(*at) > FAILURE_WINDOW)
-        {
-            lockout.failures.pop_front();
-        }
+        prune(&mut lockout.failures, now);
         lockout.failures.push_back(now);
         if lockout.failures.len() >= MAX_FAILURES {
             lockout.failures.clear();
@@ -355,49 +388,47 @@ impl Account {
     }
 
     /// Checks a sign-in: the passphrase, then the second factor. The second
-    /// factor is only checked (and a TOTP step or backup code only used up)
-    /// after the passphrase matches. Every failure counts towards the lockout,
-    /// and nothing says which part was wrong.
+    /// factor is checked either way, so the time taken doesn't show whether
+    /// the passphrase was right, but a TOTP step or backup code is only used
+    /// up when it was. Every failure counts towards the lockout, and nothing
+    /// says which part was wrong. [`AccountError::Locked`] while locked.
     pub async fn check_login(
         &self,
         passphrase: Zeroizing<String>,
         factor: SecondFactor<'_>,
     ) -> Result<bool, AccountError> {
+        let attempt = self.begin_attempt()?;
         let Some(stored) = self.passphrase_hash().await? else {
             return Ok(false);
         };
         let matches = tokio::task::spawn_blocking(move || verify_passphrase(&passphrase, &stored))
             .await
             .map_err(StoreError::from)?;
-        let ok = matches
-            && match factor {
-                SecondFactor::Totp(code) => self.use_totp(code).await?,
-                SecondFactor::Backup(code) => self.use_backup_code(code).await?,
-            };
-        if ok {
-            self.record_success();
-        } else {
-            self.record_failure();
-        }
+        let factor_ok = match factor {
+            SecondFactor::Totp(code) => self.use_totp(code, matches).await?,
+            SecondFactor::Backup(code) => self.use_backup_code(code, matches).await?,
+        };
+        let ok = matches && factor_ok;
+        attempt.finish(ok);
         Ok(ok)
     }
 
     /// Checks a TOTP code alone, for a device proving it is still with its
     /// owner. Failures count towards the lockout like a sign-in's.
     pub async fn check_code(&self, code: &str) -> Result<bool, AccountError> {
-        let ok = self.use_totp(code).await?;
-        if ok {
-            self.record_success();
-        } else {
-            self.record_failure();
-        }
+        let attempt = self.begin_attempt()?;
+        let ok = self.use_totp(code, true).await?;
+        attempt.finish(ok);
         Ok(ok)
     }
 
+    /// A wrong one counts towards the lockout; a right one doesn't reset it,
+    /// since it proves nothing about the second factor.
     pub async fn check_current_passphrase(
         &self,
         passphrase: Zeroizing<String>,
     ) -> Result<bool, AccountError> {
+        let attempt = self.begin_attempt()?;
         let Some(stored) = self.passphrase_hash().await? else {
             return Ok(false);
         };
@@ -405,16 +436,34 @@ impl Account {
             .await
             .map_err(StoreError::from)?;
         if !ok {
-            self.record_failure();
+            attempt.finish(false);
         }
         Ok(ok)
+    }
+
+    /// Whether `passphrase` is the sign-in passphrase. The vault refuses it:
+    /// the sign-in hash is weaker, so a copy of the database would then be
+    /// the easier way to the vault's passphrase.
+    pub async fn is_sign_in_passphrase(
+        &self,
+        passphrase: Zeroizing<String>,
+    ) -> Result<bool, AccountError> {
+        let Some(stored) = self.passphrase_hash().await? else {
+            return Ok(false);
+        };
+        Ok(
+            tokio::task::spawn_blocking(move || verify_passphrase(&passphrase, &stored))
+                .await
+                .map_err(StoreError::from)?,
+        )
     }
 
     pub async fn set_passphrase(&self, passphrase: Zeroizing<String>) -> Result<(), AccountError> {
         let hash = tokio::task::spawn_blocking(move || hash_passphrase(&passphrase))
             .await
             .map_err(StoreError::from)??;
-        self.0
+        let changed = self
+            .0
             .store
             .call(move |conn| {
                 conn.execute(
@@ -423,6 +472,10 @@ impl Account {
                 )
             })
             .await?;
+        // `auth reset` can remove the account under a signed-in device.
+        if changed == 0 {
+            return Err(AccountError::Gone);
+        }
         Ok(())
     }
 
@@ -453,7 +506,8 @@ impl Account {
             return Ok(Err(SetupError::WrongCode));
         };
         let secret = pending.secret;
-        self.0
+        let changed = self
+            .0
             .store
             .call(move |conn| {
                 conn.execute(
@@ -462,6 +516,9 @@ impl Account {
                 )
             })
             .await?;
+        if changed == 0 {
+            return Err(AccountError::Gone);
+        }
         Ok(Ok(()))
     }
 
@@ -472,11 +529,16 @@ impl Account {
             .store
             .call(move |conn| {
                 let tx = conn.transaction()?;
+                if !has_account(&tx)? {
+                    return Ok(false);
+                }
                 replace_backup_codes(&tx, &hashes)?;
-                tx.commit()
+                tx.commit()?;
+                Ok(true)
             })
-            .await?;
-        Ok(codes)
+            .await?
+            .then_some(codes)
+            .ok_or(AccountError::Gone)
     }
 
     pub async fn backup_codes_left(&self) -> Result<i64, StoreError> {
@@ -506,10 +568,10 @@ impl Account {
             .await
     }
 
-    /// Accepts a current code once: the step it matched becomes the last one
-    /// accepted, in the same statement that checks it, so two requests racing
-    /// with one code can't both pass.
-    async fn use_totp(&self, code: &str) -> Result<bool, StoreError> {
+    /// Accepts a current code once: with `consume`, the step it matched
+    /// becomes the last one accepted, in the transaction that checks it, so
+    /// two requests racing with one code can't both pass.
+    async fn use_totp(&self, code: &str, consume: bool) -> Result<bool, StoreError> {
         let code = code.to_string();
         self.0
             .store
@@ -532,6 +594,9 @@ impl Account {
                 else {
                     return Ok(false);
                 };
+                if !consume {
+                    return Ok(true);
+                }
                 tx.execute(
                     "UPDATE account SET totp_last_step = ?1 WHERE id = 1",
                     [step],
@@ -542,11 +607,22 @@ impl Account {
             .await
     }
 
-    async fn use_backup_code(&self, code: &str) -> Result<bool, StoreError> {
+    /// Whether `code` is an unused backup code; with `consume`, also uses it up.
+    async fn use_backup_code(&self, code: &str, consume: bool) -> Result<bool, StoreError> {
         let hash = setup_code::hash(code).to_vec();
         self.0
             .store
             .call(move |conn| {
+                if !consume {
+                    return conn
+                        .query_row(
+                            "SELECT 1 FROM backup_codes WHERE hash = ?1 AND used_at IS NULL",
+                            [&hash],
+                            |_| Ok(()),
+                        )
+                        .optional()
+                        .map(|row| row.is_some());
+                }
                 Ok(conn.execute(
                     "UPDATE backup_codes SET used_at = ?1 WHERE hash = ?2 AND used_at IS NULL",
                     rusqlite::params![now_ms(), hash],
@@ -673,6 +749,22 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// The guarded state holds no invariant a panic could break halfway, so a
 /// poisoned lock is still usable.
+fn has_account(conn: &rusqlite::Connection) -> rusqlite::Result<bool> {
+    conn.query_row("SELECT EXISTS (SELECT 1 FROM account)", [], |row| {
+        row.get(0)
+    })
+}
+
+/// Drops failures older than the window.
+fn prune(failures: &mut VecDeque<Instant>, now: Instant) {
+    while failures
+        .front()
+        .is_some_and(|at| now.duration_since(*at) > FAILURE_WINDOW)
+    {
+        failures.pop_front();
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()

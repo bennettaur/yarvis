@@ -72,6 +72,25 @@ pub struct Created {
 struct Guesses {
     wrong: u32,
     next_try: Option<Instant>,
+    /// One passphrase at a time: requests sent together would otherwise all
+    /// pass the wait before any of them recorded a wrong guess.
+    in_progress: bool,
+}
+
+/// The right to try one passphrase, from [`Vault::begin_guess`]. Dropping it
+/// without [`GuessTurn::record`] (an I/O error, say) counts as no guess.
+struct GuessTurn<'a>(&'a Vault);
+
+impl GuessTurn<'_> {
+    fn record(self, right: bool) {
+        self.0.record_guess(right);
+    }
+}
+
+impl Drop for GuessTurn<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.0.guesses).in_progress = false;
+    }
 }
 
 /// How a passphrase change proves it is the owner's.
@@ -131,7 +150,7 @@ impl Vault {
     }
 
     pub fn state(&self) -> Result<VaultState, VaultError> {
-        if self.lock_state().is_some() {
+        if self.is_unlocked() {
             return Ok(VaultState::Unlocked);
         }
         Ok(if self.0.path.try_exists()? {
@@ -141,8 +160,10 @@ impl Vault {
         })
     }
 
+    /// Reads the signal rather than the lock, so an open route like
+    /// `/api/auth/status` never waits on a slow change holding it.
     pub fn is_unlocked(&self) -> bool {
-        self.lock_state().is_some()
+        *self.0.unlocked_signal.borrow()
     }
 
     /// Sees `true` on every unlock and `false` on every lock.
@@ -177,6 +198,22 @@ impl Vault {
             .and_then(|at| at.checked_duration_since(Instant::now()))
     }
 
+    /// Claims the next passphrase try, or says how long to wait for it.
+    fn begin_guess(&self) -> Result<GuessTurn<'_>, VaultError> {
+        let mut guesses = lock(&self.0.guesses);
+        if let Some(left) = guesses
+            .next_try
+            .and_then(|at| at.checked_duration_since(Instant::now()))
+        {
+            return Err(VaultError::TooSoon(left));
+        }
+        if guesses.in_progress {
+            return Err(VaultError::TooSoon(Duration::from_secs(1)));
+        }
+        guesses.in_progress = true;
+        Ok(GuessTurn(self))
+    }
+
     fn record_guess(&self, right: bool) {
         let mut guesses = lock(&self.0.guesses);
         if right {
@@ -184,21 +221,32 @@ impl Vault {
             return;
         }
         guesses.wrong += 1;
+        // The shift stops at 9 (512 s, past the cap) so it can't overflow.
         let wait = Duration::from_secs(1u64 << (guesses.wrong - 1).min(9)).min(MAX_GUESS_DELAY);
         guesses.next_try = Some(Instant::now() + wait);
     }
 
     /// Unlocks with the vault passphrase. Slow (the passphrase is stretched),
     /// so call it off the async workers. A wrong passphrase makes the next
-    /// try wait; see [`Vault::guess_delay`].
+    /// try wait, and a try during the wait is [`VaultError::TooSoon`].
     pub fn unlock_with_passphrase(&self, passphrase: &str) -> Result<(), VaultError> {
+        if self.is_unlocked() {
+            return Err(VaultError::AlreadyUnlocked);
+        }
+        let turn = self.begin_guess()?;
+        // Stretched without holding the lock, which `secret()` also takes.
+        let result = self.load()?.unlock_with_passphrase(passphrase);
+        match &result {
+            Ok(_) => turn.record(true),
+            Err(VaultError::WrongKey) => turn.record(false),
+            Err(_) => {}
+        }
+        let unlocked = result?;
         let mut state = self.lock_state();
         if state.is_some() {
             return Err(VaultError::AlreadyUnlocked);
         }
-        let result = self.load()?.unlock_with_passphrase(passphrase);
-        self.record_guess(result.is_ok());
-        *state = Some(result?);
+        *state = Some(unlocked);
         drop(state);
         self.0.unlocked_signal.send_replace(true);
         Ok(())
@@ -207,12 +255,32 @@ impl Vault {
     /// Replaces the vault passphrase, after checking the current one or the
     /// recovery key. Needs the vault unlocked, since wrapping takes the vault
     /// key. Slow: call it off the async workers.
-    pub fn change_passphrase(&self, proof: Proof<'_>, new: &str) -> Result<(), VaultError> {
+    pub fn change_passphrase(
+        &self,
+        proof: Proof<'_>,
+        new_passphrase: &str,
+    ) -> Result<(), VaultError> {
+        self.change_with_proof(proof, |unlocked| unlocked.set_passphrase(new_passphrase))
+    }
+
+    /// Applies a change once `proof` opens the vault. A passphrase proof is a
+    /// guess like an unlock's and waits the same way.
+    fn change_with_proof(
+        &self,
+        proof: Proof<'_>,
+        apply: impl FnOnce(&mut Unlocked) -> Result<(), VaultError>,
+    ) -> Result<(), VaultError> {
+        let turn = match proof {
+            Proof::Passphrase(_) => Some(self.begin_guess()?),
+            Proof::Recovery(_) => None,
+        };
         self.change(|unlocked| {
             let proven = match proof {
                 Proof::Passphrase(current) => {
                     let right = unlocked.opens_with_passphrase(current);
-                    self.record_guess(right);
+                    if let Some(turn) = turn {
+                        turn.record(right);
+                    }
                     right
                 }
                 Proof::Recovery(recovery) => unlocked.opens_with_recovery(recovery),
@@ -220,7 +288,7 @@ impl Vault {
             if !proven {
                 return Err(VaultError::WrongKey);
             }
-            unlocked.set_passphrase(new)
+            apply(unlocked)
         })
     }
 
@@ -234,12 +302,13 @@ impl Vault {
         was_unlocked
     }
 
-    /// Replaces the recovery key. The old one stops opening the vault once the
-    /// file is written. Needs the vault unlocked, since wrapping takes the
-    /// vault key.
-    pub fn rotate_recovery_key(&self) -> Result<RecoveryKey, VaultError> {
+    /// Replaces the recovery key, after checking the vault passphrase or the
+    /// current key. The old key stops opening the vault once the file is
+    /// written. Without the proof, a stolen fresh device could rotate the key
+    /// and then use the new one to replace the passphrase.
+    pub fn rotate_recovery_key(&self, proof: Proof<'_>) -> Result<RecoveryKey, VaultError> {
         let mut new_key = None;
-        self.change(|unlocked| {
+        self.change_with_proof(proof, |unlocked| {
             new_key = Some(unlocked.rotate_recovery_key());
             Ok(())
         })?;
@@ -355,10 +424,33 @@ mod tests {
         ));
         let first = vault.guess_delay().unwrap();
         assert!(first <= Duration::from_secs(1), "{first:?}");
-        let _ = vault.unlock_with_passphrase("not it either");
+        assert!(
+            matches!(
+                vault.unlock_with_passphrase(TEST_PASSPHRASE),
+                Err(VaultError::TooSoon(_))
+            ),
+            "even the right passphrase waits"
+        );
+        vault.record_guess(false);
         assert!(vault.guess_delay().unwrap() > Duration::from_secs(1));
+        // Skip the wait rather than sleep through it.
+        lock(&vault.0.guesses).next_try = None;
         vault.unlock_with_passphrase(TEST_PASSPHRASE).unwrap();
         assert_eq!(vault.guess_delay(), None, "a right passphrase clears it");
+    }
+
+    #[test]
+    fn only_one_passphrase_is_tried_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
+        let vault = Vault::new(dir.path());
+        let turn = vault.begin_guess().unwrap();
+        assert!(matches!(
+            vault.unlock_with_passphrase(TEST_PASSPHRASE),
+            Err(VaultError::TooSoon(_))
+        ));
+        drop(turn);
+        vault.unlock_with_passphrase(TEST_PASSPHRASE).unwrap();
     }
 
     #[test]
@@ -375,6 +467,14 @@ mod tests {
             vault.change_passphrase(Proof::Passphrase("wrong"), "second passphrase"),
             Err(VaultError::WrongKey)
         ));
+        assert!(
+            matches!(
+                vault.change_passphrase(Proof::Passphrase(TEST_PASSPHRASE), "second passphrase"),
+                Err(VaultError::TooSoon(_))
+            ),
+            "a wrong passphrase here waits like an unlock's"
+        );
+        lock(&vault.0.guesses).next_try = None;
         vault
             .change_passphrase(Proof::Passphrase(TEST_PASSPHRASE), "second passphrase")
             .unwrap();
@@ -384,6 +484,7 @@ mod tests {
         vault.lock();
         let fresh = Vault::new(dir.path());
         assert!(fresh.unlock_with_passphrase("second passphrase").is_err());
+        lock(&fresh.0.guesses).next_try = None;
         fresh.unlock_with_passphrase("third passphrase").unwrap();
     }
 

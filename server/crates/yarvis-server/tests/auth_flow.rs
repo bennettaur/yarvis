@@ -217,6 +217,180 @@ async fn ten_failed_sign_ins_lock_the_account_even_for_the_right_passphrase() {
 }
 
 #[tokio::test]
+async fn wrong_sign_ins_sent_together_still_stop_at_ten() {
+    let h = Harness::new().await;
+    h.setup().await;
+    let guess = login_body("wrong passphrase!", "000000", "x");
+    let statuses = futures_util::future::join_all(
+        (0..30).map(|_| h.call("POST", "/api/auth/login", None, Some(guess.clone()))),
+    )
+    .await;
+    let checked = statuses
+        .iter()
+        .filter(|(st, _)| *st == StatusCode::UNAUTHORIZED)
+        .count();
+    assert!(checked <= 10, "{checked} guesses were checked");
+    let code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn wrong_reverify_codes_count_towards_the_lockout() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    for _ in 0..10 {
+        let (st, _) = h
+            .call(
+                "POST",
+                "/api/auth/reverify",
+                Some(&laptop),
+                Some(json!({ "code": "000000" })),
+            )
+            .await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+    }
+    let code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/reverify",
+            Some(&laptop),
+            Some(json!({ "code": code })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "sign-in is locked too");
+}
+
+#[tokio::test]
+async fn a_second_factor_sent_with_the_wrong_passphrase_is_not_used_up() {
+    let h = Harness::new().await;
+    h.setup().await;
+    let code = h.code().await;
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body("wrong passphrase!", &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(login_body(PASSPHRASE, &code, "x")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "the code still works: {body}");
+
+    let backup = h.backup_codes.lock().unwrap()[0].clone();
+    let with = |passphrase: &str| json!({ "passphrase": passphrase, "backupCode": backup, "deviceName": "x" });
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/auth/login",
+            None,
+            Some(with("wrong passphrase!")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, body) = h
+        .call("POST", "/api/auth/login", None, Some(with(PASSPHRASE)))
+        .await;
+    assert_eq!(st, StatusCode::OK, "the backup code still works: {body}");
+}
+
+#[tokio::test]
+async fn one_code_signs_in_once_even_when_two_servers_race() {
+    // Two stores on one file, as two processes would be: within one store
+    // calls already take turns, so only this reaches the transaction.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("server.db");
+    let one = Harness::on(Store::open(&path).unwrap()).await;
+    one.setup().await;
+    let two = Harness::on(Store::open(&path).unwrap()).await;
+    let code = one.code().await;
+    let body = login_body(PASSPHRASE, &code, "x");
+    let (a, b) = tokio::join!(
+        one.call("POST", "/api/auth/login", None, Some(body.clone())),
+        two.call("POST", "/api/auth/login", None, Some(body.clone())),
+    );
+    let mut statuses = [a.0, b.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::UNAUTHORIZED]);
+}
+
+#[tokio::test]
+async fn sign_in_wants_exactly_one_second_factor() {
+    let h = Harness::new().await;
+    h.setup().await;
+    let backup = h.backup_codes.lock().unwrap()[0].clone();
+    for body in [
+        json!({ "passphrase": PASSPHRASE, "deviceName": "x" }),
+        json!({ "passphrase": PASSPHRASE, "code": "123456", "backupCode": backup, "deviceName": "x" }),
+    ] {
+        let (st, body) = h.call("POST", "/api/auth/login", None, Some(body)).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn a_token_with_a_recent_check_still_is_not_fresh() {
+    let h = Harness::new().await;
+    h.setup().await;
+    let cli = add_token_device(
+        &h.state.store,
+        &h.state.events,
+        "tauri",
+        &[Scope::Admin],
+        None,
+    )
+    .await
+    .unwrap();
+    let id = cli.device.device_id.clone();
+    // Only a stray write could set this; the device's kind is what decides.
+    h.state
+        .store
+        .call(move |conn| {
+            conn.execute(
+                "UPDATE devices SET verified_at = ?1 WHERE id = ?2",
+                rusqlite::params![yarvis_server::store::now_ms(), id],
+            )
+        })
+        .await
+        .unwrap();
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/account/sign-out-others",
+            Some(&cli.token),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "reauth_required");
+}
+
+#[tokio::test]
 async fn admin_actions_need_a_recent_code() {
     let h = Harness::new().await;
     let laptop = h.setup().await;
@@ -477,11 +651,20 @@ async fn auth_reset_reopens_setup_with_a_new_code() {
     assert_eq!(status["setupRequired"], true);
     let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
     assert_eq!(st, StatusCode::OK, "devices stay signed in");
+    let (st, body) = h
+        .call("POST", "/api/account/backup-codes", Some(&laptop), None)
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "no codes for an account that's gone: {body}"
+    );
+    assert_eq!(h.events("account.reset").await.len(), 1);
     h.setup_code = code;
     h.setup().await;
 }
 
-/// Switching the secrets backend needs a fresh passkey; writing a secret needs
+/// Switching the secrets backend needs a fresh device; writing a secret needs
 /// only `admin`. With `secrets.backend` set in the config, a switch that gets
 /// past the check is refused with 409, so no real store is touched.
 #[tokio::test]

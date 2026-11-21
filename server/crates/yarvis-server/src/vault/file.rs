@@ -30,6 +30,12 @@ const KEY_LEN: usize = 32;
 /// new wrappers without breaking old ones.
 const PASSPHRASE_MEMORY_KIB: u32 = 64 * 1024;
 const PASSPHRASE_PASSES: u32 = 3;
+/// What a wrapper read from the file may ask for. Whoever can write
+/// `vault.json` could otherwise make the next unlock allocate gigabytes or run
+/// for hours; nothing below the current strength is accepted either.
+const PASSPHRASE_MEMORY_KIB_RANGE: std::ops::RangeInclusive<u32> =
+    PASSPHRASE_MEMORY_KIB..=1024 * 1024;
+const PASSPHRASE_PASSES_RANGE: std::ops::RangeInclusive<u32> = PASSPHRASE_PASSES..=10;
 const PASSPHRASE_WRAPPER_ID: &str = "passphrase";
 
 #[derive(Debug, thiserror::Error)]
@@ -44,6 +50,8 @@ pub enum VaultError {
     /// no detail, so callers can't tell a wrong secret from a corrupt wrapper.
     #[error("wrong key or corrupt wrapper")]
     WrongKey,
+    #[error("wait {0:?} before trying another passphrase")]
+    TooSoon(std::time::Duration),
     #[error("the passphrase couldn't be stretched: {0}")]
     Kdf(String),
     #[error("secrets blob failed to decrypt with the vault key (file tampered or corrupt)")]
@@ -135,6 +143,13 @@ fn passphrase_secret(
     memory_kib: u32,
     passes: u32,
 ) -> Result<UnwrapSecret, VaultError> {
+    if !PASSPHRASE_MEMORY_KIB_RANGE.contains(&memory_kib)
+        || !PASSPHRASE_PASSES_RANGE.contains(&passes)
+    {
+        return Err(VaultError::Kdf(format!(
+            "refusing Argon2 parameters of {memory_kib} KiB and {passes} passes"
+        )));
+    }
     let params = Params::new(memory_kib, passes, 1, Some(KEY_LEN))
         .map_err(|e| VaultError::Kdf(e.to_string()))?;
     let mut out = Zeroizing::new(vec![0u8; KEY_LEN]);
@@ -626,6 +641,12 @@ mod tests {
                 *passes = 1;
             }
         };
+        // Refused before Argon2 runs, so this doesn't allocate 4 TiB.
+        let huge_memory = |w: &mut Wrapper| {
+            if let WrapperKind::Passphrase { memory_kib, .. } = &mut w.kind {
+                *memory_kib = u32::MAX;
+            }
+        };
         let other_salt = |w: &mut Wrapper| {
             if let WrapperKind::Passphrase { kdf_salt, .. } = &mut w.kind {
                 *kdf_salt = B64.encode([7u8; 16]);
@@ -638,6 +659,7 @@ mod tests {
         };
         for change in [
             &weaker_params as &dyn Fn(&mut Wrapper),
+            &huge_memory,
             &other_salt,
             &flip_key,
         ] {
