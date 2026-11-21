@@ -17,15 +17,13 @@ lists what in the API would get in its way.
 | Screens not rebuilt natively | `WKWebView` pointed at the server |
 | Alarms, notifications, global shortcuts | Native, driven by `alarm.fire` and `alarm.release` events |
 
-**Sign-in.** The same routes a browser uses, with nothing browser-specific
-in them: `POST /api/auth/login` with the passphrase and a TOTP code (or a
-backup code) returns the device token. Setup shows the `otpauth://` URI as a
-QR code (`qrSvg` renders with any SVG view, or the app can draw its own from
-`otpauthUri`). No ASAuthorization, no Associated Domains entitlement, and no
-`apple-app-site-association` file: sign-in isn't tied to a domain, so a
-`*.ts.net` name from `tailscale serve` works as it does in a browser. The
-token goes in the Keychain. Passkeys could come back later as an optional
-second way to sign in, and would bring the association file back with them.
+**Sign-in.** The same routes a browser uses: `POST /api/auth/login` with the
+passphrase and a TOTP code (or a backup code) returns the device token, which
+goes in the Keychain. Setup shows the `otpauth://` URI as a QR code (`qrSvg`
+renders in any SVG view, or draw one from `otpauthUri`). Sign-in isn't tied
+to a domain, so a `*.ts.net` name from `tailscale serve` works as it does in
+a browser. Adding passkeys later, as a second way to sign in, would need the
+Associated Domains entitlement and an `apple-app-site-association` route.
 
 When a route answers `403 reauth_required`, ask for a code and send it to
 `POST /api/auth/reverify`, then retry. A `401` means the token is gone: sign

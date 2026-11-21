@@ -3,7 +3,7 @@
 //! The app owns three things about that server: the port it listens on, where
 //! it finds the bundled sidecar, migrations and web UI, and the device token
 //! the app signs in with. Everything else in its `server.toml` (the secrets
-//! backend, the ssh-agent, the RP ID) is the user's, so a start merges the
+//! backend, the ssh-agent, the origins) is the user's, so a start merges the
 //! app's keys into the file rather than rewriting it.
 //!
 //! Pairing runs `yarvis-server device add`, which needs only local access to

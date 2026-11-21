@@ -176,7 +176,7 @@ enabled = true   # the server signs git commits with a key in the vault
   `vault.json` in the server's data dir, and prints a recovery key once. Keep
   the key somewhere safe: it is the way in if you forget the passphrase.
 - The vault passphrase is separate from the passphrase you sign in with, and
-  should be different. Signing in proves who is asking the server; the vault
+  has to be different: the vault refuses the sign-in one. Signing in proves who is asking the server; the vault
   passphrase decrypts `vault.json`, which anyone with a copy of the file can
   attack offline, so it is stretched harder and never stored.
 - The vault starts locked every time the server starts. Unlock it with its

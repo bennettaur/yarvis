@@ -20,7 +20,7 @@ const USAGE: &str = "usage: yarvis-server [--config PATH]
 #[derive(Debug)]
 enum Command {
     Serve,
-    /// Pairs a client without a passkey. Only someone who can run commands on
+    /// Pairs a client that can't sign in itself. Only someone who can run commands on
     /// the server machine can do this, the same trust as reading the setup code.
     AddDevice {
         name: String,

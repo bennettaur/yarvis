@@ -4,7 +4,7 @@
 //! backup code). The passphrase is stored as an Argon2id hash. The TOTP secret
 //! has to be stored as it is, since the server computes codes from it, so
 //! whoever can read the database can make codes; the passphrase hash still
-//! stands between them and a sign-in. Backup codes have 50 bits of randomness
+//! stands between them and a sign-in. Backup codes have about 49 bits of randomness
 //! each, so a SHA-256 is enough to store them.
 //!
 //! Setup and TOTP re-enrollment are two requests. The first returns a new

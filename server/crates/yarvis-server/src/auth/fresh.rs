@@ -1,6 +1,6 @@
 //! Actions that could give a stolen token a lasting foothold (minting tokens,
-//! changing the passphrase, revoking devices) also need a TOTP code from the
-//! last few minutes. Only a device made by a passphrase sign-in can enter one,
+//! changing the passphrase, revoking devices) also need a sign-in or a TOTP
+//! code in the last 10 minutes. Only a device made by a passphrase sign-in can enter one,
 //! so a token never qualifies, whatever its scopes.
 
 use std::marker::PhantomData;
@@ -22,7 +22,7 @@ pub fn is_fresh(verified_at: Option<i64>, now: i64) -> bool {
     verified_at.is_some_and(|at| now - at < FRESH_WINDOW_MS)
 }
 
-/// Like [`Authed`], and the device also passed a login check within
+/// Like [`Authed`], and the device also signed in or entered a TOTP code within
 /// [`FRESH_WINDOW_MS`].
 pub struct Fresh<S: ScopeMarker> {
     pub device: DeviceContext,
