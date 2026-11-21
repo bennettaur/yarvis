@@ -94,6 +94,7 @@ impl AppState {
             config.ssh_agent.clone(),
             PtyOptions::default(),
         );
+        pty.set_server_ssh_agent(ssh_agent::configured_socket(&config));
         // The sidecar's port and tokens are fixed for the server's life, so
         // every session can be given them from the start.
         pty.set_sidecar_env(Some(SidecarSessionEnv {

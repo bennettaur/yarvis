@@ -764,16 +764,17 @@ async fn input_over_the_write_limit_closes_the_socket() {
     assert_eq!(client.wait_for_close().await, 4400);
 }
 
+/// What `$SSH_AUTH_SOCK` a fresh shell sees. `server_agent` replaces the
+/// socket the server set from its config, when given.
 async fn ssh_auth_sock_seen_with(ssh_agent: SshAgentConfig, server_agent: Option<&str>) -> String {
     let server = serve_with(Setup {
         ssh_agent,
         ..Setup::default()
     })
     .await;
-    server
-        .state
-        .pty
-        .set_server_ssh_agent(server_agent.map(Into::into));
+    if let Some(socket) = server_agent {
+        server.state.pty.set_server_ssh_agent(Some(socket.into()));
+    }
     let (_, token) = device(&server.state, &[Scope::Chat]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     client
@@ -812,6 +813,9 @@ async fn shells_get_the_upstream_agent_or_the_servers_own() {
         ssh_auth_sock_seen_with(on.clone(), Some("/tmp/server-agent.sock")).await,
         "/tmp/server-agent.sock"
     );
-    // Locked: no agent at all, not the one the server inherited.
-    assert_eq!(ssh_auth_sock_seen_with(on, None).await, "");
+    // The vault here is never unlocked. The shell still gets the server
+    // agent's path, not the agent the server inherited, so it can sign once
+    // the vault opens.
+    let seen = ssh_auth_sock_seen_with(on, None).await;
+    assert!(seen.ends_with("/ssh-agent.sock"), "{seen}");
 }

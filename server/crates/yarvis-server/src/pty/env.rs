@@ -29,9 +29,10 @@ pub struct SidecarSessionEnv {
 /// With the server's own agent off, git keeps signing with the user's agent:
 /// `upstream_socket` when the config names one (a server under launchd has no
 /// login-shell value to pass on), otherwise the server's own `inherited`
-/// value. With it on, sessions get only the server agent's socket, which is
-/// `None` while the vault is locked. Falling back to another agent then would
-/// sign without the approval the server's agent asks for.
+/// value. With it on, sessions get only the server agent's socket. The path
+/// is set even while the vault is locked, so signing fails until unlock;
+/// falling back to another agent would sign without the approval the server's
+/// agent asks for.
 pub(crate) fn ssh_auth_sock(
     config: &SshAgentConfig,
     server_agent: Option<&Path>,
@@ -211,7 +212,7 @@ mod tests {
             ),
             Some(OsString::from("/data/ssh-agent.sock"))
         );
-        // Locked: no agent at all, rather than one that signs without asking.
+        // No socket known: no agent at all, rather than one that signs without asking.
         assert_eq!(ssh_auth_sock(&agent(true, None), None, inherited), None);
     }
 

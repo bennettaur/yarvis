@@ -156,7 +156,7 @@ struct Inner {
     secrets: SecretBlob,
     events: EventLog,
     ssh_agent: SshAgentConfig,
-    /// The server ssh-agent's socket while it runs. See [`PtyManager::set_server_ssh_agent`].
+    /// The server ssh-agent's socket path. See [`PtyManager::set_server_ssh_agent`].
     server_ssh_agent: RwLock<Option<PathBuf>>,
     sidecar_env: RwLock<Option<SidecarSessionEnv>>,
     options: PtyOptions,
@@ -223,10 +223,11 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner()) = env;
     }
 
-    /// Sets the socket of the server's own ssh-agent, or `None` while it isn't
-    /// running (the vault is locked). The server's ssh-agent calls this as it
-    /// starts and stops. Later spawns use it when `ssh_agent.enabled` is on;
-    /// running shells keep what they started with.
+    /// Sets the socket of the server's own ssh-agent. `AppState::new` sets it
+    /// once from the config ([`crate::ssh_agent::socket_path`]): the path is
+    /// fixed and the socket comes and goes with the vault, so a shell started
+    /// while locked can sign once the vault unlocks. Used only when
+    /// `ssh_agent.enabled` is on.
     pub fn set_server_ssh_agent(&self, socket: Option<PathBuf>) {
         *self
             .inner

@@ -52,7 +52,8 @@ pub fn socket_path(state: &AppState) -> Option<PathBuf> {
     configured_socket(&state.config)
 }
 
-fn configured_socket(config: &Config) -> Option<PathBuf> {
+/// [`socket_path`], for code that runs before the `AppState` exists.
+pub(crate) fn configured_socket(config: &Config) -> Option<PathBuf> {
     config
         .ssh_agent
         .enabled
