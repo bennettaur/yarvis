@@ -24,6 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::AppState;
+use crate::auth::fresh::Fresh;
 use crate::auth::{Admin, Authed, Read, Scope, Terminal};
 use crate::error::ApiError;
 use crate::harness::AgentHarness;
@@ -72,6 +73,16 @@ pub const COMMANDS: &[(&str, Scope)] = &[
     ("restart_sidecar", Scope::Admin),
 ];
 
+/// Admin commands that also need a passkey check within the last few minutes
+/// (`Fresh<Admin>`). Switching the backend copies every secret into another
+/// store and is rare, so a stolen admin token shouldn't be enough for it.
+/// Setting and deleting a secret need only `admin`: an overwrite loses the old
+/// value as surely as a delete, and a CLI-paired device (the Tauri app's) can
+/// never be fresh, so asking for it there would lock the single-Mac setup out
+/// of its own keys. A CLI device that needs a backend switch can edit
+/// `server.toml` or `settings.json`, which it can already reach.
+const FRESH_COMMANDS: &[&str] = &["set_secret_backend"];
+
 fn scope_of(command: &str) -> Option<Scope> {
     COMMANDS
         .iter()
@@ -104,6 +115,9 @@ async fn handle(
     match scope {
         Scope::Read => {
             Authed::<Read>::from_request_parts(&mut parts, &state).await?;
+        }
+        Scope::Admin if FRESH_COMMANDS.contains(&command.as_str()) => {
+            Fresh::<Admin>::from_request_parts(&mut parts, &state).await?;
         }
         Scope::Admin => {
             Authed::<Admin>::from_request_parts(&mut parts, &state).await?;

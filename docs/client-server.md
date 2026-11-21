@@ -120,17 +120,19 @@ This follows `spikes/auth/FINDINGS.md`.
 - Scopes: `read`, `chat`, `terminal`, `approve`, `admin`. A passkey device
   gets all five. A token made for a bot or script gets only what it is given,
   and `POST /api/devices/tokens` can't give `terminal` or `admin`.
-- **Fresh**: device management, adding a passkey, and adding or removing a
-  vault wrapper also need a passkey check on this device in the last 10
-  minutes (`verified_at`). Unlocking and locking the vault need only `admin`:
+- **Fresh**: device management, adding a passkey, adding or removing a
+  vault wrapper, and switching the secrets backend (`set_secret_backend`)
+  also need a passkey check on this device in the last 10 minutes
+  (`verified_at`). Setting and deleting secrets need only `admin`, so the
+  Tauri app's CLI-made token can manage its own keys. Unlocking and locking the vault need only `admin`:
   a passkey unlock is a passkey check of its own, and the recovery key has to
   work when every passkey is lost.
   Without one they get `403 { "error": "reauth_required" }`, and
   the client runs `/api/auth/reverify`. A token device can never be fresh,
   so it can never do these things.
-- Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`.
-  Tokens made with the CLI on the server machine can, since whoever runs that
-  can already read the database.
+- Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`
+  or `terminal`. Tokens made with the CLI on the server machine can, since
+  whoever runs that can already read the database and open a shell.
 - `401` means no token, or a token that's unknown, revoked or expired.
   `403` means the device lacks the route's scope, or isn't fresh.
 - Revoking a device takes effect on its next request and closes its open
