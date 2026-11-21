@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Approval } from "../lib/auth";
 import { saveDeviceToken, signOut } from "../lib/server";
+import { fakeSockets, installFakeSockets } from "../test/fakeSocket";
 import { mountForInteraction, renderToHtml, waitFor } from "../test/render";
 import { stubServerRoutes } from "../test/serverRoutes";
 import ApprovalsList from "./ApprovalsList";
@@ -67,6 +68,41 @@ describe("ApprovalsList", () => {
     expect(server.calls.find((c) => c.route === "POST /api/approvals/ap-1")?.body).toEqual({
       approve: true,
     });
+  });
+
+  it("shows a request as soon as the server announces it", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      approvals = [];
+      const mounted = await mountForInteraction(createElement(ApprovalsList));
+      unmount = mounted.unmount;
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      await waitFor(
+        () => mounted.host.textContent?.includes("Nothing is waiting") ?? false,
+        "the empty list",
+      );
+      const socket = fakeSockets()[0];
+      socket?.open();
+
+      approvals = [signing];
+      socket?.sendJson({
+        type: "event",
+        seq: 1,
+        at: 1,
+        deviceId: null,
+        kind: "approval.requested",
+        data: {},
+      });
+
+      await waitFor(
+        () => mounted.host.textContent?.includes("Sign a commit") ?? false,
+        "the request",
+      );
+    } finally {
+      unmount?.();
+      unmount = undefined;
+      restoreSockets();
+    }
   });
 
   it("treats a 409 as another device having answered, not as an error", async () => {

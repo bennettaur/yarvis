@@ -77,14 +77,17 @@ export default function ClipboardPalette({
   const [editing, setEditing] = useState<{ id: string | null; draft: ClipboardDraft } | null>(null);
   const [reloads, setReloads] = useState(0);
 
-  // History is this machine's clipboard, which only the desktop app records.
-  const hasHistory = localFeaturesAvailable();
-  const tabs = hasHistory ? TABS : TABS.filter(({ id }) => id !== "history");
+  // History is this machine's clipboard, which only the desktop app records,
+  // and only while it runs its own server. A read that fails means this window
+  // has no history to offer, so the tab goes.
+  const desktop = localFeaturesAvailable();
   const {
     history,
     error: historyError,
     refresh: refreshHistory,
-  } = useScreenedHistory(open && hasHistory);
+  } = useScreenedHistory(open && desktop);
+  const hasHistory = desktop && historyError === null;
+  const tabs = hasHistory ? TABS : TABS.filter(({ id }) => id !== "history");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(() => setReloads((n) => n + 1), []);
