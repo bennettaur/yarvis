@@ -145,7 +145,7 @@
   <p>A report is only useful if you know what it didn't look at. So:</p>
   <ul>
     <li><b>No file is left out to save room.</b> Each changed file's diff is handed to the agents on its own, and each agent is told exactly which patches to read. Only a binary file has no diff. A diff over 2 MB is cut to its first 256 KB, and the agents are told so.</li>
-    <li><b>Big PRs are split into reading groups</b> of about 512 KB of diff each. Every check runs one agent per group, and their findings are merged. One agent can't hold every diff at once, and what it read first would drop out of its context.</li>
+    <li><b>Big PRs are split into reading groups</b> of about 512 KB of diff each. Every check runs one agent per group, and Yarvis merges their findings itself, keeping the most severe. An agent that fails is asked once more; if it fails again, the check says that group didn't complete, so you know to read that part by hand. One agent can't hold every diff at once, and what it read first would drop out of its context.</li>
     <li><b>Reads are verified, not assumed.</b> A read only counts when it shows the lines. A failed read, a partly read diff, or lines too long to see whole don't count.</li>
     <li><b>Bulk is skimmed, not read</b>: the summary agent reads the first 200 lines of each lockfile, minified file, generated or vendored file, and file under <code>dist/</code> or <code>vendor/</code>, to say what it is. A file the PR adds under <code>dist/</code> or <code>vendor/</code> is read in full. Whether a file is marked generated or vendored is read from <code>.gitattributes</code> at the merge-base, so a PR can't mark its own code generated to get it skimmed.</li>
   </ul>

@@ -1,7 +1,9 @@
 ---
 name: change-mapper
 description: Groups a pull request's changes into themes, says how risky each is and whether it belongs to the PR's goal, and asks about the ones that don't. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 
