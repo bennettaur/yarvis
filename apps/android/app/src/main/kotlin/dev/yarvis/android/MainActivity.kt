@@ -2,6 +2,7 @@ package dev.yarvis.android
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -32,11 +34,15 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.yarvis.android.ui.CodePromptDialog
@@ -48,6 +54,7 @@ import dev.yarvis.android.ui.chat.ChatThreadScreen
 import dev.yarvis.android.ui.chat.ChatThreadViewModel
 import dev.yarvis.android.ui.signin.SignInScreen
 import dev.yarvis.android.ui.signin.SignInViewModel
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     private val openAttention = mutableStateOf(false)
@@ -57,14 +64,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        openAttention.value = intent.getBooleanExtra(EXTRA_OPEN_ATTENTION, false)
-        if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        // Only a fresh launch follows the notification's extra; a rotation keeps the user's tab.
+        if (savedInstanceState == null) openAttention.value = intent.getBooleanExtra(EXTRA_OPEN_ATTENTION, false)
         val container = (application as YarvisApp).container
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-                YarvisRoot(container, openAttention)
+                YarvisRoot(container, openAttention, ::askForNotifications)
             }
         }
+    }
+
+    /** Asked once signed in, when it's clear what the notifications are for. */
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -79,33 +93,43 @@ class MainActivity : ComponentActivity() {
 
 private enum class Tab { Chat, Attention }
 
+/** A thread that gets its session when the first message is sent. Each "New chat" gets its own. */
+private const val NEW_THREAD_PREFIX = "new:"
+
+private fun newThreadKey() = NEW_THREAD_PREFIX + UUID.randomUUID()
+
 @Composable
-private fun YarvisRoot(container: AppContainer, openAttention: androidx.compose.runtime.MutableState<Boolean>) {
+private fun YarvisRoot(container: AppContainer, openAttention: MutableState<Boolean>, askForNotifications: () -> Unit) {
     val auth by container.auth.collectAsStateWithLifecycle()
     when (val state = auth) {
-        AuthState.Loading -> CircularProgressIndicator()
+        AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         is AuthState.SignedOut -> Scaffold { padding ->
-            val vm = viewModel(key = "signin") { SignInViewModel(container.signInGateway, state.lastServerUrl) }
-            SignInScreen(vm, Modifier.padding(padding))
+            val vm = viewModel(key = "signin:${state.lastServerUrl}") { SignInViewModel(container.signInGateway, state.lastServerUrl) }
+            SignInScreen(vm, state.notice, Modifier.padding(padding))
         }
-        is AuthState.SignedIn -> SignedIn(container, state.session, openAttention)
+        is AuthState.SignedIn -> {
+            LaunchedEffect(Unit) { askForNotifications() }
+            SignedInScreens(container, state.session, openAttention)
+        }
     }
     CodePromptDialog(container.codePrompt)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SignedIn(
+private fun SignedInScreens(
     container: AppContainer,
     session: SignedInSession,
-    openAttention: androidx.compose.runtime.MutableState<Boolean>,
+    openAttention: MutableState<Boolean>,
 ) {
     var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
-    // A thread is open when this holds; "" is a new thread not yet created.
+    // A thread is open when this holds a session id, or a key made by newThreadKey().
     var thread by rememberSaveable { mutableStateOf<String?>(null) }
-    if (openAttention.value) {
-        tab = Tab.Attention
-        openAttention.value = false
+    LaunchedEffect(openAttention.value) {
+        if (openAttention.value) {
+            tab = Tab.Attention
+            openAttention.value = false
+        }
     }
     val attention by session.attention.state.collectAsStateWithLifecycle()
     val pending = attention.items.size + attention.approvals.size
@@ -149,17 +173,17 @@ private fun SignedIn(
                 Tab.Chat -> {
                     val open = thread
                     if (open == null) {
-                        val vm = viewModel(key = "chats:${session.serverUrl}") { ChatListViewModel(session.client) }
-                        ChatListScreen(vm, onOpen = { thread = it ?: "" })
+                        val vm = viewModel(key = "chats:${session.id}") { ChatListViewModel(session.client) }
+                        ChatListScreen(vm, onOpen = { thread = it ?: newThreadKey() })
                     } else {
-                        val vm = viewModel(key = "thread:$open") {
-                            ChatThreadViewModel(session.client, container.chatModelPrefs, open.ifEmpty { null })
+                        val vm = viewModel(key = "thread:${session.id}:$open") {
+                            ChatThreadViewModel(session.client, container.chatModelPrefs, open.takeUnless { it.startsWith(NEW_THREAD_PREFIX) })
                         }
                         ChatThreadScreen(vm)
                     }
                 }
                 Tab.Attention -> {
-                    val vm = viewModel(key = "attention:${session.serverUrl}") {
+                    val vm = viewModel(key = "attention:${session.id}") {
                         AttentionViewModel(session.client, session.attention)
                     }
                     AttentionScreen(vm)

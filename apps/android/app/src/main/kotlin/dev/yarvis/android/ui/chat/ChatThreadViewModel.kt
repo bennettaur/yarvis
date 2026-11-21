@@ -66,17 +66,17 @@ class ChatThreadViewModel(
 
     init {
         viewModelScope.launch { loadProviders() }
-        if (sessionId != null) viewModelScope.launch { reload(sessionId) }
+        if (sessionId != null) viewModelScope.launch { loadMessages(sessionId) }
     }
 
     private suspend fun loadProviders() {
         try {
             val providers = api.providers()
             val saved = prefs.load()
-            val chosen = providers.firstOrNull { it.id == saved?.first }
+            val chosen = providers.firstOrNull { it.id == saved?.provider }
                 ?: providers.firstOrNull { it.available }
                 ?: providers.firstOrNull()
-            val model = chosen?.models?.firstOrNull { it.id == saved?.second }?.id ?: chosen?.models?.firstOrNull()?.id
+            val model = chosen?.models?.firstOrNull { it.id == saved?.model }?.id ?: chosen?.models?.firstOrNull()?.id
             _state.update { it.copy(providers = providers, provider = chosen?.id.orEmpty(), model = model.orEmpty()) }
         } catch (e: CancellationException) {
             throw e
@@ -85,7 +85,7 @@ class ChatThreadViewModel(
         }
     }
 
-    private suspend fun reload(sessionId: String) {
+    private suspend fun loadMessages(sessionId: String) {
         try {
             val messages = api.messages(sessionId).map { it.toThreadMessage() }
             _state.update { it.copy(messages = messages, loading = false) }
@@ -105,9 +105,9 @@ class ChatThreadViewModel(
 
     fun send(text: String) {
         val message = text.trim()
-        val s = _state.value
-        if (message.isEmpty() || s.running) return
-        if (s.provider.isEmpty() || s.model.isEmpty()) {
+        val before = _state.value
+        if (message.isEmpty() || before.running) return
+        if (before.provider.isEmpty() || before.model.isEmpty()) {
             _state.update { it.copy(error = "No chat model is set up on the server.") }
             return
         }
@@ -122,14 +122,15 @@ class ChatThreadViewModel(
         }
         turn = viewModelScope.launch {
             try {
-                val sessionId = s.sessionId ?: api.createSession().id.also { id -> _state.update { it.copy(sessionId = id) } }
+                val sessionId = before.sessionId ?: api.createSession().id.also { id -> _state.update { it.copy(sessionId = id) } }
+                // The sidecar saves no reply for a turn that ended in an error, so neither do we.
                 var failed = false
-                api.streamChat(ChatRequest(sessionId, message, s.provider, s.model)).collect { event ->
+                api.streamChat(ChatRequest(sessionId, message, before.provider, before.model)).collect { event ->
                     if (event.type == "error") failed = true
-                    apply(event)
+                    applyEvent(event)
                 }
                 finishTurn(saveReply = !failed)
-                reload(sessionId)
+                loadMessages(sessionId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -166,7 +167,7 @@ class ChatThreadViewModel(
         }
     }
 
-    private fun apply(event: ChatEvent) {
+    private fun applyEvent(event: ChatEvent) {
         _state.update { s ->
             when (event.type) {
                 "delta" -> s.copy(streaming = (s.streaming ?: "") + event.text.orEmpty())

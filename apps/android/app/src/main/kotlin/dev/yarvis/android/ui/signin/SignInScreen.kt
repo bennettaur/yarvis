@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 @Composable
-fun SignInScreen(viewModel: SignInViewModel, modifier: Modifier = Modifier) {
+fun SignInScreen(viewModel: SignInViewModel, notice: String?, modifier: Modifier = Modifier) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     Column(
         modifier = modifier
@@ -38,6 +38,7 @@ fun SignInScreen(viewModel: SignInViewModel, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Sign in to Yarvis", style = MaterialTheme.typography.headlineSmall)
+        notice?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Text(
             "Use your server's HTTPS address, such as the name tailscale serve gives it.",
             style = MaterialTheme.typography.bodyMedium,

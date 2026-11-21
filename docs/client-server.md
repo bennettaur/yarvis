@@ -500,7 +500,7 @@ questions and server approvals from a phone. It signs in with the passphrase
 and a code, keeps its token encrypted with a Keystore key, and needs an HTTPS
 origin, normally a `tailscale serve` name. It follows the sidecar's attention
 SSE stream for the bell's items and `/api/events` for server approvals. It has
-no push yet, so it notifies only while open or shortly after. See
+no push, so it notifies only while open or shortly after. See
 [apps/android/README.md](../apps/android/README.md).
 
 ## API contract

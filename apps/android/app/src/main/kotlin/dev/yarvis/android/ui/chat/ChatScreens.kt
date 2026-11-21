@@ -29,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +38,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -147,7 +150,7 @@ private fun MessageBubble(role: String, content: String, toolCalls: List<ToolAct
         ) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (toolCalls.isNotEmpty()) ToolActivityList(toolCalls)
-                if (mine) Text(content) else Markdown(content = content)
+                if (mine) Text(content) else WebLinksOnly { Markdown(content = content) }
             }
         }
     }
@@ -180,7 +183,7 @@ private fun ToolActivityList(calls: List<ToolActivity>) {
 
 @Composable
 private fun ToolApprovalBar(approval: PendingApproval, waiting: Int, onAnswer: (Boolean) -> Unit) {
-    var showArgs by rememberSaveable(approval.id) { mutableStateOf(approval.reason != null) }
+    var expanded by rememberSaveable(approval.id) { mutableStateOf(false) }
     Surface(tonalElevation = 4.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             val server = if (approval.server.isNotEmpty()) " on ${approval.server}" else ""
@@ -189,9 +192,15 @@ private fun ToolApprovalBar(approval: PendingApproval, waiting: Int, onAnswer: (
                 style = MaterialTheme.typography.titleSmall,
             )
             approval.reason?.let { Text("The assistant says: $it", style = MaterialTheme.typography.bodySmall) }
-            TextButton(onClick = { showArgs = !showArgs }) { Text(if (showArgs) "Hide details" else "Show details") }
-            if (showArgs && approval.args != null) {
-                Text(approval.args.toString(), style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            // The arguments are always shown: they are what the call will do, and the reason is only the model's claim.
+            approval.args?.toString()?.let { args ->
+                val long = args.length > ARGS_PREVIEW_CHARS
+                Text(
+                    if (long && !expanded) args.take(ARGS_PREVIEW_CHARS) + "…" else args,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+                if (long) TextButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Show less" else "Show all") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { onAnswer(true) }) { Text("Approve") }
@@ -199,6 +208,26 @@ private fun ToolApprovalBar(approval: PendingApproval, waiting: Int, onAnswer: (
             }
         }
     }
+}
+
+private const val ARGS_PREVIEW_CHARS = 600
+
+/**
+ * Replies are model-written, so their links may open only as web pages, never
+ * as another app's deep link or an intent: URI.
+ */
+@Composable
+private fun WebLinksOnly(content: @Composable () -> Unit) {
+    val system = LocalUriHandler.current
+    val handler = remember(system) {
+        object : UriHandler {
+            override fun openUri(uri: String) {
+                val scheme = uri.substringBefore(':', "").lowercase()
+                if (scheme == "https" || scheme == "http") system.openUri(uri)
+            }
+        }
+    }
+    CompositionLocalProvider(LocalUriHandler provides handler, content = content)
 }
 
 @Composable

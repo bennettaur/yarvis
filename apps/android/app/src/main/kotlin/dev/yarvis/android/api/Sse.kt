@@ -1,5 +1,6 @@
 package dev.yarvis.android.api
 
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -44,7 +45,8 @@ internal fun sseFlow(call: Call): Flow<String> = callbackFlow {
         response.close()
         throw error
     }
-    launch(Dispatchers.IO) {
+    // ATOMIC: the reader must start even if the flow is cancelled first, so `use` closes the body.
+    launch(Dispatchers.IO, start = CoroutineStart.ATOMIC) {
         try {
             response.body.source().use { source -> readSseData(source) { send(it) } }
             close()

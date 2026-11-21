@@ -68,7 +68,9 @@ interface AttentionApi {
 class YarvisClient(
     baseUrl: HttpUrl,
     token: String,
-    private val http: OkHttpClient,
+    http: OkHttpClient,
+    /** For the SSE streams, which need no read timeout. */
+    private val streamHttp: OkHttpClient = http,
     private val codePrompt: CodePrompt,
 ) : ChatApi, AttentionApi {
     private val rest = Rest(baseUrl, http, token)
@@ -116,10 +118,10 @@ class YarvisClient(
         rest.post("$SIDECAR/chat/sessions", CreateSession(), CreateSession.serializer(), ChatSession.serializer())
 
     override suspend fun messages(sessionId: String): List<ChatMessage> =
-        rest.get("$SIDECAR/chat/sessions/${seg(sessionId)}/messages", ListSerializer(ChatMessage.serializer()))
+        rest.get("$SIDECAR/chat/sessions/${encode(sessionId)}/messages", ListSerializer(ChatMessage.serializer()))
 
     override fun streamChat(request: ChatRequest): Flow<ChatEvent> {
-        val call = http.newCall(
+        val call = streamHttp.newCall(
             rest.request("$SIDECAR/chat")
                 .header("Accept", "text/event-stream")
                 .post(rest.json(request, ChatRequest.serializer()))
@@ -131,7 +133,7 @@ class YarvisClient(
     override suspend fun answerToolApproval(toolCallId: String, approved: Boolean) {
         withFreshAuth {
             rest.post(
-                "$SIDECAR/chat/approvals/${seg(toolCallId)}",
+                "$SIDECAR/chat/approvals/${encode(toolCallId)}",
                 ToolApprovalAnswer(approved),
                 ToolApprovalAnswer.serializer(),
                 Unit.serializer(),
@@ -145,24 +147,24 @@ class YarvisClient(
         rest.get("$SIDECAR/attention?status=pending", ListSerializer(AttentionItem.serializer()))
 
     override fun attentionStream(): Flow<AttentionItem> {
-        val call = http.newCall(rest.request("$SIDECAR/attention/stream").header("Accept", "text/event-stream").build())
+        val call = streamHttp.newCall(rest.request("$SIDECAR/attention/stream").header("Accept", "text/event-stream").build())
         return sseFlow(call).mapNotNull {
             runCatching { YarvisJson.decodeFromString(AttentionStreamEvent.serializer(), it) }.getOrNull()?.item
         }
     }
 
     override suspend fun setAttentionStatus(id: String, status: String) {
-        rest.patch("$SIDECAR/attention/${seg(id)}", AttentionPatch(status), AttentionPatch.serializer())
+        rest.patch("$SIDECAR/attention/${encode(id)}", AttentionPatch(status), AttentionPatch.serializer())
     }
 
     override suspend fun permissions(sessionKey: String): List<PermissionRequest> = rest.get(
-        "$SIDECAR/attention/permissions?sessionKey=${seg(sessionKey)}",
+        "$SIDECAR/attention/permissions?sessionKey=${encode(sessionKey)}",
         ListSerializer(PermissionRequest.serializer()),
     )
 
     override suspend fun decidePermission(id: String, decision: PermissionDecision): Boolean = try {
         withFreshAuth {
-            rest.post("$SIDECAR/attention/permissions/${seg(id)}", decision, PermissionDecision.serializer(), Unit.serializer())
+            rest.post("$SIDECAR/attention/permissions/${encode(id)}", decision, PermissionDecision.serializer(), Unit.serializer())
         }
         true
     } catch (e: ApiException) {
@@ -174,21 +176,21 @@ class YarvisClient(
         // A session's questions coalesce into one item, so a keyed item lists them all.
         val key = item.sessionKey
         if (key != null) {
-            return rest.get("$SIDECAR/questions?sessionKey=${seg(key)}", ListSerializer(AgentQuestion.serializer()))
+            return rest.get("$SIDECAR/questions?sessionKey=${encode(key)}", ListSerializer(AgentQuestion.serializer()))
         }
         val id = item.questionId ?: return emptyList()
-        val question = rest.get("$SIDECAR/questions/${seg(id)}", AgentQuestion.serializer())
+        val question = rest.get("$SIDECAR/questions/${encode(id)}", AgentQuestion.serializer())
         return if (question.status == "pending") listOf(question) else emptyList()
     }
 
     override suspend fun answerQuestion(id: String, answers: List<QuestionAnswer>) {
         withFreshAuth {
-            rest.post("$SIDECAR/questions/${seg(id)}/answer", AnswerQuestions(answers), AnswerQuestions.serializer(), Unit.serializer())
+            rest.post("$SIDECAR/questions/${encode(id)}/answer", AnswerQuestions(answers), AnswerQuestions.serializer(), Unit.serializer())
         }
     }
 
     override suspend fun declineQuestion(id: String) {
-        withFreshAuth { rest.postEmpty("$SIDECAR/questions/${seg(id)}/decline") }
+        withFreshAuth { rest.postEmpty("$SIDECAR/questions/${encode(id)}/decline") }
     }
 
     override suspend fun headsDownQuestion(id: String): HeadsDownQuestion? =
@@ -196,12 +198,12 @@ class YarvisClient(
 
     override suspend fun answerHeadsDown(id: String, answer: HeadsDownAnswer) {
         withFreshAuth {
-            rest.post("$SIDECAR/heads-down/questions/${seg(id)}/answer", answer, HeadsDownAnswer.serializer(), Unit.serializer())
+            rest.post("$SIDECAR/heads-down/questions/${encode(id)}/answer", answer, HeadsDownAnswer.serializer(), Unit.serializer())
         }
     }
 
     override suspend fun dismissHeadsDown(id: String) {
-        withFreshAuth { rest.postEmpty("$SIDECAR/heads-down/questions/${seg(id)}/dismiss") }
+        withFreshAuth { rest.postEmpty("$SIDECAR/heads-down/questions/${encode(id)}/dismiss") }
     }
 
     override suspend fun approvals(): List<ServerApproval> =
@@ -209,7 +211,7 @@ class YarvisClient(
 
     override suspend fun answerApproval(id: String, approve: Boolean) {
         withFreshAuth {
-            rest.post("api/approvals/${seg(id)}", ApprovalAnswer(approve), ApprovalAnswer.serializer(), Unit.serializer())
+            rest.post("api/approvals/${encode(id)}", ApprovalAnswer(approve), ApprovalAnswer.serializer(), Unit.serializer())
         }
     }
 
@@ -217,8 +219,14 @@ class YarvisClient(
         const val SIDECAR = "api/sidecar/api"
         const val MAX_CODE_ATTEMPTS = 3
 
-        /** Percent-encodes one path segment or query value. */
-        fun seg(value: String): String = java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+        /**
+         * Percent-encodes one path segment or query value. A `.` or `..` id is
+         * refused, since URL resolution would turn it into a different route.
+         */
+        fun encode(value: String): String {
+            require(value != "." && value != "..") { "not an id: $value" }
+            return java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+        }
     }
 }
 
@@ -234,31 +242,31 @@ internal class Rest(private val baseUrl: HttpUrl, private val http: OkHttpClient
     fun <T> json(body: T, serializer: SerializationStrategy<T>): RequestBody =
         YarvisJson.encodeToString(serializer, body).toRequestBody(JSON)
 
-    suspend fun <T> get(path: String, out: DeserializationStrategy<T>): T = send(request(path).get().build(), out)
+    suspend fun <T> get(path: String, responseSerializer: DeserializationStrategy<T>): T = send(request(path).get().build(), responseSerializer)
 
-    suspend fun <B, T> post(path: String, body: B, inSer: SerializationStrategy<B>, out: DeserializationStrategy<T>): T =
-        send(request(path).post(json(body, inSer)).build(), out)
+    suspend fun <B, T> post(path: String, body: B, bodySerializer: SerializationStrategy<B>, responseSerializer: DeserializationStrategy<T>): T =
+        send(request(path).post(json(body, bodySerializer)).build(), responseSerializer)
 
     suspend fun postEmpty(path: String) {
         send(request(path).post(ByteArray(0).toRequestBody(null)).build(), Unit.serializer())
     }
 
-    suspend fun <B> patch(path: String, body: B, inSer: SerializationStrategy<B>) {
-        send(request(path).patch(json(body, inSer)).build(), Unit.serializer())
+    suspend fun <B> patch(path: String, body: B, bodySerializer: SerializationStrategy<B>) {
+        send(request(path).patch(json(body, bodySerializer)).build(), Unit.serializer())
     }
 
     suspend fun delete(path: String) {
         send(request(path).delete().build(), Unit.serializer())
     }
 
-    private suspend fun <T> send(request: Request, out: DeserializationStrategy<T>): T {
+    private suspend fun <T> send(request: Request, responseSerializer: DeserializationStrategy<T>): T {
         val response = http.newCall(request).await()
         return response.use {
             if (!it.isSuccessful) throw it.toApiException()
             @Suppress("UNCHECKED_CAST")
-            if (out == Unit.serializer()) return Unit as T
+            if (responseSerializer == Unit.serializer()) return Unit as T
             val text = withContext(Dispatchers.IO) { it.body.string() }
-            YarvisJson.decodeFromString(out, text)
+            YarvisJson.decodeFromString(responseSerializer, text)
         }
     }
 

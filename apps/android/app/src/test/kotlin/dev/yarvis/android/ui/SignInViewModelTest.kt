@@ -24,7 +24,7 @@ class SignInViewModelTest {
         var setupRequired = false
         var error: Exception? = null
         val signIns = mutableListOf<Pair<HttpUrl, LoginRequest>>()
-        override suspend fun setupRequired(server: HttpUrl) = setupRequired
+        override suspend fun isSetupRequired(server: HttpUrl) = setupRequired
         override suspend fun signIn(server: HttpUrl, request: LoginRequest) {
             error?.let { throw it }
             signIns += server to request

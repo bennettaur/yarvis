@@ -1,6 +1,8 @@
 package dev.yarvis.android.api
 
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -33,8 +35,8 @@ sealed interface EventsSignal {
 }
 
 /**
- * The server's `/api/events` WebSocket, reconnected until the server refuses
- * the device. The token goes in the first message, never the URL. A reconnect
+ * The server's `/api/events` WebSocket, reconnected until the server closes it
+ * with 4401, 4403 or 4400. The token goes in the first message, never the URL. A reconnect
  * sends `since` with the last seq seen, so nothing is missed or repeated.
  *
  * [backoffMs] gives the wait before reconnect attempt n (1-based).
@@ -51,32 +53,32 @@ class ServerEventsSocket(
         var lastSeq: Long? = null
         var attempt = 0
         while (true) {
-            var end: Frame.Closed? = null
+            var closed: Frame.Closed? = null
             connectOnce(lastSeq).collect { frame ->
-                when (frame) {
-                    is Frame.Text -> {
-                        val msg = runCatching { YarvisJson.parseToJsonElement(frame.text).jsonObject }.getOrNull()
-                            ?: return@collect
-                        when (msg["type"]?.jsonPrimitive?.contentOrNull) {
-                            "event" -> {
-                                val event = runCatching { YarvisJson.decodeFromJsonElement(ServerEvent.serializer(), msg) }
-                                    .getOrNull() ?: return@collect
-                                attempt = 0
-                                if (lastSeq == null || event.seq > lastSeq!!) {
-                                    lastSeq = event.seq
-                                    emit(EventsSignal.Event(event))
-                                }
-                            }
-                            "lagged" -> {
-                                lastSeq = null
-                                emit(EventsSignal.Lagged)
-                            }
+                if (frame is Frame.Closed) {
+                    closed = frame
+                    return@collect
+                }
+                when (val signal = parse((frame as Frame.Text).text)) {
+                    is EventsSignal.Event -> {
+                        // As the web client does, the backoff resets on the first event, not on
+                        // connect, so a server that accepts and then drops at once is still backed off.
+                        attempt = 0
+                        val last = lastSeq
+                        // Skips anything at or before what was seen, so a resumed replay never repeats.
+                        if (last == null || signal.event.seq > last) {
+                            lastSeq = signal.event.seq
+                            emit(signal)
                         }
                     }
-                    is Frame.Closed -> end = frame
+                    EventsSignal.Lagged -> {
+                        lastSeq = null
+                        emit(signal)
+                    }
+                    else -> Unit
                 }
             }
-            when (val code = end?.code) {
+            when (val code = closed?.code) {
                 CLOSE_UNAUTHORIZED -> {
                     emit(EventsSignal.SignedOut)
                     return@flow
@@ -88,6 +90,17 @@ class ServerEventsSocket(
             }
             attempt++
             delay(backoffMs(attempt))
+        }
+    }
+
+    /** An event or `lagged`, or null for anything else. */
+    private fun parse(text: String): EventsSignal? {
+        val message = runCatching { YarvisJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
+        return when (message["type"]?.jsonPrimitive?.contentOrNull) {
+            "event" -> runCatching { YarvisJson.decodeFromJsonElement(ServerEvent.serializer(), message) }
+                .getOrNull()?.let { EventsSignal.Event(it) }
+            "lagged" -> EventsSignal.Lagged
+            else -> null
         }
     }
 
@@ -116,6 +129,7 @@ class ServerEventsSocket(
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    // Answer the server's close so the socket is released.
                     webSocket.close(code, null)
                     trySend(Frame.Closed(code))
                     close()
@@ -134,6 +148,8 @@ class ServerEventsSocket(
         )
         awaitClose { socket.cancel() }
     }
+        // Never drop a frame: a lost event is gone for good once a later seq moves `lastSeq` past it.
+        .buffer(Channel.UNLIMITED)
 
     companion object {
         const val CLOSE_UNAUTHORIZED = 4401

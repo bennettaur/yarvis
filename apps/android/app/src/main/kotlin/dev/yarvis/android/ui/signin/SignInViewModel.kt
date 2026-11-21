@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 
 interface SignInGateway {
-    suspend fun setupRequired(server: HttpUrl): Boolean
+    suspend fun isSetupRequired(server: HttpUrl): Boolean
 
     /** Signs in, keeps the token, and moves the app to the signed-in screens. */
     suspend fun signIn(server: HttpUrl, request: LoginRequest)
@@ -53,7 +53,7 @@ class SignInViewModel(private val gateway: SignInGateway, lastServerUrl: String?
         _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
             try {
-                if (gateway.setupRequired(server)) {
+                if (gateway.isSetupRequired(server)) {
                     _state.update {
                         it.copy(busy = false, error = "This server isn't set up yet. Finish setup in the web UI first.")
                     }

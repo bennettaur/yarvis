@@ -51,8 +51,8 @@ class AttentionViewModel(
 ) : ViewModel() {
     val attention: StateFlow<AttentionState> = repository.state
 
-    private val _open = MutableStateFlow<OpenItem?>(null)
-    val open: StateFlow<OpenItem?> = _open.asStateFlow()
+    private val _opened = MutableStateFlow<OpenItem?>(null)
+    val opened: StateFlow<OpenItem?> = _opened.asStateFlow()
 
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
@@ -66,7 +66,7 @@ class AttentionViewModel(
 
     fun refresh() {
         viewModelScope.launch {
-            act("Couldn't refresh") {
+            reportingFailure("Couldn't refresh") {
                 repository.reloadAttention()
                 repository.reloadApprovals()
             }
@@ -74,7 +74,7 @@ class AttentionViewModel(
     }
 
     fun openItem(item: AttentionItem) {
-        _open.value = OpenItem(item, ItemDetail.Loading)
+        _opened.value = OpenItem(item, ItemDetail.Loading)
         viewModelScope.launch {
             val detail = try {
                 when {
@@ -88,74 +88,74 @@ class AttentionViewModel(
             } catch (e: Exception) {
                 ItemDetail.Failed(e.message ?: "Couldn't load it")
             }
-            _open.update { if (it?.item?.id == item.id) it.copy(detail = detail) else it }
+            _opened.update { if (it?.item?.id == item.id) it.copy(detail = detail) else it }
         }
     }
 
     fun close() {
-        _open.value = null
+        _opened.value = null
     }
 
-    fun decidePermission(request: PermissionRequest, decision: PermissionDecision) = answer {
+    fun decidePermission(request: PermissionRequest, decision: PermissionDecision) = runExclusive {
         val delivered = api.decidePermission(request.id, decision)
         if (!delivered) _message.value = "That prompt was already answered in the terminal."
-        val item = _open.value?.item ?: return@answer
-        val left = api.permissions(request.sessionKey)
-        if (left.isEmpty()) {
+        val item = _opened.value?.item ?: return@runExclusive
+        val remaining = api.permissions(request.sessionKey)
+        if (remaining.isEmpty()) {
             repository.forgetItem(item.id)
             close()
         } else {
-            _open.value = OpenItem(item, ItemDetail.Permissions(left))
+            _opened.value = OpenItem(item, ItemDetail.Permissions(remaining))
         }
     }
 
-    fun answerQuestion(question: AgentQuestion, answers: List<QuestionAnswer>) = answer {
+    fun answerQuestion(question: AgentQuestion, answers: List<QuestionAnswer>) = runExclusive {
         api.answerQuestion(question.id, answers)
-        afterQuestion(question)
+        showRemainingQuestions(question)
     }
 
-    fun declineQuestion(question: AgentQuestion) = answer {
+    fun declineQuestion(question: AgentQuestion) = runExclusive {
         api.declineQuestion(question.id)
-        afterQuestion(question)
+        showRemainingQuestions(question)
     }
 
-    private suspend fun afterQuestion(question: AgentQuestion) {
-        val item = _open.value?.item ?: return
-        val left = api.questionsFor(item).filterNot { it.id == question.id }
-        if (left.isEmpty()) {
+    private suspend fun showRemainingQuestions(question: AgentQuestion) {
+        val item = _opened.value?.item ?: return
+        val remaining = api.questionsFor(item).filterNot { it.id == question.id }
+        if (remaining.isEmpty()) {
             repository.forgetItem(item.id)
             close()
         } else {
-            _open.value = OpenItem(item, ItemDetail.Questions(left))
+            _opened.value = OpenItem(item, ItemDetail.Questions(remaining))
         }
     }
 
-    fun answerHeadsDown(question: HeadsDownQuestion, answer: HeadsDownAnswer) = answer {
+    fun answerHeadsDown(question: HeadsDownQuestion, answer: HeadsDownAnswer) = runExclusive {
         api.answerHeadsDown(question.id, answer)
-        _open.value?.item?.let { repository.forgetItem(it.id) }
+        _opened.value?.item?.let { repository.forgetItem(it.id) }
         close()
     }
 
-    fun dismissHeadsDown(question: HeadsDownQuestion) = answer {
+    fun dismissHeadsDown(question: HeadsDownQuestion) = runExclusive {
         api.dismissHeadsDown(question.id)
-        _open.value?.item?.let { repository.forgetItem(it.id) }
+        _opened.value?.item?.let { repository.forgetItem(it.id) }
         close()
     }
 
     /** Takes the item off the list. An unanswered question still waits for an answer. */
-    fun dismiss(item: AttentionItem) = answer {
+    fun dismiss(item: AttentionItem) = runExclusive {
         api.setAttentionStatus(item.id, "dismissed")
         repository.forgetItem(item.id)
-        if (_open.value?.item?.id == item.id) close()
+        if (_opened.value?.item?.id == item.id) close()
     }
 
-    fun markRead(item: AttentionItem) = answer {
+    fun markRead(item: AttentionItem) = runExclusive {
         api.setAttentionStatus(item.id, "read")
         repository.forgetItem(item.id)
         close()
     }
 
-    fun answerApproval(approval: ServerApproval, approve: Boolean) = answer {
+    fun answerApproval(approval: ServerApproval, approve: Boolean) = runExclusive {
         try {
             api.answerApproval(approval.id, approve)
         } catch (e: ApiException) {
@@ -166,19 +166,20 @@ class AttentionViewModel(
         repository.forgetApproval(approval.id)
     }
 
-    private fun answer(block: suspend () -> Unit) {
+    /** Runs one action at a time, so a double tap can't answer twice. */
+    private fun runExclusive(block: suspend () -> Unit) {
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
             try {
-                act("Couldn't send that", block)
+                reportingFailure("Couldn't send that", block)
             } finally {
                 _busy.value = false
             }
         }
     }
 
-    private suspend fun act(failure: String, block: suspend () -> Unit) {
+    private suspend fun reportingFailure(failure: String, block: suspend () -> Unit) {
         try {
             block()
         } catch (e: CancellationException) {

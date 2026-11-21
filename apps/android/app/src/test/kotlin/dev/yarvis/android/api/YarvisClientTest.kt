@@ -149,6 +149,10 @@ class YarvisClientTest {
         assertEquals("q9", items[1].questionId)
         assertNull(items[1].headsDownQuestionId)
         assertEquals("hq1", items[2].headsDownQuestionId)
+        assertNull(
+            "a merge announcement isn't a heads-down question",
+            items[2].copy(sessionKey = "heads-down-merge:pr-12").headsDownQuestionId,
+        )
         assertFalse(items[2].isClaudePermission)
     }
 
@@ -262,6 +266,109 @@ class YarvisClientTest {
 
         assertEquals(2, prompts)
         assertEquals(4, server.requestCount)
+    }
+
+    @Test
+    fun `three wrong codes give up with the server's error`() = runTest {
+        server.enqueue(json(403, """{"error":"reauth_required"}"""))
+        repeat(3) { server.enqueue(json(403, """{"error":"wrong code"}""")) }
+        codes.addAll(listOf("1", "2", "3", "4"))
+        try {
+            client.answerApproval("ap1", approve = true)
+            fail("expected an error")
+        } catch (e: ApiException) {
+            assertEquals("wrong code", e.error)
+        }
+        assertEquals(3, prompts)
+        assertEquals(4, server.requestCount)
+    }
+
+    @Test
+    fun `a permission prompt settled while the code was typed reports not delivered`() = runTest {
+        server.enqueue(json(403, """{"error":"reauth_required"}"""))
+        server.enqueue(json(200, """{"verifiedAt":1}"""))
+        server.enqueue(json(410, """{"error":"no longer waiting"}"""))
+        codes.add("123456")
+
+        assertFalse(client.decidePermission("r1", PermissionDecision.Allow))
+    }
+
+    @Test
+    fun `sign out revokes this device by its id`() = runTest {
+        server.enqueue(json(200, """{"deviceId":"d7","name":"Pixel","scopes":["read"],"verifiedAt":null}"""))
+        server.enqueue(json(200, """{"revokedAt":1763600000000}"""))
+
+        client.revokeSelf()
+
+        assertEquals("/api/devices/me", server.next().url.encodedPath)
+        val revoke = server.next()
+        assertEquals("DELETE", revoke.method)
+        assertEquals("/api/devices/d7", revoke.url.encodedPath)
+    }
+
+    @Test
+    fun `dismissing patches the item's status`() = runTest {
+        server.enqueue(json(200, "{}"))
+        client.setAttentionStatus("a1", "dismissed")
+
+        val request = server.next()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/sidecar/api/attention/a1", request.url.encodedPath)
+        assertEquals(Json.parseToJsonElement("""{"status":"dismissed"}"""), bodyOf(request))
+    }
+
+    @Test
+    fun `a keyed question item lists that session's questions`() = runTest {
+        server.enqueue(json(200, "[]"))
+        client.questionsFor(
+            AttentionItem(id = "a1", seq = 1, source = "system", sessionKey = "ws-1:claude", kind = "question", title = "t", status = "pending", createdAt = "", updatedAt = ""),
+        )
+        assertEquals("/api/sidecar/api/questions?sessionKey=ws-1%3Aclaude", server.next().target)
+    }
+
+    @Test
+    fun `a question answered elsewhere leaves nothing to answer`() = runTest {
+        server.enqueue(json(200, """{"id":"q9","context":{"task":"t"},"questions":[],"status":"answered","createdAt":""}"""))
+        val item = AttentionItem(
+            id = "a2", seq = 1, source = "system", kind = "question", title = "t", status = "pending",
+            payload = Json.parseToJsonElement("""{"questionId":"q9"}"""), createdAt = "", updatedAt = "",
+        )
+        assertTrue(client.questionsFor(item).isEmpty())
+    }
+
+    @Test
+    fun `heads-down questions are found by id, answered with a choice, and dismissed`() = runTest {
+        server.enqueue(
+            json(
+                200,
+                """[{"id":"h1","kind":"approval","streamId":null,"question":"Merge #12?","situation":null,"options":["approve","deny"],
+                   "action":"merge","toolArgs":null,"status":"open","choice":null,"answer":null,"answeredBy":null,"argsHash":null,
+                   "usedAt":null,"createdAt":"2026-11-20T10:00:00.000Z","answeredAt":null}]""",
+            ),
+        )
+        server.enqueue(json(200, "{}"))
+        server.enqueue(json(200, """{"dismissed":true}"""))
+
+        val question = client.headsDownQuestion("h1")!!
+        client.answerHeadsDown(question.id, HeadsDownAnswer(choice = "approve"))
+        client.dismissHeadsDown(question.id)
+
+        assertEquals(listOf("approve", "deny"), question.options)
+        assertEquals("/api/sidecar/api/heads-down/questions", server.next().url.encodedPath)
+        val answer = server.next()
+        assertEquals("/api/sidecar/api/heads-down/questions/h1/answer", answer.url.encodedPath)
+        assertEquals(Json.parseToJsonElement("""{"choice":"approve"}"""), bodyOf(answer))
+        assertEquals("/api/sidecar/api/heads-down/questions/h1/dismiss", server.next().url.encodedPath)
+    }
+
+    @Test
+    fun `a dot id is refused before a request is made`() = runTest {
+        try {
+            client.answerQuestion("..", emptyList())
+            fail("expected a refusal")
+        } catch (_: IllegalArgumentException) {
+        }
+        assertEquals(0, server.requestCount)
     }
 
     @Test

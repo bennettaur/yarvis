@@ -16,9 +16,11 @@ import dev.yarvis.android.api.PermissionRequest
 import dev.yarvis.android.api.ProviderInfo
 import dev.yarvis.android.api.QuestionAnswer
 import dev.yarvis.android.api.ServerApproval
+import dev.yarvis.android.data.ChatModelChoice
 import dev.yarvis.android.data.ChatModelPrefs
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.receiveAsFlow
 
 fun item(id: String, seq: Long, status: String = "pending", kind: String = "info", sessionKey: String? = null, source: String = "system") =
@@ -43,6 +45,7 @@ class FakeChatApi : ChatApi {
     val approvalAnswers = mutableListOf<Pair<String, Boolean>>()
     var turnEvents = Channel<ChatEvent>(Channel.UNLIMITED)
     var approvalError: Exception? = null
+    var streamError: Exception? = null
     var created = 0
 
     override suspend fun providers() = providerList
@@ -53,6 +56,7 @@ class FakeChatApi : ChatApi {
     }
     override suspend fun messages(sessionId: String) = stored.filter { it.sessionId == sessionId }
     override fun streamChat(request: ChatRequest): Flow<ChatEvent> {
+        streamError?.let { error -> return flow { throw error } }
         requests += request
         return turnEvents.receiveAsFlow()
     }
@@ -62,10 +66,10 @@ class FakeChatApi : ChatApi {
     }
 }
 
-class FakePrefs(var saved: Pair<String, String>? = null) : ChatModelPrefs {
+class FakePrefs(var saved: ChatModelChoice? = null) : ChatModelPrefs {
     override suspend fun load() = saved
     override suspend fun save(provider: String, model: String) {
-        saved = provider to model
+        saved = ChatModelChoice(provider, model)
     }
 }
 
@@ -97,7 +101,8 @@ class FakeAttentionApi : AttentionApi {
         permissionList.removeAll { it.id == id }
         return delivered
     }
-    override suspend fun questionsFor(item: AttentionItem) = questionList.filter { it.status == "pending" }
+    override suspend fun questionsFor(item: AttentionItem) =
+        questionList.filter { it.status == "pending" && (item.sessionKey == null || it.sessionKey == item.sessionKey) }
     override suspend fun answerQuestion(id: String, answers: List<QuestionAnswer>) {
         calls += "answer:$id:${answers.map { it.selected + listOfNotNull(it.text) }}"
         questionList.replaceAll { if (it.id == id) it.copy(status = "answered") else it }
@@ -105,7 +110,12 @@ class FakeAttentionApi : AttentionApi {
     override suspend fun declineQuestion(id: String) {
         calls += "decline:$id"
     }
-    override suspend fun headsDownQuestion(id: String): HeadsDownQuestion? = null
+    var headsDown: HeadsDownQuestion? = null
+    var detailError: Exception? = null
+    override suspend fun headsDownQuestion(id: String): HeadsDownQuestion? {
+        detailError?.let { throw it }
+        return headsDown?.takeIf { it.id == id }
+    }
     override suspend fun answerHeadsDown(id: String, answer: HeadsDownAnswer) {
         calls += "headsdown:$id:${answer.choice}"
     }

@@ -4,6 +4,8 @@ import dev.yarvis.android.FakeAttentionApi
 import dev.yarvis.android.MainDispatcherRule
 import dev.yarvis.android.api.AgentQuestion
 import dev.yarvis.android.api.ApiException
+import dev.yarvis.android.api.HeadsDownAnswer
+import dev.yarvis.android.api.HeadsDownQuestion
 import dev.yarvis.android.api.PermissionDecision
 import dev.yarvis.android.api.PermissionRequest
 import dev.yarvis.android.api.QuestionAnswer
@@ -43,6 +45,7 @@ class AttentionViewModelTest {
 
     private fun question(id: String) = AgentQuestion(
         id = id,
+        sessionKey = "ws-1:claude",
         context = QuestionContext("Pick a branch"),
         questions = listOf(QuestionItem("Which branch?", options = listOf(QuestionOption("main"), QuestionOption("dev")))),
         status = "pending",
@@ -56,7 +59,7 @@ class AttentionViewModelTest {
         vm.openItem(item("a1", 1, kind = "permission", sessionKey = "ws-1:claude", source = "claude-hook"))
         advanceUntilIdle()
 
-        val detail = vm.open.value!!.detail as ItemDetail.Permissions
+        val detail = vm.opened.value!!.detail as ItemDetail.Permissions
         assertEquals(listOf("r1"), detail.requests.map { it.id })
     }
 
@@ -73,7 +76,7 @@ class AttentionViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("permission:r1:Allow"), api.calls)
-        assertNull(vm.open.value)
+        assertNull(vm.opened.value)
         assertTrue(repo.state.value.items.isEmpty())
     }
 
@@ -102,7 +105,7 @@ class AttentionViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("answer:q1:[[main]]"), api.calls)
-        val detail = vm.open.value!!.detail as ItemDetail.Questions
+        val detail = vm.opened.value!!.detail as ItemDetail.Questions
         assertEquals(listOf("q2"), detail.questions.map { it.id })
     }
 
@@ -145,6 +148,59 @@ class AttentionViewModelTest {
 
         assertEquals(listOf("status:a1:dismissed"), api.calls)
         assertTrue(repo.state.value.items.isEmpty())
+    }
+
+    @Test
+    fun `a heads-down item loads its question, and answering closes it`() = runTest {
+        api.headsDown = HeadsDownQuestion(id = "h1", kind = "approval", question = "Merge #12?", options = listOf("approve", "deny"), status = "open", createdAt = "")
+        api.pending += item("a1", 1, kind = "permission", sessionKey = "heads-down:h1")
+        val (vm, repo) = viewModel()
+        repo.reloadAttention()
+        vm.openItem(api.pending.single())
+        advanceUntilIdle()
+        assertEquals("h1", (vm.opened.value!!.detail as ItemDetail.HeadsDown).question!!.id)
+
+        vm.answerHeadsDown(api.headsDown!!, HeadsDownAnswer(choice = "approve"))
+        advanceUntilIdle()
+
+        assertEquals(listOf("headsdown:h1:approve"), api.calls)
+        assertNull(vm.opened.value)
+        assertTrue(repo.state.value.items.isEmpty())
+    }
+
+    @Test
+    fun `a detail that fails to load says so`() = runTest {
+        api.detailError = java.io.IOException("timeout")
+        val (vm, _) = viewModel()
+        vm.openItem(item("a1", 1, kind = "permission", sessionKey = "heads-down:h1"))
+        advanceUntilIdle()
+
+        assertEquals(ItemDetail.Failed("timeout"), vm.opened.value!!.detail)
+    }
+
+    @Test
+    fun `declining a question tells the agent and closes the item`() = runTest {
+        api.questionList += question("q1")
+        val (vm, _) = viewModel()
+        vm.openItem(item("a1", 1, kind = "question", sessionKey = "ws-1:claude"))
+        advanceUntilIdle()
+
+        api.questionList.clear()
+        vm.declineQuestion(question("q1"))
+        advanceUntilIdle()
+
+        assertEquals(listOf("decline:q1"), api.calls)
+        assertNull(vm.opened.value)
+    }
+
+    @Test
+    fun `any other approval failure is shown`() = runTest {
+        api.approvalError = ApiException(500, "internal error")
+        val (vm, _) = viewModel()
+        vm.answerApproval(approval("ap1"), approve = true)
+        advanceUntilIdle()
+
+        assertTrue(vm.message.value!!.startsWith("Couldn't send that"))
     }
 
     @Test
