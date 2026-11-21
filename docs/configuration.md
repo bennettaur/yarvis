@@ -373,9 +373,12 @@ The tabs in **Settings**, in order:
    attention panel.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
-11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
+11. **Devices.** The devices signed in to the server, revoking one, creating a
+    token to pair a client that can't use a passkey, and the approvals waiting
+    on an answer. See [Signing in and devices](features/devices.md).
+12. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
     `settings.json`. Below it, a toggle turns off the amber band that sweeps
     across the top bar and the bell's shake while the bell has something
     pending, saved as `attentionAnimation`.
-12. **Diagnostics.** The sidecar log.
+13. **Diagnostics.** The sidecar log.

@@ -14,9 +14,13 @@ Three processes, each with a clear owner:
   1Password), and every terminal session. It supervises the sidecar: it picks a
   free loopback port, generates a bearer token, and passes secrets in as
   environment variables.
-- **React frontend** (`src/`). Vite, TypeScript and Tailwind. It calls the Rust
-  core through Tauri `invoke` for native features and secrets, and the sidecar
-  over authenticated loopback HTTP for data and AI.
+- **React frontend** (`src/`). Vite, TypeScript and Tailwind. yarvis-server
+  serves it and is the only thing it talks to, on the page's own origin with a
+  device token. Core commands (settings, secrets, terminal control) go through
+  `core()` to `/api/core`, sidecar calls through `/api/sidecar`, and events and
+  terminals over WebSockets. Inside the Tauri window, the clipboard history,
+  window focus and alarm takeover go to the Tauri bridge instead. See
+  [client-server.md](client-server.md).
 - **Bun sidecar** (`sidecar/`). A Hono HTTP service that owns Postgres (through
   Drizzle), every LLM call, memory, the background jobs and the Telegram bot.
   In development it runs `sidecar/src/main.ts` directly with Bun.
