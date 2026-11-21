@@ -513,13 +513,14 @@ secrets store included, so treat `terminal` as full trust. Only passkey
 devices and `yarvis-server device add` get it; a token minted over the API
 can't.
 
-`chat` opens no PTY, and the sidecar routes that would amount to one need
-`terminal` too: anything that writes into a worktree, runs git on it, clones
-a PR, or starts a process there (see "Sidecar" below). A file planted in a
-worktree, such as a hook config, runs when an agent session or a commit
-there next reads it, so writing one is as good as a shell. `admin` reaches a
-shell indirectly: `set_agent` and `set_agent_harnesses` choose the command
-`pty_start_claude` runs.
+`chat` opens no shell, but it is broad on purpose: it starts workspaces,
+runs their setup, and drives their agent sessions, directly and through the
+assistant. Those agents act with their own permissions, so a `chat` device
+is trusted with the workspaces. What `terminal` adds is raw shell access:
+the PTY socket and commands below, and saving a file into a worktree
+(`PUT /api/workspaces/:id/repos/:wrId/file`), since a planted hook runs as the
+server's user. `admin` reaches a shell indirectly too: `set_agent` and
+`set_agent_harnesses` choose the command `pty_start_claude` runs.
 
 - `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
 - `POST /api/core/pty_resize` `{ id, cols, rows }` → `204`. Attached clients
@@ -683,23 +684,12 @@ Sidecar:
   definitions, registered repos) need `admin`, and so does reading the MCP
   endpoint's connection info, which carries its token. Answers to tool
   approvals, permission prompts and agent questions need `approve`.
-  Workspace and review-workspace writes need `terminal`: creating,
-  provisioning and archiving a workspace, saving a file, merging a stack,
-  adding, refreshing and removing a review PR, running its setup script, and
-  starting a Claude Code session or a verification or re-review run. So do
-  the routes elsewhere that start a workspace or hand work to its agent
-  (`/api/pr/workspace`, `/api/pr/resolve-conflicts`, `/api/pr/fix-checks`,
-  the issue, JIRA and Azure Boards `start-work`), running a scheduled job
-  now (`/api/jobs/agent-jobs/:id/run`), and text an agent takes as the
-  user's request: review comments, and starting, resuming or messaging a
-  heads-down pass. Accepting a failed provision (`ignore-error`) does too,
-  since it launches the kick-off session. The ones that only change rows
-  stay `chat`: renaming, linking PRs, tasks and issues, stopping the agent,
-  marking a PR reviewed. Those match their exact path, and any other
-  workspace write needs `terminal`, so a new route fails closed. Rules are
+  Saving a file into a worktree needs `terminal`; every other workspace
+  route, starting a workspace or an agent run included, is `chat`. Rules are
   matched on the percent-decoded path, as the sidecar's router decodes it
-  before routing. The proxy keeps that list (`SCOPE_RULES` in `sidecar_proxy.rs`). A path with `..`, an
-  encoded slash or backslash, or an empty segment is refused. The client's own
+  before routing. The proxy keeps that list (`SCOPE_RULES` in
+  `sidecar_proxy.rs`). A path with `..`, an encoded slash or backslash, or an
+  empty segment is refused. The client's own
   `Authorization` and `X-Yarvis-Device-Id` headers are dropped before the
   server adds its own. `sidecarFetch("/api/status")` becomes
   `/api/sidecar/api/status`: only `/health` and paths under `/api/` are
@@ -751,15 +741,6 @@ Core commands that changed on the way from `invoke`:
   made for an old RP ID can't be replaced by ones for the new name.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
-- **`chat` still reaches workspaces through the assistant.** The proxy gates
-  the routes, but a chat turn runs the assistant's own tools in the sidecar,
-  and some of them start workspaces or send to agent sessions
-  (`create_workspace_session`, `start_workspace_session`,
-  `send_workspace_instruction`). They ask first only on spoken and browser
-  turns (`chat/destructiveTools.ts`); a typed turn from a `chat` device runs
-  them. Closing this needs the sidecar to know the device's scopes (from
-  `X-Yarvis-Device-Id`) and drop those tools for a device without
-  `terminal`.
 - **Some `read` routes run git.** Listing a repo's branches and a
   workspace's sync, stack and since-review views fetch or clone. They act
   only on repos an admin registered, with nothing the caller chooses.

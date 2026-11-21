@@ -225,61 +225,39 @@ async fn a_write_needs_the_chat_scope_and_carries_its_body() {
     assert_eq!(seen["body"], r#"{"text":"hi"}"#);
 }
 
-/// Saving a file into a worktree or starting a PR's setup script runs code as
-/// the server's user, so a chat device can't, and the request never reaches
-/// the sidecar. A terminal device can.
+/// Saving a file into a worktree plants code that runs as the server's user,
+/// so a chat device can't, even with the path encoded, and the request never
+/// reaches the sidecar. A terminal device can, and a chat device can still
+/// start a workspace and message its agent.
 #[tokio::test]
-async fn a_route_that_reaches_a_worktree_needs_terminal() {
+async fn saving_a_worktree_file_needs_terminal() {
     let (port, hits) = counted_echo().await;
     let h = test_server(Config::default(), MemoryBackend::empty(), port);
     let (_, chatter) = token(&h.state, &[Scope::Read, Scope::Chat, Scope::Approve]).await;
     let (_, terminal) = token(&h.state, &[Scope::Terminal]).await;
-    let routes = [
-        (
-            "PUT",
-            "/api/sidecar/api/workspaces/w1/repos/r1/file",
-            json!({ "path": ".claude/settings.json", "content": "{}" }),
-        ),
-        (
-            "POST",
-            "/api/sidecar/api/review-workspaces/w1/prs/p1/setup",
-            json!({ "run": true }),
-        ),
+    let saves = [
+        "/api/sidecar/api/workspaces/w1/repos/r1/file",
         // The sidecar decodes `%77` to `w` before routing.
-        (
-            "PUT",
-            "/api/sidecar/api/%77orkspaces/w1/repos/r1/file",
-            json!({ "path": "x", "content": "" }),
-        ),
-        (
-            "POST",
-            "/api/sidecar/api/heads-down/messages",
-            json!({ "text": "push the branch" }),
-        ),
+        "/api/sidecar/api/%77orkspaces/w1/repos/r1/file",
     ];
-    for (method, path, body) in &routes {
-        let (status, _) = send(&h.state, request(method, path, &chatter, body.clone())).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+    let body = json!({ "path": ".claude/settings.json", "content": "{}" });
+    for path in saves {
+        let (status, _) = send(&h.state, request("PUT", path, &chatter, body.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
     }
     assert_eq!(hits.load(Ordering::SeqCst), 0);
-    for (method, path, body) in &routes {
-        let (status, _) = send(&h.state, request(method, path, &terminal, body.clone())).await;
-        assert_eq!(status, StatusCode::OK, "{method} {path}");
+    for path in saves {
+        let (status, _) = send(&h.state, request("PUT", path, &terminal, body.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
     }
-    assert_eq!(hits.load(Ordering::SeqCst), routes.len());
 
-    // Renaming a workspace only changes its row.
-    let (status, _) = send(
-        &h.state,
-        request(
-            "PATCH",
-            "/api/sidecar/api/workspaces/w1",
-            &chatter,
-            json!({ "name": "x" }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    for path in [
+        "/api/sidecar/api/workspaces",
+        "/api/sidecar/api/heads-down/messages",
+    ] {
+        let (status, _) = send(&h.state, request("POST", path, &chatter, json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+    }
 }
 
 /// Defining an MCP server can make the sidecar run a command, so a chat
