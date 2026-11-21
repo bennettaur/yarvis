@@ -27,7 +27,10 @@ You need your own Google Cloud OAuth client. This is a one-time setup.
 The redirect Yarvis uses is
 `http://127.0.0.1:<sidecar-port>/oauth/google/callback`. The sidecar port
 changes every launch, but Desktop-app clients accept any loopback port, so
-there is nothing to update when it does.
+there is nothing to update when it does. A server you reach from other
+machines redirects to its own origin instead and needs a **Web application**
+client; see
+[Google Calendar on a server you reach remotely](../configuration.md#google-calendar-on-a-server-you-reach-remotely).
 
 Yarvis asks for the `calendar.events` scope. The tokens are stored in Postgres
 and refresh themselves. One Google account is connected at a time.

@@ -110,11 +110,15 @@ export type TurnDetectorState = "stopped" | "starting" | "running" | "failed";
 /** The sidecar's turn detector for continuous mode (`sidecar/src/voice/turnDetector.ts`). */
 export interface TurnDetectorStatus {
   state: TurnDetectorState;
-  /** Websocket URL with its token; null until the detector is listening. */
-  url: string | null;
   log: string[];
   error: string | null;
 }
+
+/**
+ * The server's socket for the detector. The server relays it to the detector on
+ * the sidecar's machine, so continuous mode works from any browser.
+ */
+export const TURN_DETECTOR_SOCKET = "/api/voice/turn-detector/socket";
 
 export async function getTurnDetector(): Promise<TurnDetectorStatus> {
   const res = await sidecarFetch("/api/voice/turn-detector");

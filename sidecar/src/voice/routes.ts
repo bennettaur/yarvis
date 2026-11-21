@@ -463,13 +463,13 @@ export function createVoiceRoutes(config: Config, options: VoiceRouteOptions = {
     return c.json({ providerId: await server.ensureProvider(status.port) });
   });
 
-  /**
-   * Continuous mode's turn detector. The status carries the websocket URL with
-   * its token, which is why it sits behind the sidecar's bearer like the rest.
-   */
+  /** Continuous mode's turn detector: its state, without its address or token. */
   router.get("/turn-detector", (c) => c.json(turnDetector.status()));
 
   router.post("/turn-detector/start", (c) => c.json(turnDetector.start()));
+
+  // For yarvis-server only, which refuses to proxy it to clients.
+  router.get("/turn-detector/upstream", (c) => c.json({ url: turnDetector.upstreamUrl() }));
 
   return router;
 }

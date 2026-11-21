@@ -1,10 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-
-/** Connection details for the sidecar, provided by the Rust core. */
-export interface SidecarInfo {
-  port: number;
-  token: string;
-}
+import { serverFetch } from "./server";
 
 export interface HealthResponse {
   status: string;
@@ -27,31 +21,13 @@ export interface DbHealthResponse {
   reachable: boolean;
 }
 
-let cachedInfo: Promise<SidecarInfo> | null = null;
-
-/** Fetches and caches the sidecar port/token from the Rust core. */
-export function sidecarInfo(): Promise<SidecarInfo> {
-  if (!cachedInfo) {
-    // Don't cache a rejection: clear it so the next call (e.g. the boot-time
-    // poll) retries instead of being stuck on a one-time failure.
-    cachedInfo = invoke<SidecarInfo>("get_sidecar_info").catch((e) => {
-      cachedInfo = null;
-      throw e;
-    });
-  }
-  return cachedInfo;
-}
-
-function baseUrl(info: SidecarInfo): string {
-  return `http://127.0.0.1:${info.port}`;
-}
-
-/** Authenticated fetch against the sidecar. Adds the bearer token automatically. */
-export async function sidecarFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const info = await sidecarInfo();
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${info.token}`);
-  return fetch(`${baseUrl(info)}${path}`, { ...init, headers });
+/**
+ * Authenticated fetch against the sidecar. It sits behind the server's
+ * `/api/sidecar` proxy, which checks the device token and swaps in the
+ * sidecar's own.
+ */
+export function sidecarFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return serverFetch(`/api/sidecar${path}`, init);
 }
 
 /**
@@ -99,7 +75,7 @@ async function readErrorDetail(res: Response): Promise<{ reason: string | null; 
 }
 
 /**
- * A failed sidecar call. Carries the HTTP status and the server's own longer
+ * A failed sidecar call, or any server call that goes through `ensureOk`. Carries the HTTP status and the server's own longer
  * explanation so the UI can show one line and keep the diagnosis behind an
  * expander instead of throwing it away.
  */
@@ -131,10 +107,9 @@ export async function ensureOk(res: Response, context: string): Promise<void> {
   );
 }
 
-/** Unauthenticated readiness probe. */
+/** Readiness probe. */
 export async function getHealth(): Promise<HealthResponse> {
-  const info = await sidecarInfo();
-  const res = await fetch(`${baseUrl(info)}/health`);
+  const res = await sidecarFetch("/health");
   await ensureOk(res, "health check");
   return res.json();
 }

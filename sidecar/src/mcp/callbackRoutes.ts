@@ -18,8 +18,10 @@ export function createMcpOAuthCallbackRoutes(config: Config): Hono {
     const state = c.req.query("state");
     const err = c.req.query("error");
     if (err) {
-      const description = c.req.query("error_description");
-      return c.html(donePage(`Authorization failed: ${description ?? err}`), 400);
+      // Only the OAuth error code, and only when it looks like one: on a
+      // server reached remotely this page is served on its origin, so free
+      // text from the query would let anyone put words on it.
+      return c.html(donePage(`Authorization failed${oauthErrorCode(err)}.`), 400);
     }
     if (!code || !state) {
       return c.html(donePage("Invalid authorization response."), 400);
@@ -41,6 +43,11 @@ export function createMcpOAuthCallbackRoutes(config: Config): Hono {
   });
 
   return router;
+}
+
+/** ` (access_denied)` for an OAuth error code, nothing for anything else. */
+export function oauthErrorCode(err: string): string {
+  return /^[a-z_]{1,40}$/.test(err) ? ` (${err})` : "";
 }
 
 /** Escapes text for safe interpolation into the callback HTML. */

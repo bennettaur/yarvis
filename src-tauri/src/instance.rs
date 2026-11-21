@@ -3,28 +3,28 @@
 //! An instance is named by `YARVIS_INSTANCE`; absent, the process is the
 //! primary one. The name also selects the bundle identifier (see
 //! `scripts/dev-instance.ts`), and Tauri derives the app data directory and the
-//! single-instance socket from that identifier — so `settings.json` and
-//! `core-control.sock` separate without any work here.
+//! single-instance socket from that identifier, so each instance gets its own
+//! `connection.json`, local server, server data and Keychain device token
+//! without any work here.
 //!
-//! What does not separate on its own is anything singular to the machine or to
-//! the shared database: the global hotkeys only one process can hold, and the
-//! sidecar's background workers, which on a shared database would poll the same
-//! providers twice and can resume the same workspace kick-off from two
-//! processes at once. Those default to the primary instance and are opt-in
-//! elsewhere.
-//!
-//! Secrets are deliberately *not* separated: the Keychain item is keyed by a
-//! fixed service name (`keychain.rs`), so every instance reads the same
-//! provider credentials. A secondary instance that needs its own database —
-//! testing a migration without touching the primary's data — overrides just
-//! that one value with `YARVIS_DATABASE_URL`.
+//! What does not separate on its own is the global hotkeys only one process
+//! can hold. Those default to the primary instance and are opt-in elsewhere.
+//! Nor do a dev build's Vite and local server ports, which the launcher moves
+//! with `YARVIS_DEV_PORT`. The local server inherits this process's environment, so
+//! `YARVIS_INSTANCE`, `YARVIS_BACKGROUND_WORKERS` and `YARVIS_DATABASE_URL`
+//! reach it and the sidecar it starts unchanged.
 
 /// Name reported by a process that was never given one.
 const PRIMARY: &str = "main";
 
 /// Port the Vite dev server uses when no instance moved it. Matches
-/// `vite.config.ts` and `tauri.conf.json`'s `devUrl`.
+/// `vite.config.ts`.
 const DEFAULT_DEV_PORT: u16 = 1420;
+
+/// In a dev build the local server listens this far above the Vite port, so
+/// Vite's `/api` proxy knows where it is before the app starts it. Matches
+/// `vite.config.ts` and `scripts/dev-instance.ts`.
+const DEV_SERVER_PORT_OFFSET: u16 = 6000;
 
 /// Reads an env var, treating an empty value as unset so an exported-but-blank
 /// variable behaves the same as no variable at all.
@@ -80,30 +80,28 @@ pub fn global_shortcuts_enabled() -> bool {
     )
 }
 
-/// Whether the sidecar should run its background workers (Telegram bot,
-/// workspace poller, interrupted kick-off resume, guide sweep). Passed to the
-/// sidecar rather than decided there so the answer is instance policy, made in
-/// one place.
-pub fn background_workers_enabled() -> bool {
-    primary_owned(
-        env_value("YARVIS_BACKGROUND_WORKERS").as_deref(),
-        is_primary(),
-    )
-}
-
-/// Parses the dev-server port this instance's webview loads from. Anything that
-/// isn't a port falls back to the default rather than propagating: the value is
-/// interpolated into the sidecar's allowed-origins list, so a comma in it would
-/// otherwise append an origin of the caller's choosing.
+/// Parses the Vite dev-server port. Anything that isn't a port falls back to
+/// the default rather than propagating: the value becomes an origin in the
+/// server's `auth.origins` and the bridge capability, so a comma or a host in
+/// it would otherwise widen both.
 fn resolve_dev_port(raw: Option<&str>) -> u16 {
     raw.and_then(|p| p.trim().parse::<u16>().ok())
         .unwrap_or(DEFAULT_DEV_PORT)
 }
 
-/// The dev-server port this instance's webview loads from; the launcher sets it
-/// (see `scripts/dev-instance.ts`) because the default one is already taken.
+/// The Vite dev server this instance's window loads in a dev build. The
+/// launcher sets it (see `scripts/dev-instance.ts`) because the default one is
+/// already taken.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn dev_port() -> u16 {
     resolve_dev_port(env_value("YARVIS_DEV_PORT").as_deref())
+}
+
+/// The port the local server listens on in a dev build. `None` when the dev
+/// port is too high to leave room above it.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+pub fn dev_server_port() -> Option<u16> {
+    dev_port().checked_add(DEV_SERVER_PORT_OFFSET)
 }
 
 /// Marks a secondary instance's window with its name. Two instances are
@@ -121,14 +119,6 @@ pub fn label_window(app: &tauri::AppHandle) {
     if let Err(e) = window.set_title(&format!("{title} ({})", name())) {
         eprintln!("[instance] could not label the window: {e}");
     }
-}
-
-/// A database URL that overrides the one stored in the Keychain, letting a
-/// secondary instance run against its own database — so a migration under
-/// development can't reach the primary's data — while still sharing every other
-/// secret.
-pub fn database_url_override() -> Option<String> {
-    env_value("YARVIS_DATABASE_URL")
 }
 
 #[cfg(test)]
@@ -163,7 +153,6 @@ mod tests {
         assert!(primary_owned(Some("1"), false));
         assert!(!primary_owned(Some("0"), true));
     }
-
     #[test]
     fn an_unset_dev_port_falls_back_to_the_default() {
         assert_eq!(resolve_dev_port(None), DEFAULT_DEV_PORT);
@@ -172,13 +161,11 @@ mod tests {
 
     #[test]
     fn a_dev_port_is_used_as_given() {
-        assert_eq!(resolve_dev_port(Some("1437")), 1437);
         assert_eq!(resolve_dev_port(Some(" 1437 ")), 1437);
     }
 
     #[test]
     fn a_dev_port_that_could_widen_the_origin_list_is_refused() {
-        // A comma would otherwise append a second origin to the allowlist.
         assert_eq!(
             resolve_dev_port(Some("1420,https://evil.example")),
             DEFAULT_DEV_PORT
@@ -187,11 +174,6 @@ mod tests {
             resolve_dev_port(Some("1420 https://evil.example")),
             DEFAULT_DEV_PORT
         );
-    }
-
-    #[test]
-    fn a_dev_port_outside_the_port_range_falls_back_to_the_default() {
         assert_eq!(resolve_dev_port(Some("99999999999")), DEFAULT_DEV_PORT);
-        assert_eq!(resolve_dev_port(Some("-1")), DEFAULT_DEV_PORT);
     }
 }

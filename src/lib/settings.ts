@@ -1,4 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
+import { withFreshCode } from "./auth";
+import { core } from "./core";
 
 /**
  * Client for the settings the Rust core owns (`src-tauri/src/settings.rs`),
@@ -108,59 +109,59 @@ export interface HarnessSecretStatus {
 /** Replaces the configured harnesses and the default. Rejected as a whole when
  * any entry is invalid. Takes effect on the next session started. */
 export const setAgentHarnesses = (harnesses: AgentHarness[], defaultHarness: string | null) =>
-  invoke<Settings>("set_agent_harnesses", { harnesses, defaultHarness });
+  core<Settings>("set_agent_harnesses", { harnesses, defaultHarness });
 
 /** Which declared harness secrets have a stored value. Never returns values. */
 export const listAgentHarnessSecretStatus = () =>
-  invoke<HarnessSecretStatus[]>("list_agent_harness_secret_status");
+  core<HarnessSecretStatus[]>("list_agent_harness_secret_status");
 
 /** Stores one harness secret, or removes it with `null`. Only a variable the
  * saved harness declares in `secretEnv` can be written. */
 export const setAgentHarnessSecret = (harnessId: string, key: string, value: string | null) =>
-  invoke<void>("set_agent_harness_secret", { harnessId, key, value });
+  core<void>("set_agent_harness_secret", { harnessId, key, value });
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
 export type SecretBackend = "keychain" | "onepassword";
 
-export const getSettings = () => invoke<Settings>("get_settings");
+export const getSettings = () => core<Settings>("get_settings");
 
 /** Sets the live-terminal cap, or clears it back to the default with `null`.
  * Takes effect on the next terminal opened — no restart. Rejects zero. */
 export const setMaxPtySessions = (value: number | null) =>
-  invoke<Settings>("set_max_pty_sessions", { value });
+  core<Settings>("set_max_pty_sessions", { value });
 
 /** Sets the agent's tab title and launch command, clearing either back to its
  * default with `null` or a blank string. Takes effect on the next agent session
  * started — no restart. Rejects a value spanning more than one line. */
 export const setAgent = (name: string | null, command: string | null) =>
-  invoke<Settings>("set_agent", { name, command });
+  core<Settings>("set_agent", { name, command });
 
 /** Replaces the extra slash commands Yarvis may send to workspace sessions; an
  * empty list clears them. Takes effect on the next send. Rejects a name with
  * spaces or punctuation, since arguments are never part of the allowlist. */
 export const setAllowedSlashCommands = (commands: string[]) =>
-  invoke<Settings>("set_allowed_slash_commands", { commands });
+  core<Settings>("set_allowed_slash_commands", { commands });
 
 /** Turns channel messaging to workspace sessions on or off. The sidecar reads it
  * on each send, each relay start and each workspace provision, so no restart is
  * needed. */
 export const setChannelMessaging = (enabled: boolean) =>
-  invoke<Settings>("set_channel_messaging", { enabled });
+  core<Settings>("set_channel_messaging", { enabled });
 
 /** Stores the colour theme; `null` clears it back to the default. The webview
  * applies a theme as it is chosen, so this only makes it survive a restart. */
 export const saveColorTheme = (value: string | null) =>
-  invoke<Settings>("set_color_theme", { value });
+  core<Settings>("set_color_theme", { value });
 
 /** Stores the terminal font size; `null` clears it back to the default. Like
  * the theme, it is already applied by the time this is called. */
 export const saveTerminalFontSize = (value: number | null) =>
-  invoke<Settings>("set_terminal_font_size", { value });
+  core<Settings>("set_terminal_font_size", { value });
 
 /** Stores whether the top bar's attention animation runs; `null` clears it back to
  * the default (on). Like the theme, it is already applied when this is called. */
 export const saveAttentionAnimation = (value: boolean | null) =>
-  invoke<Settings>("set_attention_animation", { value });
+  core<Settings>("set_attention_animation", { value });
 
 /**
  * The settings below are injected into the sidecar's environment at spawn
@@ -170,19 +171,19 @@ export const saveAttentionAnimation = (value: boolean | null) =>
  */
 
 export const setAzureDevopsOrgUrl = (value: string | null) =>
-  invoke<Settings>("set_azure_devops_org_url", { value });
+  core<Settings>("set_azure_devops_org_url", { value });
 
 export const setJiraBaseUrl = (value: string | null) =>
-  invoke<Settings>("set_jira_base_url", { value });
+  core<Settings>("set_jira_base_url", { value });
 
-export const setJiraEmail = (value: string | null) => invoke<Settings>("set_jira_email", { value });
+export const setJiraEmail = (value: string | null) => core<Settings>("set_jira_email", { value });
 
 export const setGoogleClientId = (value: string | null) =>
-  invoke<Settings>("set_google_client_id", { value });
+  core<Settings>("set_google_client_id", { value });
 
 /** Rejects zero; `null` clears back to `defaultTelegramOtpWindowMinutes`. */
 export const setTelegramOtpWindowMinutes = (value: number | null) =>
-  invoke<Settings>("set_telegram_otp_window_minutes", { value });
+  core<Settings>("set_telegram_otp_window_minutes", { value });
 
 /** What became of the secrets during a backend switch. */
 export type Copied =
@@ -208,9 +209,10 @@ export interface BackendSwitch {
  * copy is left behind untouched.
  *
  * `vault` and `item` are required for `"onepassword"` and ignored otherwise.
+ * The server asks for a recent code first, which this asks the user for.
  */
 export const setSecretBackend = (
   backend: SecretBackend,
   vault: string | null,
   item: string | null,
-) => invoke<BackendSwitch>("set_secret_backend", { backend, vault, item });
+) => withFreshCode(() => core<BackendSwitch>("set_secret_backend", { backend, vault, item }));

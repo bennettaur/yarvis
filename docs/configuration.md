@@ -156,6 +156,54 @@ How switching works:
 Writes pass the secrets to `op` on standard input, never as command arguments.
 Other processes can read command arguments with no prompt at all.
 
+### Secrets on `yarvis-server`
+
+`yarvis-server` can keep the secrets item in its own encrypted vault instead of
+the Keychain or 1Password, for a server that starts before anyone logs in. It
+is set in `server.toml`, not the Settings screen. `docs/client-server.md` has
+the full setup and the API.
+
+```toml
+[secrets]
+backend = "vault"
+
+[ssh_agent]
+enabled = true   # the server signs git commits with a key in the vault
+```
+
+- `yarvis-server vault init` asks for the vault passphrase (twice, with no
+  echo; `--passphrase-stdin` reads it from stdin instead), creates
+  `vault.json` in the server's data dir, and prints a recovery key once. Keep
+  the key somewhere safe: it is the way in if you forget the passphrase.
+- The vault passphrase is separate from the passphrase you sign in with, and
+  has to be different: the vault refuses the sign-in one. Signing in proves who is asking the server; the vault
+  passphrase decrypts `vault.json`, which anyone with a copy of the file can
+  attack offline, so it is stretched harder and never stored.
+- The vault starts locked every time the server starts. Unlock it with its
+  passphrase or the recovery key. Until then the sidecar can't read its
+  secrets. A wrong passphrase makes the next try wait, doubling up to 5
+  minutes. Settings can't change the vault passphrase yet; the API can
+  (`POST /api/vault/passphrase`, see `docs/client-server.md`).
+- With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
+  vault is unlocked, and asks for an approval on every commit it signs.
+
+**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+key where it is:
+
+```toml
+[secrets]
+backend = "onepassword"   # or "keychain"
+
+[ssh_agent]
+enabled = false           # the default
+# Needed when launchd starts the server; written out in full, since ~ isn't expanded.
+upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
+With `ssh_agent.enabled = false` the server never makes a signing key or opens
+an agent socket. Workspace shells sign through 1Password's agent, which asks
+for approval on the laptop itself.
+
 ## `~/.yarvis/settings.json`
 
 This file holds everything you set from the Settings screen that isn't a
@@ -268,6 +316,38 @@ providers, Settings → Embeddings warns that some memories were made by a
 different embedder. **Re-embed all** there (or `POST /api/memory/reembed`)
 regenerates every vector.
 
+## Google Calendar on a server you reach remotely
+
+When yarvis-server's `auth.origins` lists an `https` origin that isn't
+`localhost` (a server behind `tailscale serve`, say), Google's sign-in
+redirects to `https://<that origin>/api/oauth/google/callback` instead of the
+sidecar's loopback port. The server forwards it to the sidecar, which accepts
+only a sign-in it started. A "Desktop app" client can't use that redirect, so
+such a server needs a "Web application" client:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com), open
+   **APIs & Services → Credentials** in the project with the Google Calendar
+   API enabled, and choose **Create credentials → OAuth client ID**.
+2. Pick **Web application** as the application type.
+3. Under **Authorized redirect URIs**, add
+   `https://<your server's origin>/api/oauth/google/callback`, with the host
+   in lowercase and no `:443` (Google matches it character for character).
+   The origin is the first `https` one in `auth.origins` that isn't loopback.
+4. Create it, then enter its client ID and secret in **Settings →
+   Credentials** as for a Desktop client (`googleClientId` and
+   `google_client_secret`). Connect again from the Calendar tab.
+
+Which kind of client the server expects follows from its config: an `https`
+origin off loopback means Web application, none means Desktop app. Changing
+`auth.origins` either way means switching the client too.
+
+Google only accepts an `https` redirect whose host ends in a domain on the
+[Public Suffix List](https://publicsuffix.org/), and refuses raw IP
+addresses. `ts.net` is on that list (in its private section, added by
+Tailscale), so a `<machine>.<tailnet>.ts.net` name from `tailscale serve`
+meets the rule. Nobody has tried one against Google yet, so if the console
+refuses it, use a domain you own.
+
 ## Environment variables
 
 You don't need any of these for normal use. They are for running more than one
@@ -333,9 +413,14 @@ The tabs in **Settings**, in order:
    attention panel.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
-11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
+11. **Devices.** The devices signed in to the server, revoking one, creating a
+    token to pair a client that can't sign in itself, the account (passphrase,
+    authenticator app, backup codes, signing out other devices), and the
+    approvals waiting
+    on an answer. See [Signing in and devices](features/devices.md).
+12. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
     `settings.json`. Below it, a toggle turns off the amber band that sweeps
     across the top bar and the bell's shake while the bell has something
     pending, saved as `attentionAnimation`.
-12. **Diagnostics.** The sidecar log.
+13. **Diagnostics.** The sidecar log.

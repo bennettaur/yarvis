@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
+import { core } from "./core";
 
 /** Mirrors the sidecar's `LogLevel`. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -43,7 +43,7 @@ export async function getLogs(filter: LogFilter = {}): Promise<LogPage> {
  * survives a restart and a crash, which is what a bug report wants attached.
  */
 export function sidecarLogPath(): Promise<string> {
-  return invoke<string>("get_sidecar_log_path");
+  return core<string>("get_sidecar_log_path");
 }
 
 /** One log line as it reads in a copied report. */

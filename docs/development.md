@@ -7,16 +7,24 @@ an agent (or a person) should follow when changing the code, read
 
 ## Architecture
 
-Three processes, each with a clear owner:
+Four pieces, each with a clear owner:
 
-- **Rust core** (`src-tauri/`). Native OS integration (window, tray,
-  notifications, global hotkeys, alarms), the secret store (Keychain or
-  1Password), and every terminal session. It supervises the sidecar: it picks a
-  free loopback port, generates a bearer token, and passes secrets in as
-  environment variables.
-- **React frontend** (`src/`). Vite, TypeScript and Tailwind. It calls the Rust
-  core through Tauri `invoke` for native features and secrets, and the sidecar
-  over authenticated loopback HTTP for data and AI.
+- **yarvis-server** (`server/`). A Rust (axum) server that owns secrets,
+  settings, every terminal session and the sidecar: it supervises the sidecar,
+  passes it secrets as environment variables and proxies `/api/sidecar/*` to
+  it. It also serves the built web UI. See [client-server.md](client-server.md).
+- **Tauri app** (`src-tauri/`). A thin desktop client: the window, tray,
+  notifications, global hotkeys, clipboard history and alarm takeovers. It
+  starts a local yarvis-server (the default) or connects to one on another
+  machine, keeps its device token in the Keychain, and points its window at the
+  server, which serves the UI.
+- **React frontend** (`src/`). Vite, TypeScript and Tailwind. yarvis-server
+  serves it and is the only thing it talks to, on the page's own origin with a
+  device token. Core commands (settings, secrets, terminal control) go through
+  `core()` to `/api/core`, sidecar calls through `/api/sidecar`, and events and
+  terminals over WebSockets. Inside the Tauri window, the clipboard history,
+  window focus and alarm takeover go to the Tauri bridge instead. See
+  [client-server.md](client-server.md).
 - **Bun sidecar** (`sidecar/`). A Hono HTTP service that owns Postgres (through
   Drizzle), every LLM call, memory, the background jobs and the Telegram bot.
   In development it runs `sidecar/src/main.ts` directly with Bun.
@@ -29,11 +37,11 @@ Data lives in PostgreSQL with pgvector. Non-secret settings live in
 Run these from the repo root.
 
 ```bash
-bun run tauri dev                 # the full app: frontend + Rust core + sidecar
-bun run tauri:preview             # the same on the production frontend build: faster, no hot reload
-bun run tauri:build               # a release bundle with the compiled sidecar (see Nightly builds)
+bun run tauri dev                 # the full app: builds server/, starts Vite, then the Tauri app starts the server
+bun run tauri:build               # a release bundle with the server and compiled sidecar (see Nightly builds)
 bun run dev:instance <name>       # a second copy beside your main one
 bun run sidecar:dev               # the sidecar on its own (YARVIS_LOG_DEV_TOKEN=1 prints its API token)
+bun run e2e                       # the server and built UI in Chromium (see docs/client-server.md)
 bun run demo                      # record screenshots and video of the UI (see demo/README.md)
 
 bun run test                      # frontend tests (src/) and dev-script tests (scripts/)
@@ -313,18 +321,19 @@ bun run dev:instance migration-test
 ```
 
 The name picks a bundle identifier (`com.mikebennett.yarvis.migration-test`)
-and a pair of Vite ports in the 1430–1489 range. The pair comes from the name,
-so it's the same every launch. If something else holds it, the launcher moves
-to the next free pair. The second port is Vite's HMR socket, used when
-`TAURI_DEV_HOST` is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it
-is taken. Because macOS
-derives the app data directory from the identifier, each instance gets its own
-control socket. The window title shows the name.
+and a pair of Vite ports in the 1430–1489 range, with the local server 6000
+above the first. The pair comes from the name, so it's the same every launch.
+If something else holds one of the three ports, the launcher moves to the next
+free pair. The second Vite port is the HMR socket, used when `TAURI_DEV_HOST`
+is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it is taken.
+Because macOS derives the app data directory from the identifier, each instance
+gets its own `connection.json`, its own `server.db` and its own Keychain device
+token. The window title shows the name.
 
 Use `dev:instance` rather than setting `YARVIS_INSTANCE` on a plain
 `bun run tauri dev`. The variable alone makes the process skip the hotkeys and
 background workers, but it keeps the main bundle identifier, so it shares the
-main instance's control socket.
+main instance's local server config and device token.
 
 ### What the instances share
 
@@ -386,13 +395,24 @@ Workspaces are shared too: both instances create worktrees under
 
 Build a release locally with `bun run tauri:build`, not `bun run tauri build`.
 It layers `src-tauri/tauri.release.conf.json` over the main config, which
-compiles the sidecar into a single binary (`bun run sidecar:compile`), bundles it
-with `externalBin`, and ships `sidecar/drizzle` as a resource for the migrations.
-Those entries stay out of `tauri.conf.json` because `tauri-build` checks that an
-`externalBin` exists on every cargo build, including `cargo clippy` in the
-pre-commit hook. A release build also runs the sidecar with the `PATH` of your
-login shell (`src-tauri/src/login_path.rs`), since an app opened from Finder
-gets one without Homebrew or mise on it.
+compiles the sidecar into a single binary (`bun run sidecar:compile`), builds
+`server/` in release mode (`bun run server:compile`), bundles both with
+`externalBin`, and ships `sidecar/drizzle` and the built UI (`dist/`) as
+resources. Those entries stay out of `tauri.conf.json` because `tauri-build`
+checks that an `externalBin` exists on every cargo build, including `cargo
+clippy` in the pre-commit hook. In local mode the app writes the bundle's paths
+into the server's `server.toml` (`src-tauri/src/local_server.rs`) and starts the
+server with the `PATH` of your login shell (`src-tauri/src/login_path.rs`),
+since an app opened from Finder gets one without Homebrew or mise on it. The
+server passes that `PATH` on to the sidecar.
+
+`tauri.conf.json`'s `frontendDist` is `src-tauri/connect/`, the app's own
+connect page. A release build's UI is built to `dist/` and served by the
+server. A dev build's window loads the Vite dev server instead, for hot reload,
+and Vite proxies `/api` (WebSockets included) to the local server, which
+listens 6000 ports above Vite (7420 beside the default 1420). The app waits for
+Vite before starting the server, since `tauri dev` starts Vite only after
+`server/` has built.
 
 The nightly is ad-hoc code-signed but not notarized, so macOS blocks the first
 launch:
@@ -463,15 +483,13 @@ src/            React frontend (Vite + TS + Tailwind)
     onboarding/ first-run setup guide and the app tour
     find/       find-on-page bar (Cmd+F)
   omni/         json-render component catalog, registry, layout primitives
-src-tauri/      Rust core (Tauri v2)
-  src/keychain.rs       secret commands over the single consolidated item
-  src/secret_store.rs   which store holds that item: Keychain or 1Password
-  src/onepassword.rs    the 1Password store, through the `op` CLI
-  src/settings.rs       non-secret settings in ~/.yarvis/settings.json
+src-tauri/      thin desktop client (Tauri v2)
+  connect/              the app's own page: progress and the local/remote choice
+  src/server_link.rs    connects the window to a server, grants its origin the bridge
+  src/local_server.rs   starts, pairs with and supervises the bundled yarvis-server
+  src/connection.rs     connection.json: local or remote, and the remote URL
+  src/device_token.rs   the device token, in the Keychain
   src/instance.rs       which instance this process is, and what it owns
-  src/sidecar.rs        sidecar supervisor
-  src/pty.rs            terminal and workspace agent sessions
-  src/control.rs        fixed-method socket the sidecar drives sessions through
   src/alarms.rs         rings a due alarm: full-screen takeover, notification, sound
   src/clipboard.rs      clipboard read/write and in-memory clip history
 sidecar/        Bun + TS service (Hono)

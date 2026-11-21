@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { ensureOk, sidecarFetch } from "./api";
+import { core } from "./core";
 
 /**
  * Wire protocol the proxy speaks:
@@ -14,7 +14,7 @@ export type CustomProviderApiKind = "openai" | "openai-chat" | "anthropic" | "ol
 /**
  * Structural fields for a user-configured proxy. Stored in Postgres. Secret
  * values (apiKey + each custom header value) are managed separately via the
- * Tauri commands below and live in the macOS Keychain.
+ * core commands below and live in the server's secret store.
  */
 export interface CustomProvider {
   id: string;
@@ -84,10 +84,10 @@ export async function deleteCustomProvider(id: string): Promise<void> {
   await ensureOk(res, "delete custom provider");
 }
 
-/* ---------- Secrets (Tauri commands, Keychain-backed) ---------- */
+/* ---------- Secrets (core commands, kept in the server's secret store) ---------- */
 
 export function listCustomProviderSecretStatus(): Promise<CustomProviderSecretStatus[]> {
-  return invoke<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
+  return core<CustomProviderSecretStatus[]>("list_custom_provider_secret_status");
 }
 
 export function setCustomProviderSecret(
@@ -95,16 +95,16 @@ export function setCustomProviderSecret(
   slot: CustomProviderSecretSlot,
   value: string,
 ): Promise<void> {
-  return invoke("set_custom_provider_secret", { providerId, slot, value });
+  return core("set_custom_provider_secret", { providerId, slot, value });
 }
 
 export function deleteCustomProviderSecret(
   providerId: string,
   slot: CustomProviderSecretSlot,
 ): Promise<void> {
-  return invoke("delete_custom_provider_secret", { providerId, slot });
+  return core("delete_custom_provider_secret", { providerId, slot });
 }
 
 export function deleteAllCustomProviderSecrets(providerId: string): Promise<void> {
-  return invoke("delete_custom_provider_all_secrets", { providerId });
+  return core("delete_custom_provider_all_secrets", { providerId });
 }

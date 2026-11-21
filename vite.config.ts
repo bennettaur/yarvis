@@ -42,6 +42,13 @@ export default defineConfig(async () => ({
           port: port + 1,
         }
       : undefined,
+    // A dev build's Tauri window loads this dev server, and the app starts its
+    // local yarvis-server 6000 ports above it (`DEV_SERVER_PORT_OFFSET` in
+    // `scripts/dev-instance.ts` and `src-tauri/src/instance.rs`). Proxying
+    // `/api` keeps the page same-origin with the API, WebSockets included.
+    proxy: {
+      "/api": { target: `http://127.0.0.1:${port + 6000}`, ws: true },
+    },
     watch: {
       // 3. tell Vite to ignore watching `src-tauri` and git directories
       ignored: ["**/src-tauri/**", "**/.git/**", "**/.worktrees/**"],
