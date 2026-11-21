@@ -1133,6 +1133,12 @@ describe("a fan-out run on OpenCode", () => {
         { ...ocDeps(program), sandboxExec: join(dir, "no-such-sandbox") },
       ),
     ).rejects.toThrow("sandbox-exec");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts }, ocDeps("bin/opencode")),
+    ).rejects.toThrow("must be a name or an absolute path");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts }, ocDeps("no-such-opencode-here")),
+    ).rejects.toThrow("on PATH");
     expect((await sql`SELECT count(*)::int AS n FROM agent_runs`)[0]?.n).toBe(0);
   });
 });

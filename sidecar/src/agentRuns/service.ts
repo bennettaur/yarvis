@@ -689,7 +689,7 @@ export async function startClaudeFanOutRun<T, R = T>(
 
   const prepare = (part: RunPart, index: number): PreparedProcess =>
     openCode
-      ? openCode.prepare(part, program, cwd)
+      ? openCode.prepare(part, cwd)
       : {
           program,
           args: args[index] ?? [],
@@ -824,8 +824,9 @@ export async function startClaudeFanOutRun<T, R = T>(
 async function openCodeSetup<T, R>(
   options: FanOutRunOptions<T, R>,
   deps: ClaudeRunDeps,
-): Promise<{ prepare: (part: RunPart, program: string, checkout: string) => PreparedProcess }> {
+): Promise<{ prepare: (part: RunPart, checkout: string) => PreparedProcess }> {
   if (!deps.program) throw new Error("an OpenCode run needs the harness's program");
+  const program = harnessProgram(deps.program);
   const model = options.model;
   // Settings hold the stricter rule; this only keeps an alias like "sonnet" out.
   if (!model || !/^[^/\s]+\/\S+$/.test(model)) {
@@ -842,7 +843,7 @@ async function openCodeSetup<T, R>(
   const answerSchema = jsonSchemaArg(options.partSchema);
   const catalog = await (deps.loadCatalog ?? openCodeCatalog)();
   return {
-    prepare: (part, program, checkout) => {
+    prepare: (part, checkout) => {
       const dirs = makeOpenCodeDirs();
       try {
         // The plugin's name isn't part of an OpenCode agent id.
@@ -891,6 +892,20 @@ async function openCodeSetup<T, R>(
       }
     },
   };
+}
+
+/**
+ * The path a harness's program runs from. The profile allows running only
+ * named files, and `sandbox-exec` looks a bare name up in `PATH`, so the
+ * profile has to name what that finds.
+ */
+function harnessProgram(program: string): string {
+  if (isAbsolute(program)) return program;
+  if (program.includes("/"))
+    throw new Error(`the harness's program ${program} must be a name or an absolute path`);
+  const found = onPath(program);
+  if (!found) throw new Error(`can't find the harness's program ${program} on PATH`);
+  return found;
 }
 
 /** The first `name` in the sidecar's `PATH`, or null. */
