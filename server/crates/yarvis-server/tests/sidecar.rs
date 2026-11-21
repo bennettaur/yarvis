@@ -910,6 +910,54 @@ async fn a_sidecar_that_exits_is_restarted() {
     supervisor.abort();
 }
 
+/// A restart, a lock or a shutdown takes the sidecar's children with it,
+/// including one that put itself in a process group of its own, as agent runs
+/// do.
+#[tokio::test]
+async fn stopping_the_sidecar_kills_its_children_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let pids = dir.path().join("pids");
+    // `set -m` gives each background job its own process group.
+    let script = format!(
+        "sleep 300 & a=$!; set -m; sleep 300 & b=$!; set +m; echo \"$a $b\" > '{0}.tmp' && mv '{0}.tmp' '{0}'; wait",
+        pids.display()
+    );
+    let mut config = Config::default();
+    config.sidecar.command = Some(vec!["sh".into(), "-c".into(), script]);
+    let h = test_server(config, MemoryBackend::empty(), 1);
+    let deps = SupervisorDeps {
+        config: h.state.config.clone(),
+        settings: h.state.settings.clone(),
+        secrets: h.state.secrets.clone(),
+        events: h.state.events.clone(),
+        vault_unlocked: None,
+    };
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
+    until("the children's pids", async || pids.exists()).await;
+    let children: Vec<String> = std::fs::read_to_string(&pids)
+        .unwrap()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    assert_eq!(children.len(), 2);
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(children.iter().all(|pid| alive(pid)));
+
+    h.state.sidecar.restart();
+    until("the children to exit", async || {
+        children.iter().all(|pid| !alive(pid))
+    })
+    .await;
+    supervisor.abort();
+}
+
 /// The server stops by dropping the supervisor, which must take the sidecar
 /// with it rather than leave it running.
 #[tokio::test]

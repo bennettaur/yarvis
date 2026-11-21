@@ -220,6 +220,9 @@ impl Sidecar {
                     continue;
                 }
             };
+            // Kills what the sidecar started with it, whichever way it stops,
+            // including this task being dropped at shutdown.
+            let tree = child.id().map(ProcessTree);
             self.inner.running.store(true, Ordering::SeqCst);
             if let Some(out) = child.stdout.take() {
                 tee(out, log.clone(), false);
@@ -247,6 +250,7 @@ impl Sidecar {
                     json!({ "reason": "vault.locked" })
                 }
             };
+            drop(tree);
             // No-op if it already exited.
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -292,8 +296,80 @@ impl Sidecar {
         strip_endpoint_overrides(&mut cmd);
         // The child dies with the server rather than lingering.
         cmd.kill_on_drop(true);
+        // Its own process group, so stopping it can take its children too.
+        #[cfg(unix)]
+        cmd.process_group(0);
         Ok(cmd)
     }
+}
+
+/// The sidecar's process and everything it started. Dropping it kills them:
+/// its children hold the secrets from its environment (a `claude -p` run has
+/// the provider keys), so none may outlive a stop.
+///
+/// Agent runs and the voice servers start in process groups of their own, so
+/// killing the sidecar's group isn't enough, and once the sidecar dies they're
+/// reparented and can't be found by ancestry. So the sidecar is paused first,
+/// which keeps it from starting more, and every descendant's group is killed
+/// before the sidecar's own. PTY sessions are the server's, not the sidecar's,
+/// so they're untouched.
+struct ProcessTree(u32);
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        kill_tree(self.0);
+    }
+}
+
+#[cfg(unix)]
+fn kill_tree(root: u32) {
+    let Ok(root) = libc::pid_t::try_from(root) else {
+        return;
+    };
+    // SAFETY: plain syscalls on a pid and process groups we started.
+    unsafe { libc::kill(root, libc::SIGSTOP) };
+    let own_group = unsafe { libc::getpgrp() };
+    let mut groups = descendant_groups(root);
+    groups.push(root);
+    for group in groups {
+        if group > 1 && group != own_group {
+            unsafe { libc::killpg(group, libc::SIGKILL) };
+        }
+    }
+}
+
+/// The process groups of every process below `root`, from `ps`. Empty when
+/// `ps` can't be run, which leaves only the sidecar's own group to kill.
+#[cfg(unix)]
+fn descendant_groups(root: libc::pid_t) -> Vec<libc::pid_t> {
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,pgid="])
+        .output()
+    else {
+        tracing::warn!("couldn't list the sidecar's child processes; killing its group only");
+        return Vec::new();
+    };
+    let rows: Vec<[libc::pid_t; 3]> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(|f| f.parse().ok());
+            Some([fields.next()??, fields.next()??, fields.next()??])
+        })
+        .collect();
+    let mut below = vec![root];
+    let mut groups = Vec::new();
+    while let Some(parent) = below.pop() {
+        for [pid, ppid, pgid] in &rows {
+            if *ppid == parent && *pid != parent {
+                below.push(*pid);
+                if !groups.contains(pgid) {
+                    groups.push(*pgid);
+                }
+            }
+        }
+    }
+    groups
 }
 
 /// What the supervisor reads on every spawn.
