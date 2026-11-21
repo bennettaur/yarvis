@@ -251,10 +251,11 @@ export const listDevices = () => get<Device[]>("/api/devices", "devices");
 const REAUTH_REQUIRED = "reauth_required";
 
 /**
- * Runs a device-management action, checking the passkey and retrying once when
- * the server refuses it for want of a recent check.
+ * Runs an action the server guards with a recent passkey check (device
+ * management, switching the secrets backend), checking the passkey and
+ * retrying once when the server refuses it for want of one.
  */
-async function withFreshPasskey<T>(action: () => Promise<T>): Promise<T> {
+export async function withFreshPasskey<T>(action: () => Promise<T>): Promise<T> {
   try {
     return await action();
   } catch (e) {

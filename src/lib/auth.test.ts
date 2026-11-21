@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { realCore, resetCore, stubCore } from "../test/coreApi";
 import {
   base64urlToBuffer,
   bufferToBase64url,
@@ -8,6 +9,7 @@ import {
   toCreationOptions,
 } from "./auth";
 import { deviceToken, saveDeviceToken, signOut } from "./server";
+import { setSecretBackend } from "./settings";
 
 const bytes = (...values: number[]) => new Uint8Array(values).buffer;
 
@@ -67,6 +69,7 @@ beforeEach(() => {
   signOut();
 });
 afterAll(() => {
+  resetCore();
   fetchSpy.mockRestore();
   delete (navigator as { credentials?: unknown }).credentials;
   signOut();
@@ -201,6 +204,29 @@ describe("admin actions", () => {
     ]);
     // The token minted for someone else is never kept as this device's own.
     expect(await deviceToken()).toBe("tok-admin");
+  });
+
+  it("checks the passkey before switching the secrets backend", async () => {
+    saveDeviceToken("tok-admin");
+    let switches = 0;
+    routes["POST /api/core/set_secret_backend"] = () =>
+      ++switches === 1
+        ? Response.json({ error: "reauth_required" }, { status: 403 })
+        : Response.json({ settings: {}, copied: { count: 0 } });
+    routes["POST /api/auth/reverify/start"] = () => Response.json(requestOptions);
+    routes["POST /api/auth/reverify/finish"] = () => Response.json({});
+    credentials.get = async () => fakeAssertion;
+    // The real transport, so the call reaches the routes above.
+    stubCore({ core: realCore.core });
+
+    await setSecretBackend("keychain", null, null);
+
+    expect(calls.map((c) => c.url)).toEqual([
+      "/api/core/set_secret_backend",
+      "/api/auth/reverify/start",
+      "/api/auth/reverify/finish",
+      "/api/core/set_secret_backend",
+    ]);
   });
 
   it("doesn't ask for the passkey when the device just lacks the scope", async () => {

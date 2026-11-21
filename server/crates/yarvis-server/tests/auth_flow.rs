@@ -14,7 +14,10 @@ use webauthn_authenticator_rs::WebauthnAuthenticator;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
 use webauthn_rs::prelude::{RequestChallengeResponse, Url};
 use yarvis_server::auth::Scope;
+use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::add_token_device;
+use yarvis_server::secret_blob::SecretBlob;
+use yarvis_server::settings::SettingsStore;
 use yarvis_server::store::Store;
 
 #[tokio::test]
@@ -153,6 +156,68 @@ async fn the_setup_code_burns_after_five_wrong_guesses() {
         .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "no setup code is outstanding");
+}
+
+/// Switching the secrets backend needs a fresh passkey; writing a secret needs
+/// only `admin`. With `secrets.backend` set in the config, a switch that gets
+/// past the check is refused with 409, so no real store is touched.
+#[tokio::test]
+async fn a_backend_switch_needs_a_fresh_passkey_and_a_secret_write_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = dir.path().to_path_buf();
+    config.secrets.backend = Some(SecretBackendKind::Vault);
+    let mut h = Harness::with_config(config).await;
+    h.state.settings = SettingsStore::new(dir.path().join("settings.json"));
+    h.state.secrets = SecretBlob::from_config(
+        Some(SecretBackendKind::Vault),
+        h.state.settings.clone(),
+        &h.state.vault,
+    );
+    let laptop = h.setup(&mut authenticator()).await;
+    let cli = add_token_device(
+        &h.state.store,
+        &h.state.events,
+        "tauri",
+        &[Scope::Admin],
+        None,
+    )
+    .await
+    .unwrap()
+    .token;
+    let switch = json!({ "backend": "keychain" });
+
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/core/set_secret_backend",
+            Some(&cli),
+            Some(switch.clone()),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "reauth_required");
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/core/set_secret_backend",
+            Some(&laptop),
+            Some(switch),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+
+    // The vault is locked, so the write fails, but past the scope check.
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/core/set_secret",
+            Some(&cli),
+            Some(json!({ "key": "anthropic_api_key", "value": "sk-test" })),
+        )
+        .await;
+    assert_ne!(st, StatusCode::FORBIDDEN, "{body}");
+    assert_ne!(st, StatusCode::UNAUTHORIZED, "{body}");
 }
 
 #[tokio::test]
