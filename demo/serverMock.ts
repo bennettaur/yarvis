@@ -44,7 +44,9 @@ class FakeServerSocket extends EventTarget {
 
   constructor(readonly url: string) {
     super();
-    queueMicrotask(() => {
+    // A task later, as over a network: the page adds its listeners only after
+    // its auth message is sent, and the answer to that must not beat them.
+    setTimeout(() => {
       this.readyState = FakeServerSocket.OPEN;
       this.dispatchEvent(new Event("open"));
     });
@@ -62,7 +64,11 @@ class FakeServerSocket extends EventTarget {
   }
 
   receive(data: string | ArrayBuffer): void {
-    this.dispatchEvent(new MessageEvent("message", { data }));
+    setTimeout(() => {
+      if (this.readyState === FakeServerSocket.OPEN) {
+        this.dispatchEvent(new MessageEvent("message", { data }));
+      }
+    });
   }
 }
 
@@ -121,11 +127,8 @@ export function installServerMock({
     }
   }) as typeof fetch;
 
-  const RealSocket = window.WebSocket;
-  window.WebSocket = ((url: string | URL, protocols?: string | string[]) => {
-    const parsed = new URL(String(url));
-    if (parsed.host !== location.host) return new RealSocket(url, protocols);
-    const socket = new FakeServerSocket(String(url));
+  const fakeSocketFor = (parsed: URL): FakeServerSocket => {
+    const socket = new FakeServerSocket(parsed.href);
     if (parsed.pathname === "/api/events") {
       eventSockets.add(socket);
       socket.onClose = () => eventSockets.delete(socket);
@@ -159,13 +162,24 @@ export function installServerMock({
       socket.onClose = () => ptySockets.get(id)?.delete(socket);
     }
     return socket;
-  }) as unknown as typeof WebSocket;
-  Object.assign(window.WebSocket, {
-    CONNECTING: 0,
-    OPEN: 1,
-    CLOSING: 2,
-    CLOSED: 3,
-  });
+  };
+
+  // Only the server's routes are played here. Anything else, Vite's own reload
+  // socket or the turn detector, gets a real WebSocket.
+  const RealSocket = window.WebSocket;
+  window.WebSocket = class {
+    static readonly CONNECTING = 0;
+    static readonly OPEN = 1;
+    static readonly CLOSING = 2;
+    static readonly CLOSED = 3;
+
+    constructor(url: string | URL, protocols?: string | string[]) {
+      const parsed = new URL(String(url), location.href);
+      const ours = parsed.host === location.host && parsed.pathname.startsWith("/api/");
+      // biome-ignore lint/correctness/noConstructorReturn: stands in for the WebSocket constructor, which `new` must keep working for
+      return ours ? fakeSocketFor(parsed) : new RealSocket(url, protocols);
+    }
+  } as unknown as typeof WebSocket;
 
   return {
     /** Sends a session's output to every socket attached to it. */
