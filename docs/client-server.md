@@ -744,9 +744,9 @@ Core commands that changed on the way from `invoke`:
 - **Some `read` routes run git.** Listing a repo's branches and a
   workspace's sync, stack and since-review views fetch or clone. They act
   only on repos an admin registered, with nothing the caller chooses.
-- **A lock doesn't reach what already holds secrets.** Locking stops the
-  sidecar's own process, but not processes it started that outlive it, and
-  not PTY sessions, which keep the environment they started with.
+- **A lock doesn't reach running PTY sessions.** Stopping the sidecar (on
+  lock, restart or shutdown) kills it and every process it started, but PTY
+  sessions keep the environment they started with.
 - **Monaco under the CSP is untested.** Monaco's TypeScript worker contains
   a `new Function(`. The end-to-end test doesn't open an editor, since that
   needs the sidecar, so whether it trips `script-src 'self'` is unchecked.
