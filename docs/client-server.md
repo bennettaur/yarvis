@@ -737,10 +737,10 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
-- **Google OAuth on a `*.ts.net` name is unconfirmed.** Google requires a
-  Web application client's redirect host to end in a domain on the Public
-  Suffix List. Whether `ts.net` passes hasn't been checked; a domain you own
-  does.
+- **Google OAuth on a `*.ts.net` name is untried.** Google requires a Web
+  application client's redirect host to end in a domain on the Public Suffix
+  List, and `ts.net` is on it, but nobody has registered a `ts.net` redirect
+  with Google yet.
 - **Port squatting in local mode.** The Tauri app starts its server on a
   loopback port and sends it a token. Another local user who binds that port
   first receives the token. The app doesn't check the server's identity yet.
