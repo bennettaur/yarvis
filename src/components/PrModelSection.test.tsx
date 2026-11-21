@@ -259,6 +259,33 @@ describe("PrModelSection", () => {
     ]);
   });
 
+  it("asks a Pi harness for a model per tier, with its thinking level on the model", async () => {
+    verification = {
+      ...VERIFICATION_DEFAULTS,
+      harness: "pi",
+      harnesses: [
+        { id: "claude", name: "Claude", kind: "claude-code" },
+        { id: "pi", name: "Pi", kind: "pi" },
+      ],
+    };
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).toContain(":level");
+    const sonnet = mounted.host.querySelector(
+      '[aria-label="Pi model for the Sonnet tier"]',
+    ) as HTMLInputElement;
+    enter(sonnet, "anthropic/claude-sonnet-5-5:high", "input");
+    sonnet.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([
+      { harnessModels: { pi: { sonnet: "anthropic/claude-sonnet-5-5:high" } } },
+    ]);
+  });
+
   it("shows a saved harness that is gone, so it can be changed", async () => {
     verification = { ...VERIFICATION_DEFAULTS, harness: "deleted" };
     const mounted = await mountForInteraction(createElement(PrModelSection));

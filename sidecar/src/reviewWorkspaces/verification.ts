@@ -1677,7 +1677,7 @@ export async function startVerification(
 /**
  * The run dependencies for `harness`: the configured Claude Code build for the
  * built-in agent, or a saved harness's kind, program and environment from the
- * core, which refuses one that isn't Claude Code or OpenCode. Read once for
+ * core, which refuses one that isn't Claude Code, OpenCode or Pi. Read once for
  * every section a call starts, since the secret store may prompt.
  */
 async function harnessRun(
@@ -1703,10 +1703,16 @@ async function harnessRun(
   };
 }
 
+/** The CLIs a harness maps tiers to models for, as their names are written. */
+const TIER_CLI_NAMES: Record<Exclude<RunInputs["harness"]["kind"], "claude-code">, string> = {
+  opencode: "OpenCode",
+  pi: "Pi",
+};
+
 /**
  * The model a section's run is started with: the Claude Code alias itself, or
- * the OpenCode model the harness's settings give that alias. Throws when an
- * OpenCode harness has none for it, naming what to set.
+ * the OpenCode or Pi model the harness's settings give that alias. Throws when
+ * such a harness has none for it, naming what to set.
  */
 function harnessModel(
   harness: RunInputs["harness"],
@@ -1717,7 +1723,7 @@ function harnessModel(
   const mapped = settings.harnessModels?.[harness.id]?.[model];
   if (!mapped) {
     throw new ReviewWorkspaceError(
-      `harness "${harness.id}" has no OpenCode model for the ${model} tier; pick one under Settings → PR review → Review models`,
+      `harness "${harness.id}" has no ${TIER_CLI_NAMES[harness.kind]} model for the ${model} tier; pick one under Settings → PR review → Review models`,
       400,
     );
   }
@@ -1861,10 +1867,10 @@ async function startSectionRun(
           ...(TICKET_SECTIONS.includes(section) && { namedTickets }),
           sections,
           model,
-          // The section's Claude Code alias, which an OpenCode harness maps to `model`.
+          // The section's Claude Code alias, which an OpenCode or Pi harness maps to `model`.
           tier,
-          // OpenCode takes no effort: a `#variant` on the model stands in for it.
-          effort: harness.kind === "opencode" ? null : effort,
+          // Neither OpenCode nor Pi takes an effort: the model's `#variant` or `:thinking` stands in.
+          effort: harness.kind === "claude-code" ? effort : null,
           harness: harness.id,
           format: RUN_FORMAT,
         },

@@ -199,7 +199,7 @@ counts as read once all its files are viewed, wherever you marked them.
 ### Verification report
 
 **Verification** in the PR's nav opens a checklist of checks that agents
-(Claude Code, or the OpenCode harness you picked, running on your machine
+(Claude Code, or the OpenCode or Pi harness you picked, running on your machine
 against the PR's checkout) run on the change, each reading every changed file's diff. The checks are grouped by
 theme:
 
@@ -270,14 +270,14 @@ every few seconds, and **Cancel** on a running check's row stops it. A check
 another Yarvis instance is running says so, and can't be started twice. If
 some picked checks can't start, the tab names them and the rest still run.
 Each check runs on the Claude model and effort set for it in **Settings → PR
-review** (on an OpenCode harness, the OpenCode model its tier maps to). The two pickers beside **Run picked** override both for the checks
+review** (on an OpenCode or Pi harness, the model its tier maps to). The two pickers beside **Run picked** override both for the checks
 you start from the tab, whether picked or run from a row, until you set them
-back to "Each check's model" and "Each check's effort". With a Claude Code
-or OpenCode [agent harness](workspaces.md#agent-harnesses) saved besides the
+back to "Each check's model" and "Each check's effort". With a Claude Code,
+OpenCode or Pi [agent harness](workspaces.md#agent-harnesses) saved besides the
 built-in agent, a third picker runs the checks with another harness, such as
 a Claude Code pointed at another provider. Its first option is the harness
-set in **Settings → PR review**. On an OpenCode harness the model picker
-picks a tier, which runs on the OpenCode model Settings gives it, and the
+set in **Settings → PR review**. On an OpenCode or Pi harness the model picker
+picks a tier, which runs on the model Settings gives it, and the
 effort picker doesn't apply.
 Nothing asks about cost first: which checks you run is the budget.
 

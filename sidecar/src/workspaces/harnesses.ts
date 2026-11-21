@@ -60,7 +60,7 @@ const HEADLESS_REFUSED_ENV = new Set([
   "XDG_CACHE_HOME",
 ]);
 const HEADLESS_REFUSED_PREFIXES = ["BUN_"];
-const KIND_REFUSED_PREFIXES: Record<string, string[]> = { opencode: ["OPENCODE_"] };
+const KIND_REFUSED_PREFIXES: Record<string, string[]> = { opencode: ["OPENCODE_"], pi: ["PI_"] };
 const HEADLESS_ALLOWED_ENV = new Set(["OPENCODE_API_KEY"]);
 
 /** Whether a stored harness of `kind` sets a variable a verification run refuses. */
@@ -88,7 +88,11 @@ function runsProgram(command: string, binary: string): boolean {
 }
 
 /** The kinds a verification run can drive, by the program each must run. */
-const HEADLESS_PROGRAMS: Record<string, string> = { "claude-code": "claude", opencode: "opencode" };
+const HEADLESS_PROGRAMS: Record<string, string> = {
+  "claude-code": "claude",
+  opencode: "opencode",
+  pi: "pi",
+};
 
 /** Whether a saved harness of `kind` can run verification checks. */
 function headlessCapable(kind: string, h: StoredHarness & { command: string }): boolean {
@@ -188,7 +192,7 @@ export async function listAgentHarnesses(
 
 /**
  * The harnesses a verification run can use: the built-in agent, then saved
- * Claude Code and OpenCode harnesses that run `claude` or `opencode` directly
+ * Claude Code, OpenCode and Pi harnesses that run `claude`, `opencode` or `pi` directly
  * and set no variable a run refuses, since a run drives the CLI with flags of
  * its own. Mirrors the core's `harness::headless_run_env`. The user picks
  * among them in Settings or on the Verification tab; the assistant can't pick
@@ -202,9 +206,10 @@ export async function listVerificationHarnesses(
     .map(({ id, name, kind }) => ({
       id,
       name,
-      // Only those two kinds run headless, and the built-in agent's checks
-      // always run its Claude Code build.
-      kind: kind === "opencode" && id !== BUILTIN_HARNESS_ID ? "opencode" : "claude-code",
+      // Only those kinds run headless, and the built-in agent's checks always
+      // run its Claude Code build.
+      kind:
+        (kind === "opencode" || kind === "pi") && id !== BUILTIN_HARNESS_ID ? kind : "claude-code",
     }));
 }
 
