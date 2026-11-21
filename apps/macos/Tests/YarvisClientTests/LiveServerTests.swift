@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import YarvisClient
@@ -80,4 +81,63 @@ struct LiveServerTests {
         #expect(await exited.value == .number(3))
         await events.stop()
     }
+}
+
+/// Signs in to a real server set up with `YARVIS_E2E_PASSPHRASE` and the
+/// base32 `YARVIS_E2E_TOTP_SECRET` its setup printed.
+@Suite(.enabled(if: Live.url != nil && Live.env["YARVIS_E2E_PASSPHRASE"] != nil
+    && Live.env["YARVIS_E2E_TOTP_SECRET"] != nil), .timeLimit(.minutes(1)))
+struct LiveSignInTests {
+    let url = Live.url!
+    let passphrase = Live.env["YARVIS_E2E_PASSPHRASE"]!
+    let secret = Live.env["YARVIS_E2E_TOTP_SECRET"]!
+
+    @Test func signsInAndAWrongCodeKeepsTheDeviceSignedIn() async throws {
+        await #expect(throws: YarvisError.unauthorized) {
+            try await YarvisClient.signIn(baseURL: url, SignInRequest(passphrase: "wrong passphrase!!", code: "000000",
+                                                                      deviceName: "e2e"))
+        }
+        // The server refuses a code already used, so the next step's code is
+        // the fallback when this step's was spent by an earlier run.
+        let step = Int64(Date().timeIntervalSince1970) / 30
+        var signedIn: SignedIn?
+        for s in [step, step + 1] where signedIn == nil {
+            signedIn = try? await YarvisClient.signIn(baseURL: url, SignInRequest(
+                passphrase: passphrase, code: totp(secret: secret, step: s), deviceName: "macOS e2e"))
+        }
+        let device = try #require(signedIn).device
+        #expect(Set(device.scopes) == Set(Scope.allCases))
+
+        let lost = Counter()
+        let client = YarvisClient(baseURL: url, token: signedIn!.token, onUnauthorized: { lost.bump() })
+        #expect(try await client.me().deviceId == device.deviceId)
+        let refusal = await #expect(throws: YarvisError.self) { try await client.reverify(code: "000000") }
+        guard case .http(403, "wrong code", _)? = refusal else {
+            Issue.record("expected 403 wrong code, got \(String(describing: refusal))")
+            return
+        }
+        #expect(lost.value == 0)
+    }
+}
+
+/// RFC 6238 with the server's parameters: HMAC-SHA1, 6 digits, 30-second steps.
+func totp(secret: String, step: Int64) -> String {
+    let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
+    var bits = 0, value = 0
+    var key = [UInt8]()
+    for c in secret.uppercased() where c != "=" {
+        guard let i = alphabet.firstIndex(of: c) else { continue }
+        value = (value << 5) | i
+        bits += 5
+        if bits >= 8 {
+            key.append(UInt8((value >> (bits - 8)) & 0xff))
+            bits -= 8
+        }
+    }
+    var counter = UInt64(step).bigEndian
+    let mac = Array(HMAC<Insecure.SHA1>.authenticationCode(for: Data(bytes: &counter, count: 8),
+                                                         using: SymmetricKey(data: key)))
+    let o = Int(mac[mac.count - 1] & 0x0f)
+    let n = (UInt32(mac[o] & 0x7f) << 24) | (UInt32(mac[o + 1]) << 16) | (UInt32(mac[o + 2]) << 8) | UInt32(mac[o + 3])
+    return String(format: "%06d", n % 1_000_000)
 }
