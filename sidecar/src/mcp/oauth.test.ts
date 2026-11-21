@@ -362,4 +362,10 @@ describe("oauthRedirectUri", () => {
       "http://127.0.0.1:61234/oauth/mcp/callback",
     );
   });
+
+  it("points at the server's origin when it is reached from other machines", () => {
+    expect(
+      oauthRedirectUri(config({ port: 61234, publicOrigin: "https://mini.example.ts.net" })),
+    ).toBe("https://mini.example.ts.net/api/oauth/mcp/callback");
+  });
 });
