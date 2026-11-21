@@ -340,7 +340,7 @@ impl PasskeyAuth {
         self.0
             .store
             .call(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let (exists, total): (bool, i64) = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = ?1), COUNT(*) FROM passkeys",
                     [&id],
@@ -381,7 +381,7 @@ impl PasskeyAuth {
         self.0
             .store
             .call(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let found = tx
                     .query_row(
                         "SELECT id, label, created_at, passkey FROM passkeys WHERE credential_id = ?1",

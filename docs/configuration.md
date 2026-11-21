@@ -156,7 +156,7 @@ How switching works:
 Writes pass the secrets to `op` on standard input, never as command arguments.
 Other processes can read command arguments with no prompt at all.
 
-### The server's vault (`yarvis-server`)
+### Secrets on `yarvis-server`
 
 `yarvis-server` can keep the secrets item in its own encrypted vault instead of
 the Keychain or 1Password, for a server that starts before anyone logs in. It
