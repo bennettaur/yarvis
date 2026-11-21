@@ -1251,6 +1251,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rpassword"
+version = "7.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa2c5d9304b618df61ff17f3d3485c6e1854a3d94902a49abbb8d43dfbe0464"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1278,6 +1289,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "353b74f9810d5b085b6c42c9d86a5f0fdb795553235cdd48753b32e3809d18a7"
 dependencies = [
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a1efe12a1469752d0e6ff5ebec0b6ef4924cc5c4c71046b0ec730040535819d"
+dependencies = [
+ "libc",
+ "windows-sys",
 ]
 
 [[package]]
@@ -2146,6 +2167,7 @@ dependencies = [
  "portable-pty",
  "qrcode",
  "rand 0.9.5",
+ "rpassword",
  "rusqlite",
  "serde",
  "serde_json",

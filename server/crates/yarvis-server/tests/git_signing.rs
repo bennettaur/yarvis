@@ -31,7 +31,7 @@ async fn signer() -> Signer {
     config.server.data_dir = dir.path().to_path_buf();
     config.secrets.backend = Some(SecretBackendKind::Vault);
     config.ssh_agent.enabled = true;
-    let created = Vault::init(dir.path(), true).unwrap();
+    let created = Vault::init(dir.path(), true, "a vault passphrase").unwrap();
     let harness = Harness::with_config(config).await;
     let token = harness.setup().await;
     let (status, body) = harness

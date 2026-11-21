@@ -629,7 +629,7 @@ pub(crate) mod tests {
     fn the_vault_backend_reads_through_the_vault_and_fails_while_locked() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path());
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, "a vault passphrase").unwrap();
         let blob = SecretBlob::from_config(
             Some(SecretBackendKind::Vault),
             SettingsStore::new(dir.path().join("settings.json")),

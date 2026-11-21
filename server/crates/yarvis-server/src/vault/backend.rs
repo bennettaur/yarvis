@@ -47,7 +47,7 @@ mod tests {
     #[test]
     fn locked_reads_and_writes_fail_and_never_look_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, "a vault passphrase").unwrap();
         let vault = Vault::new(dir.path());
         let backend = vault.secret_backend();
         assert!(matches!(backend.read_root(), Err(SecretError::Locked)));
