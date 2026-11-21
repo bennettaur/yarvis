@@ -117,8 +117,9 @@ This follows `spikes/auth/FINDINGS.md`.
   second device. The devices page shows when each was last used, so old ones
   are easy to revoke.
 - A token unused for 90 days stops working.
-- Scopes: `read`, `chat`, `approve`, `admin`. A passkey device gets all four.
-  A token made for a bot or script gets only what it is given.
+- Scopes: `read`, `chat`, `terminal`, `approve`, `admin`. A passkey device
+  gets all five. A token made for a bot or script gets only what it is given,
+  and `POST /api/devices/tokens` can't give `terminal` or `admin`.
 - **Fresh**: device management, adding a passkey, and adding or removing a
   vault wrapper also need a passkey check on this device in the last 10
   minutes (`verified_at`). Unlocking and locking the vault need only `admin`:
@@ -393,15 +394,16 @@ response = its return value, `204` for none):
 
 - `POST /api/core/{command}`, for example `/api/core/get_settings` or
   `/api/core/set_secret`. Scope: `admin` for anything that writes secrets or
-  settings, `chat` for PTY control, `read` for reads. A command that only makes
+  settings, `terminal` for PTY control, `read` for reads. A command that only makes
   sense on the client machine is not served here.
 
-PTY (`chat` to drive a session, `read` to look at one):
+PTY (`terminal` to drive a session, `read` to look at one):
 
-`chat` lets a device run a shell as the user the server runs as. From there
-it can reach everything that user can, the control socket and the secrets
-store included, so treat `chat` as full trust. Don't give it to a token for
-a bot or a script.
+`terminal` lets a device run a shell as the user the server runs as. From
+there it can reach everything that user can, the control socket and the
+secrets store included, so treat `terminal` as full trust. Only passkey
+devices and `yarvis-server device add` get it; a token minted over the API
+can't. `chat` sends messages through the sidecar and opens no shell.
 
 - `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
 - `POST /api/core/pty_resize` `{ id, cols, rows }` → `204`. Attached clients
@@ -416,9 +418,9 @@ a bot or a script.
   the shell holds the terminal.
 - `POST /api/core/pty_session_harness` `{ id }` → `{ id, name }` or `null`.
 - `POST /api/core/get_agent_config` → `{ name, command, harnesses, defaultHarness }`.
-  `chat`, since the commands are user-written and can carry a `VAR=secret`.
+  `terminal`, since the commands are user-written and can carry a `VAR=secret`.
 
-- `GET /api/pty/{id}` (WebSocket, `chat`). `{id}` is the session id,
+- `GET /api/pty/{id}` (WebSocket, `terminal`). `{id}` is the session id,
   URL-encoded (ids such as `ws:<workspaceId>/<tab>/<pane>` hold slashes). The
   hello is:
 
@@ -547,7 +549,7 @@ while it waits refuses the signature and fails `git commit`.
 
 Pairing a device without a passkey:
 
-- `yarvis-server device add --name NAME --scopes read,chat,approve,admin`
+- `yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin`
   prints a token. Only someone who can run commands on the server machine can
   do this, which is the same trust as reading the setup code. The thin Tauri
   app uses it when it starts a local server.

@@ -111,11 +111,18 @@ async fn mint(
     if scopes.is_empty() {
         return Err(ApiError::bad_request("a token needs at least one scope"));
     }
-    // An admin token could revoke the owner's devices. Only the CLI on the
-    // server machine may make one, since whoever runs it can read the database.
-    if scopes.contains(&Scope::Admin) {
-        return Err(ApiError::bad_request("a token made here can't have admin")
-            .with_detail("run `yarvis-server device add` on the server instead"));
+    // An admin token could revoke the owner's devices, and a terminal token
+    // is a shell on the server. Only the CLI on the server machine may make
+    // either, since whoever runs it already has both.
+    if let Some(scope) = scopes
+        .iter()
+        .find(|s| matches!(s, Scope::Admin | Scope::Terminal))
+    {
+        return Err(ApiError::bad_request(format!(
+            "a token made here can't have {}",
+            scope.as_str()
+        ))
+        .with_detail("run `yarvis-server device add` on the server instead"));
     }
     let signed_in = add_token_device(
         &state.store,
@@ -205,7 +212,7 @@ async fn revoke(
     Ok(Json(Revoked { revoked_at }))
 }
 
-/// Parses `read,chat,approve,admin` for the `device add` command. Unlike the
+/// Parses `read,chat,terminal,approve,admin` for the `device add` command. Unlike the
 /// stored form, an unknown scope here is an error: the operator typed it.
 pub fn parse_scope_list(list: &str) -> Result<Vec<Scope>, String> {
     let mut scopes = Vec::new();
@@ -213,7 +220,9 @@ pub fn parse_scope_list(list: &str) -> Result<Vec<Scope>, String> {
         let scope = Scope::ALL
             .into_iter()
             .find(|s| s.as_str() == word)
-            .ok_or_else(|| format!("unknown scope {word:?}; use read, chat, approve or admin"))?;
+            .ok_or_else(|| {
+                format!("unknown scope {word:?}; use read, chat, terminal, approve or admin")
+            })?;
         scopes.push(scope);
     }
     let scopes = normalize_scopes(scopes);

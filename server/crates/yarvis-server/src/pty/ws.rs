@@ -90,7 +90,8 @@ async fn serve(mut socket: WebSocket, state: AppState, id: String) {
     // Subscribe before authenticating, so a revocation that lands while the
     // token is being checked still reaches this socket.
     let revoked = state.auth.subscribe_revocations();
-    let Some((device, hello)) = authenticate_ws(&mut socket, &state.auth, Scope::Chat).await else {
+    let Some((device, hello)) = authenticate_ws(&mut socket, &state.auth, Scope::Terminal).await
+    else {
         return;
     };
     let Some(hello) = parse_hello(&hello.extra).filter(|_| is_valid_id(&id)) else {

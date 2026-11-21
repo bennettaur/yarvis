@@ -47,7 +47,10 @@ async fn setup_then_login_and_the_setup_code_cannot_be_replayed() {
     let laptop = body["token"].as_str().unwrap().to_string();
     assert_eq!(body["device"]["name"], "laptop");
     let (_, me) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
-    assert_eq!(me["scopes"], json!(["read", "chat", "approve", "admin"]));
+    assert_eq!(
+        me["scopes"],
+        json!(["read", "chat", "terminal", "approve", "admin"])
+    );
     assert!(me["verifiedAt"].is_i64());
 
     let replay = json!({ "code": h.setup_code, "deviceName": "attacker" });
@@ -200,6 +203,23 @@ async fn scopes_are_enforced_and_a_token_never_counts_as_fresh() {
         "only the CLI makes admin tokens"
     );
     assert!(body["error"].as_str().unwrap().contains("admin"), "{body}");
+    let (st, body) = h
+        .call(
+            "POST",
+            "/api/devices/tokens",
+            Some(&laptop),
+            Some(json!({ "name": "bot", "scopes": ["read", "terminal"] })),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::BAD_REQUEST,
+        "only the CLI makes terminal tokens"
+    );
+    assert!(
+        body["error"].as_str().unwrap().contains("terminal"),
+        "{body}"
+    );
 
     // An admin token can list devices, but nothing that needs a passkey check.
     let (st, _) = h.call("GET", "/api/devices", Some(&admin), None).await;

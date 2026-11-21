@@ -34,8 +34,12 @@ use crate::store::{Store, StoreError, now_ms};
 pub enum Scope {
     /// See data and events.
     Read,
-    /// Send chat messages and drive PTY sessions.
+    /// Send chat messages and act through the sidecar.
     Chat,
+    /// Open and type into PTY sessions: a shell as the server's user, which
+    /// reaches the secrets store and the control socket. Kept apart from
+    /// `chat` so a chat bot's token doesn't come with a shell.
+    Terminal,
     /// Answer approvals, including git signatures.
     Approve,
     /// Manage devices, the vault and secrets.
@@ -43,12 +47,19 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub const ALL: [Scope; 4] = [Scope::Read, Scope::Chat, Scope::Approve, Scope::Admin];
+    pub const ALL: [Scope; 5] = [
+        Scope::Read,
+        Scope::Chat,
+        Scope::Terminal,
+        Scope::Approve,
+        Scope::Admin,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::Read => "read",
             Scope::Chat => "chat",
+            Scope::Terminal => "terminal",
             Scope::Approve => "approve",
             Scope::Admin => "admin",
         }
@@ -178,6 +189,7 @@ pub trait ScopeMarker: Send + Sync + 'static {
 
 pub struct Read;
 pub struct Chat;
+pub struct Terminal;
 pub struct Approve;
 pub struct Admin;
 
@@ -186,6 +198,9 @@ impl ScopeMarker for Read {
 }
 impl ScopeMarker for Chat {
     const SCOPE: Scope = Scope::Chat;
+}
+impl ScopeMarker for Terminal {
+    const SCOPE: Scope = Scope::Terminal;
 }
 impl ScopeMarker for Approve {
     const SCOPE: Scope = Scope::Approve;

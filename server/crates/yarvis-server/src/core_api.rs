@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::AppState;
-use crate::auth::{Admin, Authed, Chat, Read, Scope};
+use crate::auth::{Admin, Authed, Read, Scope, Terminal};
 use crate::error::ApiError;
 use crate::harness::AgentHarness;
 use crate::settings::{BackendSwitchError, TextField};
@@ -108,7 +108,7 @@ async fn handle(
         Scope::Admin => {
             Authed::<Admin>::from_request_parts(&mut parts, &state).await?;
         }
-        Scope::Chat | Scope::Approve => {
+        Scope::Chat | Scope::Terminal | Scope::Approve => {
             return Err(ApiError::internal(format!(
                 "{command} is listed with a scope this route doesn't check"
             )));
@@ -120,7 +120,7 @@ async fn handle(
         .map_err(ApiError::internal)?
 }
 
-/// The PTY commands ([`pty::core`]), which need `chat` to drive a session
+/// The PTY commands ([`pty::core`]), which need `terminal` to drive a session
 /// and run on the PTY manager rather than the blocking pool.
 async fn pty_command(
     state: AppState,
@@ -133,10 +133,10 @@ async fn pty_command(
         Scope::Read => {
             Authed::<Read>::from_request_parts(&mut parts, &state).await?;
         }
-        Scope::Chat => {
-            Authed::<Chat>::from_request_parts(&mut parts, &state).await?;
+        Scope::Terminal => {
+            Authed::<Terminal>::from_request_parts(&mut parts, &state).await?;
         }
-        Scope::Approve | Scope::Admin => {
+        Scope::Chat | Scope::Approve | Scope::Admin => {
             return Err(ApiError::internal(format!(
                 "{command} is listed with a scope this route doesn't check"
             )));

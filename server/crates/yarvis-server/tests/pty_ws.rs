@@ -220,7 +220,7 @@ async fn core(server: &Server, token: &str, command: &str, body: Value) -> (u16,
 #[tokio::test]
 async fn attaching_spawns_a_shell_and_streams_its_output() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     let attached = client.wait_for_text("attached").await;
     assert_eq!(attached["mode"], "snapshot");
@@ -244,7 +244,7 @@ async fn attaching_spawns_a_shell_and_streams_its_output() {
 #[tokio::test]
 async fn a_client_resuming_from_its_offset_gets_exactly_what_it_missed() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut first = Client::connect(&server, id, hello(&token, &server)).await;
     let (command, output) = marker("before");
@@ -294,7 +294,7 @@ async fn an_offset_older_than_the_scrollback_gets_a_flagged_snapshot() {
         ..PtyOptions::default()
     })
     .await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut first = Client::connect(&server, id, hello(&token, &server)).await;
     first
@@ -323,7 +323,7 @@ async fn an_offset_older_than_the_scrollback_gets_a_flagged_snapshot() {
 #[tokio::test]
 async fn two_clients_see_the_same_stream_and_either_can_type() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut a = Client::connect(&server, id, hello(&token, &server)).await;
     let (command, output) = marker("from-a");
@@ -353,7 +353,7 @@ async fn two_clients_see_the_same_stream_and_either_can_type() {
 #[tokio::test]
 async fn the_first_client_owns_the_size_and_a_later_one_waits_its_turn() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut a = Client::connect(&server, id, hello(&token, &server)).await;
     let attached = a.wait_for_text("attached").await;
@@ -390,7 +390,7 @@ async fn the_first_client_owns_the_size_and_a_later_one_waits_its_turn() {
 #[tokio::test]
 async fn focus_and_resize_move_the_size_to_that_client() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut a = Client::connect(&server, id, hello(&token, &server)).await;
     a.wait_for_text("attached").await;
@@ -431,7 +431,7 @@ async fn focus_and_resize_move_the_size_to_that_client() {
 #[tokio::test]
 async fn revoking_the_device_closes_its_terminal() {
     let server = serve(PtyOptions::default()).await;
-    let (phone, token) = device(&server.state, &[Scope::Chat]).await;
+    let (phone, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     client.wait_for_text("attached").await;
     server.state.auth.announce_revocation(&phone);
@@ -447,10 +447,35 @@ async fn a_read_only_device_cannot_attach() {
     assert!(!server.state.pty.exists("tab:terminal/t1/p1"));
 }
 
+/// `chat` sends messages; only `terminal` gets a shell.
+#[tokio::test]
+async fn a_chat_device_gets_no_shell() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Read, Scope::Chat]).await;
+    let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    assert_eq!(client.wait_for_close().await, 4403);
+    assert!(!server.state.pty.exists("tab:terminal/t1/p1"));
+    for (command, args) in [
+        (
+            "pty_write",
+            json!({"id": "tab:terminal/t1/p1", "data": "x"}),
+        ),
+        ("pty_kill", json!({"id": "tab:terminal/t1/p1"})),
+        (
+            "pty_start_claude",
+            json!({"id": "ws-claude:w1", "cwd": "/tmp"}),
+        ),
+        ("get_agent_config", json!({})),
+    ] {
+        let (status, body) = core(&server, &token, command, args).await;
+        assert_eq!(status, 403, "{command}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn a_malformed_hello_is_refused_without_spawning() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(
         &server,
         "tab:terminal/t1/p1",
@@ -464,7 +489,7 @@ async fn a_malformed_hello_is_refused_without_spawning() {
 #[tokio::test]
 async fn a_review_id_never_gets_a_plain_shell() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "review-claude:ws1", hello(&token, &server)).await;
     let error = client.wait_for_text("error").await;
     assert_eq!(error["error"], "the review session has ended");
@@ -474,7 +499,7 @@ async fn a_review_id_never_gets_a_plain_shell() {
 #[tokio::test]
 async fn an_exit_reaches_clients_after_the_last_byte_and_the_event_log() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut events = server.state.events.subscribe();
     let id = "tab:terminal/t1/p1";
     let mut client = Client::connect(&server, id, hello(&token, &server)).await;
@@ -513,7 +538,7 @@ async fn an_exit_reaches_clients_after_the_last_byte_and_the_event_log() {
 #[tokio::test]
 async fn the_core_commands_drive_and_report_on_a_session() {
     let server = serve(PtyOptions::default()).await;
-    let (_, chat) = device(&server.state, &[Scope::Read, Scope::Chat]).await;
+    let (_, chat) = device(&server.state, &[Scope::Read, Scope::Terminal]).await;
     let (_, reader) = device(&server.state, &[Scope::Read]).await;
     let id = "tab:terminal/t1/p1";
 
@@ -612,7 +637,7 @@ async fn a_client_that_stops_reading_is_resynced_without_holding_up_the_other() 
         ..PtyOptions::default()
     })
     .await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let id = "tab:terminal/t1/p1";
     let mut fast = Client::connect(&server, id, hello(&token, &server)).await;
     fast.wait_for_text("attached").await;
@@ -637,7 +662,7 @@ async fn a_client_that_stops_reading_is_resynced_without_holding_up_the_other() 
 async fn every_core_command_needs_its_scope() {
     let server = serve(PtyOptions::default()).await;
     let (_, reader) = device(&server.state, &[Scope::Read]).await;
-    let (_, chat) = device(&server.state, &[Scope::Chat]).await;
+    let (_, chat) = device(&server.state, &[Scope::Terminal]).await;
     let id = json!({"id": "tab:terminal/t1/p1"});
     for command in [
         "pty_write",
@@ -695,7 +720,7 @@ async fn pty_start_claude_launches_the_configured_agent() {
     let server = serve(PtyOptions::default()).await;
     // `cat` stands in for Claude Code: the launch line is the bare command.
     server.write_settings(json!({"agentCommand": "cat", "agentName": "Cat"}));
-    let (_, token) = device(&server.state, &[Scope::Read, Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Read, Scope::Terminal]).await;
     let workspace = "0b6a3f1e-9c1d-4e55-8a5b-2f3c4d5e6f70";
     let cwd = server.dir.path().to_string_lossy().into_owned();
     let (status, _) = core(
@@ -723,8 +748,8 @@ async fn pty_start_claude_launches_the_configured_agent() {
 #[tokio::test]
 async fn revoking_another_device_leaves_this_terminal_open() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
-    let (other, _) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
+    let (other, _) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     client.wait_for_text("attached").await;
     server.state.auth.announce_revocation(&other);
@@ -737,7 +762,7 @@ async fn revoking_another_device_leaves_this_terminal_open() {
 async fn the_session_cap_refuses_one_more_shell() {
     let server = serve(PtyOptions::default()).await;
     server.write_settings(json!({"maxPtySessions": 1}));
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut first = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     first.wait_for_text("attached").await;
     let mut second = Client::connect(&server, "tab:terminal/t1/p2", hello(&token, &server)).await;
@@ -757,7 +782,7 @@ async fn the_session_cap_refuses_one_more_shell() {
 #[tokio::test]
 async fn input_over_the_write_limit_closes_the_socket() {
     let server = serve(PtyOptions::default()).await;
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     client.wait_for_text("attached").await;
     client.input(&"x".repeat(64 * 1024 + 1)).await;
@@ -775,7 +800,7 @@ async fn ssh_auth_sock_seen_with(ssh_agent: SshAgentConfig, server_agent: Option
     if let Some(socket) = server_agent {
         server.state.pty.set_server_ssh_agent(Some(socket.into()));
     }
-    let (_, token) = device(&server.state, &[Scope::Chat]).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
     let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
     client
         .input("printf 'sock=[%s]\\n' \"$SSH_AUTH_SOCK\"\n")

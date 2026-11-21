@@ -6,6 +6,7 @@ import {
   MINTABLE_SCOPES,
   mintDeviceToken,
   revokeDevice,
+  SCOPE_LABELS,
   type Scope,
   type SignedIn,
 } from "../lib/auth";
@@ -170,7 +171,7 @@ export default function DevicesSection() {
           </h3>
           <p className="mb-3 text-xs text-zinc-500">
             For a client that can't use a passkey. Paste the token into it, and give it only the
-            scopes it needs. Admin stays with passkey devices.
+            scopes it needs. Admin and terminal stay with passkey devices.
           </p>
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs text-zinc-400">
@@ -185,13 +186,14 @@ export default function DevicesSection() {
             <fieldset className="flex gap-3 text-xs text-zinc-300">
               <legend className="sr-only">Scopes</legend>
               {MINTABLE_SCOPES.map((scope) => (
-                <label key={scope} className="flex items-center gap-1">
+                <label key={scope} className="flex items-center gap-1" title={SCOPE_LABELS[scope]}>
                   <input
                     type="checkbox"
                     checked={scopes.includes(scope)}
                     onChange={() => toggleScope(scope)}
                   />
                   {scope}
+                  <span className="text-zinc-500">({SCOPE_LABELS[scope]})</span>
                 </label>
               ))}
             </fieldset>
