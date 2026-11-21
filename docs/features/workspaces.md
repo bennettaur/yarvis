@@ -97,9 +97,10 @@ environment, plain and secret, not the rest of its command, so a variable
 the run needs belongs in the environment list rather than before the
 program in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
 `NODE_OPTIONS`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, an
-`XDG_*_HOME` folder, or any `OPENCODE_*` or `BUN_*` variable, isn't offered:
-those would move the files a run over someone else's code is kept from
-reading, or change how OpenCode runs. The assistant can't pick a harness for the checks, but the
+`XDG_*_HOME` folder, or any `BUN_*` variable, isn't offered, and neither is
+an OpenCode harness that sets an `OPENCODE_*` variable other than the Zen key
+`OPENCODE_API_KEY`: those would move the files a run over someone else's
+code is kept from reading, or change how the harness runs. The assistant can't pick a harness for the checks, but the
 ones it starts use the harness set in Settings. Any program running as you
 can ask the app for a harness's secret variables this way, so keep them to
 keys scoped for this use.

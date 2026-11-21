@@ -34,8 +34,9 @@ Three processes, each with a clean ownership boundary:
   starts use the Settings one. The values go only into the run's
   environment, never a log or a row, and a harness setting a variable that
   would move what the run may not read (`HOME`, `CLAUDE_CONFIG_DIR`, the
-  `XDG_*_HOME` folders) or change how OpenCode runs (any `OPENCODE_*` or
-  `BUN_*`) is refused. Like every method it trusts any
+  `XDG_*_HOME` folders) or change how the harness runs (any `BUN_*`, and
+  on OpenCode any `OPENCODE_*` but the Zen key `OPENCODE_API_KEY`) is
+  refused. Like every method it trusts any
   process running as the user, so such a process can read those secrets
   through the socket; that was accepted rather than tying the socket to the
   sidecar's pid.

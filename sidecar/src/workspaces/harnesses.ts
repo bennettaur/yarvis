@@ -45,8 +45,9 @@ interface StoredHarness {
 }
 
 /**
- * Mirrors the core's `HEADLESS_REFUSED_ENV` and `HEADLESS_REFUSED_PREFIXES`:
- * variables a verification run refuses from a harness.
+ * Mirrors the core's `HEADLESS_REFUSED_ENV`, `HEADLESS_REFUSED_PREFIXES`,
+ * `kind_refused_prefixes` and `HEADLESS_ALLOWED_ENV`: variables a
+ * verification run refuses from a harness.
  */
 const HEADLESS_REFUSED_ENV = new Set([
   "HOME",
@@ -58,17 +59,19 @@ const HEADLESS_REFUSED_ENV = new Set([
   "XDG_STATE_HOME",
   "XDG_CACHE_HOME",
 ]);
-const HEADLESS_REFUSED_PREFIXES = ["OPENCODE_", "BUN_"];
+const HEADLESS_REFUSED_PREFIXES = ["BUN_"];
+const KIND_REFUSED_PREFIXES: Record<string, string[]> = { opencode: ["OPENCODE_"] };
+const HEADLESS_ALLOWED_ENV = new Set(["OPENCODE_API_KEY"]);
 
-/** Whether a stored harness sets a variable a verification run refuses. */
-function setsRefusedEnv(h: StoredHarness): boolean {
+/** Whether a stored harness of `kind` sets a variable a verification run refuses. */
+function setsRefusedEnv(kind: string, h: StoredHarness): boolean {
   const plain = h.env && typeof h.env === "object" ? Object.keys(h.env) : [];
   const secret = Array.isArray(h.secretEnv) ? h.secretEnv : [];
+  const prefixes = [...HEADLESS_REFUSED_PREFIXES, ...(KIND_REFUSED_PREFIXES[kind] ?? [])];
   return [...plain, ...secret].some((key) => {
     const name = String(key);
-    return (
-      HEADLESS_REFUSED_ENV.has(name) || HEADLESS_REFUSED_PREFIXES.some((p) => name.startsWith(p))
-    );
+    if (HEADLESS_ALLOWED_ENV.has(name)) return false;
+    return HEADLESS_REFUSED_ENV.has(name) || prefixes.some((p) => name.startsWith(p));
   });
 }
 
@@ -90,7 +93,7 @@ const HEADLESS_PROGRAMS: Record<string, string> = { "claude-code": "claude", ope
 /** Whether a saved harness of `kind` can run verification checks. */
 function headlessCapable(kind: string, h: StoredHarness & { command: string }): boolean {
   const binary = HEADLESS_PROGRAMS[kind];
-  return !!binary && runsProgram(h.command, binary) && !setsRefusedEnv(h);
+  return !!binary && runsProgram(h.command, binary) && !setsRefusedEnv(kind, h);
 }
 
 /**

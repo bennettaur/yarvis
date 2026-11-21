@@ -228,16 +228,33 @@ const HEADLESS_REFUSED_ENV: [&str; 8] = [
     "XDG_CACHE_HOME",
 ];
 
-/// Prefixes a headless run refuses too: OpenCode reads many `OPENCODE_*`
-/// variables (config, a model catalog, a home folder, its Claude Code
-/// compatibility, experimental features), and it is a Bun build, so `BUN_*`
-/// can load code into it. A list of names would miss the next one added.
-const HEADLESS_REFUSED_PREFIXES: [&str; 2] = ["OPENCODE_", "BUN_"];
+/// Prefixes every headless run refuses: Claude Code and OpenCode are Bun
+/// builds, so `BUN_*` can load code into them.
+const HEADLESS_REFUSED_PREFIXES: [&str; 1] = ["BUN_"];
 
-fn refused_in_headless_run(key: &str) -> bool {
+/// Prefixes a headless run refuses for one kind. OpenCode reads many
+/// `OPENCODE_*` variables (config, a model catalog, a home folder, its Claude
+/// Code compatibility, experimental features); a list of names would miss the
+/// next one added.
+fn kind_refused_prefixes(kind: HarnessKind) -> &'static [&'static str] {
+    match kind {
+        HarnessKind::Opencode => &["OPENCODE_"],
+        HarnessKind::ClaudeCode | HarnessKind::Pi | HarnessKind::Custom => &[],
+    }
+}
+
+/// Provider keys a run takes even though a refused prefix covers them.
+/// `OPENCODE_API_KEY` is the OpenCode Zen key, which paid Zen models need.
+const HEADLESS_ALLOWED_ENV: [&str; 1] = ["OPENCODE_API_KEY"];
+
+fn refused_in_headless_run(kind: HarnessKind, key: &str) -> bool {
+    if HEADLESS_ALLOWED_ENV.contains(&key) {
+        return false;
+    }
     HEADLESS_REFUSED_ENV.contains(&key)
         || HEADLESS_REFUSED_PREFIXES
             .iter()
+            .chain(kind_refused_prefixes(kind))
             .any(|prefix| key.starts_with(prefix))
 }
 
@@ -257,7 +274,7 @@ pub fn headless_run_env(
         .chain(&harness.secret_env);
     if let Some(key) = declared
         .into_iter()
-        .find(|key| refused_in_headless_run(key))
+        .find(|key| refused_in_headless_run(harness.kind, key))
     {
         return Err(format!(
             "\"{}\" sets {key}, which a verification run can't take: it would move the files the run is kept from reading",
@@ -743,6 +760,21 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("can't take"), "{err}");
         }
+    }
+
+    #[test]
+    fn a_headless_run_takes_the_zen_key_and_refuses_prefixes_only_for_their_kind() {
+        let mut zen = stored("zen", HarnessKind::Opencode, "opencode");
+        zen.secret_env = vec!["OPENCODE_API_KEY".to_string()];
+        let resolved = resolve_stored(&zen).unwrap();
+        let root =
+            serde_json::json!({ SECRET_ENV_SUBTREE: { "zen": { "OPENCODE_API_KEY": "k" } } });
+        let (_, env) = headless_run_env(&resolved, || Ok(root)).unwrap();
+        assert_eq!(env, vec![("OPENCODE_API_KEY".to_string(), "k".to_string())]);
+
+        let mut claude = stored("cc", HarnessKind::ClaudeCode, "claude");
+        claude.env = BTreeMap::from([("OPENCODE_CONFIG".to_string(), "/x".to_string())]);
+        assert!(headless_run_env(&resolve_stored(&claude).unwrap(), || unreachable!()).is_ok());
     }
 
     #[test]
