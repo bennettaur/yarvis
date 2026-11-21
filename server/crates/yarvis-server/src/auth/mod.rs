@@ -21,6 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
+pub mod fresh;
+pub mod passkeys;
+pub mod routes;
+mod setup_code;
+
 use crate::error::ApiError;
 use crate::store::{Store, StoreError, now_ms};
 
