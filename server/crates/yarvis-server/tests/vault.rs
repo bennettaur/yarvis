@@ -435,16 +435,45 @@ async fn rotating_the_recovery_key_needs_a_fresh_device_and_retires_the_old_one(
     .await
     .unwrap()
     .token;
+    let proof = json!({ "currentPassphrase": VAULT_PASSPHRASE });
     let (status, body) = v
         .harness
-        .call("POST", "/api/vault/recovery-key", Some(&cli), None)
+        .call(
+            "POST",
+            "/api/vault/recovery-key",
+            Some(&cli),
+            Some(proof.clone()),
+        )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "reauth_required");
 
+    // A fresh device alone isn't enough: it could rotate the key, then use the
+    // new key to replace the passphrase.
     let (status, body) = v
         .harness
-        .call("POST", "/api/vault/recovery-key", Some(&token), None)
+        .call(
+            "POST",
+            "/api/vault/recovery-key",
+            Some(&token),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/recovery-key",
+            Some(&token),
+            Some(json!({ "recoveryKey": yarvis_server::vault::RecoveryKey::generate().expose() })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    let (status, body) = v
+        .harness
+        .call("POST", "/api/vault/recovery-key", Some(&token), Some(proof))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let new_key = body["recoveryKey"].as_str().unwrap().to_string();
@@ -580,6 +609,24 @@ async fn changing_the_vault_passphrase_needs_proof_and_a_fresh_device() {
         )
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/passphrase",
+            Some(&token),
+            Some(json!({ "recoveryKey": v.recovery_key, "newPassphrase": common::PASSPHRASE })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the sign-in passphrase can't be the vault's: {body}"
+    );
+    assert!(
+        v.harness.state.vault.guess_delay().is_some(),
+        "so the recovery key below is checked during the wait"
+    );
     let (status, body) = v
         .harness
         .call(

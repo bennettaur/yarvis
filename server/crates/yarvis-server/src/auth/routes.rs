@@ -51,7 +51,12 @@ pub fn router(state: &AppState) -> Router<AppState> {
 
 impl From<AccountError> for ApiError {
     fn from(e: AccountError) -> Self {
-        ApiError::internal(e)
+        match e {
+            AccountError::Locked(left) => locked(left),
+            AccountError::Gone => ApiError::conflict("the account was reset")
+                .with_detail("set it up again with the new setup code"),
+            other => ApiError::internal(other),
+        }
     }
 }
 
@@ -246,9 +251,6 @@ async fn login(
         return Err(ApiError::conflict("this server isn't set up yet")
             .with_detail("enter the setup code it printed"));
     }
-    if let Some(left) = state.account.locked_for() {
-        return Err(locked(left));
-    }
     let factor = match (&body.code, &body.backup_code) {
         (Some(code), None) => SecondFactor::Totp(code),
         (None, Some(code)) => SecondFactor::Backup(code),
@@ -348,9 +350,6 @@ async fn reverify(
             "only a device that signed in with the passphrase can confirm with a code",
         ));
     }
-    if let Some(left) = state.account.locked_for() {
-        return Err(locked(left));
-    }
     if !state.account.check_code(&body.code).await? {
         return Err(wrong_code());
     }
@@ -403,9 +402,6 @@ async fn change_passphrase(
     Json(body): Json<ChangePassphrase>,
 ) -> ApiResult<Json<SignedOut>> {
     check_passphrase_shape(&body.new_passphrase).map_err(bad_passphrase)?;
-    if let Some(left) = state.account.locked_for() {
-        return Err(locked(left));
-    }
     if !state
         .account
         .check_current_passphrase(body.current_passphrase)

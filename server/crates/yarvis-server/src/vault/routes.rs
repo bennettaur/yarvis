@@ -64,6 +64,7 @@ fn vault_error(e: VaultError) -> ApiError {
         // 403, not 401: a 401 tells the client its token is no good, and it
         // signs out.
         VaultError::WrongKey => ApiError::new(StatusCode::FORBIDDEN, "that doesn't open the vault"),
+        VaultError::TooSoon(left) => wait_before_guessing(left),
         other => ApiError::internal(other),
     }
 }
@@ -129,9 +130,6 @@ async fn unlock(
     Authed { device, .. }: Authed<Admin>,
     Json(body): Json<PassphraseBody>,
 ) -> ApiResult<Json<Value>> {
-    if let Some(left) = state.vault.guess_delay() {
-        return Err(wait_before_guessing(left));
-    }
     let vault = state.vault.clone();
     tokio::task::spawn_blocking(move || vault.unlock_with_passphrase(&body.passphrase))
         .await
@@ -140,48 +138,76 @@ async fn unlock(
     after_unlock(&state, &device.device_id, json!({ "via": "passphrase" })).await
 }
 
+// ---- the passphrase ----
+
+/// What proves a change to the vault is the owner's: its passphrase or its
+/// recovery key, since a fresh device alone is a sign-in, not knowledge of
+/// the vault.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultProof {
+    current_passphrase: Option<Zeroizing<String>>,
+    recovery_key: Option<Zeroizing<String>>,
+}
+
+enum Given {
+    Passphrase(Zeroizing<String>),
+    Recovery(RecoveryKey),
+}
+
+impl VaultProof {
+    fn parse(self) -> ApiResult<Given> {
+        match (self.current_passphrase, self.recovery_key) {
+            (Some(passphrase), None) => Ok(Given::Passphrase(passphrase)),
+            (None, Some(key)) => {
+                Ok(Given::Recovery(RecoveryKey::parse(&key).map_err(|_| {
+                    ApiError::bad_request("that isn't a recovery key")
+                })?))
+            }
+            _ => Err(ApiError::bad_request(
+                "send the current passphrase or the recovery key",
+            )),
+        }
+    }
+}
+
+impl Given {
+    fn proof(&self) -> Proof<'_> {
+        match self {
+            Given::Passphrase(passphrase) => Proof::Passphrase(passphrase),
+            Given::Recovery(key) => Proof::Recovery(key),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChangePassphrase {
-    current_passphrase: Option<Zeroizing<String>>,
-    recovery_key: Option<Zeroizing<String>>,
+    #[serde(flatten)]
+    proof: VaultProof,
     new_passphrase: Zeroizing<String>,
 }
 
-/// Re-wraps the vault key under a new passphrase. The current passphrase or
-/// the recovery key proves the change is the owner's, since a fresh device
-/// alone is a sign-in, not knowledge of the vault.
+/// Re-wraps the vault key under a new passphrase.
 async fn change_passphrase(
     State(state): State<AppState>,
     Fresh { device, .. }: Fresh<Admin>,
     Json(body): Json<ChangePassphrase>,
 ) -> ApiResult<Json<Value>> {
     check_passphrase_shape(&body.new_passphrase).map_err(ApiError::bad_request)?;
-    let recovery = match &body.recovery_key {
-        Some(key) => Some(
-            RecoveryKey::parse(key)
-                .map_err(|_| ApiError::bad_request("that isn't a recovery key"))?,
-        ),
-        None => None,
-    };
-    if body.current_passphrase.is_some() == recovery.is_some() {
-        return Err(ApiError::bad_request(
-            "send the current passphrase or the recovery key",
-        ));
-    }
-    if body.current_passphrase.is_some()
-        && let Some(left) = state.vault.guess_delay()
+    let given = body.proof.parse()?;
+    if state
+        .account
+        .is_sign_in_passphrase(body.new_passphrase.clone())
+        .await?
     {
-        return Err(wait_before_guessing(left));
+        return Err(ApiError::bad_request(
+            "that is the sign-in passphrase; the vault needs a different one",
+        ));
     }
     let vault = state.vault.clone();
     tokio::task::spawn_blocking(move || {
-        let proof = match (&body.current_passphrase, &recovery) {
-            (Some(current), _) => Proof::Passphrase(current),
-            (None, Some(recovery)) => Proof::Recovery(recovery),
-            (None, None) => unreachable!("checked above"),
-        };
-        vault.change_passphrase(proof, &body.new_passphrase)
+        vault.change_passphrase(given.proof(), &body.new_passphrase)
     })
     .await
     .map_err(ApiError::internal)?
@@ -196,6 +222,8 @@ async fn change_passphrase(
         .await?;
     Ok(Json(json!({ "state": "unlocked" })))
 }
+
+// ---- unlock with the recovery key ----
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -252,8 +280,14 @@ async fn lock(
 async fn rotate_recovery_key(
     State(state): State<AppState>,
     Fresh { device, .. }: Fresh<Admin>,
+    Json(body): Json<VaultProof>,
 ) -> ApiResult<Json<Value>> {
-    let recovery = state.vault.rotate_recovery_key().map_err(vault_error)?;
+    let given = body.parse()?;
+    let vault = state.vault.clone();
+    let recovery = tokio::task::spawn_blocking(move || vault.rotate_recovery_key(given.proof()))
+        .await
+        .map_err(ApiError::internal)?
+        .map_err(vault_error)?;
     state
         .events
         .append(

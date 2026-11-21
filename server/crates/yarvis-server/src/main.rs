@@ -55,7 +55,9 @@ async fn main() {
     match command {
         Command::Serve => serve(config, store).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
-        Command::VaultInit { passphrase_stdin } => vault_init(&config, passphrase_stdin),
+        Command::VaultInit { passphrase_stdin } => {
+            vault_init(&config, store, passphrase_stdin).await
+        }
         Command::AuthReset => auth_reset(&config, store).await,
     }
 }
@@ -156,17 +158,26 @@ async fn add_device(store: Store, name: &str, scopes: &str) {
 
 /// The recovery key goes to stdout and nowhere else; the rest goes to
 /// stderr, so `vault init > key.txt` captures only the key.
-fn vault_init(config: &Config, passphrase_stdin: bool) {
+async fn vault_init(config: &Config, store: Store, passphrase_stdin: bool) {
     if config.secrets.backend != Some(SecretBackendKind::Vault) {
         eprintln!(
             "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
         );
     }
     let data_dir = &config.server.data_dir;
+    // Before the prompt, so nobody types a passphrase for nothing.
     if data_dir.join("vault.json").exists() {
         fail("a vault already exists here");
     }
     let passphrase = read_vault_passphrase(passphrase_stdin);
+    let account = yarvis_server::auth::account::Account::new(store);
+    if account
+        .is_sign_in_passphrase(passphrase.clone())
+        .await
+        .unwrap_or_else(|e| fail(e))
+    {
+        fail("that is the sign-in passphrase; the vault needs a different one");
+    }
     let created =
         Vault::init(data_dir, config.ssh_agent.enabled, &passphrase).unwrap_or_else(|e| fail(e));
     eprintln!(
