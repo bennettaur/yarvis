@@ -33,9 +33,9 @@ file through its CDN from the public internet, so a tailnet-only name doesn't
 work for a released app. A personal build can use
 `webcredentials:<rp_id>?mode=developer`, which fetches it directly.
 
-webauthn-rs checks `clientDataJSON`'s origin against `auth.origins`. Which
-origin ASAuthorization puts there is unchecked; if it isn't the server's
-`https://` URL, it has to be added to `auth.origins`.
+webauthn-rs checks `clientDataJSON`'s origin against `auth.origins`. If the
+origin ASAuthorization puts there isn't the server's `https://` URL, add it
+to `auth.origins`.
 
 **Events.** Open the socket, send `{"type":"auth","token":"…","since":seq}`
 as the first message, and keep the last `seq` seen for the next connect. A
@@ -50,10 +50,10 @@ reset the terminal before feeding. Send keystrokes as binary frames, and
 `{"type":"resize"}` from `sizeChanged`. Opening terminals needs the
 `terminal` scope.
 
-**WKWebView fallback.** WKWebView can't run WebAuthn without the
-browser entitlement, so the fallback screens use the app's token: inject it
-into `localStorage` (`yarvis.deviceToken`) with a `WKUserScript` before the
-page loads, as the Tauri app hands its token to the page. Anything that needs a
+**WKWebView fallback.** WKWebView can't run WebAuthn without the browser
+entitlement, so the fallback screens use the app's token: inject it into
+`localStorage` (`yarvis.deviceToken`) with a `WKUserScript` before the page
+loads, as the Tauri app hands its token to the page. Anything that needs a
 fresh passkey (device management, switching the secrets backend) goes through
 a native passkey check first.
 
@@ -90,6 +90,6 @@ Not added. With `utoipa` and `utoipa-axum` it would take:
   `/api/core/{command}` dispatches on the name. The command bodies are parsed
   from `serde_json::Value` today, so each needs a named type first.
 
-That covers the server's own routes, a day or two of work. It doesn't cover
+That covers the server's own routes. It doesn't cover
 the WebSocket protocols, which OpenAPI can't describe (AsyncAPI could), or
 the sidecar, which would need its own description from its Hono routes.

@@ -5,8 +5,8 @@ PTYs and the window, and it spawns a Bun sidecar that owns everything else. The
 webview talks to the core through `invoke` and to the sidecar over HTTP on
 127.0.0.1.
 
-This document describes the first pass at splitting that into one server and
-several clients, and is the description of what is built. The server can run on the same Mac or on another machine (an
+This document describes splitting that into one server and several clients.
+The server can run on the same Mac or on another machine (an
 always-on Intel Mac mini, for example). Clients are the web UI in a browser, a
 thin Tauri app, and later a native macOS app and a phone app.
 
@@ -48,7 +48,7 @@ Not yet:
 - Recovery-key rotation (see "Known gaps").
 - An OpenAPI description.
 
-## Goals for the first pass
+## Goals
 
 - One Rust binary, `yarvis-server`, that a browser can use with no Tauri app
   installed.
@@ -63,7 +63,7 @@ Not yet:
 - The existing UI keeps working, in a browser and in the Tauri app, with no
   feature lost.
 
-Out of scope for the first pass: porting the sidecar's TypeScript to Rust, the
+Out of scope: porting the sidecar's TypeScript to Rust, the
 native macOS app itself, and the phone app.
 
 ## The sidecar stays, behind the server
@@ -93,8 +93,8 @@ sidecar's own token, and adds `X-Yarvis-Device-Id` so the sidecar can record
 who asked. SSE and WebSocket routes on the sidecar are proxied as streams.
 
 The sidecar calls back into the server over a Unix-socket control channel
-(`control.rs`), with the method list the desktop app's core had. Anything the sidecar
-used to trigger in the window, such as ringing an alarm, becomes an event on
+(`server/crates/yarvis-server/src/control.rs`), with the same methods as the
+desktop app's core. Anything the sidecar would trigger in the window, such as ringing an alarm, becomes an event on
 `/api/events`. Each client decides how to show it.
 
 Porting a sidecar module later means adding a native route and deleting its
@@ -151,13 +151,13 @@ This follows `spikes/auth/FINDINGS.md`.
 - **Fresh**: device management, adding a passkey, adding or removing a
   vault wrapper, and switching the secrets backend (`set_secret_backend`)
   also need a passkey check on this device in the last 10 minutes
-  (`verified_at`). Setting and deleting secrets need only `admin`, so the
-  Tauri app's CLI-made token can manage its own keys. Unlocking and locking
-  the vault need only `admin`: a passkey unlock is a passkey check of its own,
-  and the recovery key has to work when every passkey is lost.
-  Without one they get `403 { "error": "reauth_required" }`, and
-  the client runs `/api/auth/reverify`. A token device can never be fresh,
-  so it can never do these things.
+  (`verified_at`). Without one they get `403 { "error": "reauth_required" }`,
+  and the client runs `/api/auth/reverify`. A token device can never be
+  fresh, so it can never do these things. Setting and deleting secrets need
+  only `admin`, so the Tauri app's CLI-made token can manage its own keys.
+  Unlocking and locking the vault need only `admin` too: a passkey unlock is
+  a passkey check of its own, and the recovery key has to work when every
+  passkey is lost.
 - Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`
   or `terminal`. Tokens made with the CLI on the server machine can, since
   whoever runs that can already read the database and open a shell.
@@ -289,8 +289,11 @@ does (`docs/getting-started.md`).
    1Password), and workspace shells get 1Password's SSH agent when it exists.
 3. For the actions that need a fresh passkey (minting or revoking devices,
    switching the secrets backend), open `http://localhost:<port>` in a browser
-   on the same Mac and set up a passkey with the code in
-   `<app data>/server/setup-code`. The app's own token can't do them.
+   on the same Mac, with the port from `bind` in `<app data>/server.toml`, and
+   set up a passkey with the code in `<app data>/server/setup-code`. The app's
+   own token can't do them. The app keeps its port across restarts when it
+   is free; a passkey keeps working on a new port, since it is bound to
+   `localhost`, not the port.
 
 **A home server with the vault and ssh-agent, behind `tailscale serve`.** The
 server runs on an always-on Mac and you reach it from anywhere on the tailnet.
@@ -388,7 +391,7 @@ To keep that possible, the API has to stay plain: JSON bodies, typed error
 bodies (`{ "error": "...", "detail": "..." }`), and WebSocket messages as
 tagged JSON (`{"type": "...", ...}`).
 
-## API contract for the first pass
+## API contract
 
 All routes are under `/api`. Errors are `{ "error": string, "detail"?: string }`.
 Times are milliseconds since the Unix epoch. A **device** in a response is:
@@ -397,8 +400,8 @@ Times are milliseconds since the Unix epoch. A **device** in a response is:
 { "deviceId": "…", "name": "My iPhone", "scopes": ["read", "chat"], "verifiedAt": 1763600000000 }
 ```
 
-The devices list adds more fields (see `GET /api/devices`). Tokens and their hashes never appear in a
-response, except the one time a token is created.
+The devices list adds more fields (see `GET /api/devices`). Tokens and their
+hashes never appear in a response, except the one time a token is created.
 
 - `GET /api/health` → `{ "status": "ok", "service": "yarvis-server" }`, no token.
 
@@ -508,7 +511,16 @@ PTY (`terminal` to drive a session, `read` to look at one):
 there it can reach everything that user can, the control socket and the
 secrets store included, so treat `terminal` as full trust. Only passkey
 devices and `yarvis-server device add` get it; a token minted over the API
-can't. `chat` sends messages through the sidecar and opens no shell.
+can't.
+
+`chat` opens no PTY, but it is not a sandbox either. Every sidecar write
+route not listed in `SCOPE_RULES` needs only `chat`, and some of those write
+into workspace worktrees (`PUT /api/workspaces/:id/repos/:wrId/file`) or
+start work there. A file planted in a worktree, such as a hook config, runs
+when an agent session or a commit there next reads it. Give `chat` only to
+clients you'd trust with the workspaces. `admin` reaches a shell indirectly
+too: `set_agent` and `set_agent_harnesses` choose the command
+`pty_start_claude` runs.
 
 - `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
 - `POST /api/core/pty_resize` `{ id, cols, rows }` → `204`. Attached clients
@@ -680,8 +692,8 @@ Sidecar:
   served.
 - While no sidecar process is up (the supervisor is waiting for the secrets,
   restarting it, or has stopped it because the vault locked), the proxy
-  answers `503` and sends nothing to the
-  sidecar's port, which another local process could have taken.
+  answers `503` and sends nothing to the sidecar's port, which another local
+  process could have taken.
 - A response still streaming when its device is revoked ends there.
 - Routes that local processes call on the sidecar with their own scoped
   tokens (Claude Code hooks posting to `/ingest/*`, the browser extension's
@@ -717,17 +729,20 @@ Core commands that changed on the way from `invoke`:
 - **The local Tauri app can't do fresh actions.** Its token comes from
   `yarvis-server device add`, and a token device is never fresh, so minting
   and revoking devices and switching the secrets backend need a browser
-  signed in with a passkey. A remote Tauri app pasted a token minted over
-  the API, which can't carry `terminal`, so its terminals need a token made
-  with `device add` on the server instead.
+  signed in with a passkey. A remote Tauri app given a token minted over the
+  API can't open terminals, since such tokens can't carry `terminal`; make
+  its token with `device add` on the server instead.
 - **The RP ID can't change after the first passkey.** The setup routes close
   once a passkey exists, and nothing issues a new setup code, so passkeys
   made for an old RP ID can't be replaced by ones for the new name.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
-- Monaco's TypeScript worker contains a `new Function(`. The end-to-end test
-  doesn't reach a Monaco editor (PR review needs the sidecar), so whether it
-  trips `script-src 'self'` is unchecked.
+- **A lock doesn't reach what already holds secrets.** Locking stops the
+  sidecar's own process, but not processes it started that outlive it, and
+  not PTY sessions, which keep the environment they started with.
+- **Monaco under the CSP is untested.** Monaco's TypeScript worker contains
+  a `new Function(`. The end-to-end test doesn't open an editor, since that
+  needs the sidecar, so whether it trips `script-src 'self'` is unchecked.
 
 ## Open questions
 
