@@ -7,6 +7,7 @@ import {
   setUpWithCode,
   signInWithPasskey,
   toCreationOptions,
+  unlockVaultWithPasskey,
 } from "./auth";
 import { deviceToken, saveDeviceToken, signOut } from "./server";
 import { setSecretBackend } from "./settings";
@@ -175,6 +176,55 @@ describe("sign-in", () => {
     credentials.get = async () => null;
     await expect(signInWithPasskey("Phone")).rejects.toThrow("no passkey was chosen");
     expect(await deviceToken()).toBeNull();
+  });
+});
+
+describe("vault unlock with a passkey", () => {
+  const unlockStart = {
+    ceremonyId: "c-v",
+    options: {
+      publicKey: {
+        challenge: "AQID",
+        allowCredentials: [{ id: "AQID", type: "public-key" }],
+        extensions: { prf: { evalByCredential: { AQID: { first: "BAUG" } } } },
+      },
+    },
+  };
+
+  it("sends the PRF output for the salt the server gave the passkey", async () => {
+    saveDeviceToken("tok-admin");
+    routes["POST /api/vault/unlock/start"] = () => Response.json(unlockStart);
+    routes["POST /api/vault/unlock/finish"] = () => Response.json({ state: "unlocked" });
+    let salt: ArrayBuffer | undefined;
+    credentials.get = async (options: unknown) => {
+      const prf = (options as CredentialRequestOptions).publicKey?.extensions as {
+        prf: { evalByCredential: Record<string, { first: ArrayBuffer }> };
+      };
+      salt = prf.prf.evalByCredential.AQID?.first;
+      return {
+        ...fakeAssertion,
+        getClientExtensionResults: () => ({ prf: { results: { first: bytes(9, 9) } } }),
+      };
+    };
+
+    expect(await unlockVaultWithPasskey()).toEqual({ state: "unlocked" });
+
+    expect([...new Uint8Array(salt as ArrayBuffer)]).toEqual([4, 5, 6]);
+    const finish = calls.find((c) => c.url === "/api/vault/unlock/finish")?.body as {
+      ceremonyId: string;
+      prfFirst: string;
+    };
+    expect(finish.ceremonyId).toBe("c-v");
+    expect(finish.prfFirst).toBe("CQk");
+  });
+
+  it("points to the recovery key when the passkey gives no PRF output", async () => {
+    saveDeviceToken("tok-admin");
+    routes["POST /api/vault/unlock/start"] = () => Response.json(unlockStart);
+    credentials.get = async () => ({ ...fakeAssertion, getClientExtensionResults: () => ({}) });
+
+    await expect(unlockVaultWithPasskey()).rejects.toThrow(/recovery key/);
+    expect(calls.map((c) => c.url)).not.toContain("/api/vault/unlock/finish");
   });
 });
 

@@ -65,6 +65,7 @@ export function VaultUnlock({
       onUnlocked();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setRecoveryKey("");
     } finally {
       setBusy(false);
     }
@@ -102,6 +103,7 @@ export function VaultUnlock({
             <label className="text-xs text-zinc-400">
               <span className="mb-1 block uppercase tracking-wide">Recovery key</span>
               <input
+                type="password"
                 value={recoveryKey}
                 onChange={(e) => setRecoveryKey(e.target.value)}
                 autoComplete="off"

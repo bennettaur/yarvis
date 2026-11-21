@@ -37,9 +37,8 @@ export default function BootGate({
   const [detail, setDetail] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
   const [_attempt, setAttempt] = useState(0);
-  // Set by "Continue anyway". The poll must stop then, or its next failed
-  // check puts the boot screen back over the app.
-  const proceeded = useRef(false);
+  // The poll must stop here, or its next failed check puts the boot screen back over the app.
+  const continuedAnyway = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +46,7 @@ export default function BootGate({
     const poll = async () => {
       try {
         const h = await getHealth();
-        if (cancelled || proceeded.current) return;
+        if (cancelled || continuedAnyway.current) return;
         if (h.ready === false) {
           if (h.phase === "error") {
             setDetail(h.error ?? "Database migration failed.");
@@ -61,7 +60,7 @@ export default function BootGate({
         }
       } catch {
         // Sidecar not reachable yet (still spawning); keep waiting.
-        if (cancelled || proceeded.current) return;
+        if (cancelled || continuedAnyway.current) return;
         setPhase("connecting");
       }
       timer = setTimeout(poll, 500);
@@ -92,7 +91,7 @@ export default function BootGate({
   }, []);
 
   const proceed = useCallback(() => {
-    proceeded.current = true;
+    continuedAnyway.current = true;
     setPhase("ready");
   }, []);
 

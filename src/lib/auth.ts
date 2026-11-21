@@ -343,8 +343,9 @@ export interface Approval {
   summary: string;
   /** The requester's details, shaped by `kind`. */
   data: Record<string, unknown>;
-  /** Milliseconds since the epoch. Past `expiresAt` the server denies it. */
+  /** Milliseconds since the epoch, as is `expiresAt`. */
   createdAt: number;
+  /** After this the server denies it. */
   expiresAt: number;
 }
 
