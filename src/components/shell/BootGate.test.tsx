@@ -1,5 +1,4 @@
 import { afterAll, describe, expect, it } from "bun:test";
-import { createElement } from "react";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import BootGate from "./BootGate";
@@ -16,7 +15,9 @@ afterAll(resetSidecarApi);
 describe("BootGate", () => {
   it("stays out of the way after Continue anyway, though the sidecar is still down", async () => {
     const mounted = await mountForInteraction(
-      createElement(BootGate, { slowAfterMs: 10 }, createElement("p", null, "the app")),
+      <BootGate slowAfterMs={10}>
+        <p>the app</p>
+      </BootGate>,
     );
     const skip = () =>
       [...mounted.host.querySelectorAll("button")].find((b) => b.textContent === "Continue anyway");
