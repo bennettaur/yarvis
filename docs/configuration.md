@@ -308,6 +308,36 @@ providers, Settings → Embeddings warns that some memories were made by a
 different embedder. **Re-embed all** there (or `POST /api/memory/reembed`)
 regenerates every vector.
 
+## Google Calendar on a server you reach remotely
+
+When yarvis-server's `auth.origins` lists an `https` origin that isn't
+`localhost` (a server behind `tailscale serve`, say), Google's sign-in
+redirects to `https://<that origin>/api/oauth/google/callback` instead of the
+sidecar's loopback port. The server forwards it to the sidecar, which accepts
+only a sign-in it started. A "Desktop app" client can't use that redirect, so
+such a server needs a "Web application" client:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com), open
+   **APIs & Services → Credentials** in the project with the Google Calendar
+   API enabled, and choose **Create credentials → OAuth client ID**.
+2. Pick **Web application** as the application type.
+3. Under **Authorized redirect URIs**, add
+   `https://<your server's origin>/api/oauth/google/callback`, exactly as the
+   server's first non-loopback `https` origin in `auth.origins` spells it
+   (Google matches it character for character).
+4. Create it, then enter its client ID and secret in **Settings →
+   Credentials** as for a Desktop client (`googleClientId` and
+   `google_client_secret`). Connect again from the Calendar tab.
+
+Which kind of client the server expects follows from its config: an `https`
+origin off loopback means Web application, none means Desktop app. Changing
+`auth.origins` either way means switching the client too.
+
+Google only accepts an `https` redirect whose host ends in a domain on the
+[Public Suffix List](https://publicsuffix.org/), and refuses raw IP
+addresses. Whether a `*.ts.net` name passes that check hasn't been
+confirmed. A server behind a domain you own works either way.
+
 ## Environment variables
 
 You don't need any of these for normal use. They are for running more than one

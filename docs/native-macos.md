@@ -70,8 +70,11 @@ a native passkey check first.
 - **`/api/core/{command}` is one route with untyped bodies.** Commands keep
   the Tauri names (`set_secret`, `pty_write`) and the frontend's camelCase
   arguments. That works from Swift but has no schema.
-- **Local-only flows.** MCP and Google OAuth redirect to the sidecar's
-  loopback port, which works only from the server's machine, native or not.
+- **OAuth on a server reached on loopback only.** There, MCP and Google
+  sign-ins redirect to the sidecar's loopback port, which works only from the
+  server's machine. A server with an `https` origin takes them on its own
+  origin instead (`/api/oauth/*/callback`), which a native client's browser
+  sheet can reach.
 - Nothing else is browser-specific. Auth is a bearer header, never a cookie;
   WebSockets authenticate with their first message; CSP and frame headers only
   matter to the web UI.
