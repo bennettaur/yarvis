@@ -279,15 +279,20 @@ describe("an OpenCode process's setup", () => {
     ).toThrow("can't start with -");
   });
 
-  it("denies the home folder but what it may read, writes outside its folder, and other programs", () => {
+  it("denies the home, temp and shared folders but what it may read, writes outside its folder, and other programs", () => {
     const profile = sandboxProfile({
       root: "/private/tmp/run",
       readable: ["/Users/someone/dev/checkout"],
       programs: ["/opt/bin/opencode"],
       secretPaths: [".ssh"],
       home: "/Users/someone",
+      temp: "/private/var/folders/x/T",
     });
-    expect(profile).toContain('(deny file-read* (subpath "/Users/someone"))');
+    // Other runs' context folders sit in the temp folder, and the shared folders aren't the user's alone.
+    expect(profile).toContain(
+      '(deny file-read* (subpath "/Users/someone") (subpath "/private/var/folders/x/T") (subpath "/private/tmp") (subpath "/Users/Shared") (subpath "/Volumes"))',
+    );
+    expect(profile).toContain('(subpath "/Users/someone/.pi/agent")');
     expect(profile).toContain('(subpath "/Users/someone/dev/checkout")');
     expect(profile).toContain('(subpath "/Users/someone/.ssh")');
     expect(profile).toContain('(subpath "/Users/someone/.claude")');

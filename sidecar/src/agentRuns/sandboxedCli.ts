@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { redactSecrets } from "../llm/errors.ts";
 
@@ -45,6 +45,7 @@ function sbString(value: string): string {
   return `"${value}"`;
 }
 
+/** `path` with its links resolved, or `path` itself when it doesn't exist. */
 export function realpathOr(path: string): string {
   try {
     return realpathSync(path);
@@ -63,11 +64,33 @@ function ancestors(path: string): string[] {
 }
 
 /**
- * The sandbox for one process. In the real home folder it reads only the
- * `readable` folders and its programs, never `secretPaths`; it writes only in
- * its own folder; and it runs only `programs` and what it put in that folder
- * (the ripgrep OpenCode downloads, say). The network is open, since the model
- * is reached over it; the CLI offers the model no tool that could use it.
+ * Folders outside the home folder that hold other people's or other runs'
+ * files: the temp folder has other reviews' context folders (other PRs'
+ * text, maybe from private repos), and the rest are shared with other users
+ * or are external disks. The system folders a CLI needs to start stay
+ * readable.
+ */
+const SHARED_DIRS = ["/private/tmp", "/Users/Shared", "/Volumes"];
+
+/**
+ * Under the home folder, denied even inside a folder that `readable` grants:
+ * the CLIs' own logins, besides `SECRET_HOME_PATHS`.
+ */
+const CLI_SECRET_PATHS = [
+  ".claude",
+  ".agents",
+  ".pi/agent",
+  ".config/opencode",
+  ".local/share/opencode",
+];
+
+/**
+ * The sandbox for one process. In the home folder, the temp folder and the
+ * shared folders it reads only the `readable` folders and its programs, never
+ * `secretPaths`; it writes only in its own folder; and it runs only
+ * `programs` and what it put in that folder (the ripgrep OpenCode downloads,
+ * say). The network is open, since the model is reached over it; the CLI
+ * offers the model no tool that could use it.
  */
 export function sandboxProfile(options: {
   root: string;
@@ -75,24 +98,27 @@ export function sandboxProfile(options: {
   readable: readonly string[];
   /** Executables it may run besides those in `root`: the CLI, ripgrep. */
   programs: readonly string[];
-  /** Under the home folder, e.g. `.ssh`. `.claude` and `.agents` are always denied. */
+  /** Under the home folder, e.g. `.ssh`, besides `CLI_SECRET_PATHS`. */
   secretPaths: readonly string[];
   home?: string;
+  /** The user's temp folder; the test's stand-in otherwise. */
+  temp?: string;
 }): string {
   const home = realpathOr(options.home ?? homedir());
+  const denied = [home, realpathOr(options.temp ?? tmpdir()), ...SHARED_DIRS.map(realpathOr)];
   const root = realpathOr(options.root);
   const sub = (path: string) => `(subpath ${sbString(path)})`;
   const lit = (path: string) => `(literal ${sbString(path)})`;
   const readable = [root, ...options.readable.map(realpathOr)];
   // A program is often a link (`/opt/homebrew/bin/opencode`); exec checks both names.
   const programs = [...new Set(options.programs.flatMap((p) => [p, realpathOr(p)]))];
-  const secrets = [...options.secretPaths, ".claude", ".agents"].map((p) => sub(join(home, p)));
+  const secrets = [...options.secretPaths, ...CLI_SECRET_PATHS].map((p) => sub(join(home, p)));
   // Stat-ing the way down to what it may read has to work, or `realpath` fails.
   const metadata = [...new Set([...readable, ...programs].flatMap((p) => [p, ...ancestors(p)]))];
   return [
     "(version 1)",
     "(allow default)",
-    `(deny file-read* ${sub(home)})`,
+    `(deny file-read* ${denied.map(sub).join(" ")})`,
     `(allow file-read* ${[...readable.map(sub), ...programs.map(lit)].join(" ")})`,
     `(deny file-read* ${secrets.join(" ")})`,
     `(allow file-read-metadata ${metadata.map(lit).join(" ")})`,
@@ -127,7 +153,7 @@ export function jsonAnswer(text: string): unknown {
   }
 }
 
-/** Longest text event kept, as for a Claude Code run. */
+/** The parsers' limits, as for a Claude Code run: text kept per event, a tool summary, a path, reads kept. */
 export const MAX_TEXT_CHARS = 8_000;
 export const MAX_SUMMARY_CHARS = 160;
 export const MAX_PATH_CHARS = 4096;

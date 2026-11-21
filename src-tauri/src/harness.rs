@@ -214,8 +214,8 @@ pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
 /// Variables a headless run refuses from a harness. A run over a PR checkout
 /// is kept from reading credentials by rules written against the home folder
 /// (`Read(~/.ssh)`) and the CLI's own config, so moving either one, or
-/// loading code into the CLI itself, would quietly undo them. An OpenCode run
-/// gets folders of its own through the `XDG_*` variables. The sidecar sets its
+/// loading code into the CLI itself, would quietly undo them. An OpenCode or
+/// Pi run gets folders of its own through the `XDG_*` variables. The sidecar sets its
 /// own values over a harness's anyway; refusing them says so on save rather
 /// than letting a setting silently not apply.
 const HEADLESS_REFUSED_ENV: [&str; 8] = [
@@ -230,8 +230,8 @@ const HEADLESS_REFUSED_ENV: [&str; 8] = [
 ];
 
 /// Prefixes every headless run refuses: Claude Code and OpenCode are Bun
-/// builds, so `BUN_*` can load code into them. Pi runs on Node, which
-/// `NODE_OPTIONS` covers.
+/// builds, so `BUN_*` can load code into them. Pi runs on Node, whose
+/// `NODE_OPTIONS` is in [`HEADLESS_REFUSED_ENV`].
 const HEADLESS_REFUSED_PREFIXES: [&str; 1] = ["BUN_"];
 
 /// Prefixes a headless run refuses for one kind. OpenCode reads many
@@ -281,7 +281,7 @@ pub fn headless_run_env(
         .find(|key| refused_in_headless_run(harness.kind, key))
     {
         return Err(format!(
-            "\"{}\" sets {key}, which a verification run can't take: it would move the files the run is kept from reading",
+            "\"{}\" sets {key}, which a verification run can't take: it could move what the run may read or change how the CLI runs",
             harness.name
         ));
     }
@@ -785,9 +785,15 @@ mod tests {
         let mut pi_dir = stored("pi", HarnessKind::Pi, "pi");
         pi_dir.env = BTreeMap::from([("PI_CODING_AGENT_DIR".to_string(), "/x".to_string())]);
         assert!(headless_run_env(&resolve_stored(&pi_dir).unwrap(), || unreachable!()).is_err());
-        let mut pi_zen = stored("pi-zen", HarnessKind::Pi, "pi");
-        pi_zen.env = BTreeMap::from([("OPENCODE_API_KEY".to_string(), "k".to_string())]);
-        assert!(headless_run_env(&resolve_stored(&pi_zen).unwrap(), || unreachable!()).is_ok());
+        // Each kind's prefix is its own: OpenCode's config variables mean nothing to Pi.
+        let mut pi_opencode = stored("pi-oc", HarnessKind::Pi, "pi");
+        pi_opencode.env = BTreeMap::from([("OPENCODE_CONFIG".to_string(), "/x".to_string())]);
+        assert!(
+            headless_run_env(&resolve_stored(&pi_opencode).unwrap(), || unreachable!()).is_ok()
+        );
+        let mut claude_pi = stored("cc-pi", HarnessKind::ClaudeCode, "claude");
+        claude_pi.env = BTreeMap::from([("PI_CODING_AGENT_DIR".to_string(), "/x".to_string())]);
+        assert!(headless_run_env(&resolve_stored(&claude_pi).unwrap(), || unreachable!()).is_ok());
     }
 
     #[test]

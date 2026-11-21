@@ -9,13 +9,13 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   makePiDirs,
   PiEventParser,
   piCommand,
   piEnv,
+  piInstructions,
   piLaunch,
   piTools,
   removePiDirs,
@@ -136,7 +136,10 @@ describe("reading Pi's output", () => {
   });
 
   it("fails a run Pi aborted, or one that settled without answering", () => {
-    expect(parse([assistant('{"a": 1}', "stop"), settled(true)]).results[0]?.isError).toBe(true);
+    expect(parse([assistant('{"a": 1}', "stop"), settled(true)]).results[0]).toMatchObject({
+      isError: true,
+      text: "Pi stopped the run",
+    });
     expect(parse([settled()]).results[0]).toMatchObject({
       isError: true,
       text: "Pi settled without answering",
@@ -192,33 +195,69 @@ describe("a Pi process's setup", () => {
     expect(existsSync(dirs.root)).toBe(false);
   });
 
-  it("runs an npm install's script with the node beside it, and may read only its package", () => {
-    const base = realpathSync(makeTempDir("yarvis-pi-launch-"));
+  // Pi runs on Node, so these need one; bun's own binary would prove nothing about it.
+  const node = Bun.which("node");
+
+  /** An npm-shaped install: `bin/pi` links to the package's script, with `bin/node` beside it. */
+  function npmInstall(base: string, body = "", nodeBinary = node ?? "") {
     const pkg = join(base, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
     mkdirSync(join(pkg, "dist"), { recursive: true });
-    writeFileSync(join(pkg, "package.json"), "{}");
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ bin: { pi: "dist/cli.js" } }));
     const script = join(pkg, "dist", "cli.js");
-    writeFileSync(script, "#!/usr/bin/env node\n");
-    mkdirSync(join(base, "bin"));
+    writeFileSync(script, `#!/usr/bin/env node\n${body}`);
+    chmodSync(script, 0o755);
+    mkdirSync(join(base, "bin"), { recursive: true });
     symlinkSync(script, join(base, "bin", "pi"));
-    symlinkSync(process.execPath, join(base, "bin", "node"));
-    const launch = piLaunch(join(base, "bin", "pi"), () => null);
-    expect(launch.args).toEqual([script]);
-    expect(launch.program).toBe(launch.programs[0] ?? "");
-    expect(launch.readable).toEqual([pkg]);
+    if (nodeBinary) symlinkSync(nodeBinary, join(base, "bin", "node"));
+    return { pkg, script, pi: join(base, "bin", "pi") };
+  }
 
-    const wrapper = join(base, "bin", "pi-wrapper");
-    writeFileSync(wrapper, '#!/bin/sh\nexec pi "$@"\n');
-    expect(piLaunch(wrapper, () => null).args).toEqual([]);
-    const binary = join(base, "bin", "pi-compiled");
-    writeFileSync(binary, "\x7fELF");
-    expect(piLaunch(binary, () => null)).toEqual({
-      program: binary,
-      args: [],
-      programs: [binary],
-      readable: [],
-    });
-    expect(() => piLaunch(join(base, "bin", "pi"), () => null)).not.toThrow();
+  it.skipIf(!node)(
+    "runs an npm install's script with the node beside it, and may read only its package",
+    () => {
+      const base = realpathSync(makeTempDir("yarvis-pi-launch-"));
+      const { pkg, script, pi } = npmInstall(base);
+      expect(piLaunch(pi, () => null)).toEqual({
+        program: realpathSync(node ?? ""),
+        args: [script],
+        programs: [realpathSync(node ?? "")],
+        readable: [pkg],
+      });
+
+      const binary = join(base, "bin", "pi-compiled");
+      writeFileSync(binary, "\x7fELF");
+      expect(piLaunch(binary, () => null)).toEqual({
+        program: binary,
+        args: [],
+        programs: [binary],
+        readable: [],
+      });
+    },
+  );
+
+  it("refuses a Node script it can't run under the sandbox, or whose package it can't tell", () => {
+    const noNode = npmInstall(realpathSync(makeTempDir("yarvis-pi-launch-")), "", "");
+    expect(() => piLaunch(noNode.pi, () => null)).toThrow("no node beside it or on PATH");
+    // A version manager's shim resolves to the manager, not to Node.
+    const shimDir = realpathSync(makeTempDir("yarvis-pi-shim-"));
+    writeFileSync(join(shimDir, "mise"), "");
+    symlinkSync(join(shimDir, "mise"), join(shimDir, "node"));
+    expect(() => piLaunch(noNode.pi, () => join(shimDir, "node"))).toThrow("not Node itself");
+    // A package.json above the script that doesn't name it as a bin isn't Pi's.
+    const stray = realpathSync(makeTempDir("yarvis-pi-stray-"));
+    writeFileSync(join(stray, "package.json"), "{}");
+    mkdirSync(join(stray, "bin"));
+    writeFileSync(join(stray, "bin", "pi"), "#!/usr/bin/env node\n");
+    symlinkSync(node ?? "/usr/bin/true", join(stray, "bin", "node"));
+    expect(() => piLaunch(join(stray, "bin", "pi"), () => null)).toThrow(
+      node ? "isn't the pi bin of an npm package" : "",
+    );
+  });
+
+  it("names only the tools the run was given in its prompt", () => {
+    expect(piInstructions("/checkout", "{}", ["read", "grep", "ls"])).toContain(
+      "to read, grep and ls.",
+    );
   });
 
   it("runs Pi under the sandbox with nothing loaded but the run's prompt, and the task last", () => {
@@ -253,41 +292,41 @@ describe("a Pi process's setup", () => {
     expect(args.slice(-2)).toEqual(["--", "-count the files"]);
   });
 
-  // Pi runs on Node, so the test needs one; bun's own binary would prove nothing about it.
-  const node = Bun.which("node");
-
   it.skipIf(!existsSync(SANDBOX_EXEC) || !node)(
-    "holds under the real sandbox-exec: Node runs Pi's script, which reads only what it was given",
+    "holds under the real sandbox-exec: Node runs Pi's package, which reads only what it was given",
     () => {
       const base = realpathSync(makeTempDir("yarvis-pi-sandbox-"));
-      const pkg = join(base, "pkg");
-      mkdirSync(pkg);
-      writeFileSync(join(pkg, "package.json"), "{}");
-      const script = join(pkg, "cli.js");
-      writeFileSync(
-        script,
+      // Pi installed in the home folder, as under a version manager, next to its logins.
+      const home = join(base, "home");
+      const { pi, pkg } = npmInstall(
+        home,
         [
-          "#!/usr/bin/env node",
           'const fs = require("node:fs");',
           "const can = (p) => { try { fs.readFileSync(p); return 1; } catch { return 0; } };",
           "console.log(JSON.stringify(process.argv.slice(2).map(can)));",
         ].join("\n"),
       );
-      chmodSync(script, 0o755);
-      mkdirSync(join(base, "bin"));
-      symlinkSync(script, join(base, "bin", "pi"));
-      symlinkSync(node ?? "", join(base, "bin", "node"));
-      const checkout = join(base, "checkout");
+      writeFileSync(join(pkg, "dep.js"), "x");
+      mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+      writeFileSync(join(home, ".pi", "agent", "auth.json"), "{}");
+      writeFileSync(join(home, "notes.txt"), "x");
+      // Another run's context folder, in the temp folder.
+      const temp = join(base, "temp");
+      mkdirSync(join(temp, "yarvis-verification-other"), { recursive: true });
+      writeFileSync(join(temp, "yarvis-verification-other", "context.md"), "x");
+      const checkout = join(home, "checkout");
       mkdirSync(checkout);
       writeFileSync(join(checkout, "a.txt"), "x");
-      const dirs = makePiDirs(base);
+      const dirs = makePiDirs(temp);
       try {
-        const launch = piLaunch(join(base, "bin", "pi"), () => null);
+        const launch = piLaunch(pi, () => null);
         const profile = sandboxProfile({
           root: dirs.root,
           readable: [checkout, ...launch.readable],
           programs: launch.programs,
           secretPaths: [".ssh"],
+          home,
+          temp,
         });
         const run = spawnSync(SANDBOX_EXEC, [
           "-p",
@@ -295,10 +334,13 @@ describe("a Pi process's setup", () => {
           launch.program,
           ...launch.args,
           join(checkout, "a.txt"),
-          join(homedir(), ".gitconfig"),
+          join(pkg, "dep.js"),
+          join(home, ".pi", "agent", "auth.json"),
+          join(home, "notes.txt"),
+          join(temp, "yarvis-verification-other", "context.md"),
         ]);
         expect(run.stderr.toString()).toBe("");
-        expect(JSON.parse(run.stdout.toString())).toEqual([1, 0]);
+        expect(JSON.parse(run.stdout.toString())).toEqual([1, 1, 0, 0, 0]);
       } finally {
         removePiDirs(dirs);
       }

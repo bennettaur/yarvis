@@ -92,7 +92,8 @@ A Claude Code harness whose command runs `claude` itself, or an OpenCode or
 Pi harness whose command runs `opencode` or `pi` itself, not through a wrapper such as
 `ssh box claude`, can also run a PR's [verification
 checks](review-workspaces.md), picked in **Settings → PR review** or on the
-Verification tab. Those runs use only the harness's program and its
+Verification tab. Those runs use only the harness's program, found on the
+`PATH` Yarvis started with unless it's an absolute path, and its
 environment, plain and secret, not the rest of its command, so a variable
 the run needs belongs in the environment list rather than before the
 program in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
@@ -130,7 +131,9 @@ a thinking level (`anthropic/claude-sonnet-5-5:high`). Pi has no permission
 rules of its own, so it is offered only its read, grep, find and ls tools,
 and the macOS sandbox is what keeps them to the checkout. Grep needs
 ripgrep (`rg`) and find needs `fd` on your `PATH`; Yarvis doesn't let Pi
-download them, and leaves a tool out when its program is missing.
+download them, and leaves a tool out when its program is missing. Install
+Pi with npm, so the `node` it runs with sits beside it. Pi runs need macOS,
+like OpenCode's.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than

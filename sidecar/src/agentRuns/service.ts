@@ -220,7 +220,7 @@ export interface ClaudeRunDeps {
   /** What a fan-out run's processes wait on; defaults to {@link fanOutSlots}. */
   slots?: ProcessSlots;
   /**
-   * OpenCode only: what applies a process's sandbox profile; defaults to
+   * OpenCode and Pi only: what applies a process's sandbox profile; defaults to
    * macOS's `sandbox-exec`. Tests on a machine without it pass a stand-in.
    */
   sandboxExec?: string;
@@ -842,7 +842,7 @@ async function openCodeSetup<T, R>(
   options: FanOutRunOptions<T, R>,
   deps: ClaudeRunDeps,
 ): Promise<SandboxedSetup> {
-  const { program, model, sandboxExec } = checkSandboxed("OpenCode", options, deps);
+  const { program, model, sandboxExec } = checkSandboxedRun("OpenCode", options, deps);
   const actions = openCodeActions(options.allowedTools);
   const readable = [options.cwd, ...(options.addDirs ?? [])];
   // OpenCode's grep and glob run ripgrep: the one on PATH, or one it downloads into its folder.
@@ -922,21 +922,24 @@ function sandboxedSystemPrompt(
   ].join("\n\n");
 }
 
-/** Checks shared by the sandboxed backends; the harness's program, resolved. */
-function checkSandboxed<T, R>(
-  name: string,
+/**
+ * Checks shared by the sandboxed backends, returning the resolved program,
+ * the model and what applies the profile. `label` names the CLI in errors.
+ */
+function checkSandboxedRun<T, R>(
+  label: string,
   options: FanOutRunOptions<T, R>,
   deps: ClaudeRunDeps,
 ): { program: string; model: string; sandboxExec: string } {
-  if (!deps.program) throw new Error(`a ${name} run needs the harness's program`);
+  if (!deps.program) throw new Error(`a ${label} run needs the harness's program`);
   const model = options.model;
   // Settings hold the stricter rule; this only keeps an alias like "sonnet" out.
   if (!model || !/^[^/\s]+\/\S+$/.test(model)) {
-    throw new Error(`a ${name} run needs its model as provider/model`);
+    throw new Error(`a ${label} run needs its model as provider/model`);
   }
   const sandboxExec = deps.sandboxExec ?? SANDBOX_EXEC;
   if (!existsSync(sandboxExec)) {
-    throw new Error(`${name} runs need macOS's sandbox-exec, which isn't on this machine`);
+    throw new Error(`${label} runs need macOS's sandbox-exec, which isn't on this machine`);
   }
   return { program: harnessProgram(deps.program), model, sandboxExec };
 }
@@ -950,10 +953,13 @@ async function piSetup<T, R>(
   options: FanOutRunOptions<T, R>,
   deps: ClaudeRunDeps,
 ): Promise<SandboxedSetup> {
-  const { program, model, sandboxExec } = checkSandboxed("Pi", options, deps);
+  const { program, model, sandboxExec } = checkSandboxedRun("Pi", options, deps);
   // Pi's grep runs ripgrep and its find runs fd, from PATH; offline, it downloads neither.
-  const helpers = { rg: onPath("rg"), fd: onPath("fd") };
-  const tools = piTools(options.allowedTools, (name) => !!helpers[name as keyof typeof helpers]);
+  const helpers: Record<string, string | null> = { rg: onPath("rg"), fd: onPath("fd") };
+  const tools = piTools(options.allowedTools, (name) => !!helpers[name]);
+  if (tools.length === 0) {
+    throw new Error("a Pi run has no tool to use: its grep needs rg and its find needs fd on PATH");
+  }
   const launch = piLaunch(program, onPath);
   const readable = [options.cwd, ...(options.addDirs ?? [])];
   const answerSchema = jsonSchemaArg(options.partSchema);
@@ -968,7 +974,7 @@ async function piSetup<T, R>(
       try {
         writePiSystemPrompt(
           dirs,
-          sandboxedSystemPrompt(options, part.agent, piInstructions(checkout, answerSchema)),
+          sandboxedSystemPrompt(options, part.agent, piInstructions(checkout, answerSchema, tools)),
         );
         const command = piCommand({
           sandboxExec,

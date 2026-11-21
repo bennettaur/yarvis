@@ -1703,6 +1703,12 @@ async function harnessRun(
   };
 }
 
+/** The CLIs a harness maps tiers to models for, as their names are written. */
+const TIER_CLI_NAMES: Record<Exclude<RunInputs["harness"]["kind"], "claude-code">, string> = {
+  opencode: "OpenCode",
+  pi: "Pi",
+};
+
 /**
  * The model a section's run is started with: the Claude Code alias itself, or
  * the OpenCode or Pi model the harness's settings give that alias. Throws when
@@ -1717,7 +1723,7 @@ function harnessModel(
   const mapped = settings.harnessModels?.[harness.id]?.[model];
   if (!mapped) {
     throw new ReviewWorkspaceError(
-      `harness "${harness.id}" has no ${harness.kind === "pi" ? "Pi" : "OpenCode"} model for the ${model} tier; pick one under Settings → PR review → Review models`,
+      `harness "${harness.id}" has no ${TIER_CLI_NAMES[harness.kind]} model for the ${model} tier; pick one under Settings → PR review → Review models`,
       400,
     );
   }
