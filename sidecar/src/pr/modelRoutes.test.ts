@@ -186,6 +186,13 @@ describe("GET/PATCH /api/pr-models/verification", () => {
             secretEnv: ["OPENCODE_FLAGS"],
           },
           {
+            id: "oc-zen",
+            name: "OC Zen",
+            kind: "opencode",
+            command: "opencode",
+            secretEnv: ["OPENCODE_API_KEY"],
+          },
+          {
             id: "moved",
             name: "Moved",
             kind: "claude-code",
@@ -203,6 +210,7 @@ describe("GET/PATCH /api/pr-models/verification", () => {
       { id: "claude", name: "Claude", kind: "claude-code" },
       { id: "bedrock", name: "Bedrock", kind: "claude-code" },
       { id: "oc", name: "OpenCode", kind: "opencode" },
+      { id: "oc-zen", name: "OC Zen", kind: "opencode" },
     ]);
     expect((await patch({ harness: "oc-wrapped" })).status).toBe(400);
     expect((await patch({ harness: "oc-moved" })).status).toBe(400);
