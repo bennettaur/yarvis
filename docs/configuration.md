@@ -335,8 +335,10 @@ origin off loopback means Web application, none means Desktop app. Changing
 
 Google only accepts an `https` redirect whose host ends in a domain on the
 [Public Suffix List](https://publicsuffix.org/), and refuses raw IP
-addresses. Whether a `*.ts.net` name passes that check hasn't been
-confirmed. A server behind a domain you own works either way.
+addresses. `ts.net` is on that list (in its private section, added by
+Tailscale), so a `<machine>.<tailnet>.ts.net` name from `tailscale serve`
+meets the rule. Nobody has tried one against Google yet, so if the console
+refuses it, use a domain you own.
 
 ## Environment variables
 
