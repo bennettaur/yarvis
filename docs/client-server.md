@@ -513,13 +513,12 @@ secrets store included, so treat `terminal` as full trust. Only passkey
 devices and `yarvis-server device add` get it; a token minted over the API
 can't.
 
-`chat` opens no PTY, but it is not a sandbox either. Every sidecar write
-route not listed in `SCOPE_RULES` needs only `chat`, and some of those write
-into workspace worktrees (`PUT /api/workspaces/:id/repos/:wrId/file`) or
-start work there. A file planted in a worktree, such as a hook config, runs
-when an agent session or a commit there next reads it. Give `chat` only to
-clients you'd trust with the workspaces. `admin` reaches a shell indirectly
-too: `set_agent` and `set_agent_harnesses` choose the command
+`chat` opens no PTY, and the sidecar routes that would amount to one need
+`terminal` too: anything that writes into a worktree, runs git on it, clones
+a PR, or starts a process there (see "Sidecar" below). A file planted in a
+worktree, such as a hook config, runs when an agent session or a commit
+there next reads it, so writing one is as good as a shell. `admin` reaches a
+shell indirectly: `set_agent` and `set_agent_harnesses` choose the command
 `pty_start_claude` runs.
 
 - `POST /api/core/pty_write` `{ id, data }` → `204`. `data` is at most 64 KiB.
@@ -683,8 +682,19 @@ Sidecar:
   sections, the GitHub sign-in, standing tool consent, job and specialist
   definitions, registered repos) need `admin`, and so does reading the MCP
   endpoint's connection info, which carries its token. Answers to tool
-  approvals, permission prompts and agent questions need `approve`. The proxy
-  keeps that list (`SCOPE_RULES` in `sidecar_proxy.rs`). A path with `..`, an
+  approvals, permission prompts and agent questions need `approve`.
+  Workspace and review-workspace writes need `terminal`: creating,
+  provisioning and archiving a workspace, saving a file, merging a stack,
+  adding, refreshing and removing a review PR, running its setup script, and
+  starting a Claude Code session or a verification or re-review run. So do
+  the routes elsewhere that start a workspace or hand work to its agent
+  (`/api/pr/workspace`, `/api/pr/resolve-conflicts`, `/api/pr/fix-checks`,
+  the issue, JIRA and Azure Boards `start-work`) and running a scheduled job
+  now (`/api/jobs/agent-jobs/:id/run`). The ones
+  that only change rows stay `chat`: renaming, linking PRs, tasks and issues,
+  review comments, stopping the agent, marking a PR reviewed. A workspace
+  write route the list doesn't name needs `terminal`, so a new one fails
+  closed. The proxy keeps that list (`SCOPE_RULES` in `sidecar_proxy.rs`). A path with `..`, an
   encoded slash or backslash, or an empty segment is refused. The client's own
   `Authorization` and `X-Yarvis-Device-Id` headers are dropped before the
   server adds its own. `sidecarFetch("/api/status")` becomes
@@ -737,6 +747,11 @@ Core commands that changed on the way from `invoke`:
   made for an old RP ID can't be replaced by ones for the new name.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
+- **`chat` still reaches workspaces through the assistant.** The proxy gates
+  the routes, but a chat turn runs the assistant's own tools in the sidecar,
+  and some of them start workspaces or send to agent sessions. Those are
+  bounded by the assistant's tool rules (`AGENTS.md`), not by the device's
+  scope. Heads-down passes and Omni weren't surveyed for the same pattern.
 - **A lock doesn't reach what already holds secrets.** Locking stops the
   sidecar's own process, but not processes it started that outlive it, and
   not PTY sessions, which keep the environment they started with.
