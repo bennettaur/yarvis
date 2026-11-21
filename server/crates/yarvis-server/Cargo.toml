@@ -9,7 +9,11 @@ rust-version.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chacha20poly1305 = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hkdf = "0.12"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 rand = "0.9"
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -19,17 +23,19 @@ signature = "2"
 ssh-agent-lib = "0.6"
 ssh-key = { version = "0.6", features = ["ed25519"] }
 thiserror = "2"
+tokio-tungstenite = "0.29"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "fs", "process", "io-util"] }
 toml = "0.9"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webauthn-rs = "0.6.2"
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
 [dev-dependencies]
-futures-util = "0.3"
-http-body-util = "0.1"
 tempfile = "3"
-tokio-tungstenite = "0.28"
-tower = { version = "0.5", features = ["util"] }
 webauthn-authenticator-rs = { version = "0.6.2", features = ["softpasskey"] }

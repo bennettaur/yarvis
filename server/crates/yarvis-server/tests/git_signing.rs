@@ -29,7 +29,7 @@ async fn signer() -> Signer {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
-    config.secrets.backend = SecretBackendKind::Vault;
+    config.secrets.backend = Some(SecretBackendKind::Vault);
     config.ssh_agent.enabled = true;
     let created = Vault::init(dir.path(), true).unwrap();
     let harness = Harness::with_config(config).await;

@@ -57,7 +57,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
 }
 
 async fn only_with_vault(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if state.config.secrets.backend != SecretBackendKind::Vault {
+    if state.config.secrets.backend != Some(SecretBackendKind::Vault) {
         return ApiError::not_found().into_response();
     }
     next.run(request).await

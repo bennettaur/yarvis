@@ -7,6 +7,8 @@ use yarvis_server::auth::passkeys::PasskeyAuth;
 use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
+use yarvis_server::secret_blob::Store as SecretStore;
+use yarvis_server::sidecar::SupervisorDeps;
 use yarvis_server::store::Store;
 use yarvis_server::vault::Vault;
 use yarvis_server::{AppState, app};
@@ -44,15 +46,21 @@ async fn main() {
     let config = Config::load(&config_path).unwrap_or_else(|e| fail(e));
     let store = Store::open(&config.server.data_dir.join("server.db")).unwrap_or_else(|e| fail(e));
     match command {
-        Command::Serve => serve(config, store).await,
+        Command::Serve => serve(config, store, &config_path).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
         Command::VaultInit => vault_init(&config),
     }
 }
 
-async fn serve(config: Config, store: Store) {
+async fn serve(config: Config, store: Store, config_path: &std::path::Path) {
     if let Err(e) = PasskeyAuth::new(&config.auth, store.clone()) {
         fail(e);
+    }
+    if config.secrets.backend == Some(SecretBackendKind::Vault) {
+        fail(format!(
+            "the vault backend isn't built yet; set [secrets] backend to \"keychain\" or \"onepassword\" in {}",
+            config_path.display()
+        ));
     }
     let bind = config.server.bind;
     let setup_code_file = config.server.data_dir.join("setup-code");
@@ -79,6 +87,7 @@ async fn serve(config: Config, store: Store) {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
+    let supervisor = start_core(&state).await;
     tracing::info!("listening on http://{bind}");
     // The peer address feeds the per-IP limit on the sign-in routes.
     let server = axum::serve(
@@ -95,6 +104,12 @@ async fn serve(config: Config, store: Store) {
             shutdown_signal().await;
             tokio::time::sleep(SHUTDOWN_GRACE).await;
         } => tracing::info!("open connections didn't close in time; exiting"),
+    }
+    // Dropping the supervisor kills the sidecar (`kill_on_drop`), so it never
+    // outlives the server.
+    if let Some(supervisor) = supervisor {
+        supervisor.abort();
+        let _ = supervisor.await;
     }
 }
 
@@ -129,7 +144,7 @@ async fn add_device(store: Store, name: &str, scopes: &str) {
 /// The recovery key goes to stdout and nowhere else; the rest goes to
 /// stderr, so `vault init > key.txt` captures only the key.
 fn vault_init(config: &Config) {
-    if config.secrets.backend != SecretBackendKind::Vault {
+    if config.secrets.backend != Some(SecretBackendKind::Vault) {
         eprintln!(
             "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
         );
@@ -191,6 +206,40 @@ fn default_config_path() -> PathBuf {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".yarvis").join("server.toml"))
         .unwrap_or_else(|| PathBuf::from("server.toml"))
+}
+
+/// Settings and secrets housekeeping, then the sidecar. Returns the
+/// supervisor's task, if the sidecar runs.
+async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
+    state.settings.ensure_dir();
+    // Both migrations move values a past desktop build wrote to the Keychain,
+    // so they run unless server.toml picked another store for this server.
+    if matches!(
+        state.config.secrets.backend,
+        None | Some(SecretBackendKind::Keychain)
+    ) {
+        let (settings, secrets) = (state.settings.clone(), state.secrets.clone());
+        let migrated = tokio::task::spawn_blocking(move || {
+            let keychain = SecretStore::keychain();
+            settings.migrate_keychain_settings(&secrets, &keychain);
+            yarvis_server::embeddings_secrets::migrate_legacy_item(&secrets, &keychain);
+        })
+        .await;
+        if let Err(e) = migrated {
+            tracing::error!("the Keychain migrations panicked: {e}");
+        }
+    }
+    if !state.config.sidecar.enabled {
+        tracing::info!("sidecar.enabled is false; not starting the sidecar");
+        return None;
+    }
+    let deps = SupervisorDeps {
+        config: state.config.clone(),
+        settings: state.settings.clone(),
+        secrets: state.secrets.clone(),
+        events: state.events.clone(),
+    };
+    Some(tokio::spawn(state.sidecar.clone().supervise(deps)))
 }
 
 #[cfg(test)]

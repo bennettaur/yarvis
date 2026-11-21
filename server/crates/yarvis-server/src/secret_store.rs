@@ -27,3 +27,7 @@ pub trait SecretBackend: Send + Sync {
     /// a read-modify-write of the one blob.
     fn write_root(&self, blob: &str) -> Result<(), SecretError>;
 }
+
+pub mod keychain;
+pub mod memory;
+pub mod onepassword;

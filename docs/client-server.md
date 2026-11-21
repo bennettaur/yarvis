@@ -177,7 +177,7 @@ rp_id = "localhost"
 origins = ["http://localhost:7878"]
 
 [secrets]
-backend = "keychain"            # "vault" | "keychain" | "onepassword"
+# backend = "keychain"          # "vault" | "keychain" | "onepassword"
 
 [ssh_agent]
 enabled = false                 # the server's own ssh-agent; needs "vault"
@@ -186,7 +186,16 @@ enabled = false                 # the server's own ssh-agent; needs "vault"
 [sidecar]
 enabled = true
 # command = ["bun", "run", "..."]
+# migrations_dir = "..."       # for a compiled sidecar: YARVIS_MIGRATIONS_DIR
 ```
+
+With `secrets.backend` unset, the server follows `secretBackend` in
+`~/.yarvis/settings.json`, as the desktop app does: 1Password when it says
+`"onepassword"`, the Keychain otherwise. An existing install, such as a work
+laptop already on 1Password, keeps its store when the Tauri app starts a local
+server, and Settings can still switch between the two. Once `server.toml`
+names a backend, it wins, and Settings can only change which 1Password item a
+1Password server reads.
 
 The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
 since the vault is where the signing key lives.
@@ -449,13 +458,37 @@ Sidecar:
 
 - `ANY /api/sidecar/{*path}` → the sidecar's `/{path}`, with `read` for `GET`
   and `chat` for everything else. Routes that change what the sidecar may do
-  (MCP servers, custom providers, agent and job definitions, settings) need
-  `admin`. The proxy keeps that list. A path with `..` or an encoded slash is
-  refused. The client's own `Authorization` and `X-Yarvis-Device-Id` headers
-  are dropped before the server adds its own.
+  (MCP servers, custom providers, model choices, the sidecar's settings
+  sections, the GitHub sign-in, standing tool consent, job and specialist
+  definitions, registered repos) need `admin`, and so does reading the MCP
+  endpoint's connection info, which carries its token. Answers to tool
+  approvals, permission prompts and agent questions need `approve`. The proxy
+  keeps that list (`SCOPE_RULES` in `sidecar_proxy.rs`). A path with `..`, an
+  encoded slash or backslash, or an empty segment is refused. The client's own
+  `Authorization` and `X-Yarvis-Device-Id` headers are dropped before the
+  server adds its own. `sidecarFetch("/api/status")` becomes
+  `/api/sidecar/api/status`: only `/health` and paths under `/api/` are
+  served.
+- While no sidecar process is up (the supervisor is waiting for the secrets,
+  or restarting it), the proxy answers `503` and sends nothing to the
+  sidecar's port, which another local process could have taken.
+- A response still streaming when its device is revoked ends there.
 - Routes that local processes call on the sidecar with their own scoped
   tokens (Claude Code hooks posting to `/ingest/*`, the browser extension's
   host, the MCP endpoint) are not proxied. They stay on loopback.
+- A WebSocket on the proxy authenticates with its first message like every
+  other socket, and needs what a write to its path needs (at least `chat`),
+  since a socket can send as well as read.
+
+Core commands that changed on the way from `invoke`:
+
+- `set_secret_backend` behaves as it did when `server.toml` names no backend.
+  When it names one, a request for another kind gets `409`, and on a
+  1Password server it switches the item, copying the secrets into it as
+  before. The first item such a server is given is filled from the Keychain.
+- `get_sidecar_info` and `get_sidecar_log_path` are gone. Clients reach the
+  sidecar through the proxy, and the log is on the server's disk (the sidecar's
+  `/api/logs` serves its recent lines).
 
 ## Open questions
 

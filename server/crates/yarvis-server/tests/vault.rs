@@ -45,7 +45,7 @@ async fn vault_harness_without_a_vault(agent_enabled: bool) -> VaultHarness {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
-    config.secrets.backend = SecretBackendKind::Vault;
+    config.secrets.backend = Some(SecretBackendKind::Vault);
     config.ssh_agent.enabled = agent_enabled;
     config.validate().unwrap();
     VaultHarness {

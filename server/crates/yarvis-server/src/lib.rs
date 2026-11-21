@@ -1,24 +1,35 @@
 //! The Yarvis server. See `docs/client-server.md` for the design.
 
+pub mod agent_policy;
 pub mod approvals;
 pub mod auth;
 pub mod config;
+pub mod core_api;
+pub mod custom_providers;
 pub mod devices;
+pub mod embeddings_secrets;
 pub mod error;
 pub mod events;
+pub mod harness;
 pub mod http_guard;
+pub mod mcp;
 pub mod rate_limit;
+pub mod secret_blob;
 pub mod secret_store;
+pub mod settings;
+pub mod sidecar;
+pub mod sidecar_proxy;
 pub mod ssh_agent;
 pub mod store;
 pub mod vault;
+pub mod web;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::FromRef;
-use axum::routing::get;
+use axum::routing::{any, get, post};
 
 use crate::approvals::Approvals;
 use crate::auth::passkeys::PasskeyAuth;
@@ -26,6 +37,9 @@ use crate::auth::{Auth, Authed, DeviceContext, Read};
 use crate::config::Config;
 use crate::events::EventLog;
 use crate::rate_limit::RateLimiter;
+use crate::secret_blob::SecretBlob;
+use crate::settings::SettingsStore;
+use crate::sidecar::Sidecar;
 use crate::ssh_agent::SshAgent;
 use crate::store::Store;
 use crate::vault::Vault;
@@ -52,6 +66,9 @@ pub struct AppState {
     /// Runs only while the vault is unlocked, and never when
     /// `ssh_agent.enabled` is off.
     pub ssh_agent: SshAgent,
+    pub settings: SettingsStore,
+    pub secrets: SecretBlob,
+    pub sidecar: Sidecar,
 }
 
 impl AppState {
@@ -59,6 +76,12 @@ impl AppState {
     /// first with [`PasskeyAuth::new`] to exit with a message instead.
     pub fn new(config: Config, store: Store) -> Self {
         let events = EventLog::new(store.clone());
+        // No I/O: settings are read on use, and the sidecar only starts when
+        // `main` runs its supervisor.
+        let settings = SettingsStore::new(SettingsStore::default_path());
+        let secrets = SecretBlob::from_config(config.secrets.backend, settings.clone());
+        let sidecar = Sidecar::new(&config.server.data_dir)
+            .expect("couldn't pick a loopback port for the sidecar");
         Self {
             passkeys: PasskeyAuth::new(&config.auth, store.clone())
                 .unwrap_or_else(|e| panic!("invalid [auth] config: {e}")),
@@ -66,6 +89,9 @@ impl AppState {
             auth_limiter: RateLimiter::new(AUTH_REQUESTS_PER_MINUTE, Duration::from_secs(60)),
             vault: Vault::new(&config.server.data_dir),
             ssh_agent: SshAgent::default(),
+            settings,
+            secrets,
+            sidecar,
             config: Arc::new(config),
             auth: Auth::new(store.clone()),
             events,
@@ -91,6 +117,9 @@ pub fn app(state: AppState) -> Router {
         .merge(approvals::router())
         .merge(vault::routes::router(&state))
         .merge(ssh_agent::router(&state))
+        .route("/api/sidecar/{*path}", any(sidecar_proxy::proxy))
+        .route("/api/core/{command}", post(core_api::command))
+        .merge(web::fallback(state.config.server.web_dir.as_deref()))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             http_guard::guard,
