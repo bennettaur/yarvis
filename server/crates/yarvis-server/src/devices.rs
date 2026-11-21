@@ -45,7 +45,8 @@ pub fn device_name(raw: &str) -> ApiResult<String> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceRow {
-    id: String,
+    /// `deviceId`, as in `/api/devices/me`, sign-in and the device events.
+    device_id: String,
     name: String,
     kind: String,
     scopes: Vec<Scope>,
@@ -76,7 +77,7 @@ async fn list(
                 let id: String = row.get(0)?;
                 Ok(DeviceRow {
                     current: id == device.device_id,
-                    id,
+                    device_id: id,
                     name: row.get(1)?,
                     kind: row.get(2)?,
                     scopes: decode_scopes(&row.get::<_, String>(3)?),
