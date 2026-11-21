@@ -37,7 +37,9 @@ function answerFor(req: { method: string; params: { harness?: string } }) {
   if (req.method !== "harness.runEnv") return {};
   if (req.params.harness === "garbled") return { result: { program: 1 } };
   if (req.params.harness === "pi") return { ok: false, error: '"Pi" isn\'t a Claude Code harness' };
-  return { result: { program: "/opt/bin/claude", env: { API_KEY: "sk-test" } } };
+  return {
+    result: { kind: "claude-code", program: "/opt/bin/claude", env: { API_KEY: "sk-test" } },
+  };
 }
 
 beforeAll(async () => {
@@ -106,6 +108,7 @@ describe("harnessRunEnv", () => {
   it("asks for one harness by id and returns the core's answer", async () => {
     requests.length = 0;
     expect(await harnessRunEnv("bedrock")).toEqual({
+      kind: "claude-code",
       program: "/opt/bin/claude",
       env: { API_KEY: "sk-test" },
     });

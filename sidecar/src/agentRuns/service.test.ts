@@ -643,7 +643,7 @@ describe("a fan-out run", () => {
     const log = await events(handle.id);
     // The parts run at once, so either may retry first.
     expect(retried(log).sort()).toEqual([
-      expect.stringContaining("Retrying the broken part: claude exited with code 1"),
+      expect.stringContaining("Retrying the broken part: Claude Code exited with code 1"),
       expect.stringContaining("Retrying the flaky part: its answer did not match"),
     ]);
     expect(log).toContainEqual(
@@ -821,6 +821,245 @@ cat "${answer}"`,
       "at least one part",
     );
     expect(await db.select().from(agentRuns)).toHaveLength(0);
+  });
+});
+
+describe("a fan-out run on OpenCode", () => {
+  const countsSchema = z.object({ counts: z.array(z.number()) });
+  const checkout = makeTempDir("yarvis-oc-checkout-");
+  const context = makeTempDir("yarvis-oc-context-");
+  const catalog = join(dir, "oc-catalog.json");
+  writeFileSync(catalog, "{}");
+  // Stands in for sandbox-exec, which CI's Linux runners don't have: drops `-p <profile>`.
+  const sandboxExec = fakeClaude(dir, "oc-sandbox", 'shift 2\nexec "$@"');
+  const base = {
+    kind: "test-kind",
+    targetKey: "gh:o/r/1",
+    cwd: checkout,
+    addDirs: [context],
+    allowedTools: ["Read", "Grep", "Glob"],
+    timeoutMs: 10_000,
+    model: "anthropic/claude-sonnet-5-5",
+    backend: "opencode" as const,
+    partSchema: countSchema,
+    combine: (answers: unknown[]) => ({
+      counts: answers.map((a) => (a as { count: number }).count),
+    }),
+    outputSchema: countsSchema,
+  };
+  const part = (agent: string, word: string) => ({
+    description: `the ${word} part`,
+    agent: `yarvis-review:${agent}`,
+    prompt: `count the ${word} files`,
+    fallback: { count: -1 },
+  });
+  const ocDeps = (program: string, env: Record<string, string> = {}) => ({
+    program,
+    env,
+    instance: "test",
+    registry,
+    sandboxExec,
+    loadCatalog: async () => catalog,
+  });
+  const lines = (...items: unknown[]) => items.map((i) => JSON.stringify(i)).join("\n");
+  const answer = (text: string) =>
+    lines(
+      {
+        type: "tool_use",
+        part: {
+          id: "prt_1",
+          tool: "read",
+          state: {
+            status: "completed",
+            input: { path: `${checkout}/a.ts` },
+            output: `Read file ${checkout}/a.ts, lines 1-10`,
+          },
+        },
+      },
+      { type: "step_finish", part: { reason: "tool-calls", cost: 0.01 } },
+      { type: "text", part: { text } },
+      { type: "step_finish", part: { reason: "stop", cost: 0.02 } },
+    );
+
+  /**
+   * A fake `opencode` that records what it was started with, then prints the
+   * answer for the part its message names.
+   */
+  function fakeOpenCode(name: string, record: string, cases: Record<string, string>): string {
+    const branches = Object.entries(cases)
+      .map(([word, body]) => `  *"${word}"*) ${body} ;;`)
+      .join("\n");
+    return fakeClaude(
+      dir,
+      name,
+      [
+        'for last in "$@"; do :; done',
+        `out="${record}/$$"`,
+        'mkdir -p "$out"',
+        'printf \'%s\\n\' "$@" > "$out/argv"',
+        'pwd > "$out/cwd"',
+        'env > "$out/env"',
+        'cp opencode.json "$out/config.json"',
+        'case "$last" in',
+        branches,
+        "esac",
+      ].join("\n"),
+    );
+  }
+
+  it("runs each part as the agent's prompt in an OpenCode config of its own, and parses its last message", async () => {
+    const record = makeTempDir("yarvis-oc-record-");
+    const one = join(dir, "oc-one.jsonl");
+    const two = join(dir, "oc-two.jsonl");
+    writeFileSync(one, `${answer('{"count": 1}')}\n`);
+    // Fenced despite being told not to: still read.
+    writeFileSync(two, `${answer('```json\n{"count": 2}\n```')}\n`);
+    const program = fakeOpenCode("oc-ok", record, {
+      one: `cat "${one}"`,
+      two: `cat "${two}"`,
+    });
+    let activity: RunActivity | undefined;
+    const handle = await startClaudeFanOutRun(
+      db,
+      {
+        ...base,
+        parts: [part("risk-reviewer", "one"), part("test-reviewer", "two")],
+        finishOutput: (output: { counts: number[] }, seen: RunActivity) => {
+          activity = seen;
+          return output;
+        },
+      },
+      // A harness pointing OpenCode at the user's own data folder doesn't get its way.
+      ocDeps(program, { XDG_DATA_HOME: "/Users/someone/.local/share", PROVIDER_KEY: "sk-test" }),
+    );
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: "succeeded", output: { counts: [1, 2] } });
+    expect(outcome.costUsd).toBeCloseTo(0.06);
+    expect(activity?.reads).toEqual([
+      expect.objectContaining({ path: `${checkout}/a.ts`, offset: 1, limit: 10 }),
+      expect.objectContaining({ path: `${checkout}/a.ts`, offset: 1, limit: 10 }),
+    ]);
+
+    const runs = readdirSync(record).map((pid) => {
+      const read = (file: string) => readFileSync(join(record, pid, file), "utf8");
+      const env = Object.fromEntries(
+        read("env")
+          .split("\n")
+          .filter((line) => line.includes("="))
+          .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+      );
+      return {
+        argv: read("argv").trim().split("\n"),
+        cwd: read("cwd").trim(),
+        env,
+        config: JSON.parse(read("config.json")),
+      };
+    });
+    expect(runs).toHaveLength(2);
+    const roots = new Set<string>();
+    for (const run of runs) {
+      expect(run.argv.slice(0, 7)).toEqual([
+        "run",
+        "--standalone",
+        "--format",
+        "json",
+        "--agent",
+        run.argv[5],
+        "--model",
+      ]);
+      expect(run.argv[7]).toBe("anthropic/claude-sonnet-5-5");
+      // Every folder OpenCode uses is the process's own, its working directory included.
+      const root = run.cwd.replace(/\/project$/, "");
+      roots.add(root);
+      expect(root).toContain("yarvis-opencode-");
+      expect(run.env.XDG_DATA_HOME).toBe(join(root, "data"));
+      expect(run.env.XDG_CONFIG_HOME).toBe(join(root, "config"));
+      expect(run.env.OPENCODE_MODELS_PATH).toBe(join(root, "models.json"));
+      expect(run.env.OPENCODE_DISABLE_MODELS_FETCH).toBe("true");
+      expect(run.env.PROVIDER_KEY).toBe("sk-test");
+      const agentId = run.argv[5] ?? "";
+      const agent = run.config.agents[agentId];
+      expect(agent.permissions).toEqual([
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "read", resource: "*", effect: "allow" },
+        { action: "grep", resource: "*", effect: "allow" },
+        { action: "glob", resource: "*", effect: "allow" },
+        { action: "external_directory", resource: `${checkout}/*`, effect: "allow" },
+        { action: "external_directory", resource: `${context}/*`, effect: "allow" },
+      ]);
+      expect(agent.system).toStartWith(RUN_GUARDRAIL);
+      expect(agent.system).toContain(`The PR checkout is at ${checkout}.`);
+      expect(agent.system).toContain(jsonSchemaArg(countSchema));
+    }
+    expect([...roots].every((root) => !existsSync(root))).toBe(true);
+    expect(runs.map((r) => r.argv[5]).sort()).toEqual(["risk-reviewer", "test-reviewer"]);
+    rmSync(record, { recursive: true, force: true });
+  });
+
+  it("asks a part again when its last message isn't the JSON asked for", async () => {
+    const record = makeTempDir("yarvis-oc-record-");
+    const tried = join(dir, "oc-tried");
+    const prose = join(dir, "oc-prose.jsonl");
+    const good = join(dir, "oc-good.jsonl");
+    writeFileSync(prose, `${answer("I counted three files.")}\n`);
+    writeFileSync(good, `${answer('{"count": 3}')}\n`);
+    const program = fakeOpenCode("oc-retry", record, {
+      flaky: `if [ -f "${tried}" ]; then cat "${good}"; else touch "${tried}"; cat "${prose}"; fi`,
+    });
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("risk-reviewer", "flaky")] },
+      ocDeps(program),
+    );
+    expect(await handle.done).toMatchObject({ status: "succeeded", output: { counts: [3] } });
+    const log = (await getAgentRunEvents(db, handle.id))?.events ?? [];
+    expect(log).toContainEqual(
+      expect.objectContaining({
+        type: "status",
+        message: expect.stringContaining(
+          "Retrying the flaky part: it finished without a structured answer",
+        ),
+      }),
+    );
+    rmSync(record, { recursive: true, force: true });
+  });
+
+  it("fails a part with OpenCode's own error", async () => {
+    const program = fakeClaude(
+      dir,
+      "oc-error",
+      `cat "${join(FIXTURES, "opencode-error.jsonl")}"; exit 1`,
+    );
+    const handle = await startClaudeFanOutRun(
+      db,
+      { ...base, parts: [part("risk-reviewer", "one")] },
+      ocDeps(program),
+    );
+    const outcome = await handle.done;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("Model unavailable: nonexistent-provider/nonexistent-model");
+  });
+
+  it("refuses a run it can't set up before writing anything", async () => {
+    const parts = [part("risk-reviewer", "one")];
+    const program = fakeClaude(dir, "oc-never", "exit 1");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts }, { ...ocDeps(program), program: undefined }),
+    ).rejects.toThrow("needs the harness's program");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts, model: "sonnet" }, ocDeps(program)),
+    ).rejects.toThrow("provider/model");
+    await expect(
+      startClaudeFanOutRun(db, { ...base, parts, allowedTools: ["Read", "Bash"] }, ocDeps(program)),
+    ).rejects.toThrow("can't be given Bash");
+    await expect(
+      startClaudeFanOutRun(
+        db,
+        { ...base, parts },
+        { ...ocDeps(program), sandboxExec: join(dir, "no-such-sandbox") },
+      ),
+    ).rejects.toThrow("sandbox-exec");
+    expect((await sql`SELECT count(*)::int AS n FROM agent_runs`)[0]?.n).toBe(0);
   });
 });
 

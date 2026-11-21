@@ -189,32 +189,50 @@ impl ResolvedHarness {
 }
 
 /// The program a headless run, such as a verification check, starts for
-/// `harness`. Those runs depend on flags only Claude Code takes
-/// (`--json-schema`, `--plugin-dir`, stream-json output), so any other kind is
-/// refused. Only the program is used: the command's flags and any `VAR=value`
-/// words before it were written for an interactive session, so a variable the
-/// run needs belongs in the harness's environment instead.
+/// `harness`. The sidecar drives those runs with flags of its own, which only
+/// Claude Code and OpenCode take, so any other kind is refused. Only the
+/// program is used: the command's flags and any `VAR=value` words before it
+/// were written for an interactive session, so a variable the run needs
+/// belongs in the harness's environment instead.
 pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
-    if harness.kind != HarnessKind::ClaudeCode {
-        return Err(format!(
-            "\"{}\" isn't a Claude Code harness, so it can't run verification checks",
+    let binary = match harness.kind {
+        HarnessKind::ClaudeCode => "claude",
+        HarnessKind::Opencode => "opencode",
+        HarnessKind::Pi | HarnessKind::Custom => {
+            return Err(format!(
+            "\"{}\" isn't a Claude Code or OpenCode harness, so it can't run verification checks",
             harness.name
-        ));
-    }
+        ))
+        }
+    };
     harness
         .program()
-        .ok_or_else(|| format!("\"{}\" doesn't run claude directly", harness.name))
+        .ok_or_else(|| format!("\"{}\" doesn't run {binary} directly", harness.name))
 }
 
 /// Variables a headless run refuses from a harness. A run over a PR checkout
 /// is kept from reading credentials by rules written against the home folder
-/// (`Read(~/.ssh)`) and Claude Code's own config, so moving either one, or
-/// loading code into Claude Code itself, would quietly undo them.
-const HEADLESS_REFUSED_ENV: [&str; 4] = [
+/// (`Read(~/.ssh)`) and the CLI's own config, so moving either one, or
+/// loading code into the CLI itself, would quietly undo them. An OpenCode run
+/// gets folders of its own through the `XDG_*` variables, and the `OPENCODE_*`
+/// ones would load config or a model catalog from somewhere else. The sidecar
+/// sets its own values over a harness's anyway; refusing them says so on save
+/// rather than letting a setting silently not apply.
+const HEADLESS_REFUSED_ENV: [&str; 14] = [
     "HOME",
     "CLAUDE_CONFIG_DIR",
     "NODE_OPTIONS",
     "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_MODELS_PATH",
+    "OPENCODE_MODELS_URL",
+    "OPENCODE_DISABLE_MODELS_FETCH",
 ];
 
 /// The program and full environment a headless run uses for `harness`: its
@@ -658,7 +676,7 @@ mod tests {
     }
 
     #[test]
-    fn a_headless_run_takes_only_a_claude_code_harness_and_only_its_program() {
+    fn a_headless_run_takes_only_a_claude_code_or_opencode_harness_and_only_its_program() {
         assert_eq!(headless_program(&claude()).as_deref(), Ok("claude"));
         let bedrock = resolve_stored(&stored(
             "bedrock",
@@ -670,7 +688,22 @@ mod tests {
         let pi = resolve_stored(&stored("pi", HarnessKind::Pi, "pi")).unwrap();
         assert!(headless_program(&pi)
             .unwrap_err()
-            .contains("isn't a Claude Code harness"));
+            .contains("isn't a Claude Code or OpenCode harness"));
+        let opencode = resolve_stored(&stored(
+            "oc",
+            HarnessKind::Opencode,
+            "/opt/homebrew/bin/opencode --model x",
+        ))
+        .unwrap();
+        assert_eq!(
+            headless_program(&opencode).as_deref(),
+            Ok("/opt/homebrew/bin/opencode")
+        );
+        let not_opencode =
+            resolve_stored(&stored("oc2", HarnessKind::Opencode, "docker run oc")).unwrap();
+        assert!(headless_program(&not_opencode)
+            .unwrap_err()
+            .contains("doesn't run opencode directly"));
         // Marked Claude Code but runs a wrapper: what the wrapper does with the
         // run's flags is unknown.
         let wrapped =
@@ -686,7 +719,9 @@ mod tests {
         moved_home.env = BTreeMap::from([("HOME".to_string(), "/tmp/x".to_string())]);
         let mut config_dir = stored("cfg", HarnessKind::ClaudeCode, "claude");
         config_dir.secret_env = vec!["CLAUDE_CONFIG_DIR".to_string()];
-        for harness in [moved_home, config_dir] {
+        let mut opencode_data = stored("oc", HarnessKind::Opencode, "opencode");
+        opencode_data.env = BTreeMap::from([("XDG_DATA_HOME".to_string(), "/x".to_string())]);
+        for harness in [moved_home, config_dir, opencode_data] {
             let resolved = resolve_stored(&harness).unwrap();
             let err = headless_run_env(&resolved, || panic!("secrets read for a refused harness"))
                 .unwrap_err();

@@ -49,6 +49,16 @@ const HEADLESS_REFUSED_ENV = new Set([
   "CLAUDE_CONFIG_DIR",
   "NODE_OPTIONS",
   "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+  "XDG_CACHE_HOME",
+  "OPENCODE_CONFIG",
+  "OPENCODE_CONFIG_DIR",
+  "OPENCODE_CONFIG_CONTENT",
+  "OPENCODE_MODELS_PATH",
+  "OPENCODE_MODELS_URL",
+  "OPENCODE_DISABLE_MODELS_FETCH",
 ]);
 
 /** Whether a stored harness sets a variable a verification run refuses. */
@@ -64,11 +74,18 @@ const KNOWN_KINDS = new Set(["claude-code", "pi", "opencode"]);
 /** The built-in agent's command, as `pty::agent_command` resolves it. */
 const DEFAULT_AGENT_COMMAND = "claude --permission-mode auto";
 
-/** Whether a command line runs `claude` itself, past any `VAR=value` words. */
-function runsClaude(command: string): boolean {
+/** Whether a command line runs `binary` itself, past any `VAR=value` words. */
+function runsProgram(command: string, binary: string): boolean {
   const program = command.split(/\s+/).find((word) => word && !word.includes("="));
-  return !!program && basename(program) === "claude";
+  return !!program && basename(program) === binary;
 }
+
+function runsClaude(command: string): boolean {
+  return runsProgram(command, "claude");
+}
+
+/** The kinds a verification run can drive, by the program each must run. */
+const HEADLESS_PROGRAMS: Record<string, string> = { "claude-code": "claude", opencode: "opencode" };
 
 /**
  * The kind the core gives the built-in harness: Claude Code when its command
@@ -135,7 +152,10 @@ async function allHarnesses(env: NodeJS.ProcessEnv): Promise<KnownHarness[]> {
         kind,
         isDefault: effectiveDefault === h.id,
         assistantMayUse: h.assistantMayUse === true,
-        runsHeadless: kind === "claude-code" && runsClaude(h.command) && !setsRefusedEnv(h),
+        runsHeadless:
+          kind in HEADLESS_PROGRAMS &&
+          runsProgram(h.command, HEADLESS_PROGRAMS[kind] ?? "") &&
+          !setsRefusedEnv(h),
       };
     }),
   ];
@@ -162,17 +182,23 @@ export async function listAgentHarnesses(
 
 /**
  * The harnesses a verification run can use: the built-in agent, then saved
- * Claude Code harnesses that run `claude` directly and set no variable a run
- * refuses, since a run depends on flags only Claude Code takes. Mirrors the
- * core's `harness::headless_run_env`. The user picks among them in Settings or
- * on the Verification tab; the assistant can't pick one.
+ * Claude Code and OpenCode harnesses that run `claude` or `opencode` directly
+ * and set no variable a run refuses, since a run drives the CLI with flags of
+ * its own. Mirrors the core's `harness::headless_run_env`. The user picks
+ * among them in Settings or on the Verification tab; the assistant can't pick
+ * one.
  */
 export async function listVerificationHarnesses(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ id: string; name: string }[]> {
+): Promise<{ id: string; name: string; kind: string }[]> {
   return (await allHarnesses(env))
     .filter((h) => h.runsHeadless)
-    .map(({ id, name }) => ({ id, name }));
+    .map(({ id, name, kind }) => ({
+      id,
+      name,
+      // The built-in agent's checks always run its Claude Code build.
+      kind: id === BUILTIN_HARNESS_ID ? "claude-code" : kind,
+    }));
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   getPrModelConfig,
   getRereviewRunConfig,
   getVerificationRunConfig,
+  harnessModelsSchema,
   rereviewRunConfigSchema,
   runChoiceSchema,
   savePrModelConfig,
@@ -34,6 +35,7 @@ const saveVerificationSchema = z
     maxBudgetUsd: verificationBudgetSchema,
     sections: z.partialRecord(z.enum(REPORT_SECTIONS), runChoiceSchema.strict()),
     harness: harnessIdSchema.nullable(),
+    harnessModels: z.record(harnessIdSchema, harnessModelsSchema.strict().nullable()),
   })
   .partial()
   .strict();
@@ -63,7 +65,8 @@ export function createPrModelRoutes(_config: Config): Hono {
     return c.json(await savePrModelConfig(parsed.data));
   });
 
-  // The verification report's budget, and each section's Claude Code model and effort.
+  // The verification report's budget, each section's model and effort, the
+  // harness, and the OpenCode models an OpenCode harness runs each tier on.
   router.get("/verification", async (c) =>
     c.json(await verificationView(await getVerificationRunConfig())),
   );
@@ -75,7 +78,7 @@ export function createPrModelRoutes(_config: Config): Hono {
     const { harness } = parsed.data;
     if (harness && !(await listVerificationHarnesses()).some((h) => h.id === harness)) {
       return c.json(
-        { error: `"${harness}" isn't a Claude Code harness a check can run with` },
+        { error: `"${harness}" isn't a Claude Code or OpenCode harness a check can run with` },
         400,
       );
     }
