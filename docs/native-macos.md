@@ -8,8 +8,8 @@ lists what in the API would get in its way.
 
 | API surface | Swift |
 |---|---|
-| Passkey setup, sign-in and `reverify` (`/api/auth/*`) | `ASAuthorizationPlatformPublicKeyCredentialProvider` |
-| Vault unlock with a passkey (`/api/vault/unlock/*`, PRF) | The PRF inputs on `ASAuthorizationPlatformPublicKeyCredentialAssertionRequest` (macOS 15 and later) |
+| Setup, sign-in and `reverify` (`/api/auth/*`) | A SwiftUI form: passphrase, then a code; `URLSession` POSTs |
+| Vault unlock (`/api/vault/unlock`) | A SwiftUI form for the vault passphrase |
 | The device token | Keychain (`kSecClassGenericPassword`), sent as `Authorization: Bearer` |
 | `/api/events` | `URLSessionWebSocketTask` |
 | `/api/pty/{id}` | `URLSessionWebSocketTask` feeding SwiftTerm's `TerminalView` |
@@ -17,25 +17,19 @@ lists what in the API would get in its way.
 | Screens not rebuilt natively | `WKWebView` pointed at the server |
 | Alarms, notifications, global shortcuts | Native, driven by `alarm.fire` and `alarm.release` events |
 
-**Passkeys.** The server sends WebAuthn options as webauthn-rs JSON with
-base64url fields, the same shape a browser gets. The app decodes `challenge`,
-`user.id` and `allowCredentials[].id`, builds the request with
-`createCredentialRegistrationRequest` or `createCredentialAssertionRequest`,
-and sends back the browser-shaped JSON the `finish` routes read: `id`,
-`rawId`, and `response.clientDataJSON` plus `attestationObject` or
-`authenticatorData`, `signature` and `userHandle`, all base64url.
-`src/lib/auth.ts` is the reference for both directions.
+**Sign-in.** The same routes a browser uses, with nothing browser-specific
+in them: `POST /api/auth/login` with the passphrase and a TOTP code (or a
+backup code) returns the device token. Setup shows the `otpauth://` URI as a
+QR code (`qrSvg` renders with any SVG view, or the app can draw its own from
+`otpauthUri`). No ASAuthorization, no Associated Domains entitlement, and no
+`apple-app-site-association` file: sign-in isn't tied to a domain, so a
+`*.ts.net` name from `tailscale serve` works as it does in a browser. The
+token goes in the Keychain. Passkeys could come back later as an optional
+second way to sign in, and would bring the association file back with them.
 
-The app needs the Associated Domains entitlement
-(`webcredentials:<rp_id>`), and the RP ID's domain has to serve
-`/.well-known/apple-app-site-association` naming the app. Apple fetches that
-file through its CDN from the public internet, so a tailnet-only name doesn't
-work for a released app. A personal build can use
-`webcredentials:<rp_id>?mode=developer`, which fetches it directly.
-
-webauthn-rs checks `clientDataJSON`'s origin against `auth.origins`. If the
-origin ASAuthorization puts there isn't the server's `https://` URL, add it
-to `auth.origins`.
+When a route answers `403 reauth_required`, ask for a code and send it to
+`POST /api/auth/reverify`, then retry. A `401` means the token is gone: sign
+in again.
 
 **Events.** Open the socket, send `{"type":"auth","token":"…","since":seq}`
 as the first message, and keep the last `seq` seen for the next connect. A
@@ -50,19 +44,14 @@ reset the terminal before feeding. Send keystrokes as binary frames, and
 `{"type":"resize"}` from `sizeChanged`. Opening terminals needs the
 `terminal` scope.
 
-**WKWebView fallback.** WKWebView can't run WebAuthn without the browser
-entitlement, so the fallback screens use the app's token: inject it into
-`localStorage` (`yarvis.deviceToken`) with a `WKUserScript` before the page
-loads, as the Tauri app hands its token to the page. Anything that needs a
-fresh passkey (device management, switching the secrets backend) goes through
-a native passkey check first.
+**WKWebView fallback.** The fallback screens use the app's token: inject it
+into `localStorage` (`yarvis.deviceToken`) with a `WKUserScript` before the
+page loads, as the Tauri app hands its token to the page. The web UI's own
+code prompt then works inside the view for anything that needs a fresh
+device.
 
 ## What in the API would get in the way
 
-- **No `apple-app-site-association` route.** The server serves `web_dir` with
-  an SPA fallback, so `/.well-known/apple-app-site-association` returns
-  `index.html`. The server needs a route (or a config value) for it, and it
-  has to be reachable from the public internet, as above.
 - **The sidecar has no typed schema.** `/api/sidecar/*` is a proxy to a few
   hundred Hono routes. A Swift client hand-writes types for each screen it
   rebuilds, which is why screens move to native one at a time and the rest
@@ -84,7 +73,7 @@ a native passkey check first.
 Not added. With `utoipa` and `utoipa-axum` it would take:
 
 - `#[derive(ToSchema)]` on the request and response structs (`SignedIn`,
-  `DeviceRow`, `Pending`, the vault and passkey bodies), and `#[utoipa::path]`
+  `DeviceRow`, `Pending`, the account and vault bodies), and `#[utoipa::path]`
   on each handler.
 - Building the routers with `OpenApiRouter` so the paths are collected as
   they're mounted, and serving the document at `/api/openapi.json`.

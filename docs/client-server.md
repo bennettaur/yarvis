@@ -19,12 +19,13 @@ references below to `spikes/...` point there.
 
 Built:
 
-- `yarvis-server`: config, the SQLite store, passkey sign-in with a one-time
-  setup code, devices and scoped tokens (`read`, `chat`, `terminal`, `approve`,
-  `admin`), `Fresh<S>` passkey checks, the event log and `/api/events`,
+- `yarvis-server`: config, the SQLite store, sign-in with a passphrase and a
+  TOTP code (or a backup code), set up with a one-time setup code, devices and
+  scoped tokens (`read`, `chat`, `terminal`, `approve`, `admin`), `Fresh<S>`
+  checks (a TOTP code in the last 10 minutes), the event log and `/api/events`,
   approvals, and Host and CSP checks.
 - Settings and the secrets blob, in the Keychain, 1Password or the server's
-  own vault. The vault opens with a passkey (PRF) or the recovery key.
+  own vault. The vault opens with its own passphrase or the recovery key.
 - The sidecar's supervisor and the `/api/sidecar` proxy. The sidecar runs only
   while the secrets can be read, so with the vault it starts on unlock and
   stops on lock.
@@ -36,27 +37,27 @@ Built:
   Devices, and an approvals list.
 - The thin Tauri app, which starts a local server or connects to a remote one.
 - An end-to-end test (`bun run e2e`, `e2e/`) that drives the real server and
-  the built UI in Chromium with a virtual passkey.
+  the built UI in Chromium, signing in with TOTP codes it computes.
 
 Not yet:
 
 - The native macOS app. [native-macos.md](native-macos.md) maps the API to it.
 - A phone app.
 - Porting sidecar modules to Rust.
-- A vault wrapper UI: adding a passkey as an unlock method is API-only
-  (`/api/vault/wrappers/passkey/*`).
-- Recovery-key rotation (see "Known gaps").
+- Passkeys, as an optional second way to sign in beside the passphrase.
 - An OpenAPI description.
 
 ## Goals
 
 - One Rust binary, `yarvis-server`, that a browser can use with no Tauri app
   installed.
-- Every client signs in with a passkey or a scoped device token. Every event
+- Every client signs in with the passphrase and a TOTP code, or uses a scoped
+  device token. Every event
   records which device caused it, and a device can be revoked at once.
 - PTY sessions (Claude Code in a workspace) stream over WebSocket to any number
   of clients and survive a client disconnecting.
-- Secrets can live in the server's own encrypted vault, unlocked with a passkey.
+- Secrets can live in the server's own encrypted vault, unlocked with its own
+  passphrase.
   The server can also run its own ssh-agent to sign git commits after an
   approval. Both are optional: a server can keep using the macOS Keychain or
   1Password, with no ssh-agent at all (see "Deployments").
@@ -77,7 +78,8 @@ browser / Tauri / native app
         │  HTTPS + WebSocket, device token
         ▼
 yarvis-server (Rust, axum)
-  ├─ /api/auth/*, /api/devices/*      passkeys, devices, scoped tokens
+  ├─ /api/auth/*, /api/account/*      sign-in, the account
+  ├─ /api/devices/*                    devices, scoped tokens
   ├─ /api/events (WS)                  event stream, approvals, alarms
   ├─ /api/approvals/*                  first answer wins, any device
   ├─ /api/core/*                       what `invoke` did: settings, secrets, PTY control
@@ -109,15 +111,16 @@ origin.
   `~/.yarvis/server.toml`, or the file given with `--config`.
 - Modules inside it, each owned by one area:
   - `config`: the server config file and command-line flags.
-  - `store`: SQLite (`rusqlite`, bundled) for server state: passkeys, devices,
+  - `store`: SQLite (`rusqlite`, bundled) for server state: the account, devices,
     events, approvals. Postgres stays the sidecar's database. Auth and the vault
     must work even when Postgres is down, so server state does not live there.
-  - `auth`: passkeys (webauthn-rs), devices, tokens, scopes, the setup code.
+  - `auth`: the account (passphrase, TOTP, backup codes), devices, tokens,
+    scopes, the setup code.
   - `events`: the append-only event log and the `/api/events` WebSocket.
   - `approvals`: pending approvals, answered by the first device to respond.
   - `secret_store`: the `SecretBackend` trait with Keychain, 1Password and vault
     backends. The JSON blob format is the one `src-tauri` uses today.
-  - `vault`: the encrypted vault and its passkey-PRF and recovery wrappers.
+  - `vault`: the encrypted vault and its passphrase and recovery wrappers.
   - `ssh_agent`: the optional ssh-agent, which signs only `git` namespace
     signatures, after an approval.
   - `sidecar`: spawning, supervising and proxying the Bun sidecar.
@@ -131,38 +134,72 @@ is what has to run on the machine in front of you (see "Clients").
 
 ## Auth
 
-This follows `spikes/auth/FINDINGS.md`.
+The server has one account. Signing in takes its passphrase and a code from an
+authenticator app (TOTP), or one of its backup codes.
 
-- First start prints a one-time setup code to stdout, and writes it to a
-  `0600` file in the data dir for a server whose stdout goes to a log.
-  Registering the first passkey with it creates the first device with all
-  five scopes. The setup routes stop working once a passkey exists.
-- Every passkey sign-in creates a new **device** with a random 32-byte token,
-  sent as base64url without padding. Clients treat it as opaque. Only its
-  SHA-256 is stored. Clients send it as `Authorization: Bearer <token>`.
-  Browser WebSockets can't set headers, so they send it as the first message
-  instead, never in the URL. Signing in again from the same browser makes a
-  second device. The devices page shows when each was last used, so old ones
-  are easy to revoke.
+- **Setup.** First start prints a one-time setup code to stdout, and writes it
+  to a `0600` file in the data dir for a server whose stdout goes to a log. It
+  allows 5 wrong guesses. Setup takes the code, a passphrase and a device name,
+  and returns a new TOTP secret (as text, an `otpauth://` URI and a QR code).
+  Setup finishes only when a code from that secret verifies. That creates the
+  account and the first device with all five scopes, and returns 10 one-time
+  backup codes, shown once. The setup routes answer `409` once the account
+  exists.
+- **The passphrase** is at least 12 characters, stored as an Argon2id hash
+  (19 MiB, 2 passes, the OWASP minimum), hashed off the async workers and
+  compared in constant time.
+- **TOTP** is RFC 6238 with the parameters every app defaults to: SHA-1,
+  6 digits, 30-second steps, and one step either side of now. A code at or
+  before the last accepted step is refused, so a code works once. The secret is
+  stored in SQLite as it is, since the server computes codes from it: whoever
+  can read the database can make codes. The passphrase hash still stands
+  between them and a sign-in.
+- **Backup codes** are 10 codes of 10 characters, stored as SHA-256 (they
+  carry about 50 bits each, so a slow hash adds nothing). Each signs in once in
+  place of a TOTP code.
+- **Sign-in** checks the passphrase first and the second factor only after it
+  matches, and every refusal says only "wrong passphrase or code". Each sign-in
+  creates a new **device** with a random 32-byte token, sent as base64url
+  without padding. Clients treat it as opaque. Only its SHA-256 is stored.
+  Clients send it as `Authorization: Bearer <token>`. Browser WebSockets can't
+  set headers, so they send it as the first message instead, never in the URL.
+  Signing in again from the same browser makes a second device. The devices
+  page shows when each was last used, so old ones are easy to revoke.
+- **Lockout.** Ten failed sign-ins (or reverify codes) in 15 minutes, from
+  anywhere, lock sign-in for 15 minutes. That caps guessing, and it also lets
+  anyone who can reach the server keep the owner locked out by failing on
+  purpose; that trade is accepted. On top of it, the sign-in and setup routes
+  are rate-limited per address.
 - A token unused for 90 days stops working.
-- Scopes: `read`, `chat`, `terminal`, `approve`, `admin`. A passkey device
+- Scopes: `read`, `chat`, `terminal`, `approve`, `admin`. A signed-in device
   gets all five. A token made for a bot or script gets only what it is given,
   and `POST /api/devices/tokens` can't give `terminal` or `admin`.
-- **Fresh**: device management, adding a passkey, adding or removing a
-  vault wrapper, and switching the secrets backend (`set_secret_backend`)
-  also need a passkey check on this device in the last 10 minutes
-  (`verified_at`). Without one they get `403 { "error": "reauth_required" }`,
-  and the client runs `/api/auth/reverify`. A token device can never be
-  fresh, so it can never do these things. Setting and deleting secrets need
-  only `admin`, so the Tauri app's CLI-made token can manage its own keys.
-  Unlocking and locking the vault need only `admin` too: a passkey unlock is
-  a passkey check of its own, and the recovery key has to work when every
-  passkey is lost.
+- **Fresh**: device management, the account routes, and changing the vault's
+  passphrase or recovery key or the secrets backend also need a recent check
+  on this device: a sign-in or a TOTP code (`POST /api/auth/reverify`) in the
+  last 10 minutes (`verified_at`). Without one they get
+  `403 { "error": "reauth_required" }`, and the client asks for a code and
+  retries. Only devices made by a sign-in can be fresh; a token never can.
+  Setting and deleting secrets need only `admin`, so the Tauri app's CLI-made
+  token can manage its own keys. Unlocking and locking the vault need only
+  `admin` too: an unlock is a check of its own, and the recovery key has to
+  work for an admin token made with the CLI.
+- **Account changes** (admin and fresh): change the passphrase (with the
+  current one), set up a new authenticator (confirmed with a code from it),
+  make new backup codes, and sign out every other device. A passphrase or
+  authenticator change keeps the other devices signed in unless asked to sign
+  them out.
+- **Recovery.** A lost authenticator is what the backup codes are for. With
+  those gone too, `yarvis-server auth reset` on the server removes the account
+  and prints a new setup code, which the running server accepts at once. It
+  needs the same trust as `device add`: a shell on the server. Signed-in
+  devices stay signed in.
 - Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`
   or `terminal`. Tokens made with the CLI on the server machine can, since
   whoever runs that can already read the database and open a shell.
-- `401` means no token, or a token that's unknown, revoked or expired.
-  `403` means the device lacks the route's scope, or isn't fresh.
+- `401` means no token, or a token that's unknown, revoked or expired, and
+  clients sign out on it. `403` means the device lacks the route's scope,
+  isn't fresh, or sent a wrong code or vault secret.
 - Revoking a device takes effect on its next request and closes its open
   WebSockets, including proxied sidecar streams.
 - Every event has a `deviceId`, `null` for the server's own work. Proxied
@@ -183,13 +220,7 @@ reaching a loopback server through DNS rebinding.
 **TLS.** The server speaks plain HTTP. It refuses to bind anything but
 loopback unless `server.allow_plain_http = true`, which is for a server with
 TLS in front of it. On a tailnet, `tailscale serve` gives the server an HTTPS
-name, and passkeys need HTTPS on any name other than `localhost`.
-
-RP ID: passkeys are tied to one domain for good. Set it with `auth.rp_id`
-(default `localhost`) and the matching `auth.origins`. For a long-lived
-install, use a domain you own, with a tailnet-only subdomain. The native iOS and macOS apps need that, because the
-domain has to serve an `apple-app-site-association` file. `localhost` works for
-a server and browser on the same Mac.
+`*.ts.net` name, and nothing else is needed: sign-in isn't tied to a domain.
 
 ## Deployments
 
@@ -204,7 +235,6 @@ data_dir = "~/.yarvis/server"   # written out in full; ~ isn't expanded
 allow_plain_http = false        # needed for any bind that isn't loopback
 
 [auth]
-rp_id = "localhost"
 origins = ["http://localhost:7878"]
 
 [secrets]
@@ -232,21 +262,21 @@ The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
 since the vault is where the signing key lives.
 
 **Home server (the Intel Mac mini).** `backend = "vault"`, `ssh_agent.enabled =
-true`. The server starts locked. A passkey unlock (PRF) or the recovery key
+true`. The server starts locked. The vault passphrase or the recovery key
 opens the vault, starts the sidecar with its secrets, and starts the ssh-agent.
 Git in a workspace uses `SSH_AUTH_SOCK` pointing at that agent, and every
 signature waits for an approval from any device with the `approve` scope.
 Setting it up:
 
 1. Set `backend = "vault"` and `ssh_agent.enabled = true` in `server.toml`.
-2. Run `yarvis-server vault init`. It writes `vault.json` (`0600`) to the
-   data dir and prints the recovery key to stdout, once. Write the key down.
+2. Run `yarvis-server vault init`. It asks for the vault passphrase twice
+   (or reads it with `--passphrase-stdin`), writes `vault.json` (`0600`) to
+   the data dir and prints the recovery key to stdout, once. Write the key
+   down.
    With the agent on it also makes the signing key and prints its public key
    to stderr, for GitHub's signing keys and for `user.signingkey`.
 3. Start the server and sign in. The web UI shows an unlock screen while the
-   vault is locked; unlock with the recovery key. Then add each passkey you
-   want to unlock with as a vault wrapper (`/api/vault/wrappers/passkey/*`,
-   which needs a fresh passkey check). From then on a passkey unlocks it.
+   vault is locked; unlock with the vault passphrase.
 4. Point git at the agent: `gpg.format = ssh`, `user.signingkey =
    "key::<public key>"`. Workspace shells get `SSH_AUTH_SOCK` from the server.
 
@@ -287,13 +317,12 @@ does (`docs/getting-started.md`).
    `yarvis-server device add`, keeping the token in the Keychain.
 2. Secrets stay wherever Settings says (the Keychain unless you chose
    1Password), and workspace shells get 1Password's SSH agent when it exists.
-3. For the actions that need a fresh passkey (minting or revoking devices,
-   switching the secrets backend), open `http://localhost:<port>` in a browser
-   on the same Mac, with the port from `bind` in `<app data>/server.toml`, and
-   set up a passkey with the code in `<app data>/server/setup-code`. The app's
-   own token can't do them. The app keeps its port across restarts when it
-   is free; a passkey keeps working on a new port, since it is bound to
-   `localhost`, not the port.
+3. For the actions that need a fresh device (minting or revoking devices,
+   account changes, switching the secrets backend), open
+   `http://localhost:<port>` in a browser on the same Mac, with the port from
+   `bind` in `<app data>/server.toml`, and set up the account with the code in
+   `<app data>/server/setup-code`. The app's own token can't do them. The app
+   keeps its port across restarts when it is free.
 
 **A home server with the vault and ssh-agent, behind `tailscale serve`.** The
 server runs on an always-on Mac and you reach it from anywhere on the tailnet.
@@ -309,7 +338,6 @@ server runs on an always-on Mac and you reach it from anywhere on the tailnet.
    web_dir = "/Users/me/yarvis/dist"
 
    [auth]
-   rp_id = "mac-mini.example-tailnet.ts.net"
    origins = ["https://mac-mini.example-tailnet.ts.net"]
 
    [secrets]
@@ -321,14 +349,16 @@ server runs on an always-on Mac and you reach it from anywhere on the tailnet.
 
    The bind stays on loopback, so `allow_plain_http` isn't needed: TLS ends
    at `tailscale serve`, on the same machine.
-3. Run `yarvis-server vault init` and write down the recovery key it prints.
-   Add the signing key it prints to GitHub as a signing key.
+3. Run `yarvis-server vault init`, choose the vault passphrase, and write
+   down the recovery key it prints. Add the signing key it prints to GitHub
+   as a signing key.
 4. Start the server (a LaunchAgent keeps it running), then
    `tailscale serve --bg 7878` to publish it as
    `https://mac-mini.example-tailnet.ts.net`.
-5. Open that URL, enter the setup code from `<data_dir>/setup-code`, and
-   create a passkey. The vault unlock screen comes next; use the recovery key.
-   The sidecar starts once the vault is open.
+5. Open that URL, enter the setup code from `<data_dir>/setup-code`, choose
+   the sign-in passphrase, scan the QR code into an authenticator app, confirm
+   a code, and save the backup codes. The vault unlock screen comes next; enter
+   the vault passphrase. The sidecar starts once the vault is open.
 6. Every commit a workspace shell signs waits for an approval, which any
    device with `approve` can give from the approvals box. Locking the vault
    stops the sidecar and the agent until the next unlock.
@@ -345,11 +375,8 @@ key.
    server under launchd also needs `upstream_socket` set to 1Password's agent
    socket (see "Deployments").
 2. To reach it from another device, publish its port (the `bind` in its
-   `server.toml`) with `tailscale serve` as for the home server. Set
-   `auth.rp_id` to the laptop's tailnet name and add its `https://` URL to
-   `auth.origins` before the first passkey is made: passkeys are bound to the
-   RP ID, and the server can't issue a new setup code once one exists (see
-   "Known gaps").
+   `server.toml`) with `tailscale serve` as for the home server, and add the
+   laptop's `https://` tailnet URL to `auth.origins`.
 3. Commits are signed by 1Password's agent, which asks on the laptop. So while
    you're away from the laptop, workspace sessions can run but can't sign
    commits; nothing in the server works around that.
@@ -372,8 +399,8 @@ to a browser. Cookies are not used for auth (see "Browser tokens and XSS").
 The UI is always served by the server it talks to, in a browser and in the
 Tauri window alike, so every request is same-origin and needs no CORS.
 
-In front of the app are three screens, in this order: sign-in (passkey or
-setup code), the vault unlock screen while the vault is locked, and the boot
+In front of the app are three screens, in this order: sign-in (passphrase
+and code, or first-run setup), the vault unlock screen while the vault is locked, and the boot
 screen while the sidecar starts. There's also a devices page in Settings and
 an approvals list.
 
@@ -407,46 +434,49 @@ hashes never appear in a response, except the one time a token is created.
 
 Auth (no token needed):
 
-- `GET  /api/auth/status` → `{ setupRequired, rpId, vault: "absent"|"uninitialized"|"locked"|"unlocked" }`.
+- `GET  /api/auth/status` → `{ setupRequired, vault: "absent"|"uninitialized"|"locked"|"unlocked" }`.
   `absent` means the backend isn't `vault`; `uninitialized` means it is, but
   `yarvis-server vault init` hasn't run.
-- `POST /api/auth/setup/start` `{ code, deviceName }` → `{ ceremonyId, options }`
-  (WebAuthn creation options)
-- `POST /api/auth/setup/finish` `{ ceremonyId, credential }` → `{ token, device }`
-- `POST /api/auth/login/start` → `{ ceremonyId, options }` (WebAuthn request options)
-- `POST /api/auth/login/finish` `{ ceremonyId, credential, deviceName }` → `{ token, device }`
+- `POST /api/auth/setup/start` `{ code, passphrase, deviceName }` →
+  `{ enrollmentId, secret, otpauthUri, qrSvg }`. `code` is the setup code,
+  `secret` is base32, and `qrSvg` is an SVG document. A short passphrase is
+  `400`; a wrong setup code is `401` with the tries left in `detail`.
+- `POST /api/auth/setup/finish` `{ enrollmentId, code }` →
+  `{ token, device, backupCodes }`. `code` is the first TOTP code; a wrong one
+  is `403` and the enrollment stays open for another try (10 minutes).
+- `POST /api/auth/login` `{ passphrase, code | backupCode, deviceName }` →
+  `{ token, device }`. Any wrong factor is `401 { "error": "wrong passphrase
+  or code" }`; while sign-in is locked, `429`.
 
-Every WebAuthn exchange is a `start` and a `finish`. The `ceremonyId` from
-`start` names the challenge `finish` answers, and works once, for 5 minutes.
 The setup and sign-in routes (not `status`) are rate-limited per client
-address. A wrong setup code counts against 5 tries; after that the server
-needs a restart to print a new code. Once a passkey exists the setup routes
-answer `409`.
+address. Once the account exists the setup routes answer `409`.
 
-Devices (token needed):
+Devices and the account (token needed):
 
 - `GET    /api/devices/me` (`read`) → the calling device
 - `GET    /api/devices` (admin) → every device, revoked ones included:
-  `[{ deviceId, name, kind: "passkey"|"token", scopes, passkeyId, createdBy,
+  `[{ deviceId, name, kind: "login"|"token", scopes, createdBy,
   userAgent, createdAt, lastSeenAt, verifiedAt, revokedAt, current }]`.
   `current` marks the calling device.
 - `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`.
   `scopes` can't include `admin` or `terminal` (`400`).
 - `DELETE /api/devices/{id}` (admin, fresh) → `{ revokedAt }`
-- `POST   /api/auth/reverify/start` (admin) → `{ ceremonyId, options }`, and
-  `/finish` `{ ceremonyId, credential }` → `{ verifiedAt }`: a passkey check
-  that makes the device fresh. Only a device signed in with a passkey can do
-  it, so a token is never fresh.
-- `POST   /api/passkeys/register/start` `{ label }` (admin, fresh) →
-  `{ ceremonyId, options }`, and `/finish` `{ ceremonyId, credential }` →
-  `{ passkeyId }`: adds another passkey, such as a security key as a backup.
-- `GET    /api/passkeys` (admin) → `[{ id, label, createdAt }]`
-- `DELETE /api/passkeys/{id}` (admin, fresh) → `{ revokedDevices }`: removes a
-  passkey and revokes every device it signed in. The last passkey can't be
-  removed (`409`).
+- `POST   /api/auth/reverify` `{ code }` (admin) → `{ verifiedAt }`: a TOTP
+  code that makes the device fresh. Only a signed-in device can; a token gets
+  `403`. A wrong code is `403` and counts towards the lockout.
+- `GET    /api/account` (admin) → `{ backupCodesLeft }`
+- `POST   /api/account/passphrase` `{ currentPassphrase, newPassphrase,
+  signOutOtherDevices? }` (admin, fresh) → `{ revokedDevices }`
+- `POST   /api/account/totp/start` (admin, fresh) → an enrollment, as setup
+  returns, that only this device can finish; `/finish` `{ enrollmentId, code,
+  signOutOtherDevices? }` → `{ revokedDevices }` replaces the secret.
+- `POST   /api/account/backup-codes` (admin, fresh) → `{ backupCodes }`,
+  replacing every old one.
+- `POST   /api/account/sign-out-others` (admin, fresh) → `{ revokedDevices }`:
+  every live device but this one, tokens included.
 
-"Fresh" means a passkey check in the last 10 minutes. Without one these
-routes answer `403 { "error": "reauth_required" }`.
+"Fresh" means a sign-in or a TOTP code in the last 10 minutes. Without one
+these routes answer `403 { "error": "reauth_required" }`.
 
 Events and approvals:
 
@@ -479,11 +509,13 @@ Events and approvals:
     are ringing, so a client that sees the same id fire twice rings it once.
   - `approval.requested` and `approval.answered`: see below.
   - `device.created` and `device.revoked`.
-  - `passkey.added` and `passkey.removed`.
+  - `account.created`, `account.changed` (`{ what: "passphrase"|"totp"|"backupCodes" }`),
+    `account.backup_code_used` (`{ left }`) and `account.reset`.
   - `sidecar.started` and `sidecar.stopped`: the sidecar restarted, so cached
     data may be stale.
   - `vault.locked` and `vault.unlocked`. `vault.unlocked` has `via`
-    (`"passkey"` or `"recovery"`) and, for a passkey, `passkeyId`.
+    (`"passphrase"` or `"recovery"`). `vault.passphrase_changed` and
+    `vault.recovery_key_rotated` follow those changes.
   - `pty.exited`: `{ id, code }`.
 - `GET  /api/approvals` (`read`) → the pending ones, oldest first:
   `[{ id, kind, summary, data, createdAt, expiresAt }]`. `kind` names the
@@ -509,7 +541,7 @@ PTY (`terminal` to drive a session, `read` to look at one):
 
 `terminal` lets a device run a shell as the user the server runs as. From
 there it can reach everything that user can, the control socket and the
-secrets store included, so treat `terminal` as full trust. Only passkey
+secrets store included, so treat `terminal` as full trust. Only signed-in
 devices and `yarvis-server device add` get it; a token minted over the API
 can't.
 
@@ -622,40 +654,32 @@ while it was locked.
 
 Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
 
+The vault has its own passphrase, separate from the sign-in passphrase, and
+the two should differ. Sign-in proves who is asking a running server; the
+vault passphrase is what decrypts `vault.json`, which anyone with a copy of the
+file can attack offline with nothing else in the way. So it is stretched
+harder (Argon2id, 64 MiB, 3 passes, under a salt of its own), never stored,
+and a leak of the sign-in passphrase or the database doesn't open the vault.
+
 - `GET  /api/vault/status` (`read`) → `{ state: "uninitialized"|"locked"|"unlocked",
-  wrappers: [{ id, label, kind: "recovery"|"passkey", passkeyId? }] }`
-- `POST /api/vault/unlock/start` (admin) → `{ ceremonyId, options }`, offering
-  every passkey that has a wrapper, and `/finish` `{ ceremonyId, credential,
-  prfFirst }` → `{ state }`. `prfFirst` is
-  `getClientExtensionResults().prf.results.first`, base64url. The options
-  carry `publicKey.extensions.prf.evalByCredential`, credential id →
-  `{ first: <salt> }`, both base64url; the client decodes the salts to bytes
-  before calling WebAuthn. No `prfFirst` is a `400` saying the browser or
-  authenticator can't do PRF, and so is one that isn't 32 bytes. A PRF
-  output that opens no wrapper is `401`.
+  wrappers: [{ id, label, kind: "passphrase"|"recovery" }] }`
+- `POST /api/vault/unlock` `{ passphrase }` (admin) → `{ state }`. A wrong
+  passphrase is `403`, and makes the next try wait: 1 second, then doubling to
+  at most 5 minutes, cleared by a right one. Trying sooner is `429`. A wait
+  only slows guessing; unlike a lockout, it can't keep the owner out for long,
+  and only an admin device can make it grow.
 - `POST /api/vault/unlock/recovery` `{ recoveryKey }` (admin) → `{ state }`.
-  Not fresh, so an admin token made with the CLI can recover a server whose
-  passkeys are all lost.
+  Not slowed, since the key can't be guessed, and not fresh, so an admin token
+  made with the CLI can recover the vault.
 - `POST /api/vault/lock` (admin) → `{ state }`. Stops the ssh-agent first.
-- `POST /api/vault/wrappers/passkey/start` `{ passkeyId }` (admin, fresh,
-  unlocked) → `{ ceremonyId, options }`, and `/finish` `{ ceremonyId,
-  credential, prfFirst }` → `{ wrapperId }`: lets an already registered
-  passkey unlock the vault. `409` if it already can.
-- `DELETE /api/vault/wrappers/{id}` (admin, fresh, unlocked) → `204`. The last
-  wrapper can't be removed (`409`). Removing a passkey
-  (`DELETE /api/passkeys/{id}`) also removes its wrapper if the vault is
-  unlocked. If it is locked, the wrapper stays in `vault.json`, listed with no
-  `passkeyId`, until it is removed here.
-- The unlock routes need an admin token, so they aren't rate-limited: the
-  per-address budget is spent before auth, and anyone could use it up to
-  block the owner's unlock.
+- `POST /api/vault/passphrase` `{ currentPassphrase | recoveryKey,
+  newPassphrase }` (admin, fresh, unlocked) → `{ state }`: re-wraps the vault
+  key under the new passphrase. The old one stops working.
+- `POST /api/vault/recovery-key` (admin, fresh, unlocked) → `{ recoveryKey }`,
+  shown once. The old key stops working.
 - `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
   with the key and socket only while the agent runs; 404 when
   `ssh_agent.enabled = false`.
-
-The PRF output isn't signed. webauthn-rs verifies the assertion it came with
-first, and the output then proves itself only by opening a wrapper. webauthn-rs
-has no PRF support, hence the JSON patch; see `spikes/vault/FINDINGS.md`.
 
 The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir while the
 vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
@@ -665,7 +689,7 @@ fingerprint in the summary; SSHSIG carries only a hash of the commit, so there
 is no repo or message to show. No answer in 60 seconds, a denial, or a lock
 while it waits refuses the signature and fails `git commit`.
 
-Pairing a device without a passkey:
+Pairing a device that can't sign in itself:
 
 - `yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin`
   prints a token. Only someone who can run commands on the server machine can
@@ -746,17 +770,16 @@ Core commands that changed on the way from `invoke`:
   first receives the token. The app doesn't check the server's identity yet.
 - **Revoking a device doesn't revoke what it minted.** Tokens minted by a
   revoked device stay valid until revoked one by one.
-- **No recovery-key rotation route.** The vault format supports it and it is
-  unit-tested, but no route or CLI exposes it.
 - **The local Tauri app can't do fresh actions.** Its token comes from
   `yarvis-server device add`, and a token device is never fresh, so minting
-  and revoking devices and switching the secrets backend need a browser
-  signed in with a passkey. A remote Tauri app given a token minted over the
+  and revoking devices, account changes and switching the secrets backend
+  need a browser signed in with the passphrase. A remote Tauri app given a token minted over the
   API can't open terminals, since such tokens can't carry `terminal`; make
   its token with `device add` on the server instead.
-- **The RP ID can't change after the first passkey.** The setup routes close
-  once a passkey exists, and nothing issues a new setup code, so passkeys
-  made for an old RP ID can't be replaced by ones for the new name.
+- **Anyone who can reach the server can lock sign-in.** Ten wrong sign-ins
+  in 15 minutes lock it for 15 minutes, whoever sends them.
+- **The database holds the TOTP secret.** Whoever reads `server.db` can make
+  codes; the passphrase's Argon2id hash is what still protects sign-in.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
 - **Some `read` routes run git.** Listing a repo's branches and a
@@ -773,7 +796,6 @@ Core commands that changed on the way from `invoke`:
 
 ## Open questions
 
-- The real RP ID for the home server. Until it's chosen, use the config value.
 - FileVault on the home server. Off means it comes back after a power cut with
   no one there. On means someone has to unlock it at the machine after a
   reboot.
