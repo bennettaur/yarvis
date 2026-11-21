@@ -17,7 +17,7 @@ export const MINTABLE_SCOPES: readonly Scope[] = ["read", "chat", "approve"];
 /** What each scope lets a device do, as the Devices tab shows it. */
 export const SCOPE_LABELS: Record<Scope, string> = {
   read: "see data and events",
-  chat: "chat and act in workspaces",
+  chat: "chat and keep track of work",
   terminal: "open terminals",
   approve: "answer approvals",
   admin: "manage devices and secrets",
