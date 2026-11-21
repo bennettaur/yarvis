@@ -42,6 +42,7 @@ pub async fn serve_with(setup: Setup) -> Server {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
+    config.ssh_agent = setup.ssh_agent;
     let mut state = AppState::new(config, Store::open_in_memory().unwrap());
     let settings = SettingsStore::new(dir.path().join("settings.json"));
     let secrets = setup.secrets.unwrap_or_else(MemoryBackend::empty);
@@ -56,12 +57,15 @@ pub async fn serve_with(setup: Setup) -> Server {
         settings,
         blob,
         state.events.clone(),
-        setup.ssh_agent,
+        state.config.ssh_agent.clone(),
         PtyOptions {
             shell: Some("/bin/sh".into()),
             ..options
         },
     );
+    state
+        .pty
+        .set_server_ssh_agent(yarvis_server::ssh_agent::socket_path(&state));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app(state.clone());
