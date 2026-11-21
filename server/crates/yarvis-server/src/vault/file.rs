@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -22,6 +23,15 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 const FORMAT_VERSION: u32 = 1;
 const KEY_LEN: usize = 32;
 
+/// Argon2id for the vault passphrase: 64 MiB and 3 passes, about half a
+/// second on a laptop. Stronger than sign-in's, since a copy of `vault.json`
+/// can be attacked offline with nothing else in the way, and an unlock is
+/// rare. The parameters are stored in the wrapper, so they can be raised for
+/// new wrappers without breaking old ones.
+const PASSPHRASE_MEMORY_KIB: u32 = 64 * 1024;
+const PASSPHRASE_PASSES: u32 = 3;
+const PASSPHRASE_WRAPPER_ID: &str = "passphrase";
+
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
     #[error("the vault is locked")]
@@ -34,12 +44,8 @@ pub enum VaultError {
     /// no detail, so callers can't tell a wrong secret from a corrupt wrapper.
     #[error("wrong key or corrupt wrapper")]
     WrongKey,
-    #[error("no wrapper matches this credential")]
-    NoMatchingWrapper,
-    #[error("refusing to remove the last wrapper: the vault would become unrecoverable")]
-    LastWrapper,
-    #[error("wrapper id already exists: {0}")]
-    DuplicateWrapper(String),
+    #[error("the passphrase couldn't be stretched: {0}")]
+    Kdf(String),
     #[error("secrets blob failed to decrypt with the vault key (file tampered or corrupt)")]
     CorruptSecrets,
     #[error("a vault already exists here")]
@@ -110,7 +116,62 @@ impl RecoveryKey {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WrapperKind {
+    /// Opened by the vault passphrase, stretched with Argon2id under
+    /// `kdf_salt` with these parameters.
+    Passphrase {
+        kdf_salt: String,
+        memory_kib: u32,
+        passes: u32,
+    },
     Recovery,
+}
+
+/// The vault passphrase, stretched with Argon2id into a 32-byte secret that
+/// then goes through the same HKDF wrap as a recovery key. Slow on purpose:
+/// run it off the async workers.
+fn passphrase_secret(
+    passphrase: &str,
+    kdf_salt: &[u8],
+    memory_kib: u32,
+    passes: u32,
+) -> Result<UnwrapSecret, VaultError> {
+    let params = Params::new(memory_kib, passes, 1, Some(KEY_LEN))
+        .map_err(|e| VaultError::Kdf(e.to_string()))?;
+    let mut out = Zeroizing::new(vec![0u8; KEY_LEN]);
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(passphrase.as_bytes(), kdf_salt, &mut out)
+        .map_err(|e| VaultError::Kdf(e.to_string()))?;
+    Ok(UnwrapSecret(out))
+}
+
+/// A passphrase wrapper's kind and the secret it wraps with, under a new salt.
+fn new_passphrase_wrapper(passphrase: &str) -> Result<(WrapperKind, UnwrapSecret), VaultError> {
+    let mut salt = [0u8; 16];
+    rand::rng().fill_bytes(&mut salt);
+    let secret = passphrase_secret(passphrase, &salt, PASSPHRASE_MEMORY_KIB, PASSPHRASE_PASSES)?;
+    Ok((
+        WrapperKind::Passphrase {
+            kdf_salt: B64.encode(salt),
+            memory_kib: PASSPHRASE_MEMORY_KIB,
+            passes: PASSPHRASE_PASSES,
+        },
+        secret,
+    ))
+}
+
+/// The key a passphrase opens `w` with, if it does.
+fn unwrap_with_passphrase(vault_id: &str, w: &Wrapper, passphrase: &str) -> Option<VaultKey> {
+    let WrapperKind::Passphrase {
+        kdf_salt,
+        memory_kib,
+        passes,
+    } = &w.kind
+    else {
+        return None;
+    };
+    let salt = decode(kdf_salt).ok()?;
+    let secret = passphrase_secret(passphrase, &salt, *memory_kib, *passes).ok()?;
+    try_unwrap(vault_id, w, &secret)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -271,13 +332,17 @@ fn try_unwrap(vault_id: &str, w: &Wrapper, secret: &UnwrapSecret) -> Option<Vaul
 }
 
 impl VaultFile {
-    /// Creates a vault with a single recovery-key wrapper and the given secrets.
-    /// Returns it already unlocked, plus the recovery key to show the user once.
-    pub fn create(secrets: Secrets) -> (Unlocked, RecoveryKey) {
+    /// Creates a vault with a passphrase wrapper, a recovery-key wrapper and
+    /// the given secrets. Returns it already unlocked, plus the recovery key to
+    /// show the user once.
+    pub fn create(
+        secrets: Secrets,
+        passphrase: &str,
+    ) -> Result<(Unlocked, RecoveryKey), VaultError> {
         let vault_id = random_b64(16);
         let key = VaultKey::random();
         let recovery = RecoveryKey::generate();
-        let wrapper = make_wrapper(
+        let recovery_wrapper = make_wrapper(
             &vault_id,
             &key,
             "recovery".into(),
@@ -285,10 +350,19 @@ impl VaultFile {
             WrapperKind::Recovery,
             &recovery.as_unwrap_secret(),
         );
+        let (kind, secret) = new_passphrase_wrapper(passphrase)?;
+        let passphrase_wrapper = make_wrapper(
+            &vault_id,
+            &key,
+            PASSPHRASE_WRAPPER_ID.into(),
+            "Vault passphrase".into(),
+            kind,
+            &secret,
+        );
         let file = VaultFile {
             version: FORMAT_VERSION,
             vault_id,
-            wrappers: vec![wrapper],
+            wrappers: vec![passphrase_wrapper, recovery_wrapper],
             secrets: Sealed {
                 nonce: String::new(),
                 ciphertext: String::new(),
@@ -296,7 +370,7 @@ impl VaultFile {
         };
         let mut unlocked = Unlocked { file, key, secrets };
         unlocked.reseal();
-        (unlocked, recovery)
+        Ok((unlocked, recovery))
     }
 
     pub fn load(path: &Path) -> Result<Self, VaultError> {
@@ -354,6 +428,16 @@ impl VaultFile {
         Ok(tmp)
     }
 
+    /// Unlocks with the vault passphrase. Slow: the passphrase is stretched.
+    pub fn unlock_with_passphrase(self, passphrase: &str) -> Result<Unlocked, VaultError> {
+        let key = self
+            .wrappers
+            .iter()
+            .find_map(|w| unwrap_with_passphrase(&self.vault_id, w, passphrase))
+            .ok_or(VaultError::WrongKey)?;
+        self.finish_unlock(key)
+    }
+
     pub fn unlock_with_recovery(self, recovery: &RecoveryKey) -> Result<Unlocked, VaultError> {
         let secret = recovery.as_unwrap_secret();
         let key = self
@@ -386,6 +470,42 @@ impl Unlocked {
         self.file.secrets = seal(&self.key.0, &secrets_aad(&self.file.vault_id), &plaintext);
     }
 
+    /// Whether `passphrase` opens this vault's passphrase wrapper. Slow.
+    pub fn opens_with_passphrase(&self, passphrase: &str) -> bool {
+        self.file
+            .wrappers
+            .iter()
+            .any(|w| unwrap_with_passphrase(&self.file.vault_id, w, passphrase).is_some())
+    }
+
+    pub fn opens_with_recovery(&self, recovery: &RecoveryKey) -> bool {
+        let secret = recovery.as_unwrap_secret();
+        self.file
+            .wrappers
+            .iter()
+            .filter(|w| w.kind == WrapperKind::Recovery)
+            .any(|w| try_unwrap(&self.file.vault_id, w, &secret).is_some())
+    }
+
+    /// Replaces the passphrase wrapper, so the old passphrase stops opening
+    /// the vault once the file is written. Slow: the passphrase is stretched.
+    pub fn set_passphrase(&mut self, passphrase: &str) -> Result<(), VaultError> {
+        let (kind, secret) = new_passphrase_wrapper(passphrase)?;
+        let wrapper = make_wrapper(
+            &self.file.vault_id,
+            &self.key,
+            PASSPHRASE_WRAPPER_ID.into(),
+            "Vault passphrase".into(),
+            kind,
+            &secret,
+        );
+        self.file
+            .wrappers
+            .retain(|w| !matches!(w.kind, WrapperKind::Passphrase { .. }));
+        self.file.wrappers.push(wrapper);
+        Ok(())
+    }
+
     /// Replaces the recovery wrapper with a new recovery key.
     pub fn rotate_recovery_key(&mut self) -> RecoveryKey {
         let recovery = RecoveryKey::generate();
@@ -404,17 +524,6 @@ impl Unlocked {
         recovery
     }
 
-    pub fn remove_wrapper(&mut self, wrapper_id: &str) -> Result<(), VaultError> {
-        if !self.file.wrappers.iter().any(|w| w.id == wrapper_id) {
-            return Err(VaultError::NoMatchingWrapper);
-        }
-        if self.file.wrappers.len() == 1 {
-            return Err(VaultError::LastWrapper);
-        }
-        self.file.wrappers.retain(|w| w.id != wrapper_id);
-        Ok(())
-    }
-
     /// Drops the key and secrets (both zeroize on drop) and returns the locked file.
     pub fn lock(self) -> VaultFile {
         self.file.clone()
@@ -425,6 +534,8 @@ impl Unlocked {
 mod tests {
     use super::*;
 
+    const PASSPHRASE: &str = "a vault passphrase";
+
     fn sample_secrets() -> Secrets {
         let mut s = Secrets::default();
         s.insert("anthropic_api_key", b"sk-test-not-real".to_vec());
@@ -433,7 +544,7 @@ mod tests {
 
     #[test]
     fn create_lock_and_unlock_with_recovery_key() {
-        let (unlocked, recovery) = VaultFile::create(sample_secrets());
+        let (unlocked, recovery) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
         let locked = unlocked.lock();
         let reopened = locked.unlock_with_recovery(&recovery).unwrap();
         assert_eq!(
@@ -444,7 +555,7 @@ mod tests {
 
     #[test]
     fn wrong_recovery_key_fails_cleanly() {
-        let (unlocked, _recovery) = VaultFile::create(sample_secrets());
+        let (unlocked, _recovery) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
         let locked = unlocked.lock();
         let wrong = RecoveryKey::generate();
         assert!(matches!(
@@ -460,8 +571,83 @@ mod tests {
     }
 
     #[test]
+    fn the_passphrase_opens_the_vault_and_a_wrong_one_does_not() {
+        let (unlocked, _) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
+        assert!(unlocked.opens_with_passphrase(PASSPHRASE));
+        assert!(!unlocked.opens_with_passphrase("a vault passphrasE"));
+        let locked = unlocked.lock();
+        assert!(matches!(
+            locked.clone().unlock_with_passphrase("not the passphrase"),
+            Err(VaultError::WrongKey)
+        ));
+        let reopened = locked.unlock_with_passphrase(PASSPHRASE).unwrap();
+        assert!(reopened.secrets.get("anthropic_api_key").is_some());
+    }
+
+    #[test]
+    fn a_new_passphrase_retires_the_old_one_and_keeps_the_recovery_key() {
+        let (mut unlocked, recovery) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
+        unlocked.set_passphrase("another passphrase").unwrap();
+        let passphrase_wrappers = unlocked
+            .file
+            .wrappers
+            .iter()
+            .filter(|w| matches!(w.kind, WrapperKind::Passphrase { .. }))
+            .count();
+        assert_eq!(passphrase_wrappers, 1);
+        let locked = unlocked.lock();
+        assert!(matches!(
+            locked.clone().unlock_with_passphrase(PASSPHRASE),
+            Err(VaultError::WrongKey)
+        ));
+        locked
+            .clone()
+            .unlock_with_passphrase("another passphrase")
+            .unwrap();
+        locked.unlock_with_recovery(&recovery).unwrap();
+    }
+
+    #[test]
+    fn a_changed_passphrase_wrapper_does_not_open() {
+        let (unlocked, _) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
+        let locked = unlocked.lock();
+        let tampered = |change: &dyn Fn(&mut Wrapper)| {
+            let mut file = locked.clone();
+            let w = file
+                .wrappers
+                .iter_mut()
+                .find(|w| w.id == PASSPHRASE_WRAPPER_ID)
+                .unwrap();
+            change(w);
+            file.unlock_with_passphrase(PASSPHRASE)
+        };
+        let weaker_params = |w: &mut Wrapper| {
+            if let WrapperKind::Passphrase { passes, .. } = &mut w.kind {
+                *passes = 1;
+            }
+        };
+        let other_salt = |w: &mut Wrapper| {
+            if let WrapperKind::Passphrase { kdf_salt, .. } = &mut w.kind {
+                *kdf_salt = B64.encode([7u8; 16]);
+            }
+        };
+        let flip_key = |w: &mut Wrapper| {
+            let mut ct = decode(&w.wrapped_key).unwrap();
+            ct[0] ^= 1;
+            w.wrapped_key = B64.encode(ct);
+        };
+        for change in [
+            &weaker_params as &dyn Fn(&mut Wrapper),
+            &other_salt,
+            &flip_key,
+        ] {
+            assert!(matches!(tampered(change), Err(VaultError::WrongKey)));
+        }
+    }
+
+    #[test]
     fn rotating_recovery_key_invalidates_the_old_one() {
-        let (mut unlocked, old) = VaultFile::create(sample_secrets());
+        let (mut unlocked, old) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
         let new = unlocked.rotate_recovery_key();
         let locked = unlocked.lock();
         assert!(matches!(
@@ -473,7 +659,7 @@ mod tests {
 
     #[test]
     fn tampered_secrets_fail_authentication() {
-        let (unlocked, recovery) = VaultFile::create(sample_secrets());
+        let (unlocked, recovery) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
         let mut locked = unlocked.lock();
         let mut ct = decode(&locked.secrets.ciphertext).unwrap();
         ct[0] ^= 1;
@@ -489,7 +675,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("vault.json");
-        let (mut unlocked, recovery) = VaultFile::create(sample_secrets());
+        let (mut unlocked, recovery) = VaultFile::create(sample_secrets(), PASSPHRASE).unwrap();
         unlocked.secrets.insert("another", b"value".to_vec());
         unlocked.reseal();
         unlocked.file.save(&path).unwrap();

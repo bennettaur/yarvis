@@ -1,8 +1,8 @@
 //! The server's encrypted vault: the secrets blob and the git signing key,
 //! encrypted at rest in `vault.json` in the data dir.
 //!
-//! The vault starts locked on every boot. Its passphrase or the recovery key
-//! unwraps the vault key, and the decrypted secrets stay
+//! The vault starts locked on every boot. Its own passphrase or the recovery
+//! key unwraps the vault key, and the decrypted secrets stay
 //! in memory until it is locked again. Nothing is cached on disk in the clear.
 //! The format and its reasoning are in `file.rs`; `spikes/vault/FINDINGS.md`
 //! has the trade-offs behind it.
@@ -17,6 +17,7 @@ pub mod routes;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use rand::RngCore;
 use tokio::sync::watch;
@@ -33,6 +34,9 @@ pub const SECRETS_BLOB: &str = "secrets_blob";
 pub const SIGNING_KEY_SECRET: &str = "ssh_signing_key_ed25519_seed";
 
 const FILE_NAME: &str = "vault.json";
+
+/// The longest wait after a wrong vault passphrase.
+const MAX_GUESS_DELAY: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultState {
@@ -59,6 +63,23 @@ pub struct Created {
     pub signing_public_key: Option<String>,
 }
 
+/// Wrong vault passphrases so far, and when the next try is allowed. Each wrong
+/// one doubles the wait (1 s, 2 s, 4 s, up to 5 minutes), and a right one
+/// clears it. A wait only slows guessing: unlike a lockout it can't keep the
+/// owner out for long, and only an admin device can make it grow, since the
+/// unlock route needs one. The recovery key isn't slowed: it can't be guessed.
+#[derive(Default)]
+struct Guesses {
+    wrong: u32,
+    next_try: Option<Instant>,
+}
+
+/// How a passphrase change proves it is the owner's.
+pub enum Proof<'a> {
+    Passphrase(&'a str),
+    Recovery(&'a RecoveryKey),
+}
+
 /// A shared handle to the vault. Cloning it shares the lock state.
 #[derive(Clone)]
 pub struct Vault(Arc<Inner>);
@@ -66,6 +87,7 @@ pub struct Vault(Arc<Inner>);
 struct Inner {
     path: PathBuf,
     unlocked: Mutex<Option<Unlocked>>,
+    guesses: Mutex<Guesses>,
     /// `true` while unlocked, for code that waits for secrets to be readable.
     unlocked_signal: watch::Sender<bool>,
 }
@@ -76,6 +98,7 @@ impl Vault {
         Self(Arc::new(Inner {
             path: data_dir.join(FILE_NAME),
             unlocked: Mutex::new(None),
+            guesses: Mutex::default(),
             unlocked_signal: watch::channel(false).0,
         }))
     }
@@ -84,9 +107,14 @@ impl Vault {
         &self.0.path
     }
 
-    /// Creates the vault file with a recovery-key wrapper, and a signing key
-    /// when `with_signing_key` is set. Refuses to replace an existing vault.
-    pub fn init(data_dir: &Path, with_signing_key: bool) -> Result<Created, VaultError> {
+    /// Creates the vault file with a passphrase wrapper and a recovery-key
+    /// wrapper, and a signing key when `with_signing_key` is set. Refuses to
+    /// replace an existing vault.
+    pub fn init(
+        data_dir: &Path,
+        with_signing_key: bool,
+        passphrase: &str,
+    ) -> Result<Created, VaultError> {
         std::fs::create_dir_all(data_dir)?;
         let mut secrets = Secrets::default();
         let signing_public_key = with_signing_key.then(|| {
@@ -94,7 +122,7 @@ impl Vault {
             secrets.insert(SIGNING_KEY_SECRET, seed.to_vec());
             crate::ssh_agent::public_key_openssh(&seed)
         });
-        let (unlocked, recovery_key) = VaultFile::create(secrets);
+        let (unlocked, recovery_key) = VaultFile::create(secrets, passphrase)?;
         unlocked.file.save_new(&data_dir.join(FILE_NAME))?;
         Ok(Created {
             recovery_key,
@@ -139,6 +167,61 @@ impl Vault {
         drop(state);
         self.0.unlocked_signal.send_replace(true);
         Ok(())
+    }
+
+    /// How long until another passphrase may be tried, after wrong ones.
+    pub fn guess_delay(&self) -> Option<Duration> {
+        let guesses = lock(&self.0.guesses);
+        guesses
+            .next_try
+            .and_then(|at| at.checked_duration_since(Instant::now()))
+    }
+
+    fn record_guess(&self, right: bool) {
+        let mut guesses = lock(&self.0.guesses);
+        if right {
+            *guesses = Guesses::default();
+            return;
+        }
+        guesses.wrong += 1;
+        let wait = Duration::from_secs(1u64 << (guesses.wrong - 1).min(9)).min(MAX_GUESS_DELAY);
+        guesses.next_try = Some(Instant::now() + wait);
+    }
+
+    /// Unlocks with the vault passphrase. Slow (the passphrase is stretched),
+    /// so call it off the async workers. A wrong passphrase makes the next
+    /// try wait; see [`Vault::guess_delay`].
+    pub fn unlock_with_passphrase(&self, passphrase: &str) -> Result<(), VaultError> {
+        let mut state = self.lock_state();
+        if state.is_some() {
+            return Err(VaultError::AlreadyUnlocked);
+        }
+        let result = self.load()?.unlock_with_passphrase(passphrase);
+        self.record_guess(result.is_ok());
+        *state = Some(result?);
+        drop(state);
+        self.0.unlocked_signal.send_replace(true);
+        Ok(())
+    }
+
+    /// Replaces the vault passphrase, after checking the current one or the
+    /// recovery key. Needs the vault unlocked, since wrapping takes the vault
+    /// key. Slow: call it off the async workers.
+    pub fn change_passphrase(&self, proof: Proof<'_>, new: &str) -> Result<(), VaultError> {
+        self.change(|unlocked| {
+            let proven = match proof {
+                Proof::Passphrase(current) => {
+                    let right = unlocked.opens_with_passphrase(current);
+                    self.record_guess(right);
+                    right
+                }
+                Proof::Recovery(recovery) => unlocked.opens_with_recovery(recovery),
+            };
+            if !proven {
+                return Err(VaultError::WrongKey);
+            }
+            unlocked.set_passphrase(new)
+        })
     }
 
     /// Drops the vault key and the decrypted secrets, which zeroize on drop.
@@ -235,14 +318,17 @@ impl Vault {
         }
     }
 
-    /// Nothing panics halfway through a change, so a poisoned lock is still
-    /// usable.
     fn lock_state(&self) -> MutexGuard<'_, Option<Unlocked>> {
-        self.0
-            .unlocked
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.0.unlocked)
     }
+}
+
+/// Nothing panics halfway through a change, so a poisoned lock is still
+/// usable.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn random_seed() -> Zeroizing<[u8; 32]> {
@@ -255,12 +341,58 @@ fn random_seed() -> Zeroizing<[u8; 32]> {
 mod tests {
     use super::*;
 
+    const TEST_PASSPHRASE: &str = "a vault passphrase";
+
+    #[test]
+    fn a_wrong_passphrase_makes_the_next_try_wait_longer_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
+        let vault = Vault::new(dir.path());
+        assert_eq!(vault.guess_delay(), None);
+        assert!(matches!(
+            vault.unlock_with_passphrase("not it"),
+            Err(VaultError::WrongKey)
+        ));
+        let first = vault.guess_delay().unwrap();
+        assert!(first <= Duration::from_secs(1), "{first:?}");
+        let _ = vault.unlock_with_passphrase("not it either");
+        assert!(vault.guess_delay().unwrap() > Duration::from_secs(1));
+        vault.unlock_with_passphrase(TEST_PASSPHRASE).unwrap();
+        assert_eq!(vault.guess_delay(), None, "a right passphrase clears it");
+    }
+
+    #[test]
+    fn the_passphrase_changes_with_the_current_one_or_the_recovery_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let created = Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
+        let vault = Vault::new(dir.path());
+        assert!(matches!(
+            vault.change_passphrase(Proof::Passphrase(TEST_PASSPHRASE), "x"),
+            Err(VaultError::Locked)
+        ));
+        vault.unlock_with_passphrase(TEST_PASSPHRASE).unwrap();
+        assert!(matches!(
+            vault.change_passphrase(Proof::Passphrase("wrong"), "second passphrase"),
+            Err(VaultError::WrongKey)
+        ));
+        vault
+            .change_passphrase(Proof::Passphrase(TEST_PASSPHRASE), "second passphrase")
+            .unwrap();
+        vault
+            .change_passphrase(Proof::Recovery(&created.recovery_key), "third passphrase")
+            .unwrap();
+        vault.lock();
+        let fresh = Vault::new(dir.path());
+        assert!(fresh.unlock_with_passphrase("second passphrase").is_err());
+        fresh.unlock_with_passphrase("third passphrase").unwrap();
+    }
+
     #[test]
     fn starts_locked_and_reports_its_state() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(dir.path());
         assert_eq!(vault.state().unwrap(), VaultState::Uninitialized);
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
         assert!(created.signing_public_key.is_none());
         assert_eq!(vault.state().unwrap(), VaultState::Locked);
         assert!(matches!(
@@ -284,9 +416,9 @@ mod tests {
     #[test]
     fn init_refuses_to_replace_a_vault() {
         let dir = tempfile::tempdir().unwrap();
-        Vault::init(dir.path(), false).unwrap();
+        Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
         assert!(matches!(
-            Vault::init(dir.path(), false),
+            Vault::init(dir.path(), false, TEST_PASSPHRASE),
             Err(VaultError::AlreadyExists)
         ));
     }
@@ -294,7 +426,7 @@ mod tests {
     #[test]
     fn a_secret_survives_lock_and_reload() {
         let dir = tempfile::tempdir().unwrap();
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
         let vault = Vault::new(dir.path());
         vault.unlock_with_recovery(&created.recovery_key).unwrap();
         vault.set_secret("x", b"value".to_vec()).unwrap();
@@ -308,7 +440,7 @@ mod tests {
     #[test]
     fn a_failed_write_leaves_memory_unchanged() {
         let dir = tempfile::tempdir().unwrap();
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
         let vault = Vault::new(dir.path());
         vault.unlock_with_recovery(&created.recovery_key).unwrap();
         vault.set_secret("x", b"old".to_vec()).unwrap();
@@ -322,7 +454,7 @@ mod tests {
     #[test]
     fn the_signing_key_is_made_once_and_kept() {
         let dir = tempfile::tempdir().unwrap();
-        let created = Vault::init(dir.path(), false).unwrap();
+        let created = Vault::init(dir.path(), false, TEST_PASSPHRASE).unwrap();
         let vault = Vault::new(dir.path());
         vault.unlock_with_recovery(&created.recovery_key).unwrap();
         assert!(vault.secret(SIGNING_KEY_SECRET).unwrap().is_none());
@@ -341,7 +473,7 @@ mod tests {
     #[test]
     fn init_with_a_signing_key_stores_it() {
         let dir = tempfile::tempdir().unwrap();
-        let created = Vault::init(dir.path(), true).unwrap();
+        let created = Vault::init(dir.path(), true, TEST_PASSPHRASE).unwrap();
         let public = created.signing_public_key.unwrap();
         assert!(public.starts_with("ssh-ed25519 "), "{public}");
         let vault = Vault::new(dir.path());

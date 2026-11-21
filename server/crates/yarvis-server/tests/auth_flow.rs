@@ -490,7 +490,7 @@ async fn a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not() {
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.secrets.backend = Some(SecretBackendKind::Vault);
-    let created = Vault::init(dir.path(), false).unwrap();
+    let created = Vault::init(dir.path(), false, "a vault passphrase").unwrap();
     let mut h = Harness::with_config(config).await;
     h.state.settings = SettingsStore::new(dir.path().join("settings.json"));
     h.state.secrets = SecretBlob::from_config(

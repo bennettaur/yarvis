@@ -15,7 +15,7 @@ use yarvis_server::{AppState, app};
 const USAGE: &str = "usage: yarvis-server [--config PATH]
        yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin [--config PATH]
        yarvis-server auth reset [--config PATH]
-       yarvis-server vault init [--config PATH]";
+       yarvis-server vault init [--passphrase-stdin] [--config PATH]";
 
 #[derive(Debug)]
 enum Command {
@@ -26,8 +26,11 @@ enum Command {
         name: String,
         scopes: String,
     },
-    /// Creates the vault and prints its recovery key, once.
-    VaultInit,
+    /// Creates the vault and prints its recovery key, once. The vault
+    /// passphrase is asked for on the terminal, or read from stdin.
+    VaultInit {
+        passphrase_stdin: bool,
+    },
     /// Removes the account and prints a new setup code, for an owner who lost
     /// both the authenticator and the backup codes. The same trust as
     /// `device add`: whoever runs it can already read the database.
@@ -52,7 +55,7 @@ async fn main() {
     match command {
         Command::Serve => serve(config, store).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
-        Command::VaultInit => vault_init(&config),
+        Command::VaultInit { passphrase_stdin } => vault_init(&config, passphrase_stdin),
         Command::AuthReset => auth_reset(&config, store).await,
     }
 }
@@ -153,14 +156,19 @@ async fn add_device(store: Store, name: &str, scopes: &str) {
 
 /// The recovery key goes to stdout and nowhere else; the rest goes to
 /// stderr, so `vault init > key.txt` captures only the key.
-fn vault_init(config: &Config) {
+fn vault_init(config: &Config, passphrase_stdin: bool) {
     if config.secrets.backend != Some(SecretBackendKind::Vault) {
         eprintln!(
             "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
         );
     }
     let data_dir = &config.server.data_dir;
-    let created = Vault::init(data_dir, config.ssh_agent.enabled).unwrap_or_else(|e| fail(e));
+    if data_dir.join("vault.json").exists() {
+        fail("a vault already exists here");
+    }
+    let passphrase = read_vault_passphrase(passphrase_stdin);
+    let created =
+        Vault::init(data_dir, config.ssh_agent.enabled, &passphrase).unwrap_or_else(|e| fail(e));
     eprintln!(
         "Created {}. Write down the recovery key below; it is shown only this once.",
         data_dir.join("vault.json").display()
@@ -169,6 +177,35 @@ fn vault_init(config: &Config) {
     if let Some(public_key) = created.signing_public_key {
         eprintln!("Git signing key (add it to GitHub as a signing key): {public_key}");
     }
+}
+
+/// The vault passphrase, from the first line of stdin or asked for twice on
+/// the terminal with no echo. It is separate from the sign-in passphrase.
+fn read_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
+    use zeroize::Zeroizing;
+    let passphrase = if from_stdin {
+        let mut line = Zeroizing::new(String::new());
+        std::io::stdin()
+            .read_line(&mut line)
+            .unwrap_or_else(|e| fail(format!("couldn't read the passphrase: {e}")));
+        Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_string())
+    } else {
+        let ask = |prompt: &str| {
+            Zeroizing::new(
+                rpassword::prompt_password(prompt)
+                    .unwrap_or_else(|e| fail(format!("couldn't read the passphrase: {e}"))),
+            )
+        };
+        let first = ask("Vault passphrase (not your sign-in passphrase): ");
+        if *ask("Again: ") != *first {
+            fail("the passphrases don't match");
+        }
+        first
+    };
+    if let Err(reason) = yarvis_server::auth::account::check_passphrase_shape(&passphrase) {
+        fail(reason);
+    }
+    passphrase
 }
 
 /// The new setup code goes to stdout and to the private file the server
@@ -208,6 +245,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 /// put `--config` first for every command.
 fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), String> {
     let (mut words, mut config, mut name, mut scopes) = (Vec::new(), None, None, None);
+    let mut passphrase_stdin = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
@@ -215,9 +253,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
             "--config" => config = Some(value("--config")?),
             "--name" => name = Some(value("--name")?),
             "--scopes" => scopes = Some(value("--scopes")?),
+            "--passphrase-stdin" => passphrase_stdin = true,
             flag if flag.starts_with('-') => return Err(format!("unknown argument: {flag}")),
             _ => words.push(arg),
         }
+    }
+    if passphrase_stdin && words != ["vault", "init"] {
+        return Err("--passphrase-stdin goes with `vault init`".into());
     }
     let command = match words.as_slice() {
         [] if name.is_none() && scopes.is_none() => Command::Serve,
@@ -232,7 +274,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
             if name.is_some() || scopes.is_some() {
                 return Err("--name and --scopes go with `device add`".into());
             }
-            Command::VaultInit
+            Command::VaultInit { passphrase_stdin }
         }
         [device, add] if device == "device" && add == "add" => Command::AddDevice {
             name: name.ok_or("device add needs --name")?,
@@ -350,8 +392,17 @@ mod tests {
     fn parses_vault_init() {
         assert!(matches!(
             parse(&["vault", "init", "--config", "x.toml"]).unwrap().0,
-            Command::VaultInit
+            Command::VaultInit {
+                passphrase_stdin: false
+            }
         ));
+        assert!(matches!(
+            parse(&["vault", "init", "--passphrase-stdin"]).unwrap().0,
+            Command::VaultInit {
+                passphrase_stdin: true
+            }
+        ));
+        assert!(parse(&["--passphrase-stdin"]).is_err());
         assert!(parse(&["vault", "init", "--name", "x"]).is_err());
     }
 }

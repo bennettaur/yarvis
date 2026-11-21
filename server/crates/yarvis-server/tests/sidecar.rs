@@ -1002,7 +1002,7 @@ async fn stopping_the_supervisor_kills_the_sidecar() {
 #[tokio::test]
 async fn the_sidecar_follows_the_vault_lock() {
     let dir = tempfile::tempdir().unwrap();
-    let created = Vault::init(dir.path(), false).unwrap();
+    let created = Vault::init(dir.path(), false, "a vault passphrase").unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.secrets.backend = Some(SecretBackendKind::Vault);

@@ -1,18 +1,22 @@
-//! The vault routes: unlocking with the recovery key, locking, replacing the
-//! recovery key, events, and the ssh-agent switch.
+//! The vault routes: unlocking with the vault passphrase or the recovery key,
+//! locking, changing the passphrase and the recovery key, events, and the
+//! ssh-agent switch.
 
 mod common;
 
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 use axum::http::StatusCode;
-use common::Harness;
+use common::{Harness, until};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::secret_store::SecretError;
 use yarvis_server::ssh_agent;
 use yarvis_server::vault::{SIGNING_KEY_SECRET, Vault};
+
+/// The vault's own passphrase, not the sign-in one.
+const VAULT_PASSPHRASE: &str = "the vault's own passphrase";
 
 struct VaultHarness {
     harness: Harness,
@@ -22,7 +26,7 @@ struct VaultHarness {
 
 async fn vault_harness(agent_enabled: bool) -> VaultHarness {
     let v = vault_harness_without_a_vault(agent_enabled).await;
-    let created = Vault::init(v.dir.path(), agent_enabled).unwrap();
+    let created = Vault::init(v.dir.path(), agent_enabled, VAULT_PASSPHRASE).unwrap();
     VaultHarness {
         recovery_key: created.recovery_key.expose().to_string(),
         ..v
@@ -271,7 +275,7 @@ async fn a_live_server_sees_vault_init() {
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
-    let created = Vault::init(v.dir.path(), false).unwrap();
+    let created = Vault::init(v.dir.path(), false, VAULT_PASSPHRASE).unwrap();
     v.recovery_key = created.recovery_key.expose().to_string();
     assert_eq!(v.state(&token).await, "locked");
     let (status, _) = v.unlock_with_recovery(&token).await;
@@ -316,10 +320,24 @@ async fn the_vault_init_command() {
         )
         .unwrap();
         let init = move || {
-            std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
-                .args(["--config", config.to_str().unwrap(), "vault", "init"])
-                .output()
-                .unwrap()
+            use std::io::Write;
+            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+                .args([
+                    "--config",
+                    config.to_str().unwrap(),
+                    "vault",
+                    "init",
+                    "--passphrase-stdin",
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            writeln!(stdin, "{VAULT_PASSPHRASE}").unwrap();
+            drop(stdin);
+            child.wait_with_output().unwrap()
         };
         (dir, init)
     };
@@ -340,8 +358,10 @@ async fn the_vault_init_command() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("signing key"));
     let recovery = yarvis_server::vault::RecoveryKey::parse(stdout.trim()).unwrap();
     let vault = Vault::new(dir.path());
-    vault.unlock_with_recovery(&recovery).unwrap();
+    vault.unlock_with_passphrase(VAULT_PASSPHRASE).unwrap();
     assert!(vault.secret(SIGNING_KEY_SECRET).unwrap().is_none());
+    vault.lock();
+    vault.unlock_with_recovery(&recovery).unwrap();
 
     let before = std::fs::read(dir.path().join("vault.json")).unwrap();
     let again = init();
@@ -447,5 +467,160 @@ async fn rotating_the_recovery_key_needs_a_fresh_device_and_retires_the_old_one(
     );
     v.recovery_key = new_key;
     let (status, body) = v.unlock_with_recovery(&token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+impl VaultHarness {
+    async fn unlock_with_passphrase(&self, token: &str, passphrase: &str) -> (StatusCode, Value) {
+        self.harness
+            .call(
+                "POST",
+                "/api/vault/unlock",
+                Some(token),
+                Some(json!({ "passphrase": passphrase })),
+            )
+            .await
+    }
+}
+
+/// The vault passphrase unlocks it; a wrong one is refused and makes the next
+/// try wait, while the recovery key still works.
+#[tokio::test]
+async fn the_vault_passphrase_unlocks_and_wrong_guesses_wait() {
+    let v = vault_harness(false).await;
+    let token = v.harness.setup().await;
+    let (status, _) = v.unlock_with_passphrase(&token, common::PASSPHRASE).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the sign-in passphrase isn't the vault's"
+    );
+    let (status, body) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert!(body["detail"].as_str().unwrap().contains("waits"), "{body}");
+
+    let (status, body) = v.unlock_with_recovery(&token).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the recovery key isn't slowed: {body}"
+    );
+    let (status, _) = v
+        .harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Waited out rather than slept through: a right passphrase clears it.
+    until("the guess delay to pass", || async {
+        v.harness.state.vault.guess_delay().is_none().then_some(())
+    })
+    .await;
+    let (status, body) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let unlocked = v.harness.events("vault.unlocked").await;
+    assert_eq!(unlocked.last().unwrap().data["via"], "passphrase");
+    let (_, status) = v
+        .harness
+        .call("GET", "/api/vault/status", Some(&token), None)
+        .await;
+    let kinds: Vec<_> = status["wrappers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["kind"].clone())
+        .collect();
+    assert_eq!(kinds, [json!("passphrase"), json!("recovery")]);
+}
+
+/// A new vault passphrase needs a fresh device and the current passphrase or
+/// the recovery key, and the old one then opens nothing.
+#[tokio::test]
+async fn changing_the_vault_passphrase_needs_proof_and_a_fresh_device() {
+    let v = vault_harness(false).await;
+    let token = v.harness.setup().await;
+    let (status, _) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
+    assert_eq!(status, StatusCode::OK);
+    let change = |proof: Value| {
+        let mut body = json!({ "newPassphrase": "a second vault passphrase" });
+        body.as_object_mut()
+            .unwrap()
+            .extend(proof.as_object().unwrap().clone());
+        body
+    };
+
+    let cli = yarvis_server::devices::add_token_device(
+        &v.harness.state.store,
+        &v.harness.state.events,
+        "tauri",
+        &[yarvis_server::auth::Scope::Admin],
+        None,
+    )
+    .await
+    .unwrap()
+    .token;
+    let proof = json!({ "currentPassphrase": VAULT_PASSPHRASE });
+    let (status, body) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/passphrase",
+            Some(&cli),
+            Some(change(proof.clone())),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "reauth_required");
+
+    let (status, _) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/passphrase",
+            Some(&token),
+            Some(change(
+                json!({ "currentPassphrase": "not the vault's passphrase" }),
+            )),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/passphrase",
+            Some(&token),
+            Some(change(json!({ "recoveryKey": v.recovery_key }))),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the recovery key proves it too: {body}"
+    );
+    assert_eq!(v.harness.events("vault.passphrase_changed").await.len(), 1);
+
+    let (status, _) = v
+        .harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    until("the guess delay to pass", || async {
+        v.harness.state.vault.guess_delay().is_none().then_some(())
+    })
+    .await;
+    let (status, _) = v.unlock_with_passphrase(&token, VAULT_PASSPHRASE).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the old passphrase still opened it"
+    );
+    until("the guess delay to pass", || async {
+        v.harness.state.vault.guess_delay().is_none().then_some(())
+    })
+    .await;
+    let (status, body) = v
+        .unlock_with_passphrase(&token, "a second vault passphrase")
+        .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
