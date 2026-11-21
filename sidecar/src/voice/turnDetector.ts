@@ -40,8 +40,6 @@ export type TurnDetectorState = "stopped" | "starting" | "running" | "failed";
 
 export interface TurnDetectorStatus {
   state: TurnDetectorState;
-  /** Where to connect, token included. Null until the server is listening. */
-  url: string | null;
   log: string[];
   error: string | null;
 }
@@ -128,15 +126,17 @@ export class TurnDetector {
     let state: TurnDetectorState;
     if (this.child) state = this.port === null ? "starting" : "running";
     else state = this.error ? "failed" : "stopped";
-    return {
-      state,
-      url:
-        state === "running"
-          ? `ws://127.0.0.1:${this.port}/?token=${encodeURIComponent(this.token)}`
-          : null,
-      log: this.log,
-      error: this.error,
-    };
+    return { state, log: this.log, error: this.error };
+  }
+
+  /**
+   * Where to connect, token included, or null until the server is listening.
+   * Only yarvis-server reads it: clients connect through the server, which
+   * relays to this address, so the token never reaches a browser.
+   */
+  upstreamUrl(): string | null {
+    if (!this.child || this.port === null) return null;
+    return `ws://127.0.0.1:${this.port}/?token=${encodeURIComponent(this.token)}`;
   }
 
   /** Starts the server unless it is already starting or running. Answers at once. */

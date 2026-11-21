@@ -1,4 +1,5 @@
 import { encodeWav, SPEECH_SAMPLE_RATE } from "./audioEncoding";
+import { deviceToken, serverSocketUrl } from "./server";
 
 /**
  * Streams the microphone to the sidecar's turn detector for continuous voice
@@ -92,12 +93,13 @@ export function createTurnMessageHandler(
 }
 
 /**
- * Opens the microphone and the detector's websocket. Rejects when either can't
- * start, or when `signal` aborts first: a stop while the socket connects must
- * not go on to ask for the microphone.
+ * Opens the microphone and the detector's websocket at the server's `path`,
+ * which authenticates with the device token as its first message. Rejects when
+ * either can't start, or when `signal` aborts first: a stop while the socket
+ * connects must not go on to ask for the microphone.
  */
 export async function openTurnStream(
-  url: string,
+  path: string,
   handlers: TurnStreamHandlers,
   signal?: AbortSignal,
 ): Promise<TurnStream> {
@@ -107,11 +109,17 @@ export async function openTurnStream(
   const stoppedError = () => new Error("stopped before the microphone opened");
   if (signal?.aborted) throw stoppedError();
 
+  const url = serverSocketUrl(path);
+  const token = await deviceToken();
+  if (!url || !token) throw new Error("sign in to the server to use continuous mode");
   const socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
   try {
     await new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
+      socket.onopen = () => {
+        socket.send(JSON.stringify({ type: "auth", token }));
+        resolve();
+      };
       socket.onerror = () => reject(new Error("could not reach the turn detector"));
       signal?.addEventListener("abort", () => reject(stoppedError()), { once: true });
     });

@@ -158,6 +158,13 @@ const SCOPE_RULES: &[(&str, Methods, Scope)] = &[
     ("/api/repos", Methods::Writes, Scope::Admin),
 ];
 
+/// Sidecar routes only the server calls. The turn detector's address carries
+/// its token, and clients reach the detector through
+/// [`turn_detector_socket`] instead.
+const SERVER_ONLY: &[&str] = &[TURN_DETECTOR_UPSTREAM];
+
+const TURN_DETECTOR_UPSTREAM: &str = "/api/voice/turn-detector/upstream";
+
 /// The scope a request to the sidecar's `path` (no query) needs.
 fn required_scope(method: &Method, path: &str) -> Scope {
     let read = matches!(*method, Method::GET | Method::HEAD);
@@ -194,6 +201,12 @@ async fn forward(state: AppState, request: Request) -> Result<Response, ApiError
     // decodes it before routing: `/api/%77orkspaces` reaches `/api/workspaces`.
     let raw_path = path_and_query.split('?').next().unwrap_or_default();
     let path = decoded_path(raw_path).ok_or_else(ApiError::not_found)?;
+    if SERVER_ONLY
+        .iter()
+        .any(|pattern| path_matches(pattern, &path))
+    {
+        return Err(ApiError::not_found());
+    }
     let (mut parts, body) = request.into_parts();
     if is_websocket_upgrade(&parts.headers) {
         let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &state)
@@ -405,7 +418,7 @@ fn client() -> &'static Client<HttpConnector, Body> {
 async fn relay(mut socket: WebSocket, state: AppState, path_and_query: String, scope: Scope) {
     // Subscribed before authenticating, so a revocation that lands while the
     // token is being checked still closes this socket.
-    let mut revoked = state.auth.subscribe_revocations();
+    let revoked = state.auth.subscribe_revocations();
     let Some((device, _)) = authenticate_ws(&mut socket, &state.auth, scope).await else {
         return;
     };
@@ -423,6 +436,84 @@ async fn relay(mut socket: WebSocket, state: AppState, path_and_query: String, s
             return;
         }
     };
+    pump(socket, upstream, revoked, &device).await;
+}
+
+/// `GET /api/voice/turn-detector/socket` (WebSocket, `chat`): continuous
+/// voice mode's audio, relayed to the sidecar's turn detector on loopback, so
+/// a browser on another machine can use it through the server's own origin.
+pub async fn turn_detector_socket(
+    State(state): State<AppState>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade
+        .max_message_size(MAX_CLIENT_MESSAGE)
+        .on_upgrade(move |socket| relay_turn_detector(socket, state))
+}
+
+async fn relay_turn_detector(mut socket: WebSocket, state: AppState) {
+    let revoked = state.auth.subscribe_revocations();
+    let Some((device, _)) = authenticate_ws(&mut socket, &state.auth, Scope::Chat).await else {
+        return;
+    };
+    match connect_turn_detector(&state).await {
+        Ok(upstream) => pump(socket, upstream, revoked, &device).await,
+        Err(e) => {
+            tracing::warn!("turn detector websocket: {e}");
+            crate::auth::close(&mut socket, CloseReason::Internal).await;
+        }
+    }
+}
+
+/// Asks the sidecar where its turn detector listens, then connects there.
+async fn connect_turn_detector(state: &AppState) -> Result<UpstreamSocket, String> {
+    if !state.sidecar.is_running() {
+        return Err("the sidecar isn't running".into());
+    }
+    let endpoint = state.sidecar.endpoint();
+    let request = axum::http::Request::get(format!(
+        "http://127.0.0.1:{}{TURN_DETECTOR_UPSTREAM}",
+        endpoint.port
+    ))
+    .header(AUTHORIZATION, format!("Bearer {}", endpoint.token))
+    .body(Body::empty())
+    .map_err(|e| e.to_string())?;
+    let response = tokio::time::timeout(CONNECT_TIMEOUT, client().request(request))
+        .await
+        .map_err(|_| "timed out asking the sidecar".to_string())?
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("the sidecar answered {}", response.status()));
+    }
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes();
+    let url = serde_json::from_slice::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["url"].as_str().map(String::from))
+        .ok_or("the turn detector isn't running")?;
+    // Only ever a loopback address the sidecar reports; never somewhere else.
+    if !url.starts_with("ws://127.0.0.1:") {
+        return Err("the turn detector reported an address off loopback".into());
+    }
+    let connect = tokio_tungstenite::connect_async(url);
+    let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect)
+        .await
+        .map_err(|_| "timed out connecting to the turn detector".to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(socket)
+}
+
+/// Relays frames both ways until either side closes or the device is revoked.
+async fn pump(
+    socket: WebSocket,
+    upstream: UpstreamSocket,
+    mut revoked: broadcast::Receiver<String>,
+    device: &DeviceContext,
+) {
     let (mut to_client, mut from_client) = socket.split();
     let (mut to_upstream, mut from_upstream) = upstream.split();
     loop {

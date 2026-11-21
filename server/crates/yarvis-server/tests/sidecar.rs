@@ -1056,3 +1056,87 @@ async fn the_sidecar_follows_the_vault_lock() {
     .expect("the unlock didn't start the sidecar; it waited out the retry");
     supervisor.abort();
 }
+
+/// A fake turn detector on its own loopback port: it takes only its own token
+/// and echoes each binary frame back.
+async fn fake_turn_detector() -> u16 {
+    let router = Router::new().route(
+        "/",
+        get(
+            |query: axum::extract::Query<std::collections::HashMap<String, String>>,
+             upgrade: WebSocketUpgrade| async move {
+                if query.get("token").map(String::as_str) != Some("detector-token") {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                upgrade
+                    .on_upgrade(|mut socket| async move {
+                        while let Some(Ok(Message::Binary(bytes))) = socket.recv().await {
+                            let _ = socket.send(Message::Binary(bytes)).await;
+                        }
+                    })
+                    .into_response()
+            },
+        ),
+    );
+    serve(router).await
+}
+
+/// The browser streams audio over the server's own origin; the server asks the
+/// sidecar, with the sidecar's token, where the detector is, and relays.
+#[tokio::test]
+async fn the_turn_detector_socket_is_relayed_through_the_server() {
+    let detector = fake_turn_detector().await;
+    let sidecar = serve(Router::new().route(
+        "/api/voice/turn-detector/upstream",
+        get(move |headers: HeaderMap| async move {
+            if headers.get("authorization").and_then(|v| v.to_str().ok())
+                != Some(&format!("Bearer {SIDECAR_TOKEN}"))
+            {
+                return StatusCode::UNAUTHORIZED.into_response();
+            }
+            axum::Json(json!({ "url": format!("ws://127.0.0.1:{detector}/?token=detector-token") }))
+                .into_response()
+        }),
+    ))
+    .await;
+    let h = test_server(Config::default(), MemoryBackend::empty(), sidecar);
+    let (_, chatter) = token(&h.state, &[Scope::Chat]).await;
+    let (_, reader) = token(&h.state, &[Scope::Read]).await;
+    let (_, admin) = token(&h.state, &Scope::ALL).await;
+    let server = serve(app(h.state.clone())).await;
+    let open = |token: String| async move {
+        let url = format!("ws://127.0.0.1:{server}/api/voice/turn-detector/socket");
+        let (mut socket, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let auth = json!({ "type": "auth", "token": token }).to_string();
+        socket.send(tungstenite::Message::text(auth)).await.unwrap();
+        socket
+    };
+
+    let mut socket = open(chatter).await;
+    socket
+        .send(tungstenite::Message::binary(vec![1u8, 2, 3]))
+        .await
+        .unwrap();
+    let echoed = tokio::time::timeout(Duration::from_secs(5), socket.next())
+        .await
+        .expect("an echo")
+        .unwrap()
+        .unwrap();
+    assert_eq!(echoed, tungstenite::Message::binary(vec![1u8, 2, 3]));
+
+    let mut socket = open(reader).await;
+    assert_eq!(next_close_code(&mut socket).await, 4403);
+
+    // The detector's address carries its token, so no client gets it.
+    let (status, _) = send(
+        &h.state,
+        request(
+            "GET",
+            "/api/sidecar/api/voice/turn-detector/upstream",
+            &admin,
+            json!(null),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

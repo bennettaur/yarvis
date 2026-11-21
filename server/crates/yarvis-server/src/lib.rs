@@ -140,6 +140,10 @@ pub fn app(state: AppState) -> Router {
         .merge(vault::routes::router(&state))
         .merge(ssh_agent::router(&state))
         .route("/api/pty/{id}", get(pty::ws::ws))
+        .route(
+            "/api/voice/turn-detector/socket",
+            get(sidecar_proxy::turn_detector_socket),
+        )
         .route("/api/sidecar/{*path}", any(sidecar_proxy::proxy))
         .route("/api/core/{command}", post(core_api::command))
         .merge(web::fallback(state.config.server.web_dir.as_deref()))

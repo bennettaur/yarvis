@@ -675,6 +675,15 @@ Pairing a device without a passkey:
   user pastes it into the client being paired (a Tauri app pointed at a remote
   server, a script).
 
+Voice:
+
+- `GET /api/voice/turn-detector/socket` (WebSocket, `chat`): continuous voice
+  mode's audio. After the auth message, frames are relayed both ways to the
+  sidecar's turn detector, which listens only on loopback. The server gets the
+  detector's address and token from the sidecar's
+  `/api/voice/turn-detector/upstream`, which the proxy never serves to a
+  client; `/api/sidecar/api/voice/turn-detector` reports only its state.
+
 Sidecar:
 
 - `ANY /api/sidecar/{*path}` → the sidecar's `/{path}`, with `read` for `GET`
@@ -718,11 +727,9 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
-- **OAuth callbacks and the voice turn detector are local-only.** MCP and
-  Google Calendar OAuth redirect to the sidecar's loopback port, and
-  continuous voice mode's turn detector is a loopback WebSocket the page
-  connects to directly (which the CSP's `connect-src 'self'` also blocks).
-  Both work only in a browser on the server's own machine.
+- **OAuth callbacks are local-only.** MCP and Google Calendar OAuth redirect
+  to the sidecar's loopback port, so they work only in a browser on the
+  server's own machine.
 - **Port squatting in local mode.** The Tauri app starts its server on a
   loopback port and sends it a token. Another local user who binds that port
   first receives the token. The app doesn't check the server's identity yet.

@@ -3,7 +3,7 @@ import { createElement, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { waitFor } from "../test/render";
 import type { TurnStreamHandlers } from "./turnStream";
-import type { TurnDetectorStatus } from "./voice";
+import { TURN_DETECTOR_SOCKET, type TurnDetectorStatus } from "./voice";
 import { DEFAULT_VOICE_CONFIG, type VoiceConfig } from "./voiceConfig";
 
 /**
@@ -48,12 +48,7 @@ let sendError: Error | null = null;
  */
 let sendSettles: Promise<unknown> | null = null;
 
-const RUNNING: TurnDetectorStatus = {
-  state: "running",
-  url: "ws://127.0.0.1:5555/?token=t",
-  log: [],
-  error: null,
-};
+const RUNNING: TurnDetectorStatus = { state: "running", log: [], error: null };
 let detectorStatus: TurnDetectorStatus = RUNNING;
 /** Thrown by `startDetector`, as when the sidecar can't be reached. */
 let detectorError: Error | null = null;
@@ -178,10 +173,10 @@ async function mountVoice(initial = { streaming: "", busy: false }): Promise<Har
       return status;
     },
     detectorPollMs: 1,
-    openStream: async (url: string, handlers: TurnStreamHandlers, signal?: AbortSignal) => {
+    openStream: async (path: string, handlers: TurnStreamHandlers, signal?: AbortSignal) => {
       streamSignal = signal ?? null;
       if (streamOpens) await streamOpens;
-      openedUrl = url;
+      openedUrl = path;
       detector = handlers;
       streamClosed = false;
       return {
@@ -520,7 +515,7 @@ describe("useVoice", () => {
 describe("useVoice in continuous mode", () => {
   const continuous: VoiceConfig = { ...configured, continuous: true };
   const turnAudio = () => new Blob(["pcm"], { type: "audio/wav" });
-  const STARTING: TurnDetectorStatus = { state: "starting", url: null, log: [], error: null };
+  const STARTING: TurnDetectorStatus = { state: "starting", log: [], error: null };
 
   /** Mounts in continuous mode and clicks the mic, then waits for `until`. */
   async function listening(
@@ -538,7 +533,7 @@ describe("useVoice in continuous mode", () => {
 
   it("streams to the turn detector and sends each finished turn", async () => {
     active = await listening();
-    expect(openedUrl).toBe(RUNNING.url);
+    expect(openedUrl).toBe(TURN_DETECTOR_SOCKET);
     expect(active.voice.recording).toBe(true);
 
     detector?.onTurn(turnAudio());
@@ -913,7 +908,7 @@ describe("useVoice in continuous mode", () => {
     permission.resolve();
     await waitFor(() => openedUrl !== null, "the stream to finish opening");
 
-    expect(openedUrl).toBe(RUNNING.url);
+    expect(openedUrl).toBe(TURN_DETECTOR_SOCKET);
     expect(streamClosed).toBe(true);
     expect(active.voice.recording).toBe(false);
   });
@@ -937,7 +932,7 @@ describe("useVoice in continuous mode", () => {
     await waitForRenderAfter(active, (v) => v.error !== null, "the failure");
     detectorError = null;
     active.voice.startListening();
-    await waitFor(() => openedUrl === RUNNING.url, "the mic to open");
+    await waitFor(() => openedUrl === TURN_DETECTOR_SOCKET, "the mic to open");
   });
 
   it("closes the mic when continuous mode is switched off", async () => {
@@ -949,7 +944,6 @@ describe("useVoice in continuous mode", () => {
   it("explains a detector that failed to start", async () => {
     detectorStatus = {
       state: "failed",
-      url: null,
       log: [],
       error: "uv is not installed. Install it with `brew install uv`.",
     };
@@ -961,7 +955,7 @@ describe("useVoice in continuous mode", () => {
   });
 
   it("starts again on the next click after a failed start", async () => {
-    detectorStatus = { state: "failed", url: null, log: [], error: "no uv" };
+    detectorStatus = { state: "failed", log: [], error: "no uv" };
     active = await listening(failed, "the start to fail");
     expect(active.voice.error).toMatch(/no uv/);
 
@@ -970,7 +964,7 @@ describe("useVoice in continuous mode", () => {
     active.voice.startListening();
     await waitFor(() => active?.voice.recording === true, "the mic to open");
 
-    expect(openedUrl).toBe(RUNNING.url);
+    expect(openedUrl).toBe(TURN_DETECTOR_SOCKET);
     expect(active.voice.error).toBeNull();
   });
 
@@ -1010,7 +1004,7 @@ describe("useVoice in continuous mode", () => {
     active.voice.startListening();
     await waitFor(() => active?.voice.recording === true, "the mic to reopen");
 
-    expect(openedUrl as string | null).toBe(RUNNING.url);
+    expect(openedUrl as string | null).toBe(TURN_DETECTOR_SOCKET);
   });
 
   it("waits for a detector that is still starting", async () => {
@@ -1022,7 +1016,7 @@ describe("useVoice in continuous mode", () => {
     detectorStatus = RUNNING;
     await waitFor(() => active?.voice.starting === false, "the detector to be ready");
 
-    expect(openedUrl).toBe(RUNNING.url);
+    expect(openedUrl).toBe(TURN_DETECTOR_SOCKET);
   });
 
   it("sends turns in the order spoken, even when the first transcribes slower", async () => {
