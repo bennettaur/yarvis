@@ -108,6 +108,9 @@ struct CodePromptView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Confirm it's you").font(.headline)
             Text("Enter the code from your authenticator app.").foregroundStyle(.secondary)
+            if let refusal = app.codeRefusal {
+                Text(refusal).foregroundStyle(.red)
+            }
             TextField("123456", text: $code)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(submit)

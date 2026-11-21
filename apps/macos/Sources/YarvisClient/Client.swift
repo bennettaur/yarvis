@@ -155,18 +155,27 @@ public final class YarvisClient: Sendable {
         try await send("POST", "/api/auth/reverify", body: .object(["code": .string(code)]))
     }
 
-    /// Runs `action`. If the server answers `reauth_required`, asks `code` for
-    /// an authenticator code, reverifies and runs `action` once more. A nil
-    /// code cancels and rethrows the refusal.
+    /// Runs `action`. If the server answers `reauth_required`, asks `code`
+    /// for an authenticator code, reverifies and runs `action` once more. A
+    /// wrong code (403) asks again, passing the server's words for the
+    /// refusal. A nil code cancels and rethrows the refusal.
     public func withFreshCode<T: Sendable>(
-        _ code: @Sendable () async -> String?,
+        _ code: @Sendable (_ refusal: String?) async -> String?,
         _ action: @Sendable () async throws -> T
     ) async throws -> T {
         do {
             return try await action()
         } catch YarvisError.reauthRequired {
-            guard let entered = await code() else { throw YarvisError.reauthRequired }
-            try await reverify(code: entered)
+            var refusal: String?
+            while true {
+                guard let entered = await code(refusal) else { throw YarvisError.reauthRequired }
+                do {
+                    try await reverify(code: entered)
+                    break
+                } catch let YarvisError.http(status, error, detail) where status == 403 {
+                    refusal = detail.map { "\(error): \($0)" } ?? error
+                }
+            }
             return try await action()
         }
     }

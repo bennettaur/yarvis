@@ -86,6 +86,14 @@ final class Counter: @unchecked Sendable {
     var value: Int { lock.withLock { n } }
 }
 
+/// Records what a code prompt was told.
+final class Recorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var all: [String?] = []
+    func add(_ v: String?) { lock.withLock { all.append(v) } }
+    var values: [String?] { lock.withLock { all } }
+}
+
 @Suite struct RequestTests {
     @Test func sendsTheBearerTokenAndSidecarPrefix() async throws {
         let (session, id) = StubProtocol.session { _, _ in (200, json("[]")) }
@@ -114,18 +122,42 @@ final class Counter: @unchecked Sendable {
                 : (200, json("[]"))
         }
         let client = YarvisClient(baseURL: base, token: "t", session: session)
-        let approvals = try await client.withFreshCode({ "654321" }) { try await client.approvals() }
+        let approvals = try await client.withFreshCode({ _ in "654321" }) { try await client.approvals() }
         #expect(approvals.isEmpty)
         let paths = StubProtocol.recorded(id).map { $0.0.url!.path }
         #expect(paths == ["/api/approvals", "/api/auth/reverify", "/api/approvals"])
         #expect(bodyJSON(StubProtocol.recorded(id)[1].1) == .object(["code": .string("654321")]))
     }
 
+    @Test func aWrongCodeAsksAgainWithTheServersWords() async throws {
+        let verifies = Counter()
+        let done = Counter()
+        let (session, _) = StubProtocol.session { req, _ in
+            if req.url?.path == "/api/auth/reverify" {
+                verifies.bump()
+                return verifies.value == 1
+                    ? (403, json(#"{"error":"wrong code","detail":"enter the code your authenticator app shows now"}"#))
+                    : (200, json(#"{"verifiedAt":1}"#))
+            }
+            done.bump()
+            return done.value == 1 ? (403, json(#"{"error":"reauth_required"}"#)) : (200, json("[]"))
+        }
+        let lost = Counter()
+        let client = YarvisClient(baseURL: base, token: "t", session: session, onUnauthorized: { lost.bump() })
+        let refusals = Recorder()
+        _ = try await client.withFreshCode({ refusal in
+            refusals.add(refusal)
+            return "111111"
+        }) { try await client.approvals() }
+        #expect(refusals.values == [nil, "wrong code: enter the code your authenticator app shows now"])
+        #expect(lost.value == 0)
+    }
+
     @Test func cancellingTheCodePromptKeepsTheRefusal() async throws {
         let (session, id) = StubProtocol.session { _, _ in (403, json(#"{"error":"reauth_required"}"#)) }
         let client = YarvisClient(baseURL: base, token: "t", session: session)
         await #expect(throws: YarvisError.reauthRequired) {
-            try await client.withFreshCode({ nil }) { try await client.approvals() }
+            try await client.withFreshCode({ _ in nil }) { try await client.approvals() }
         }
         #expect(StubProtocol.recorded(id).count == 1)
     }

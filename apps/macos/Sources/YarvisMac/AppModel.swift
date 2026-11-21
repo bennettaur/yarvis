@@ -132,9 +132,13 @@ final class AppModel {
         codeRequest = nil
     }
 
+    /// Why the last code was refused, shown in the prompt.
+    var codeRefusal: String?
+
     /// Asks for an authenticator code; nil when the user cancels.
-    func askForCode() async -> String? {
+    func askForCode(refusal: String?) async -> String? {
         codeRequest?.resume(returning: nil)
+        codeRefusal = refusal
         return await withCheckedContinuation { codeRequest = $0 }
     }
 
@@ -147,7 +151,7 @@ final class AppModel {
     /// wants a fresh check.
     func fresh<T: Sendable>(_ action: @Sendable () async throws -> T) async throws -> T {
         guard let client else { throw YarvisError.unauthorized }
-        return try await client.withFreshCode({ await self.askForCode() }, action)
+        return try await client.withFreshCode({ await self.askForCode(refusal: $0) }, action)
     }
 
     /// Bumped to ask the main window to open the web UI window, which only a
