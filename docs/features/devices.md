@@ -14,12 +14,23 @@ fit together.
 Open the server's address in a browser. With no device token yet, Yarvis
 shows the sign-in screen.
 
-- **First run.** A new server has no passkey yet. When it starts, it prints a
-  one-time **setup code** in its terminal. Enter that code, name the device,
-  and click **Create passkey**. Your browser or password manager stores the
-  passkey. This first device gets every scope.
-- **After that.** Click **Sign in** and pick your passkey. Each sign-in makes
-  a new device, named from the field on the sign-in screen.
+- **First run.** A new server isn't set up yet. When it starts, it prints a
+  one-time **setup code** in its terminal. Enter that code and choose a
+  passphrase of at least 12 characters (twice). Scan the QR code with an
+  authenticator app (1Password, Google Authenticator, Authy…) or type in the
+  key under it, and enter the code the app shows. Last come ten **backup
+  codes**: save them somewhere safe, since they're shown once. This first
+  device gets every scope.
+- **After that.** Enter the passphrase and the code your authenticator app
+  shows, or click **Use a backup code**. Each sign-in makes a new device,
+  named from the field on the sign-in screen. A wrong passphrase or code says
+  only that one of them was wrong. Ten wrong tries in 15 minutes lock signing
+  in for 15 minutes, from everywhere.
+- **Lost your authenticator?** Sign in with a backup code, then set up a new
+  authenticator under **Settings → Devices → Account**. With no backup codes
+  left either, run `yarvis-server auth reset` on the server: it prints a new
+  setup code, and you set the account up again. Devices already signed in
+  stay signed in.
 
 A browser keeps its device token in local storage, so it stays signed in
 across reloads. A script running in the page could read it, so revoke a
@@ -39,10 +50,18 @@ the sign-in screen.
 | `approve` | Answering approvals |
 | `admin` | Managing devices and changing settings and secrets |
 
-A passkey sign-in gets all five. A token created in Settings can't have
-`terminal` or `admin`. Creating a token, and revoking a device,
-also ask you to check your passkey again if you haven't in the last few
-minutes.
+A sign-in gets all five. A token created in Settings can't have
+`terminal` or `admin`. Creating a token, revoking a device, and every account
+change ask for a code from your authenticator app if you haven't entered one
+(or signed in) in the last 10 minutes.
+
+## Account
+
+**Settings → Devices → Account** changes the passphrase (it asks for the
+current one), sets up a new authenticator app (confirmed with a code from
+it), makes new backup codes (the old ones stop working), and signs out every
+other device. Changing the passphrase or the authenticator keeps your other
+devices signed in unless you tick the box to sign them out.
 
 ## Devices
 
@@ -51,7 +70,7 @@ scopes and when it was last seen. Managing them needs the `admin` scope.
 
 - **Revoke** signs a device out at once. Its next request fails and its open
   connections close. Revoking the device you're using signs you out.
-- **Pair a device with a token** is for a client that can't use a passkey: a
+- **Pair a device with a token** is for a client that can't sign in itself: a
   desktop app pointed at a server on another machine, or a script. Give it a
   name and only the scopes it needs, then click **Create token**. The token is
   shown once. Copy it into the client, then click **Done**.

@@ -171,11 +171,19 @@ backend = "vault"
 enabled = true   # the server signs git commits with a key in the vault
 ```
 
-- `yarvis-server vault init` creates `vault.json` in the server's data dir and
-  prints a recovery key once. Keep it somewhere safe: with no passkey that can
-  unlock the vault, it is the only way in.
-- The vault starts locked every time the server starts. Unlock it with a
-  passkey or the recovery key. Until then the sidecar can't read its secrets.
+- `yarvis-server vault init` asks for the vault passphrase (twice, with no
+  echo; `--passphrase-stdin` reads it from stdin instead), creates
+  `vault.json` in the server's data dir, and prints a recovery key once. Keep
+  the key somewhere safe: it is the way in if you forget the passphrase.
+- The vault passphrase is separate from the passphrase you sign in with, and
+  should be different. Signing in proves who is asking the server; the vault
+  passphrase decrypts `vault.json`, which anyone with a copy of the file can
+  attack offline, so it is stretched harder and never stored.
+- The vault starts locked every time the server starts. Unlock it with its
+  passphrase or the recovery key. Until then the sidecar can't read its
+  secrets. A wrong passphrase makes the next try wait, doubling up to 5
+  minutes. Settings can't change the vault passphrase yet; the API can
+  (`POST /api/vault/passphrase`, see `docs/client-server.md`).
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
@@ -406,7 +414,9 @@ The tabs in **Settings**, in order:
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
 11. **Devices.** The devices signed in to the server, revoking one, creating a
-    token to pair a client that can't use a passkey, and the approvals waiting
+    token to pair a client that can't sign in itself, the account (passphrase,
+    authenticator app, backup codes, signing out other devices), and the
+    approvals waiting
     on an answer. See [Signing in and devices](features/devices.md).
 12. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in

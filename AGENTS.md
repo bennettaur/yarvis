@@ -94,8 +94,9 @@ bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
 bun run e2e                       # yarvis-server + the built UI in Chromium,
-                                  #   with a virtual passkey; needs `bun run
-                                  #   build` and the server built first
+                                  #   signing in with computed TOTP codes;
+                                  #   needs `bun run build` and the server
+                                  #   built first
 bun run demo                      # screenshots + video of the real UI in
                                   #   Chromium, Rust core mocked; see
                                   #   demo/README.md
