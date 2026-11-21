@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   type AuthStatus,
   getAuthStatus,
-  unlockVaultWithPasskey,
+  unlockVault,
   unlockVaultWithRecovery,
 } from "../../lib/auth";
 import { clearResourceCache } from "../../lib/resourceCache";
@@ -53,19 +53,20 @@ export function VaultUnlock({
   vault: "locked" | "uninitialized";
   onUnlocked: () => void;
 }) {
-  const [recoveryKey, setRecoveryKey] = useState("");
+  const [secret, setSecret] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (action: () => Promise<unknown>) => {
+  const unlock = async () => {
     setError(null);
     setBusy(true);
     try {
-      await action();
+      await (useRecovery ? unlockVaultWithRecovery(secret.trim()) : unlockVault(secret));
       onUnlocked();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setRecoveryKey("");
+      setSecret("");
     } finally {
       setBusy(false);
     }
@@ -81,50 +82,49 @@ export function VaultUnlock({
           reload.
         </p>
       ) : (
-        <div className="flex w-80 flex-col gap-3">
+        <form
+          className="flex w-80 flex-col gap-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void unlock();
+          }}
+        >
           <p className="text-sm text-zinc-400">
-            The server's vault is locked. Unlock it to start the assistant.
+            The server's vault is locked. Unlock it with the vault's own passphrase, not your
+            sign-in one, to start the assistant.
           </p>
+          <label className="text-xs text-zinc-400">
+            <span className="mb-1 block uppercase tracking-wide">
+              {useRecovery ? "Recovery key" : "Vault passphrase"}
+            </span>
+            <input
+              type="password"
+              value={secret}
+              onChange={(e) => setSecret(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT}
+            />
+          </label>
+          <button type="submit" className={BUTTON} disabled={busy || !secret.trim()}>
+            {busy ? "Unlocking…" : "Unlock"}
+          </button>
           <button
             type="button"
-            className={BUTTON}
-            disabled={busy}
-            onClick={() => void run(unlockVaultWithPasskey)}
-          >
-            {busy ? "Unlocking…" : "Unlock with passkey"}
-          </button>
-          <form
-            className="flex flex-col gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void run(() => unlockVaultWithRecovery(recoveryKey.trim()));
+            className="self-start text-xs text-zinc-500 underline hover:text-zinc-300"
+            onClick={() => {
+              setUseRecovery(!useRecovery);
+              setSecret("");
             }}
           >
-            <label className="text-xs text-zinc-400">
-              <span className="mb-1 block uppercase tracking-wide">Recovery key</span>
-              <input
-                type="password"
-                value={recoveryKey}
-                onChange={(e) => setRecoveryKey(e.target.value)}
-                autoComplete="off"
-                spellCheck={false}
-                className={INPUT}
-              />
-            </label>
-            <button
-              type="submit"
-              className="rounded-md border border-zinc-700 px-4 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-              disabled={busy || !recoveryKey.trim()}
-            >
-              Unlock with recovery key
-            </button>
-          </form>
+            {useRecovery ? "Use the vault passphrase" : "Use the recovery key"}
+          </button>
           {error && (
             <p className="break-words text-sm text-red-400" role="alert">
               {error}
             </p>
           )}
-        </div>
+        </form>
       )}
     </div>
   );

@@ -28,7 +28,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * The clients signed in to this server, and tokens minted for the ones that
- * can't use a passkey (a Tauri app pointed at a remote server, a script).
+ * can't sign in itself (a Tauri app pointed at a remote server, a script).
  * Revoking a device signs it out at once and closes its open connections.
  */
 export default function DevicesSection() {
@@ -147,7 +147,7 @@ export default function DevicesSection() {
                     )}
                   </span>
                   <span className="block text-xs text-zinc-500">
-                    {device.kind === "token" ? "Token" : "Passkey"} · {device.scopes.join(", ")} ·
+                    {device.kind === "token" ? "Token" : "Signed in"} · {device.scopes.join(", ")} ·
                     last seen {formatLastSeen(device.lastSeenAt)}
                   </span>
                 </span>
@@ -170,8 +170,8 @@ export default function DevicesSection() {
             Pair a device with a token
           </h3>
           <p className="mb-3 text-xs text-zinc-500">
-            For a client that can't use a passkey. Paste the token into it, and give it only the
-            scopes it needs. Admin and terminal stay with passkey devices.
+            For a client that can't sign in itself. Paste the token into it, and give it only the
+            scopes it needs. Admin and terminal stay with signed-in devices.
           </p>
           <div className="flex flex-wrap items-end gap-3">
             <label className="text-xs text-zinc-400">

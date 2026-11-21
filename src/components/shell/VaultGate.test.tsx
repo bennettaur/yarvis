@@ -9,6 +9,10 @@ import VaultGate from "./VaultGate";
 let vault = "locked";
 let recoveryKeyIsRight = true;
 const server = stubServerRoutes({
+  "POST /api/vault/unlock": () => {
+    vault = "unlocked";
+    return Response.json({ state: "unlocked" });
+  },
   "GET /api/auth/status": () => Response.json({ setupRequired: false, rpId: "localhost", vault }),
   "POST /api/vault/unlock/recovery": () => {
     if (!recoveryKeyIsRight) {
@@ -32,13 +36,18 @@ afterEach(() => {
   recoveryKeyIsRight = true;
 });
 
-async function submitRecoveryKey(host: HTMLElement, key: string) {
-  type(host.querySelector("input") as HTMLInputElement, key);
-  const submit = [...host.querySelectorAll("button")].find(
-    (b) => b.textContent === "Unlock with recovery key",
-  ) as HTMLButtonElement;
-  await waitFor(() => !submit.disabled, "the submit button");
-  submit.click();
+const button = (host: HTMLElement, text: string) =>
+  [...host.querySelectorAll("button")].find((b) => b.textContent === text) as HTMLButtonElement;
+
+async function submit(host: HTMLElement, secret: string, { recovery }: { recovery: boolean }) {
+  if (recovery) button(host, "Use the recovery key").click();
+  await waitFor(
+    () => host.textContent?.includes(recovery ? "Recovery key" : "Vault passphrase") ?? false,
+    "the field",
+  );
+  type(host.querySelector("input") as HTMLInputElement, secret);
+  await waitFor(() => !button(host, "Unlock").disabled, "the unlock button");
+  button(host, "Unlock").click();
 }
 
 const gate = () => createElement(VaultGate, null, createElement("p", null, "the app"));
@@ -59,7 +68,7 @@ describe("VaultGate", () => {
     await waitFor(() => mounted.host.textContent === "the app", "the app");
   });
 
-  it("holds the app until the recovery key opens the vault", async () => {
+  it("holds the app until the vault's own passphrase opens it", async () => {
     saveDeviceToken("tok-me");
     const mounted = await mountForInteraction(gate());
     unmount = mounted.unmount;
@@ -67,15 +76,26 @@ describe("VaultGate", () => {
       () => mounted.host.textContent?.includes("vault is locked") ?? false,
       "the unlock screen",
     );
+    expect(mounted.host.textContent).toContain("not your sign-in one");
     expect(mounted.host.textContent).not.toContain("the app");
 
-    const input = mounted.host.querySelector("input") as HTMLInputElement;
-    type(input, " RK-1234 ");
-    const submit = [...mounted.host.querySelectorAll("button")].find(
-      (b) => b.textContent === "Unlock with recovery key",
-    ) as HTMLButtonElement;
-    await waitFor(() => !submit.disabled, "the submit button");
-    submit.click();
+    await submit(mounted.host, "the vault's passphrase", { recovery: false });
+
+    await waitFor(() => mounted.host.textContent === "the app", "the app after unlock");
+    expect(server.calls.find((c) => c.route === "POST /api/vault/unlock")?.body).toEqual({
+      passphrase: "the vault's passphrase",
+    });
+  });
+
+  it("falls back to the recovery key", async () => {
+    saveDeviceToken("tok-me");
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("vault is locked") ?? false,
+      "the unlock screen",
+    );
+    await submit(mounted.host, " RK-1234 ", { recovery: true });
 
     await waitFor(() => mounted.host.textContent === "the app", "the app after unlock");
     expect(server.calls.find((c) => c.route === "POST /api/vault/unlock/recovery")?.body).toEqual({
@@ -92,7 +112,7 @@ describe("VaultGate", () => {
       () => mounted.host.textContent?.includes("vault is locked") ?? false,
       "the unlock screen",
     );
-    await submitRecoveryKey(mounted.host, "RK-wrong");
+    await submit(mounted.host, "RK-wrong", { recovery: true });
     await waitFor(
       () =>
         mounted.host.querySelector('[role="alert"]')?.textContent?.includes("doesn't open") ??

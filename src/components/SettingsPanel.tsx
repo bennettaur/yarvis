@@ -1,4 +1,5 @@
 import { SETTINGS_TABS, type SettingsTabKey, useSettingsTab } from "../lib/settingsTabs";
+import AccountSection from "./AccountSection";
 import AgentSection from "./AgentSection";
 import AppearanceSection from "./AppearanceSection";
 import ApprovalsList from "./ApprovalsList";
@@ -111,6 +112,7 @@ export default function SettingsPanel({
       {active === "devices" && (
         <div className="space-y-5">
           <ApprovalsList />
+          <AccountSection />
           <DevicesSection />
         </div>
       )}
