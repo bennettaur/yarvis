@@ -2,20 +2,25 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
-import { setupCode, startServer, type TestServer } from "./server";
+import { ageDevices, setupCode, startServer, type TestServer } from "./server";
+import { Authenticator, base32Decode, codeAt } from "./totp";
 
 /**
  * The client-server build end to end: a real yarvis-server serving the built
- * web UI to Chromium, with a virtual passkey. The sidecar is off, so the
- * panels that need it show their errors; what is checked is the server's own
- * surface: sign-in, devices, terminals, events and the vault's git signing.
+ * web UI to Chromium, signing in with a passphrase and TOTP codes computed from
+ * the secret setup shows. The sidecar is off, so the panels that need it show
+ * their errors; what is checked is the server's own surface: setup, sign-in,
+ * fresh checks, devices, terminals, events and the vault's git signing.
  */
+
+const PASSPHRASE = "correct horse battery staple";
 
 const TOKEN_KEY = "yarvis.deviceToken";
 
 let server: TestServer;
-// One page for the whole run: the virtual passkey lives in its context.
+// One page for the whole run, signed in once.
 let context: BrowserContext;
+let authenticator: Authenticator;
 let page: Page;
 const cspViolations: string[] = [];
 
@@ -36,7 +41,6 @@ test.beforeAll(async ({ browser }) => {
   page.on("console", (msg) => {
     if (/Content Security Policy/i.test(msg.text())) cspViolations.push(msg.text());
   });
-  await addPasskeyAuthenticator(page);
 });
 
 // Checked after every test, so a CSP regression shows even when a later step fails.
@@ -48,22 +52,6 @@ test.afterAll(async () => {
   await context?.close();
   await server?.stop();
 });
-
-/** A platform authenticator that holds resident keys and verifies the user, like Touch ID. */
-async function addPasskeyAuthenticator(page: Page): Promise<void> {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("WebAuthn.enable");
-  await cdp.send("WebAuthn.addVirtualAuthenticator", {
-    options: {
-      protocol: "ctap2",
-      transport: "internal",
-      hasResidentKey: true,
-      hasUserVerification: true,
-      isUserVerified: true,
-      automaticPresenceSimulation: true,
-    },
-  });
-}
 
 async function deviceToken(page: Page): Promise<string> {
   const token = await page.evaluate((key) => localStorage.getItem(key), TOKEN_KEY);
@@ -102,21 +90,59 @@ async function openSettingsTab(page: Page, tab: string) {
   await page.getByRole("button", { name: tab, exact: true }).click();
 }
 
-test("passkey setup and sign-in", async () => {
+test("the TOTP helper matches the RFC 6238 test vectors", () => {
+  const secret = Buffer.from("12345678901234567890");
+  for (const [seconds, code] of [
+    [59, "94287082"],
+    [1111111109, "07081804"],
+    [1111111111, "14050471"],
+    [1234567890, "89005924"],
+    [2000000000, "69279037"],
+    [20000000000, "65353130"],
+  ] as const) {
+    expect(codeAt(secret, Math.floor(seconds / 30), 8)).toBe(code);
+  }
+  expect(base32Decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").toString()).toBe("12345678901234567890");
+});
+
+test("setup, the vault passphrase, and sign-in with a code", async () => {
   await page.goto(server.origin);
 
   await page.getByLabel("Setup code").fill(setupCode(server));
-  await page.getByRole("button", { name: "Create passkey" }).click();
+  await page.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+  await page.getByLabel("Passphrase again").fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Next" }).click();
 
-  // The vault starts locked; the app waits for it.
+  // The QR code and the key to type by hand; the test plays the app.
+  await expect(page.getByAltText("QR code for your authenticator app")).toBeVisible();
+  const secret = (await page.locator("code").first().innerText()).trim();
+  authenticator = new Authenticator(base32Decode(secret));
+  await page.getByLabel("Code from the app").fill(await authenticator.code());
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await expect(page.getByRole("button", { name: "Copy codes" })).toBeVisible();
+  await page.getByRole("button", { name: "I've saved them — continue" }).click();
+
+  // The vault starts locked, and wants its own passphrase, not the sign-in one.
   await expect(page.getByText("The server's vault is locked")).toBeVisible();
-  await page.getByLabel("Recovery key").fill(server.recoveryKey);
-  await page.getByRole("button", { name: "Unlock with recovery key" }).click();
+  await page.getByLabel("Vault passphrase").fill(PASSPHRASE);
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByRole("alert")).toContainText("doesn't open the vault");
+  // A wrong passphrase makes the next try wait a second, so retry until it's let in.
+  await expect(async () => {
+    await page.getByLabel("Vault passphrase").fill(server.vaultPassphrase);
+    await page.getByRole("button", { name: "Unlock" }).click();
+    await expect(page.getByText("The server's vault is locked")).toBeHidden({ timeout: 1000 });
+  }).toPass({ timeout: 10_000 });
   await enterApp();
 
-  // Sign out by dropping the token, then sign in with the resident passkey.
+  // Sign out by dropping the token, then sign in: a wrong code first.
   await page.evaluate((key) => localStorage.removeItem(key), TOKEN_KEY);
   await page.reload();
+  await page.getByLabel("Passphrase").fill(PASSPHRASE);
+  await page.getByLabel("Code from your authenticator app").fill(authenticator.wrongCode());
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("alert")).toContainText("wrong passphrase or code");
+  await page.getByLabel("Code from your authenticator app").fill(await authenticator.code());
   await page.getByRole("button", { name: "Sign in" }).click();
   await enterApp();
   const token = await deviceToken(page);
@@ -124,13 +150,20 @@ test("passkey setup and sign-in", async () => {
   expect(me.body.scopes).toEqual(["read", "chat", "terminal", "approve", "admin"]);
 });
 
-test("devices: mint a read-only token and revoke it", async () => {
+test("devices: a code prompt makes the device fresh, then mint a token and revoke it", async () => {
+  // Age this device's last check past the window rather than waiting ten minutes.
+  ageDevices(server);
   await openSettingsTab(page, "Devices");
 
-  await page.getByLabel("Name").fill("Dashboard");
+  await page.getByLabel("Name", { exact: true }).fill("Dashboard");
   // `read` and `chat` start ticked.
   await page.getByRole("checkbox", { name: /^chat/ }).uncheck();
   await page.getByRole("button", { name: "Create token" }).click();
+  // The server wants a recent code; the prompt asks, and the mint is retried.
+  const prompt = page.getByRole("dialog", { name: "Enter a code" });
+  await expect(prompt).toBeVisible();
+  await prompt.getByLabel("Code").fill(await authenticator.code());
+  await prompt.getByRole("button", { name: "Confirm" }).click();
   await expect(page.getByRole("button", { name: "Done" })).toBeVisible();
   await page.getByRole("button", { name: "Done" }).click();
 

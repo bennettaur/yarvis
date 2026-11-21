@@ -20,6 +20,8 @@ export interface TestServer {
   /** The HOME the server and its shells see. */
   home: string;
   recoveryKey: string;
+  /** The vault's own passphrase, which `vault init` was given. */
+  vaultPassphrase: string;
   /** The vault's git signing key, `ssh-ed25519 AAAA… yarvis-server`. */
   signingKey: string;
   /** Runs the server's CLI against this server's config. */
@@ -63,7 +65,6 @@ export async function startServer(): Promise<TestServer> {
       `data_dir = ${JSON.stringify(dataDir)}`,
       `web_dir = ${JSON.stringify(DIST)}`,
       "[auth]",
-      `rp_id = "localhost"`,
       `origins = [${JSON.stringify(origin)}]`,
       "[secrets]",
       `backend = "vault"`,
@@ -87,7 +88,13 @@ export async function startServer(): Promise<TestServer> {
     execFileSync(BINARY, ["--config", configPath, ...args], { env, encoding: "utf8" });
 
   // `vault init` prints the recovery key on stdout and the signing key on stderr.
-  const init = spawnSyncText(BINARY, ["--config", configPath, "vault", "init"], env);
+  const vaultPassphrase = "the vault's own passphrase";
+  const init = spawnSyncText(
+    BINARY,
+    ["--config", configPath, "vault", "init", "--passphrase-stdin"],
+    env,
+    `${vaultPassphrase}\n`,
+  );
   const recoveryKey = init.stdout.trim();
   const signingKey = init.stderr.match(/ssh-ed25519 \S+ \S+/)?.[0];
   if (!recoveryKey || !signingKey) throw new Error(`vault init said: ${init.stderr}`);
@@ -124,6 +131,7 @@ export async function startServer(): Promise<TestServer> {
     dataDir,
     home,
     recoveryKey,
+    vaultPassphrase,
     signingKey,
     cli,
     stop: async () => {
@@ -137,12 +145,25 @@ export async function startServer(): Promise<TestServer> {
   };
 }
 
-function spawnSyncText(command: string, args: string[], env: NodeJS.ProcessEnv) {
-  const out = spawnSync(command, args, { env, encoding: "utf8" });
+function spawnSyncText(command: string, args: string[], env: NodeJS.ProcessEnv, input?: string) {
+  const out = spawnSync(command, args, { env, encoding: "utf8", input });
   if (out.status !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${out.stderr}`);
   return out;
 }
 
-/** The one-time code the server wrote when it found no passkey. */
+/**
+ * Makes every device's last code too old to count, as ten minutes would.
+ * Through the sqlite3 CLI, since the test has no other way into the database.
+ */
+export function ageDevices(server: TestServer) {
+  execFileSync("sqlite3", [
+    "-cmd",
+    ".timeout 5000",
+    join(server.dataDir, "server.db"),
+    "UPDATE devices SET verified_at = 0",
+  ]);
+}
+
+/** The one-time code the server wrote when it found no account. */
 export const setupCode = (server: TestServer) =>
   readFileSync(join(server.dataDir, "setup-code"), "utf8").trim();
