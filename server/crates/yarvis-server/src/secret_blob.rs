@@ -49,6 +49,7 @@ use crate::secret_store::SecretBackend;
 use crate::secret_store::keychain::KeychainBackend;
 use crate::secret_store::onepassword::{ItemRef, OnePasswordBackend};
 use crate::settings::SettingsStore;
+use crate::vault::Vault;
 
 /// The complete set of top-level secrets clients may write. Writes to any
 /// other key are rejected so a client cannot store arbitrary data in the
@@ -109,8 +110,6 @@ enum Selection {
     OnePassword,
     /// A store chosen by whoever built this blob: tests, and the vault.
     Fixed(Store),
-    /// A backend that can't be used, with the reason.
-    Unusable(&'static str),
 }
 
 /// The secrets blob, in whichever store the server is configured to use.
@@ -128,15 +127,21 @@ pub struct SecretStatus {
 
 impl SecretBlob {
     /// The blob in the store `kind` names, or the one `settings.json` names
-    /// when `kind` is unset. The vault backend isn't built yet, so it gives a
-    /// blob whose every access fails; `main` refuses to start with it rather
-    /// than run a server that can't read its secrets.
-    pub fn from_config(kind: Option<SecretBackendKind>, settings: SettingsStore) -> Self {
+    /// when `kind` is unset. With the vault, every access fails with
+    /// [`crate::secret_store::SecretError::Locked`] until it is unlocked.
+    pub fn from_config(
+        kind: Option<SecretBackendKind>,
+        settings: SettingsStore,
+        vault: &Vault,
+    ) -> Self {
         let selection = match kind {
             None => Selection::FromSettings,
             Some(SecretBackendKind::Keychain) => Selection::Keychain,
             Some(SecretBackendKind::OnePassword) => Selection::OnePassword,
-            Some(SecretBackendKind::Vault) => Selection::Unusable(VAULT_NOT_BUILT),
+            Some(SecretBackendKind::Vault) => Selection::Fixed(Store {
+                label: "the server's vault",
+                backend: vault.secret_backend(),
+            }),
         };
         Self {
             selection,
@@ -180,7 +185,6 @@ impl SecretBlob {
             Selection::FromSettings | Selection::Keychain => Ok(Store::keychain()),
             Selection::OnePassword => onepassword(),
             Selection::Fixed(store) => Ok(store.clone()),
-            Selection::Unusable(reason) => Err((*reason).to_string()),
         }
     }
 
@@ -277,8 +281,6 @@ impl SecretBlob {
         self.set_secret("github_token", token.to_string())
     }
 }
-
-const VAULT_NOT_BUILT: &str = "the vault backend isn't built yet; set [secrets] backend to \"keychain\" or \"onepassword\" in server.toml";
 
 fn check_known(key: &str) -> Result<(), String> {
     if SECRET_KEYS.contains(&key) {
@@ -621,15 +623,32 @@ pub(crate) mod tests {
         assert_eq!(root, json!({ "mcpServers": {} }));
     }
 
+    /// A locked vault must read as an error, never as an empty blob a write
+    /// would then replace.
     #[test]
-    fn the_vault_backend_fails_clearly_rather_than_falling_back() {
+    fn the_vault_backend_reads_through_the_vault_and_fails_while_locked() {
         let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(dir.path());
+        let created = Vault::init(dir.path(), false).unwrap();
         let blob = SecretBlob::from_config(
             Some(SecretBackendKind::Vault),
             SettingsStore::new(dir.path().join("settings.json")),
+            &vault,
         );
+        assert_eq!(blob.active().unwrap().label, "the server's vault");
         let err = blob.read_root().unwrap_err();
-        assert!(err.contains("vault backend isn't built yet"), "{err}");
+        assert!(err.contains("locked"), "{err}");
+        assert!(
+            blob.set_secret("anthropic_api_key", "sk-test".into())
+                .is_err()
+        );
+
+        vault.unlock_with_recovery(&created.recovery_key).unwrap();
+        blob.set_secret("anthropic_api_key", "sk-test".into())
+            .unwrap();
+        assert_eq!(blob.read_root().unwrap()["anthropic_api_key"], "sk-test");
+        vault.lock();
+        assert!(blob.read_root().is_err());
     }
 
     /// With no backend in `server.toml`, the desktop app's choice in
@@ -638,7 +657,7 @@ pub(crate) mod tests {
     fn an_unset_backend_follows_settings() {
         let dir = tempfile::tempdir().unwrap();
         let settings = SettingsStore::new(dir.path().join("settings.json"));
-        let blob = SecretBlob::from_config(None, settings.clone());
+        let blob = SecretBlob::from_config(None, settings.clone(), &Vault::new(dir.path()));
         assert_eq!(blob.active().unwrap().label, "the macOS Keychain");
         std::fs::write(
             settings.path(),
@@ -664,6 +683,7 @@ pub(crate) mod tests {
         let blob = SecretBlob::from_config(
             Some(SecretBackendKind::OnePassword),
             SettingsStore::new(dir.path().join("settings.json")),
+            &Vault::new(dir.path()),
         );
         let err = blob.read_root().unwrap_err();
         assert!(err.contains("needs a vault and an item"), "{err}");

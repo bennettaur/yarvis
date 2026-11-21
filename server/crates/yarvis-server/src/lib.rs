@@ -83,7 +83,8 @@ impl AppState {
         // No I/O: settings are read on use, and the sidecar only starts when
         // `main` runs its supervisor.
         let settings = SettingsStore::new(SettingsStore::default_path());
-        let secrets = SecretBlob::from_config(config.secrets.backend, settings.clone());
+        let vault = Vault::new(&config.server.data_dir);
+        let secrets = SecretBlob::from_config(config.secrets.backend, settings.clone(), &vault);
         let sidecar = Sidecar::new(&config.server.data_dir)
             .expect("couldn't pick a loopback port for the sidecar");
         let pty = PtyManager::new(
@@ -106,7 +107,7 @@ impl AppState {
                 .unwrap_or_else(|e| panic!("invalid [auth] config: {e}")),
             approvals: Approvals::new(store.clone(), events.clone()),
             auth_limiter: RateLimiter::new(AUTH_REQUESTS_PER_MINUTE, Duration::from_secs(60)),
-            vault: Vault::new(&config.server.data_dir),
+            vault,
             ssh_agent: SshAgent::default(),
             settings,
             secrets,

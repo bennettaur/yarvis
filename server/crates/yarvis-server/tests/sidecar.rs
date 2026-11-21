@@ -26,6 +26,7 @@ use yarvis_server::secret_store::{SecretBackend, SecretError};
 use yarvis_server::settings::SettingsStore;
 use yarvis_server::sidecar::{Endpoint, Sidecar, SupervisorDeps};
 use yarvis_server::store::Store;
+use yarvis_server::vault::Vault;
 use yarvis_server::{AppState, app};
 
 const SIDECAR_TOKEN: &str = "sidecar-token";
@@ -778,6 +779,7 @@ async fn the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidec
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
+        vault: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
 
@@ -842,6 +844,7 @@ async fn a_sidecar_that_exits_is_restarted() {
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
+        vault: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
     until("a restart after the exit", async || {
@@ -871,6 +874,7 @@ async fn stopping_the_supervisor_kills_the_sidecar() {
         settings: h.state.settings.clone(),
         secrets: h.state.secrets.clone(),
         events: h.state.events.clone(),
+        vault: None,
     };
     let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(deps));
     until("the pid file", async || pid_file.exists()).await;
@@ -889,4 +893,58 @@ async fn stopping_the_supervisor_kills_the_sidecar() {
     supervisor.abort();
     let _ = supervisor.await;
     until("the sidecar to exit", async || !alive(&pid)).await;
+}
+
+/// With the vault backend, the sidecar starts when the vault unlocks, with no
+/// restart request or retry delay, and stops when it locks.
+#[tokio::test]
+async fn the_sidecar_follows_the_vault_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let created = Vault::init(dir.path(), false).unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = dir.path().to_path_buf();
+    config.secrets.backend = Some(SecretBackendKind::Vault);
+    config.sidecar.command = Some(vec!["sh".into(), "-c".into(), "exec sleep 30".into()]);
+    let mut state = AppState::new(config, Store::open_in_memory().unwrap());
+    state.settings = SettingsStore::new(dir.path().join("settings.json"));
+    state.secrets = SecretBlob::from_config(
+        Some(SecretBackendKind::Vault),
+        state.settings.clone(),
+        &state.vault,
+    );
+    let deps = SupervisorDeps {
+        config: state.config.clone(),
+        settings: state.settings.clone(),
+        secrets: state.secrets.clone(),
+        events: state.events.clone(),
+        vault: Some(state.vault.subscribe()),
+    };
+    let supervisor = tokio::spawn(state.sidecar.clone().supervise(deps));
+
+    state
+        .vault
+        .unlock_with_recovery(&created.recovery_key)
+        .unwrap();
+    until("sidecar.started", async || {
+        kinds(&state).await == ["sidecar.started"]
+    })
+    .await;
+
+    state.vault.lock();
+    until("sidecar.stopped", async || {
+        kinds(&state).await == ["sidecar.started", "sidecar.stopped"]
+    })
+    .await;
+    let stopped = state.events.since(0).await.unwrap()[1].clone();
+    assert_eq!(stopped.data["reason"], "vault.locked");
+
+    state
+        .vault
+        .unlock_with_recovery(&created.recovery_key)
+        .unwrap();
+    until("a start after the second unlock", async || {
+        kinds(&state).await.len() == 3
+    })
+    .await;
+    supervisor.abort();
 }

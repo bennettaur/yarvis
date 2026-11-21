@@ -46,21 +46,15 @@ async fn main() {
     let config = Config::load(&config_path).unwrap_or_else(|e| fail(e));
     let store = Store::open(&config.server.data_dir.join("server.db")).unwrap_or_else(|e| fail(e));
     match command {
-        Command::Serve => serve(config, store, &config_path).await,
+        Command::Serve => serve(config, store).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
         Command::VaultInit => vault_init(&config),
     }
 }
 
-async fn serve(config: Config, store: Store, config_path: &std::path::Path) {
+async fn serve(config: Config, store: Store) {
     if let Err(e) = PasskeyAuth::new(&config.auth, store.clone()) {
         fail(e);
-    }
-    if config.secrets.backend == Some(SecretBackendKind::Vault) {
-        fail(format!(
-            "the vault backend isn't built yet; set [secrets] backend to \"keychain\" or \"onepassword\" in {}",
-            config_path.display()
-        ));
     }
     #[cfg(unix)]
     if let Err(e) = yarvis_server::pty::process::raise_fd_limit() {
@@ -252,6 +246,8 @@ async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
         settings: state.settings.clone(),
         secrets: state.secrets.clone(),
         events: state.events.clone(),
+        vault: (state.config.secrets.backend == Some(SecretBackendKind::Vault))
+            .then(|| state.vault.subscribe()),
     };
     Some(tokio::spawn(state.sidecar.clone().supervise(deps)))
 }
