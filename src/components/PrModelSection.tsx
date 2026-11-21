@@ -6,8 +6,8 @@ import {
   getPrModelConfig,
   getRereviewRunConfig,
   getVerificationRunConfig,
-  HARNESS_MODEL_PATTERN,
   type HarnessModels,
+  modelFitsHarness,
   PR_MODEL_FEATURES,
   type PrModelConfig,
   type PrModelFeature,
@@ -156,7 +156,7 @@ const TIER_CLIS = {
  * when it loses focus, and only once it reads as `provider/model`; clearing it
  * leaves the checks on that tier unable to start until one is picked.
  */
-function TierModels({
+function HarnessTierModels({
   cli,
   harness,
   models,
@@ -182,7 +182,7 @@ function TierModels({
     setEditing(null);
     const draft = drafts[tier]?.trim() ?? "";
     if (draft === (models[tier] ?? "")) return;
-    if (draft && !HARNESS_MODEL_PATTERN.test(draft)) return;
+    if (draft && !modelFitsHarness(cli, draft)) return;
     const next: HarnessModels = { ...models };
     if (draft) next[tier] = draft;
     else delete next[tier];
@@ -197,7 +197,7 @@ function TierModels({
       <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
         {VERIFICATION_MODELS.map((tier) => {
           const draft = drafts[tier] ?? "";
-          const invalid = draft.trim() !== "" && !HARNESS_MODEL_PATTERN.test(draft.trim());
+          const invalid = draft.trim() !== "" && !modelFitsHarness(cli, draft.trim());
           return (
             <label key={tier} className="contents">
               <span className="text-xs text-zinc-400" title={TIERS[tier].hint}>
@@ -216,6 +216,7 @@ function TierModels({
               {invalid && (
                 <span className="col-start-2 text-xs text-red-400">
                   Not saved: write it as provider/model
+                  {cli === "pi" && ", with :level rather than #variant"}
                 </span>
               )}
             </label>
@@ -271,7 +272,7 @@ function VerificationSectionRuns({
         </label>
       )}
       {picked && tierCli && (
-        <TierModels
+        <HarnessTierModels
           key={picked.id}
           cli={tierCli}
           harness={picked.id}

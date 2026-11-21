@@ -97,6 +97,11 @@ export type HarnessModels = Partial<Record<VerificationModel, string>>;
 /** Mirrors `harnessModelSchema` in `sidecar/src/pr/models.ts`. */
 export const HARNESS_MODEL_PATTERN = /^[A-Za-z0-9][\w.-]*\/[^\s#]+(#[\w.-]+)?$/;
 
+/** Mirrors `modelFitsHarness` in `sidecar/src/pr/models.ts`: Pi has no `#variant`. */
+export function modelFitsHarness(kind: string, model: string): boolean {
+  return HARNESS_MODEL_PATTERN.test(model) && (kind !== "pi" || !model.includes("#"));
+}
+
 /** Cache key for the verification settings; Settings invalidates it on save. */
 export const VERIFICATION_SETTINGS_KEY = "pr-models:verification";
 

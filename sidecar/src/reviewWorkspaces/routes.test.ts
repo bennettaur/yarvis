@@ -1309,6 +1309,8 @@ ${printAgentAnswer(fakeDir)}`,
     const res = await verify("POST", wsId, prId, ["tests"], { model: "opus" }, "oc");
     expect(res.status).toBe(400);
     expect(JSON.stringify(await res.json())).toContain("no OpenCode model for the opus tier");
+    const pi = await verify("POST", wsId, prId, ["tests"], { model: "opus" }, "pim");
+    expect(JSON.stringify(await pi.json())).toContain("no Pi model for the opus tier");
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 

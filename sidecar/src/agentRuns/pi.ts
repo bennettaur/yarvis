@@ -4,13 +4,14 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readFileSync,
   readSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { redactSecrets } from "../llm/errors.ts";
 import type { AgentRunEvent } from "./events.ts";
 import {
@@ -37,13 +38,16 @@ import type { ClaudeStreamResult, FileRead, ParsedLine } from "./streamJson.ts";
  * - `--mode json`: one JSONL event per line, ending with `agent_settled`.
  * - `--tools read,grep,find,ls` as the only tools offered. Pi has no
  *   permission rules, so nothing else limits what those tools may read. The
- *   `sandbox-exec` profile does: it reads nothing in the home folder but the
- *   checkout, the context folder and Pi's own install, writes only in its own
- *   folder, and runs only Node (or Pi itself), ripgrep and fd.
+ *   `sandbox-exec` profile does: in the home folder, the temp folder and the
+ *   shared folders it reads only the checkout, the context folder and Pi's own
+ *   package, never a CLI's logins; it writes only in its own folder; and it
+ *   runs only Node (or a compiled Pi), ripgrep and fd. System folders such as
+ *   `/usr` stay readable, since Node needs them.
  * - No config but the run's: `PI_CODING_AGENT_DIR` points at an empty folder
  *   of its own (the user's `~/.pi/agent` holds extensions, which are code, and
- *   `auth.json`, which holds logins), and `-ne`, `--no-mcp`, `-ns`, `-np`,
- *   `--no-themes`, `-nc` (no `AGENTS.md` or `CLAUDE.md`) and `--no-approve`
+ *   `auth.json`, which holds logins), and `--no-extensions`, `--no-mcp`,
+ *   `--no-skills`, `--no-prompt-templates`, `--no-themes`,
+ *   `--no-context-files` (no `AGENTS.md` or `CLAUDE.md`) and `--no-approve`
  *   (no project `.pi` folder) load nothing else. It starts in a folder of its
  *   own rather than the checkout too, since Pi reads project config from its
  *   working directory.
@@ -119,9 +123,19 @@ export function removePiDirs(dirs: PiDirs): void {
   rmSync(dirs.root, { recursive: true, force: true });
 }
 
-/** Added to the agent's prompt: where the checkout is and how to answer. */
-export function piInstructions(checkout: string, answerSchema: string): string {
-  return checkoutInstructions(checkout, answerSchema, "read, grep, find and ls");
+/**
+ * Added to the agent's prompt: where the checkout is and how to answer.
+ * `tools` are the ones the run was given, so the prompt names no tool a
+ * missing program left out.
+ */
+export function piInstructions(
+  checkout: string,
+  answerSchema: string,
+  tools: readonly string[],
+): string {
+  const names =
+    tools.length > 1 ? `${tools.slice(0, -1).join(", ")} and ${tools.at(-1)}` : (tools[0] ?? "");
+  return checkoutInstructions(checkout, answerSchema, names);
 }
 
 /**
@@ -129,7 +143,8 @@ export function piInstructions(checkout: string, answerSchema: string): string {
  * is run with the `node` installed beside it (npm puts global bins next to
  * Node's) so no version manager's shim runs under the sandbox. `readable` is
  * the package's folder, which holds its dependencies. Anything else, such as
- * a compiled build or a shell wrapper, is run as it is.
+ * a compiled build, is run as it is. A shell wrapper can't run that way:
+ * the profile lets it run neither its shell nor what the wrapper starts.
  */
 export interface PiLaunch {
   /** What `sandbox-exec` runs. */
@@ -150,11 +165,17 @@ export function piLaunch(program: string, onPath: (name: string) => string | nul
   if (!node)
     throw new Error(`Pi (${program}) is a Node script, but there's no node beside it or on PATH`);
   const realNode = realpathOr(node);
+  // A version manager's shim resolves to the manager itself, which can't run under the sandbox.
+  if (basename(realNode) !== "node") {
+    throw new Error(
+      `Pi's node (${node}) is ${realNode}, not Node itself; install Pi with npm so its node sits beside it`,
+    );
+  }
   return {
     program: realNode,
     args: [script],
     programs: [realNode],
-    readable: [packageRoot(script)],
+    readable: [packageRoot(script, realpathOr(homedir()))],
   };
 }
 
@@ -173,12 +194,32 @@ function isNodeScript(path: string): boolean {
   }
 }
 
-/** The nearest folder above `file` with a `package.json`: the package it belongs to. */
-function packageRoot(file: string): string {
-  for (let dir = dirname(file); dir !== dirname(dir); dir = dirname(dir)) {
-    if (existsSync(join(dir, "package.json"))) return dir;
+/**
+ * The package `script` is the `pi` bin of: the nearest folder above it with a
+ * `package.json` whose `bin` names it. The profile lets the run read all of
+ * it, so a `package.json` that only happens to sit above the script (one in
+ * the home folder, say) is refused rather than granted.
+ */
+function packageRoot(script: string, home: string): string {
+  for (let dir = dirname(script); dir !== dirname(dir); dir = dirname(dir)) {
+    const manifest = join(dir, "package.json");
+    if (!existsSync(manifest)) continue;
+    if (!binNames(manifest, dir).includes(script)) break;
+    if (!relative(dir, home).startsWith("..")) break;
+    return dir;
   }
-  throw new Error(`can't find the package Pi's script ${file} belongs to`);
+  throw new Error(`Pi's script ${script} isn't the pi bin of an npm package`);
+}
+
+/** The scripts a `package.json`'s `bin` names, resolved. */
+function binNames(manifest: string, dir: string): string[] {
+  try {
+    const { bin } = JSON.parse(readFileSync(manifest, "utf8")) as { bin?: unknown };
+    const paths = typeof bin === "string" ? [bin] : isObject(bin) ? Object.values(bin) : [];
+    return paths.flatMap((p) => (typeof p === "string" ? [realpathOr(join(dir, p))] : []));
+  } catch {
+    return [];
+  }
 }
 
 /** Over the harness's environment: every folder Pi reads or writes points into the process's own. */

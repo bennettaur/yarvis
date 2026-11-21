@@ -1,14 +1,16 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { z } from "zod";
@@ -1283,6 +1285,45 @@ describe("a fan-out run on Pi", () => {
     }
     rmSync(record, { recursive: true, force: true });
   });
+
+  const node = Bun.which("node");
+
+  it.skipIf(!node)(
+    "finds a bare pi on PATH and lets its profile run Node and read Pi's package",
+    async () => {
+      // An npm-shaped install: bin/pi links to the package's script, with bin/node beside it.
+      const install = realpathSync(makeTempDir("yarvis-pi-install-"));
+      const pkg = join(install, "lib", "node_modules", "pi-coding-agent");
+      mkdirSync(join(pkg, "dist"), { recursive: true });
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ bin: { pi: "dist/cli.js" } }));
+      const script = join(pkg, "dist", "cli.js");
+      writeFileSync(
+        script,
+        `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(`${answer(7)}\n`)});\n`,
+      );
+      mkdirSync(join(install, "bin"));
+      symlinkSync(script, join(install, "bin", "pi"));
+      symlinkSync(node ?? "", join(install, "bin", "node"));
+      const path = process.env.PATH;
+      process.env.PATH = `${join(install, "bin")}${delimiter}${path ?? ""}`;
+      // Setup looks pi up before the run is registered, so PATH is put back once it returns.
+      const started = startClaudeFanOutRun(
+        db,
+        { ...base, parts: [part("risk-reviewer", "one")] },
+        piDeps("pi"),
+      ).finally(() => {
+        process.env.PATH = path;
+      });
+      const handle = await started;
+      expect(await handle.done).toMatchObject({ status: "succeeded", output: { counts: [7] } });
+      const [profile] = readdirSync(profiles)
+        .map((pid) => readFileSync(join(profiles, pid), "utf8"))
+        .filter((text) => text.includes(pkg));
+      expect(profile).toContain(`(literal "${realpathSync(node ?? "")}")`);
+      expect(profile).toContain(`(subpath "${pkg}")`);
+      expect(profile).toContain(`(subpath "${realpathSync(context)}")`);
+    },
+  );
 
   it("refuses a run it can't set up before writing anything", async () => {
     const parts = [part("risk-reviewer", "one")];

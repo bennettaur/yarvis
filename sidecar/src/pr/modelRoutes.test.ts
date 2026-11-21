@@ -280,6 +280,17 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     }
   });
 
+  it("refuses OpenCode's #variant on a Pi harness's model, and takes its :level", async () => {
+    await writeFile(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({ agentHarnesses: [{ id: "pi", name: "Pi", kind: "pi", command: "pi" }] }),
+    );
+    expect((await patch({ harnessModels: { pi: { opus: "anthropic/x#high" } } })).status).toBe(400);
+    expect(
+      await (await patch({ harnessModels: { pi: { opus: "anthropic/x:high" } } })).json(),
+    ).toMatchObject({ harnessModels: { pi: { opus: "anthropic/x:high" } } });
+  });
+
   it("takes a budget of any size, since it only warns", async () => {
     expect(await (await patch({ maxBudgetUsd: 500 })).json()).toMatchObject({ maxBudgetUsd: 500 });
   });

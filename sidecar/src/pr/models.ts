@@ -89,6 +89,15 @@ export const harnessModelSchema = z
   .regex(/^[A-Za-z0-9][\w.-]*\/[^\s#]+(#[\w.-]+)?$/);
 
 /**
+ * Whether `model` is written the way a harness of `kind` takes it: Pi has no
+ * `#variant`, so a `#` would be read as part of the model's id.
+ * `modelFitsHarness` in `src/lib/pr/models.ts` mirrors it.
+ */
+export function modelFitsHarness(kind: string, model: string): boolean {
+  return kind !== "pi" || !model.includes("#");
+}
+
+/**
  * The models one OpenCode or Pi harness runs each tier on. A section's model is
  * a Claude Code alias, so such a harness says what it means by each one:
  * `opus` for the hardest checks, `haiku` for the lightest.
