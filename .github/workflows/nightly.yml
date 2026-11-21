@@ -62,9 +62,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # `tauri:build` also builds server/ (`bun run server:compile`), which is
+      # its own Cargo workspace with its own target dir.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            server
           key: ${{ matrix.platform }}
 
       - name: Install Linux build dependencies
