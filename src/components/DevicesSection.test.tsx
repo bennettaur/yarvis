@@ -10,7 +10,7 @@ import DevicesSection from "./DevicesSection";
 const me: Device = {
   deviceId: "d-me",
   name: "Chrome on Mac",
-  kind: "passkey",
+  kind: "login",
   scopes: ["read", "chat", "terminal", "approve", "admin"],
 };
 let devices: Device[] = [];
@@ -60,7 +60,7 @@ describe("DevicesSection", () => {
   it("lists the devices and revokes one", async () => {
     devices = [
       me,
-      { deviceId: "d-phone", name: "Phone", kind: "passkey", scopes: ["read"], lastSeenAt: null },
+      { deviceId: "d-phone", name: "Phone", kind: "login", scopes: ["read"], lastSeenAt: null },
     ];
     const mounted = await mountForInteraction(createElement(DevicesSection));
     unmount = mounted.unmount;

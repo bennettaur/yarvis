@@ -24,8 +24,8 @@ interface Options {
 const DEMO_DEVICE = {
   deviceId: "demo-device",
   name: "Demo browser",
-  kind: "passkey",
-  scopes: ["read", "chat", "approve", "admin"],
+  kind: "login",
+  scopes: ["read", "chat", "terminal", "approve", "admin"],
 };
 
 const json = (body: unknown, status = 200) =>
@@ -115,13 +115,15 @@ export function installServerMock({
     }
     switch (path) {
       case "/api/auth/status":
-        return json({ setupRequired: false, rpId: location.hostname, vault: "absent" });
+        return json({ setupRequired: false, vault: "absent" });
       case "/api/devices/me":
         return json(DEMO_DEVICE);
       case "/api/devices":
         return json([DEMO_DEVICE]);
       case "/api/approvals":
         return json([]);
+      case "/api/account":
+        return json({ backupCodesLeft: 10 });
       default:
         return json({ error: "not found" }, 404);
     }

@@ -2,7 +2,7 @@ import { ensureOk, SidecarError } from "./api";
 import { saveDeviceToken, serverFetch } from "./server";
 
 /**
- * Client for the server's sign-in, devices and approvals routes
+ * Client for the server's sign-in, account, devices and approvals routes
  * (`docs/client-server.md`). A device is one signed-in client or one token
  * minted for a script; each carries its own scopes and can be revoked alone.
  */
@@ -10,7 +10,7 @@ import { saveDeviceToken, serverFetch } from "./server";
 export type Scope = "read" | "chat" | "terminal" | "approve" | "admin";
 /**
  * What a token minted from Settings can carry. The server keeps `admin` and
- * `terminal` (a shell on the server) for passkey devices and its own CLI.
+ * `terminal` (a shell on the server) for signed-in devices and its own CLI.
  */
 export const MINTABLE_SCOPES: readonly Scope[] = ["read", "chat", "approve"];
 
@@ -23,9 +23,11 @@ export const SCOPE_LABELS: Record<Scope, string> = {
   admin: "manage devices and secrets",
 };
 
+/** The shortest passphrase the server takes, for sign-in and the vault alike. */
+export const MIN_PASSPHRASE_CHARS = 12;
+
 export interface AuthStatus {
   setupRequired: boolean;
-  rpId: string;
   /** `absent` when the server keeps its secrets somewhere other than its vault. */
   vault: "absent" | "uninitialized" | "locked" | "unlocked";
 }
@@ -36,8 +38,8 @@ export interface Device {
   name: string;
   scopes: Scope[];
   verifiedAt?: number | null;
-  /** The devices list adds these. */
-  kind?: "passkey" | "token";
+  /** The devices list adds these. `login` is a passphrase sign-in. */
+  kind?: "login" | "token";
   createdAt?: number;
   lastSeenAt?: number | null;
   revokedAt?: number | null;
@@ -66,232 +68,161 @@ async function get<T>(path: string, context: string): Promise<T> {
 
 export const getAuthStatus = () => get<AuthStatus>("/api/auth/status", "auth status");
 
-/* ---------- WebAuthn: the server sends binary fields as base64url; the browser wants ArrayBuffers ---------- */
+/* ---------- Setup and sign-in ---------- */
 
-export function base64urlToBuffer(s: string): ArrayBuffer {
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  return bytes.buffer;
+/** A new TOTP secret, waiting for its first code. */
+export interface Enrollment {
+  enrollmentId: string;
+  /** The secret in base32, for typing into an authenticator app by hand. */
+  secret: string;
+  otpauthUri: string;
+  /** The URI as a QR code: an SVG document. */
+  qrSvg: string;
 }
 
-export function bufferToBase64url(buf: ArrayBuffer | ArrayBufferView): string {
-  const bytes =
-    buf instanceof ArrayBuffer
-      ? new Uint8Array(buf)
-      : new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+export interface SetUp extends SignedIn {
+  /** Shown once. The server keeps only hashes. */
+  backupCodes: string[];
 }
 
-interface JsonCredentialDescriptor {
-  id: string;
-  type: string;
-  transports?: string[];
-}
+/** First run: checks the setup code and passphrase, and starts the TOTP enrollment. */
+export const startSetup = (code: string, passphrase: string, deviceName: string) =>
+  post<Enrollment>("/api/auth/setup/start", { code, passphrase, deviceName }, "start setup");
 
-interface JsonCreationOptions {
-  publicKey: Omit<
-    PublicKeyCredentialCreationOptions,
-    "challenge" | "user" | "excludeCredentials"
-  > & {
-    challenge: string;
-    user: Omit<PublicKeyCredentialUserEntity, "id"> & { id: string };
-    excludeCredentials?: JsonCredentialDescriptor[];
-  };
-}
+/**
+ * Ends setup with the first code from the authenticator app. The token isn't
+ * kept yet: the caller saves it once the backup codes have been shown, since
+ * saving it signs this client in and moves on from the setup screen.
+ */
+export const finishSetup = (enrollmentId: string, code: string) =>
+  post<SetUp>("/api/auth/setup/finish", { enrollmentId, code }, "finish setup");
 
-interface JsonRequestOptions {
-  publicKey: Omit<PublicKeyCredentialRequestOptions, "challenge" | "allowCredentials"> & {
-    challenge: string;
-    allowCredentials?: JsonCredentialDescriptor[];
-  };
-}
+/** A code from the authenticator app, or one of the backup codes. */
+export type SecondFactor = { code: string } | { backupCode: string };
 
-/** What every ceremony's `start` route answers; its `finish` route takes the id back. */
-interface Started<O> {
-  ceremonyId: string;
-  options: O;
-}
-
-const descriptor = (c: JsonCredentialDescriptor): PublicKeyCredentialDescriptor => ({
-  ...c,
-  type: "public-key",
-  id: base64urlToBuffer(c.id),
-  transports: c.transports as AuthenticatorTransport[] | undefined,
-});
-
-export function toCreationOptions(json: JsonCreationOptions): CredentialCreationOptions {
-  const pk = json.publicKey;
-  return {
-    publicKey: {
-      ...pk,
-      challenge: base64urlToBuffer(pk.challenge),
-      user: { ...pk.user, id: base64urlToBuffer(pk.user.id) },
-      excludeCredentials: pk.excludeCredentials?.map(descriptor),
-    },
-  };
-}
-
-export function toRequestOptions(json: JsonRequestOptions): CredentialRequestOptions {
-  const pk = json.publicKey;
-  return {
-    publicKey: {
-      ...pk,
-      challenge: base64urlToBuffer(pk.challenge),
-      allowCredentials: pk.allowCredentials?.map(descriptor),
-    },
-  };
-}
-
-/** A new passkey as the JSON webauthn-rs reads. */
-export function registrationJson(cred: PublicKeyCredential): unknown {
-  const response = cred.response as AuthenticatorAttestationResponse;
-  return {
-    id: cred.id,
-    rawId: bufferToBase64url(cred.rawId),
-    type: cred.type,
-    response: {
-      attestationObject: bufferToBase64url(response.attestationObject),
-      clientDataJSON: bufferToBase64url(response.clientDataJSON),
-      transports: response.getTransports?.() ?? [],
-    },
-  };
-}
-
-/** A passkey assertion as the JSON webauthn-rs reads. */
-export function assertionJson(cred: PublicKeyCredential): unknown {
-  const response = cred.response as AuthenticatorAssertionResponse;
-  return {
-    id: cred.id,
-    rawId: bufferToBase64url(cred.rawId),
-    type: cred.type,
-    response: {
-      authenticatorData: bufferToBase64url(response.authenticatorData),
-      clientDataJSON: bufferToBase64url(response.clientDataJSON),
-      signature: bufferToBase64url(response.signature),
-      userHandle: response.userHandle ? bufferToBase64url(response.userHandle) : null,
-    },
-  };
-}
-
-const NO_CREDENTIAL = "no passkey was chosen";
-
-async function createPasskey(json: JsonCreationOptions): Promise<unknown> {
-  const cred = (await navigator.credentials.create(
-    toCreationOptions(json),
-  )) as PublicKeyCredential | null;
-  if (!cred) throw new Error(NO_CREDENTIAL);
-  return registrationJson(cred);
-}
-
-async function assertPasskey(json: JsonRequestOptions): Promise<unknown> {
-  const cred = (await navigator.credentials.get(
-    toRequestOptions(json),
-  )) as PublicKeyCredential | null;
-  if (!cred) throw new Error(NO_CREDENTIAL);
-  return assertionJson(cred);
-}
-
-/** First run: registers a passkey with the setup code the server printed, and signs in. */
-export async function setUpWithCode(code: string, deviceName: string): Promise<SignedIn> {
-  const { ceremonyId, options } = await post<Started<JsonCreationOptions>>(
-    "/api/auth/setup/start",
-    { code, deviceName },
-    "start setup",
-  );
-  const credential = await createPasskey(options);
+/** Signs in; the server makes this client a new device. */
+export async function signIn(
+  passphrase: string,
+  factor: SecondFactor,
+  deviceName: string,
+): Promise<SignedIn> {
   const signedIn = await post<SignedIn>(
-    "/api/auth/setup/finish",
-    { ceremonyId, credential },
-    "finish setup",
-  );
-  saveDeviceToken(signedIn.token);
-  return signedIn;
-}
-
-/** Signs in with a passkey; the server makes this browser a new device. */
-export async function signInWithPasskey(deviceName: string): Promise<SignedIn> {
-  const { ceremonyId, options } = await post<Started<JsonRequestOptions>>(
-    "/api/auth/login/start",
-    {},
-    "start sign-in",
-  );
-  const credential = await assertPasskey(options);
-  const signedIn = await post<SignedIn>(
-    "/api/auth/login/finish",
-    { ceremonyId, credential, deviceName },
+    "/api/auth/login",
+    { passphrase, ...factor, deviceName },
     "sign in",
   );
   saveDeviceToken(signedIn.token);
   return signedIn;
 }
 
-/** Checks the passkey again, which device management needs within the last 10 minutes. */
-export async function reverify(): Promise<void> {
-  const { ceremonyId, options } = await post<Started<JsonRequestOptions>>(
-    "/api/auth/reverify/start",
-    {},
-    "start passkey check",
-  );
-  const credential = await assertPasskey(options);
-  await post<{ verifiedAt: number }>(
-    "/api/auth/reverify/finish",
-    { ceremonyId, credential },
-    "passkey check",
-  );
+/* ---------- Fresh ---------- */
+
+/** Makes this device fresh with a code from the authenticator app. */
+export const reverify = (code: string) =>
+  post<{ verifiedAt: number }>("/api/auth/reverify", { code }, "check the code");
+
+/** What the server says when an action needs a code from the last 10 minutes. */
+const REAUTH_REQUIRED = "reauth_required";
+
+/**
+ * Asks the user for a code from their authenticator app. Resolves null when
+ * they cancel. The app shell registers one (see `CodePrompt`); with none, an
+ * action that needs a recent code just fails.
+ */
+export type CodePrompter = () => Promise<string | null>;
+let prompter: CodePrompter | null = null;
+
+/** Registers the prompt. Returns a function that removes it. */
+export function setCodePrompter(next: CodePrompter): () => void {
+  prompter = next;
+  return () => {
+    if (prompter === next) prompter = null;
+  };
 }
+
+const needsFreshCode = (e: unknown) =>
+  e instanceof SidecarError && e.status === 403 && e.message.endsWith(REAUTH_REQUIRED);
+
+/**
+ * Runs an action the server guards with a recent code (device and account
+ * management, switching the secrets backend). When the server refuses it for
+ * want of one, asks the user for a code, checks it, and retries once.
+ */
+export async function withFreshCode<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (e) {
+    if (!needsFreshCode(e) || !prompter) throw e;
+    const code = await prompter();
+    if (code === null) throw e;
+    await reverify(code);
+    return action();
+  }
+}
+
+/* ---------- The account ---------- */
+
+export interface Account {
+  backupCodesLeft: number;
+}
+
+export const getAccount = () => get<Account>("/api/account", "account");
+
+/** The devices an account change signed out, when asked to. */
+export interface SignedOut {
+  revokedDevices: string[];
+}
+
+export const changePassphrase = (
+  currentPassphrase: string,
+  newPassphrase: string,
+  signOutOtherDevices: boolean,
+) =>
+  withFreshCode(() =>
+    post<SignedOut>(
+      "/api/account/passphrase",
+      { currentPassphrase, newPassphrase, signOutOtherDevices },
+      "change the passphrase",
+    ),
+  );
+
+export const startTotpReenroll = () =>
+  withFreshCode(() => post<Enrollment>("/api/account/totp/start", {}, "start a new authenticator"));
+
+export const finishTotpReenroll = (
+  enrollmentId: string,
+  code: string,
+  signOutOtherDevices: boolean,
+) =>
+  withFreshCode(() =>
+    post<SignedOut>(
+      "/api/account/totp/finish",
+      { enrollmentId, code, signOutOtherDevices },
+      "confirm the new authenticator",
+    ),
+  );
+
+export const regenerateBackupCodes = () =>
+  withFreshCode(() =>
+    post<{ backupCodes: string[] }>("/api/account/backup-codes", {}, "make new backup codes"),
+  );
+
+export const signOutOtherDevices = () =>
+  withFreshCode(() =>
+    post<SignedOut>("/api/account/sign-out-others", {}, "sign out other devices"),
+  );
 
 /* ---------- Vault ---------- */
 
 type VaultState = "uninitialized" | "locked" | "unlocked";
 
+/** Opens the server's vault with its own passphrase, not the sign-in one. */
+export const unlockVault = (passphrase: string) =>
+  post<{ state: VaultState }>("/api/vault/unlock", { passphrase }, "unlock the vault");
+
 /** Opens the server's vault with the recovery key `yarvis-server vault init` printed. */
 export const unlockVaultWithRecovery = (recoveryKey: string) =>
   post<{ state: VaultState }>("/api/vault/unlock/recovery", { recoveryKey }, "unlock the vault");
-
-/** What `/api/vault/unlock/start` adds to the request options: a PRF salt per passkey. */
-interface VaultUnlockOptions extends JsonRequestOptions {
-  publicKey: JsonRequestOptions["publicKey"] & {
-    extensions?: { prf?: { evalByCredential?: Record<string, { first: string }> } };
-  };
-}
-
-/**
- * Opens the vault with a passkey that has a vault wrapper. The passkey's PRF
- * output is the key, so this needs a browser and authenticator with the WebAuthn
- * PRF extension.
- */
-export async function unlockVaultWithPasskey(): Promise<{ state: VaultState }> {
-  const { ceremonyId, options } = await post<Started<VaultUnlockOptions>>(
-    "/api/vault/unlock/start",
-    {},
-    "start vault unlock",
-  );
-  const salts = options.publicKey.extensions?.prf?.evalByCredential ?? {};
-  const request = toRequestOptions(options);
-  if (request.publicKey) {
-    request.publicKey.extensions = {
-      prf: {
-        evalByCredential: Object.fromEntries(
-          Object.entries(salts).map(([id, salt]) => [id, { first: base64urlToBuffer(salt.first) }]),
-        ),
-      },
-    } as AuthenticationExtensionsClientInputs;
-  }
-  const cred = (await navigator.credentials.get(request)) as PublicKeyCredential | null;
-  if (!cred) throw new Error(NO_CREDENTIAL);
-  const prf = (cred.getClientExtensionResults() as { prf?: { results?: { first?: ArrayBuffer } } })
-    .prf?.results?.first;
-  if (!prf) {
-    throw new Error("this browser or passkey can't unlock the vault; use the recovery key");
-  }
-  return post<{ state: VaultState }>(
-    "/api/vault/unlock/finish",
-    { ceremonyId, credential: assertionJson(cred), prfFirst: bufferToBase64url(prf) },
-    "unlock the vault",
-  );
-}
 
 /* ---------- Devices ---------- */
 
@@ -299,35 +230,16 @@ export const getMyDevice = () => get<Device>("/api/devices/me", "this device");
 
 export const listDevices = () => get<Device[]>("/api/devices", "devices");
 
-/** What the server says when an action needs a passkey check from the last 10 minutes. */
-const REAUTH_REQUIRED = "reauth_required";
-
 /**
- * Runs an action the server guards with a recent passkey check (device
- * management, switching the secrets backend), checking the passkey and
- * retrying once when the server refuses it for want of one.
- */
-export async function withFreshPasskey<T>(action: () => Promise<T>): Promise<T> {
-  try {
-    return await action();
-  } catch (e) {
-    if (!(e instanceof SidecarError && e.status === 403 && e.message.endsWith(REAUTH_REQUIRED))) {
-      throw e;
-    }
-    await reverify();
-    return action();
-  }
-}
-
-/**
- * Mints a token for a client that can't use a passkey. The server refuses
- * `admin` here. The response is the only time the token is shown.
+ * Mints a token for a client that can't sign in itself (a script, a Tauri app
+ * pointed at a remote server). The server refuses `admin` and `terminal` here.
+ * The response is the only time the token is shown.
  */
 export const mintDeviceToken = (name: string, scopes: Scope[]) =>
-  withFreshPasskey(() => post<SignedIn>("/api/devices/tokens", { name, scopes }, "create token"));
+  withFreshCode(() => post<SignedIn>("/api/devices/tokens", { name, scopes }, "create token"));
 
 export const revokeDevice = (id: string) =>
-  withFreshPasskey(async () => {
+  withFreshCode(async () => {
     const res = await serverFetch(`/api/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
     await ensureOk(res, "revoke device");
   });

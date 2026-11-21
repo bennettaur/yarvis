@@ -1,4 +1,4 @@
-import { withFreshPasskey } from "./auth";
+import { withFreshCode } from "./auth";
 import { core } from "./core";
 
 /**
@@ -209,10 +209,10 @@ export interface BackendSwitch {
  * copy is left behind untouched.
  *
  * `vault` and `item` are required for `"onepassword"` and ignored otherwise.
- * The server asks for a recent passkey check first, which this runs.
+ * The server asks for a recent code first, which this asks the user for.
  */
 export const setSecretBackend = (
   backend: SecretBackend,
   vault: string | null,
   item: string | null,
-) => withFreshPasskey(() => core<BackendSwitch>("set_secret_backend", { backend, vault, item }));
+) => withFreshCode(() => core<BackendSwitch>("set_secret_backend", { backend, vault, item }));
