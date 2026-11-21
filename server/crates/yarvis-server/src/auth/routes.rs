@@ -108,9 +108,8 @@ struct Status {
 }
 
 async fn status(State(state): State<AppState>) -> ApiResult<Json<Status>> {
-    // Nothing in the server can unlock a vault yet, so a vault stays locked.
     let vault = match state.config.secrets.backend {
-        SecretBackendKind::Vault => "locked",
+        SecretBackendKind::Vault => state.vault.state().map_err(ApiError::internal)?.as_str(),
         SecretBackendKind::Keychain | SecretBackendKind::OnePassword => "absent",
     };
     Ok(Json(Status {

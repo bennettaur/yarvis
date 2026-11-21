@@ -4,6 +4,8 @@
 
 #![allow(dead_code)]
 
+pub mod git;
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -43,7 +45,18 @@ impl Harness {
     }
 
     pub async fn with_default_limit(store: Store) -> Self {
-        let state = AppState::new(Config::default(), store);
+        Self::build(Config::default(), store).await
+    }
+
+    /// An app on `config`, with the rate limit lifted as in [`Harness::on`].
+    pub async fn with_config(config: Config) -> Self {
+        let mut harness = Self::build(config, Store::open_in_memory().unwrap()).await;
+        harness.state.auth_limiter = RateLimiter::new(100_000, Duration::from_secs(60));
+        harness
+    }
+
+    async fn build(config: Config, store: Store) -> Self {
+        let state = AppState::new(config, store);
         let setup_code = state
             .passkeys
             .issue_setup_code_if_needed(None)
