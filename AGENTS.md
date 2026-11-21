@@ -27,13 +27,14 @@ Three processes, each with a clean ownership boundary:
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY. `harness.runEnv` is the one method that hands a secret back to the
-  sidecar: one Claude Code harness's program and environment, its secret
-  variables included, for a verification run. The harness is the one the user
-  set in Settings or picked for a run on the Verification tab; the
-  assistant's tools take none, though the runs it starts use the Settings one.
-  The values go only into the run's environment, never a log or a row, and a
-  harness setting a variable that would move what the run may not read
-  (`HOME`, `CLAUDE_CONFIG_DIR`) is refused. Like every method it trusts any
+  sidecar: one Claude Code or OpenCode harness's kind, program and
+  environment, its secret variables included, for a verification run. The
+  harness is the one the user set in Settings or picked for a run on the
+  Verification tab; the assistant's tools take none, though the runs it
+  starts use the Settings one. The values go only into the run's
+  environment, never a log or a row, and a harness setting a variable that
+  would move what the run may not read (`HOME`, `CLAUDE_CONFIG_DIR`, the
+  `XDG_*_HOME` folders, `OPENCODE_CONFIG*`) is refused. Like every method it trusts any
   process running as the user, so such a process can read those secrets
   through the socket; that was accepted rather than tying the socket to the
   sidecar's pid.
@@ -771,6 +772,25 @@ report there and leaves the fixes to the author.
   and the answers put together in code, so no model rewords or drops what
   another wrote. The verification report runs each section that way, one
   process per reading group.
+  A fan-out run can also run its parts on OpenCode (`agentRuns/opencode.ts`),
+  for an OpenCode harness, held to the same rules its own way. Each process
+  starts `opencode run --standalone` (without it the session goes to a
+  background service the user's own sessions share) in a private folder
+  holding only the run's `opencode.json`, with `XDG_*_HOME` pointed at
+  folders of its own, since OpenCode loads config, plugins and MCP servers
+  from every folder between its working directory and `/` and a checkout's
+  plugin runs code the moment it loads. Its one agent is the plugin agent's
+  prompt with every tool denied but read, grep and glob, and reads outside
+  its folder allowed only in the checkout and the context folder. It runs
+  under a `sandbox-exec` profile that allows writes only to its folder and
+  denies `SECRET_HOME_PATHS` and the user's own OpenCode folders, which hold
+  provider logins: keys come from the harness's secret environment only.
+  OpenCode has no structured-output tool, so the agent is given the JSON
+  schema and its last message is parsed, then checked like any part's
+  answer. The models.dev catalog is downloaded by the sidecar once a day and
+  handed over as a file (`OPENCODE_MODELS_PATH`), since a process with
+  empty folders downloads its own in the background and a run that picks a
+  newer model first fails.
   These runs are pointed at a pull request's checkout, which its author
   controls, so they read no settings files at all (`--setting-sources ""`):
   the checkout's can declare hooks, which are shell commands Claude Code runs

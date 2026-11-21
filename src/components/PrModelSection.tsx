@@ -6,6 +6,8 @@ import {
   getPrModelConfig,
   getRereviewRunConfig,
   getVerificationRunConfig,
+  type HarnessModels,
+  OPENCODE_MODEL_PATTERN,
   PR_MODEL_FEATURES,
   type PrModelConfig,
   type PrModelFeature,
@@ -120,6 +122,71 @@ function ClaudeRunRow({
   );
 }
 
+/** Each tier's name and what it stands for, so an OpenCode model can be picked to match it. */
+const TIERS: Record<VerificationModel, { name: string; hint: string }> = {
+  opus: { name: "Opus", hint: "the hardest checks (risk, malicious intent)" },
+  sonnet: { name: "Sonnet", hint: "most checks" },
+  haiku: { name: "Haiku", hint: "the lightest checks (comments, observability)" },
+};
+
+/**
+ * The OpenCode model an OpenCode harness runs each tier on. A field is saved
+ * when it loses focus, and only once it reads as `provider/model`; clearing it
+ * leaves the checks on that tier unable to start until one is picked.
+ */
+function OpenCodeTierModels({
+  harness,
+  models,
+  onSave,
+}: {
+  harness: string;
+  models: HarnessModels;
+  onSave: (patch: VerificationRunConfigPatch) => void;
+}) {
+  const [drafts, setDrafts] = useState<HarnessModels>(models);
+  useEffect(() => setDrafts(models), [models]);
+  const commit = (tier: VerificationModel) => {
+    const draft = drafts[tier]?.trim() ?? "";
+    if (draft === (models[tier] ?? "")) return;
+    if (draft && !OPENCODE_MODEL_PATTERN.test(draft)) return;
+    const next: HarnessModels = { ...models };
+    if (draft) next[tier] = draft;
+    else delete next[tier];
+    onSave({ harnessModels: { [harness]: next } });
+  };
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-zinc-500">
+        OpenCode models for each tier, as <code>provider/model</code>. Add <code>#variant</code>{" "}
+        (e.g. <code>#high</code>) for a reasoning effort: the effort choices below don't apply to
+        OpenCode.
+      </p>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+        {VERIFICATION_MODELS.map((tier) => {
+          const draft = drafts[tier] ?? "";
+          const invalid = draft.trim() !== "" && !OPENCODE_MODEL_PATTERN.test(draft.trim());
+          return (
+            <label key={tier} className="contents">
+              <span className="text-xs text-zinc-400" title={TIERS[tier].hint}>
+                {TIERS[tier].name} tier
+              </span>
+              <input
+                className={FIELD}
+                aria-label={`OpenCode model for the ${TIERS[tier].name} tier`}
+                aria-invalid={invalid}
+                placeholder="provider/model"
+                value={draft}
+                onChange={(e) => setDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
+                onBlur={() => commit(tier)}
+              />
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Each verification check's model and effort. "Default" leaves a check on what
  * Yarvis picked for it; choosing the default value explicitly pins it there.
@@ -136,6 +203,7 @@ function VerificationSectionRuns({
     value.harness && !value.harnesses.some((h) => h.id === value.harness) ? value.harness : null;
   const save = (section: ReportSection, choice: RunChoice) =>
     onSave({ sections: { [section]: choice } });
+  const picked = value.harnesses.find((h) => h.id === (value.harness ?? BUILTIN_HARNESS_ID));
   return (
     <div className="space-y-1">
       {(value.harnesses.length > 1 || missingHarness) && (
@@ -161,6 +229,13 @@ function VerificationSectionRuns({
             )}
           </select>
         </label>
+      )}
+      {picked?.kind === "opencode" && (
+        <OpenCodeTierModels
+          harness={picked.id}
+          models={value.harnessModels?.[picked.id] ?? {}}
+          onSave={onSave}
+        />
       )}
       <p className="text-xs text-zinc-500">
         Each check's Claude model and effort. A run started from the checklist or the assistant can
