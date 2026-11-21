@@ -88,19 +88,38 @@ session doesn't launch right away, Yarvis retries it on the next start. If by
 then you've removed that harness or unticked it, the retry uses your default
 instead.
 
-A Claude Code harness whose command runs `claude` itself, not through a
-wrapper such as `ssh box claude`, can also run a PR's [verification
+A Claude Code harness whose command runs `claude` itself, or an OpenCode
+harness whose command runs `opencode` itself, not through a wrapper such as
+`ssh box claude`, can also run a PR's [verification
 checks](review-workspaces.md), picked in **Settings → PR review** or on the
 Verification tab. Those runs use only the harness's program and its
 environment, plain and secret, not the rest of its command, so a variable
-the run needs belongs in the environment list rather than before `claude`
-in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
-`NODE_OPTIONS` or `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` isn't
-offered: those would move the files a run over someone else's code is kept
-from reading. The assistant can't pick a harness for the checks, but the ones
-it starts use the harness set in Settings. Any program running as you can ask
-the app for a harness's secret variables this way, so keep them to keys
-scoped for this use.
+the run needs belongs in the environment list rather than before the
+program in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
+`NODE_OPTIONS`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, an
+`XDG_*_HOME` folder, or any `BUN_*` variable, isn't offered, and neither is
+an OpenCode harness that sets an `OPENCODE_*` variable other than the Zen key
+`OPENCODE_API_KEY`: those would move the files a run over someone else's
+code is kept from reading, or change how the harness runs. The assistant can't pick a harness for the checks, but the
+ones it starts use the harness set in Settings. Any program running as you
+can ask the app for a harness's secret variables this way, so keep them to
+keys scoped for this use.
+
+An OpenCode harness runs the checks without your own OpenCode setup, the way
+a Claude Code run loads none of your settings: each check's process gets
+empty config and data folders and a home folder of its own, so your
+`opencode.json`, plugins, MCP servers, agents and `/connect` logins don't
+apply, and neither does your `~/.claude/CLAUDE.md`, which OpenCode otherwise
+reads. A provider's key goes
+in the harness's secret environment instead (`ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY` and so on); OpenCode Zen's free models need none. Under
+**Settings → PR review** you give the harness an OpenCode model for each of
+the three tiers the checks run on (`provider/model`, with `#variant` for a
+reasoning effort, since the effort choices apply only to Claude Code). A
+check whose tier has no model doesn't start, and says which to set. Yarvis
+downloads [models.dev](https://models.dev)'s model list once a day and hands
+it to each process, so a model newer than your OpenCode build still works.
+OpenCode runs need macOS, since the sandbox they run in is macOS's.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than

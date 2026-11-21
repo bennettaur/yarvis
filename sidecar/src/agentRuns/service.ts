@@ -1,5 +1,6 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { and, desc, eq, getTableColumns, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadInstanceConfig } from "../config.ts";
@@ -11,14 +12,33 @@ import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import { redactSecrets } from "../llm/errors.ts";
 import type { AgentRunEvent, AgentRunFinalStatus } from "./events.ts";
-import { type PluginCopy, type PluginName, writePluginCopy } from "./plugins.ts";
+import {
+  makeOpenCodeDirs,
+  OpenCodeEventParser,
+  openCodeActions,
+  openCodeCommand,
+  openCodeConfig,
+  openCodeEnv,
+  openCodeInstructions,
+  openCodeSandboxProfile,
+  removeOpenCodeDirs,
+  SANDBOX_EXEC,
+  writeOpenCodeConfig,
+} from "./opencode.ts";
+import { copyCatalog, openCodeCatalog } from "./opencodeCatalog.ts";
+import { type PluginCopy, type PluginName, pluginAgentPrompt, writePluginCopy } from "./plugins.ts";
 import {
   killLeftoverGroup,
   launchStreaming,
   processStartTime,
   type StreamingExit,
 } from "./process.ts";
-import { type ClaudeStreamResult, type FileRead, StreamJsonParser } from "./streamJson.ts";
+import {
+  type ClaudeStreamResult,
+  type FileRead,
+  type ParsedLine,
+  StreamJsonParser,
+} from "./streamJson.ts";
 
 /** What a run did on its way to an answer, for {@link ClaudeRunOptions.finishOutput}. */
 export interface RunActivity {
@@ -189,6 +209,13 @@ export interface ClaudeRunDeps {
   instance?: string;
   /** What a fan-out run's processes wait on; defaults to {@link fanOutSlots}. */
   slots?: ProcessSlots;
+  /**
+   * OpenCode only: what applies a process's sandbox profile; defaults to
+   * macOS's `sandbox-exec`. Tests on a machine without it pass a stand-in.
+   */
+  sandboxExec?: string;
+  /** OpenCode only: the model catalog a process reads; defaults to {@link openCodeCatalog}. */
+  loadCatalog?: () => Promise<string | null>;
 }
 
 /**
@@ -489,7 +516,8 @@ export async function startClaudeRun<T, R = T>(
 
   const execute = (): Promise<RunEnding> => {
     emit({ type: "status", message: "Starting Claude Code" });
-    return runClaudeProcess({
+    return runCliProcess({
+      label: "Claude Code",
       program,
       args: args[0] ?? [],
       stdin: options.prompt,
@@ -560,7 +588,39 @@ export type FanOutRunOptions<T, R = T> = Omit<
     combine: (answers: unknown[], fellBack: boolean[]) => unknown;
     /** The combined answer's shape; the run fails unless it parses. */
     outputSchema: z.ZodType<T>;
+    /**
+     * Which CLI runs each part; Claude Code when left out. An OpenCode run
+     * (`agentRuns/opencode.ts`) needs `deps.program`, a `provider/model`
+     * `model`, and only Read, Grep and Glob in `allowedTools`. It loads no
+     * plugin: each part's agent prompt is read from `plugins` and given to
+     * OpenCode as its agent. `effort` and `maxTurns` don't apply, since
+     * OpenCode takes neither, so `timeoutMs` is all that bounds a part.
+     */
+    backend?: FanOutBackend;
   };
+
+/** The CLIs a fan-out run's parts can run on. */
+export type FanOutBackend = "claude-code" | "opencode";
+
+/** What turns a process's output lines into a run's events and answer. */
+interface ProcessParser {
+  parseLine(line: string): ParsedLine;
+  readonly fileReads: FileRead[];
+  readonly subagents: ReadonlyMap<string, string>;
+  readonly estimatedCostUsd: number;
+  closeOpenDelegations(): AgentRunEvent[];
+}
+
+/** One process, ready to start. `cleanup` runs once it has exited. */
+interface PreparedProcess {
+  program: string;
+  args: string[];
+  stdin: string;
+  cwd: string;
+  env: Record<string, string> | undefined;
+  parser: ProcessParser;
+  cleanup: () => void;
+}
 
 /**
  * How a part of a fan-out run ended. `stopped` is a cancel or the run's
@@ -581,7 +641,8 @@ const PART_ATTEMPTS = 2;
  * `combine` builds in code from the parts' answers rather than a coordinating
  * model copying them. A part that fails is started once more, and one that
  * fails again answers its `fallback`, unless every part failed, which fails
- * the run. Throws for the same reasons as {@link startClaudeRun}.
+ * the run. Parts run on Claude Code, or on OpenCode with `backend: "opencode"`.
+ * Throws for the same reasons as {@link startClaudeRun}.
  */
 export async function startClaudeFanOutRun<T, R = T>(
   db: Db,
@@ -590,15 +651,25 @@ export async function startClaudeFanOutRun<T, R = T>(
 ): Promise<ClaudeRunHandle<R>> {
   if (options.parts.length === 0) throw new Error("a fan-out run needs at least one part");
   const registry = deps.registry ?? agentRunRegistry;
+  const openCode = options.backend === "opencode" ? await openCodeSetup(options, deps) : null;
+  const label = openCode ? "OpenCode" : "Claude Code";
   const { cwd, program } = await checkRunOptions(options, deps);
-  const { id, args, removePlugins } = await registerRun(db, options, deps, (dirs) =>
-    options.parts.map((part) =>
-      buildClaudeArgs(
-        { ...options, prompt: part.prompt, agent: part.agent, outputSchema: options.partSchema },
-        dirs,
-      ),
-    ),
-  );
+  const { id, args, removePlugins } = openCode
+    ? // An OpenCode part gets its agent's prompt as text, not as a plugin.
+      await registerRun(db, { ...options, plugins: [] }, deps, () => [])
+    : await registerRun(db, options, deps, (dirs) =>
+        options.parts.map((part) =>
+          buildClaudeArgs(
+            {
+              ...options,
+              prompt: part.prompt,
+              agent: part.agent,
+              outputSchema: options.partSchema,
+            },
+            dirs,
+          ),
+        ),
+      );
 
   const cancelled = registry.start(id);
   const deadline = new AbortController();
@@ -616,17 +687,38 @@ export async function startClaudeFanOutRun<T, R = T>(
     `[agent-runs] starting ${options.kind} run ${id} (${count} ${count === 1 ? "part" : "parts"})`,
   );
 
+  const prepare = (part: RunPart, index: number): PreparedProcess =>
+    openCode
+      ? openCode.prepare(part, cwd)
+      : {
+          program,
+          args: args[index] ?? [],
+          stdin: part.prompt,
+          cwd,
+          env: deps.env,
+          parser: new StreamJsonParser(cwd),
+          cleanup: () => {},
+        };
+
   const attempt = async (part: RunPart, index: number, lane: string): Promise<PartResult> => {
     const release = await slots.acquire(signal);
     if (!release) return { kind: "stopped" };
-    const parser = new StreamJsonParser(cwd);
+    let prepared: PreparedProcess;
+    try {
+      prepared = prepare(part, index);
+    } catch (e) {
+      release();
+      throw e;
+    }
+    const { parser } = prepared;
     let recorded: Promise<number | null> = Promise.resolve(null);
-    const ending = await runClaudeProcess({
-      program,
-      args: args[index] ?? [],
-      stdin: part.prompt,
-      cwd,
-      env: deps.env,
+    const ending = await runCliProcess({
+      label,
+      program: prepared.program,
+      args: prepared.args,
+      stdin: prepared.stdin,
+      cwd: prepared.cwd,
+      env: prepared.env,
       signal,
       // At least a millisecond, since a timeout of 0 would mean none.
       timeoutMs: Math.max(1, startedAt + options.timeoutMs - Date.now()),
@@ -635,7 +727,10 @@ export async function startClaudeFanOutRun<T, R = T>(
       },
       onEvent: (event) => emit(inLane(event, lane)),
       parser,
-    }).finally(release);
+    }).finally(() => {
+      release();
+      prepared.cleanup();
+    });
     // A process that has exited leaves the crash sweep's list, so the sweep
     // can't later kill whatever is given its pid.
     void recorded.then((pid) => (pid === null ? undefined : forgetProcess(db, id, pid)));
@@ -644,7 +739,7 @@ export async function startClaudeFanOutRun<T, R = T>(
       reads.push(read.subagentId === null ? { ...read, subagentId: lane } : read);
     }
     for (const [delegation, name] of parser.subagents) subagents.set(delegation, name);
-    const read = readPartEnding(options, ending, parser.estimatedCostUsd);
+    const read = readPartEnding(options, ending, parser.estimatedCostUsd, label);
     if (read.costUsd !== null) costs.push(read.costUsd);
     return read.result;
   };
@@ -721,6 +816,107 @@ export async function startClaudeFanOutRun<T, R = T>(
   return { id, done };
 }
 
+/**
+ * What an OpenCode fan-out run checks before anything is written, and how it
+ * readies each of its processes: a private folder holding the run's agent as
+ * config, under its own sandbox profile.
+ */
+async function openCodeSetup<T, R>(
+  options: FanOutRunOptions<T, R>,
+  deps: ClaudeRunDeps,
+): Promise<{ prepare: (part: RunPart, checkout: string) => PreparedProcess }> {
+  if (!deps.program) throw new Error("an OpenCode run needs the harness's program");
+  const program = harnessProgram(deps.program);
+  const model = options.model;
+  // Settings hold the stricter rule; this only keeps an alias like "sonnet" out.
+  if (!model || !/^[^/\s]+\/\S+$/.test(model)) {
+    throw new Error("an OpenCode run needs its model as provider/model");
+  }
+  const sandboxExec = deps.sandboxExec ?? SANDBOX_EXEC;
+  if (!existsSync(sandboxExec)) {
+    throw new Error("OpenCode runs need macOS's sandbox-exec, which isn't on this machine");
+  }
+  const actions = openCodeActions(options.allowedTools);
+  const readable = [options.cwd, ...(options.addDirs ?? [])];
+  // OpenCode's grep and glob run ripgrep: the one on PATH, or one it downloads into its folder.
+  const ripgrep = onPath("rg");
+  const answerSchema = jsonSchemaArg(options.partSchema);
+  const catalog = await (deps.loadCatalog ?? openCodeCatalog)();
+  return {
+    prepare: (part, checkout) => {
+      const dirs = makeOpenCodeDirs();
+      try {
+        // The plugin's name isn't part of an OpenCode agent id.
+        const agentId = part.agent.split(":").pop() ?? part.agent;
+        const system = [
+          RUN_GUARDRAIL,
+          ...(options.appendSystemPrompt ? [options.appendSystemPrompt] : []),
+          pluginAgentPrompt(part.agent),
+          openCodeInstructions(checkout, answerSchema),
+        ].join("\n\n");
+        writeOpenCodeConfig(
+          dirs,
+          openCodeConfig({
+            agentId,
+            system,
+            actions,
+            readable,
+          }),
+        );
+        const command = openCodeCommand({
+          sandboxExec,
+          program,
+          profile: openCodeSandboxProfile({
+            root: dirs.root,
+            readable,
+            programs: [program, ...(ripgrep ? [ripgrep] : [])],
+            secretPaths: SECRET_HOME_PATHS,
+          }),
+          agentId,
+          model,
+          prompt: part.prompt,
+        });
+        return {
+          program: command.program,
+          args: command.args,
+          stdin: "",
+          cwd: dirs.project,
+          // Ours last, so a harness can't point OpenCode back at the user's folders.
+          env: { ...deps.env, ...openCodeEnv(dirs, copyCatalog(catalog, dirs.root)) },
+          parser: new OpenCodeEventParser(checkout, new Set(actions)),
+          cleanup: () => removeOpenCodeDirs(dirs),
+        };
+      } catch (e) {
+        removeOpenCodeDirs(dirs);
+        throw e;
+      }
+    },
+  };
+}
+
+/**
+ * The path a harness's program runs from. The profile allows running only
+ * named files, and `sandbox-exec` looks a bare name up in `PATH`, so the
+ * profile has to name what that finds.
+ */
+function harnessProgram(program: string): string {
+  if (isAbsolute(program)) return program;
+  if (program.includes("/"))
+    throw new Error(`the harness's program ${program} must be a name or an absolute path`);
+  const found = onPath(program);
+  if (!found) throw new Error(`can't find the harness's program ${program} on PATH`);
+  return found;
+}
+
+/** The first `name` in the sidecar's `PATH`, or null. */
+function onPath(name: string): string | null {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    const candidate = join(dir, name);
+    if (dir && isAbsolute(dir) && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 /** A part's own text and tool events, put on its lane; its subagents' keep theirs. */
 function inLane(event: AgentRunEvent, lane: string): AgentRunEvent {
   if ((event.type === "text" || event.type === "tool") && event.subagentId === null) {
@@ -734,8 +930,9 @@ function readPartEnding<T, R>(
   options: FanOutRunOptions<T, R>,
   ending: RunEnding,
   estimatedCostUsd: number,
+  label: string,
 ): { result: PartResult; costUsd: number | null } {
-  const ended = endingOutcome<R>(options.timeoutMs, ending, estimatedCostUsd);
+  const ended = endingOutcome<R>(options.timeoutMs, ending, estimatedCostUsd, label);
   if (!("result" in ended)) {
     // The process's own timeout is the run's deadline, so it stops the run too.
     const stopped =
@@ -840,8 +1037,9 @@ async function registerRun(
   }
 }
 
-/** One Claude Code process, streamed through `parser` into `onEvent`. */
-async function runClaudeProcess(launch: {
+/** One process, streamed through `parser` into `onEvent`. `label` names the CLI in errors. */
+async function runCliProcess(launch: {
+  label: string;
   program: string;
   args: string[];
   stdin: string;
@@ -851,7 +1049,7 @@ async function runClaudeProcess(launch: {
   timeoutMs: number;
   onSpawn: (pid: number) => void;
   onEvent: (event: AgentRunEvent) => void;
-  parser: StreamJsonParser;
+  parser: ProcessParser;
 }): Promise<RunEnding> {
   let result: ClaudeStreamResult | undefined;
   try {
@@ -874,7 +1072,7 @@ async function runClaudeProcess(launch: {
   } catch (e) {
     return {
       kind: "not-started",
-      message: `could not start Claude Code: ${e instanceof Error ? e.message : String(e)}`,
+      message: `could not start ${launch.label}: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
 }
@@ -1002,6 +1200,7 @@ function endingOutcome<R>(
   timeoutMs: number,
   ending: RunEnding,
   estimatedCostUsd: number,
+  label = "Claude Code",
 ): { result: ClaudeStreamResult; base: OutcomeBase<R> } | AgentRunOutcome<R> {
   const estimate = estimatedCostUsd > 0 ? estimatedCostUsd : null;
   if (ending.kind === "not-started") return failure(ending.message, { costUsd: estimate });
@@ -1019,11 +1218,11 @@ function endingOutcome<R>(
   }
   if (!result) {
     if (exit.skippedLines > 0) {
-      return failure("a line of Claude Code's output was too large to read", base);
+      return failure(`a line of ${label}'s output was too large to read`, base);
     }
     const detail = exit.stderr.trim() || "no output";
     return failure(
-      `claude exited with code ${exit.code ?? "null"} before finishing: ${detail}`,
+      `${label} exited with code ${exit.code ?? "null"} before finishing: ${detail}`,
       base,
     );
   }

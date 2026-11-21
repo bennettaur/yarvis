@@ -28,8 +28,9 @@ export async function getPrModelConfig(): Promise<PrModelConfig> {
 }
 
 /**
- * The verification report runs on Claude Code, so each section takes a Claude
- * Code model alias and effort rather than a provider/model pair. The budget
+ * Each verification section takes a Claude Code model alias and effort rather
+ * than a provider/model pair. On an OpenCode harness the alias is a tier that
+ * `harnessModels` maps to an OpenCode model, and effort doesn't apply. The budget
  * only warns: a run estimated over it asks first, and nothing stops it once
  * agreed.
  */
@@ -60,8 +61,13 @@ export interface VerificationRunConfig {
   sections: Partial<Record<ReportSection, RunChoice>>;
   /** The agent harness the checks run with; left out, the built-in agent. */
   harness?: string;
-  /** The harnesses a check can run with: the built-in agent first, then saved Claude Code ones. */
-  harnesses: { id: string; name: string }[];
+  /**
+   * By harness id: the OpenCode model an OpenCode harness runs each tier on,
+   * since a section's model is a Claude Code alias.
+   */
+  harnessModels?: Record<string, HarnessModels>;
+  /** The harnesses a check can run with: the built-in agent first, then saved Claude Code and OpenCode ones. */
+  harnesses: { id: string; name: string; kind: "claude-code" | "opencode" }[];
   /** Every section, in report order, with what it runs on when not overridden. */
   sectionDefaults: {
     section: ReportSection;
@@ -77,7 +83,15 @@ export interface VerificationRunConfigPatch {
   sections?: Partial<Record<ReportSection, RunChoice>>;
   /** `null` goes back to the built-in agent. */
   harness?: string | null;
+  /** Replaces each named harness's tiers; `null` clears them. */
+  harnessModels?: Record<string, HarnessModels | null>;
 }
+
+/** The OpenCode model a harness runs each tier on, as `provider/model` with an optional `#variant`. */
+export type HarnessModels = Partial<Record<VerificationModel, string>>;
+
+/** Mirrors `openCodeModelSchema` in `sidecar/src/pr/models.ts`. */
+export const OPENCODE_MODEL_PATTERN = /^[A-Za-z0-9][\w.-]*\/[^\s#]+(#[\w.-]+)?$/;
 
 /** Cache key for the verification settings; Settings invalidates it on save. */
 export const VERIFICATION_SETTINGS_KEY = "pr-models:verification";

@@ -161,7 +161,7 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     }
   });
 
-  it("offers only Claude Code harnesses that run claude, and saves one of them", async () => {
+  it("offers only Claude Code and OpenCode harnesses that run their CLI, and saves one of them", async () => {
     await writeFile(
       join(settingsDir, "settings.json"),
       JSON.stringify({
@@ -169,6 +169,29 @@ describe("GET/PATCH /api/pr-models/verification", () => {
           { id: "bedrock", name: "Bedrock", kind: "claude-code", command: "claude" },
           { id: "wrapped", name: "Wrapped", kind: "claude-code", command: "ssh box claude" },
           { id: "pi", name: "Pi", kind: "pi", command: "pi" },
+          { id: "oc", name: "OpenCode", kind: "opencode", command: "/opt/bin/opencode" },
+          { id: "oc-wrapped", name: "Docker OC", kind: "opencode", command: "docker run oc" },
+          {
+            id: "oc-moved",
+            name: "OC moved",
+            kind: "opencode",
+            command: "opencode",
+            env: { XDG_DATA_HOME: "/tmp/elsewhere" },
+          },
+          {
+            id: "oc-flags",
+            name: "OC flags",
+            kind: "opencode",
+            command: "opencode",
+            secretEnv: ["OPENCODE_FLAGS"],
+          },
+          {
+            id: "oc-zen",
+            name: "OC Zen",
+            kind: "opencode",
+            command: "opencode",
+            secretEnv: ["OPENCODE_API_KEY"],
+          },
           {
             id: "moved",
             name: "Moved",
@@ -182,8 +205,16 @@ describe("GET/PATCH /api/pr-models/verification", () => {
       }),
     );
     const read = await app().request("/api/pr-models/verification", { headers: auth });
-    const body = (await read.json()) as { harnesses: { id: string }[] };
-    expect(body.harnesses.map((h) => h.id)).toEqual(["claude", "bedrock"]);
+    const body = (await read.json()) as { harnesses: { id: string; name: string; kind: string }[] };
+    expect(body.harnesses).toEqual([
+      { id: "claude", name: "Claude", kind: "claude-code" },
+      { id: "bedrock", name: "Bedrock", kind: "claude-code" },
+      { id: "oc", name: "OpenCode", kind: "opencode" },
+      { id: "oc-zen", name: "OC Zen", kind: "opencode" },
+    ]);
+    expect((await patch({ harness: "oc-wrapped" })).status).toBe(400);
+    expect((await patch({ harness: "oc-moved" })).status).toBe(400);
+    expect((await patch({ harness: "oc-flags" })).status).toBe(400);
 
     expect((await patch({ harness: "pi" })).status).toBe(400);
     expect((await patch({ harness: "wrapped" })).status).toBe(400);
@@ -198,6 +229,45 @@ describe("GET/PATCH /api/pr-models/verification", () => {
     expect(await kept.json()).toMatchObject({ harness: "bedrock", maxBudgetUsd: 3 });
     const cleared = (await (await patch({ harness: null })).json()) as Record<string, unknown>;
     expect(cleared.harness).toBeUndefined();
+  });
+
+  it("saves an OpenCode harness's model for each tier, replacing that harness's whole", async () => {
+    const saved = await (
+      await patch({
+        harnessModels: {
+          oc: { opus: "anthropic/claude-opus-5-5#high", sonnet: "opencode/big-pickle" },
+        },
+      })
+    ).json();
+    expect(saved).toMatchObject({
+      harnessModels: {
+        oc: { opus: "anthropic/claude-opus-5-5#high", sonnet: "opencode/big-pickle" },
+      },
+    });
+    await patch({ harnessModels: { other: { haiku: "openrouter/x/y" } } });
+    const replaced = (await (
+      await patch({ harnessModels: { oc: { haiku: "opencode/beam-free" } } })
+    ).json()) as { harnessModels: unknown };
+    expect(replaced.harnessModels).toEqual({
+      oc: { haiku: "opencode/beam-free" },
+      other: { haiku: "openrouter/x/y" },
+    });
+    const cleared = (await (await patch({ harnessModels: { oc: null } })).json()) as {
+      harnessModels: unknown;
+    };
+    expect(cleared.harnessModels).toEqual({ other: { haiku: "openrouter/x/y" } });
+  });
+
+  it("refuses an OpenCode model that isn't provider/model, and a tier it doesn't know", async () => {
+    for (const harnessModels of [
+      { oc: { opus: "sonnet" } },
+      { oc: { opus: "--model=x/y" } },
+      { oc: { opus: "a/b c" } },
+      { oc: { ultra: "a/b" } },
+      { "Bad Id!": { opus: "a/b" } },
+    ]) {
+      expect((await patch({ harnessModels })).status).toBe(400);
+    }
   });
 
   it("takes a budget of any size, since it only warns", async () => {
