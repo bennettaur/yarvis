@@ -6,7 +6,7 @@ webview talks to the core through `invoke` and to the sidecar over HTTP on
 127.0.0.1.
 
 This document describes the first pass at splitting that into one server and
-several clients. The server can run on the same Mac or on another machine (an
+several clients, and is the description of what is built. The server can run on the same Mac or on another machine (an
 always-on Intel Mac mini, for example). Clients are the web UI in a browser, a
 thin Tauri app, and later a native macOS app and a phone app.
 
@@ -15,10 +15,38 @@ Spikes tested the risky parts first. They live on the
 reference code that isn't meant to merge. Each has a `FINDINGS.md`, and
 references below to `spikes/...` point there.
 
-What is built so far: the `server/` skeleton (config, SQLite store, device
-tokens and scopes, the event log and its WebSocket, the error shape, the
-`SecretBackend` trait, `GET /api/health` and `GET /api/devices/me`). The rest
-of this document is the plan the next pull requests implement.
+## What's built and what isn't
+
+Built:
+
+- `yarvis-server`: config, the SQLite store, passkey sign-in with a one-time
+  setup code, devices and scoped tokens (`read`, `chat`, `terminal`, `approve`,
+  `admin`), `Fresh<S>` passkey checks, the event log and `/api/events`,
+  approvals, and Host and CSP checks.
+- Settings and the secrets blob, in the Keychain, 1Password or the server's
+  own vault. The vault opens with a passkey (PRF) or the recovery key.
+- The sidecar's supervisor and the `/api/sidecar` proxy. The sidecar runs only
+  while the secrets can be read, so with the vault it starts on unlock and
+  stops on lock.
+- PTY sessions over `/api/pty/{id}` with resume, the sidecar's control socket,
+  and alarms as events.
+- The optional ssh-agent, which signs git commits after an approval. Workspace
+  shells point `SSH_AUTH_SOCK` at it.
+- The web UI as a server client: sign-in, a vault unlock screen, Settings →
+  Devices, and an approvals list.
+- The thin Tauri app, which starts a local server or connects to a remote one.
+- An end-to-end test (`bun run e2e`, `e2e/`) that drives the real server and
+  the built UI in Chromium with a virtual passkey.
+
+Not yet:
+
+- The native macOS app. [native-macos.md](native-macos.md) maps the API to it.
+- A phone app.
+- Porting sidecar modules to Rust.
+- A vault wrapper UI: adding a passkey as an unlock method is API-only
+  (`/api/vault/wrappers/passkey/*`).
+- Recovery-key rotation (see "Known gaps").
+- An OpenAPI description.
 
 ## Goals for the first pass
 
@@ -64,8 +92,8 @@ checks the device, strips the client's `Authorization` header, adds the
 sidecar's own token, and adds `X-Yarvis-Device-Id` so the sidecar can record
 who asked. SSE and WebSocket routes on the sidecar are proxied as streams.
 
-The sidecar's calls back into the core (the Unix-socket control channel in
-`src-tauri/src/control.rs`) move to the server unchanged. Anything the sidecar
+The sidecar calls back into the server over a Unix-socket control channel
+(`control.rs`), with the method list the desktop app's core had. Anything the sidecar
 used to trigger in the window, such as ringing an alarm, becomes an event on
 `/api/events`. Each client decides how to show it.
 
@@ -108,7 +136,7 @@ This follows `spikes/auth/FINDINGS.md`.
 - First start prints a one-time setup code to stdout, and writes it to a
   `0600` file in the data dir for a server whose stdout goes to a log.
   Registering the first passkey with it creates the first device with all
-  four scopes. The setup routes stop working once a passkey exists.
+  five scopes. The setup routes stop working once a passkey exists.
 - Every passkey sign-in creates a new **device** with a random 32-byte token,
   sent as base64url without padding. Clients treat it as opaque. Only its
   SHA-256 is stored. Clients send it as `Authorization: Bearer <token>`.
@@ -124,9 +152,9 @@ This follows `spikes/auth/FINDINGS.md`.
   vault wrapper, and switching the secrets backend (`set_secret_backend`)
   also need a passkey check on this device in the last 10 minutes
   (`verified_at`). Setting and deleting secrets need only `admin`, so the
-  Tauri app's CLI-made token can manage its own keys. Unlocking and locking the vault need only `admin`:
-  a passkey unlock is a passkey check of its own, and the recovery key has to
-  work when every passkey is lost.
+  Tauri app's CLI-made token can manage its own keys. Unlocking and locking
+  the vault need only `admin`: a passkey unlock is a passkey check of its own,
+  and the recovery key has to work when every passkey is lost.
   Without one they get `403 { "error": "reauth_required" }`, and
   the client runs `/api/auth/reverify`. A token device can never be fresh,
   so it can never do these things.
@@ -215,9 +243,10 @@ Setting it up:
    data dir and prints the recovery key to stdout, once. Write the key down.
    With the agent on it also makes the signing key and prints its public key
    to stderr, for GitHub's signing keys and for `user.signingkey`.
-3. Start the server, sign in, and unlock with the recovery key. Then add each
-   passkey you want to unlock with as a vault wrapper (this needs a fresh
-   passkey check). From then on a passkey unlocks it.
+3. Start the server and sign in. The web UI shows an unlock screen while the
+   vault is locked; unlock with the recovery key. Then add each passkey you
+   want to unlock with as a vault wrapper (`/api/vault/wrappers/passkey/*`,
+   which needs a fresh passkey check). From then on a passkey unlocks it.
 4. Point git at the agent: `gpg.format = ssh`, `user.signingkey =
    "key::<public key>"`. Workspace shells get `SSH_AUTH_SOCK` from the server.
 
@@ -246,28 +275,104 @@ macOS session (a LaunchAgent, or the Tauri app starting it). A server started
 at boot, before anyone logs in, has no keychain. That setup needs `vault`. See
 `spikes/headless/FINDINGS.md`.
 
+## Running it
+
+Every setup needs Postgres with pgvector for the sidecar, as the desktop app
+does (`docs/getting-started.md`).
+
+**A single Mac (the Tauri app).** Nothing to configure.
+
+1. Install and open the app. It writes `server.toml` into its app data folder,
+   starts the bundled `yarvis-server` on a loopback port, and pairs itself with
+   `yarvis-server device add`, keeping the token in the Keychain.
+2. Secrets stay wherever Settings says (the Keychain unless you chose
+   1Password), and workspace shells get 1Password's SSH agent when it exists.
+3. For the actions that need a fresh passkey (minting or revoking devices,
+   switching the secrets backend), open `http://localhost:<port>` in a browser
+   on the same Mac and set up a passkey with the code in
+   `<app data>/server/setup-code`. The app's own token can't do them.
+
+**A home server with the vault and ssh-agent, behind `tailscale serve`.** The
+server runs on an always-on Mac and you reach it from anywhere on the tailnet.
+
+1. Build the UI (`bun run build`) and the server
+   (`cargo build --release --manifest-path server/Cargo.toml`).
+2. Write `~/.yarvis/server.toml`, with your machine's tailnet name:
+
+   ```toml
+   [server]
+   bind = "127.0.0.1:7878"              # tailscale serve connects here
+   data_dir = "/Users/me/.yarvis/server"
+   web_dir = "/Users/me/yarvis/dist"
+
+   [auth]
+   rp_id = "mac-mini.example-tailnet.ts.net"
+   origins = ["https://mac-mini.example-tailnet.ts.net"]
+
+   [secrets]
+   backend = "vault"
+
+   [ssh_agent]
+   enabled = true
+   ```
+
+   The bind stays on loopback, so `allow_plain_http` isn't needed: TLS ends
+   at `tailscale serve`, on the same machine.
+3. Run `yarvis-server vault init` and write down the recovery key it prints.
+   Add the signing key it prints to GitHub as a signing key.
+4. Start the server (a LaunchAgent keeps it running), then
+   `tailscale serve --bg 7878` to publish it as
+   `https://mac-mini.example-tailnet.ts.net`.
+5. Open that URL, enter the setup code from `<data_dir>/setup-code`, and
+   create a passkey. The vault unlock screen comes next; use the recovery key.
+   The sidecar starts once the vault is open.
+6. Every commit a workspace shell signs waits for an approval, which any
+   device with `approve` can give from the approvals box. Locking the vault
+   stops the sidecar and the agent until the next unlock.
+7. To pair a Tauri app with this server, make its token on the server with
+   `yarvis-server device add --name Laptop --scopes read,chat,terminal,approve`,
+   so its terminals work.
+
+**The work laptop, with 1Password and no server agent, reached remotely.**
+Secrets and the signing key stay in 1Password, and the server never holds a
+key.
+
+1. Use the Tauri app as on a single Mac, or run the server yourself with
+   `[secrets] backend = "onepassword"` and `[ssh_agent] enabled = false`. A
+   server under launchd also needs `upstream_socket` set to 1Password's agent
+   socket (see "Deployments").
+2. To reach it from another device, publish its port (the `bind` in its
+   `server.toml`) with `tailscale serve` as for the home server. Set
+   `auth.rp_id` to the laptop's tailnet name and add its `https://` URL to
+   `auth.origins` before the first passkey is made: passkeys are bound to the
+   RP ID, and the server can't issue a new setup code once one exists (see
+   "Known gaps").
+3. Commits are signed by 1Password's agent, which asks on the laptop. So while
+   you're away from the laptop, workspace sessions can run but can't sign
+   commits; nothing in the server works around that.
+
 ## Clients
 
 All clients use the same HTTP and WebSocket API. Nothing in the API is specific
 to a browser. Cookies are not used for auth (see "Browser tokens and XSS").
 
-**Web UI.** The existing React app in `src/`, built by Vite and served by the
-server. Two changes:
+**Web UI.** The React app in `src/`, built by Vite and served by the server.
 
-1. `src/lib/api.ts` finds the server instead of asking Tauri for the sidecar's
-   port. It uses the page's own origin, or a server URL the Tauri app gives it.
-   `sidecarFetch` sends the device token to `/api/sidecar/...`.
-2. Every `invoke("...")` goes through one function, `core(cmd, args)`. It calls
-   `/api/core/...` on the server. A few commands only make sense on the machine
-   you sit at (clipboard history, focusing a window). For those, `core` uses
-   the Tauri bridge when the page runs inside the Tauri app, and the UI hides
-   the feature otherwise.
+1. `src/lib/server.ts` talks to the page's own origin. `sidecarFetch` sends
+   the device token to `/api/sidecar/...`.
+2. Every core command goes through one function, `core(cmd, args)`, which
+   calls `/api/core/...` on the server. A few commands only make sense on the
+   machine you sit at (clipboard history, focusing a window). For those, `core`
+   uses the Tauri bridge when the page runs inside the Tauri app, and the UI
+   hides the feature otherwise.
 
 The UI is always served by the server it talks to, in a browser and in the
 Tauri window alike, so every request is same-origin and needs no CORS.
 
-There's also a sign-in page (passkey or setup code), a devices page in
-Settings, and an approvals list.
+In front of the app are three screens, in this order: sign-in (passkey or
+setup code), the vault unlock screen while the vault is locked, and the boot
+screen while the sidecar starts. There's also a devices page in Settings and
+an approvals list.
 
 **Thin Tauri app.** A window, a tray icon, global shortcuts, the clipboard
 history, alarm takeovers and notifications. It either starts a local
@@ -275,21 +380,13 @@ history, alarm takeovers and notifications. It either starts a local
 connects to a server URL. It keeps its device token in the Keychain. It doesn't
 spawn the sidecar or own any PTYs.
 
-**Native macOS app (later).** A SwiftUI app that talks to the same API:
-
-- Sign in with `ASAuthorizationPlatformPublicKeyCredentialProvider` against the
-  same RP ID. This needs the domain's `apple-app-site-association` file, which
-  is why a real domain matters.
-- The token is kept in the Keychain, as in the Tauri app.
-- Terminals use SwiftTerm, fed by the same `/api/pty/{id}` WebSocket.
-- Chat and the rest are native views over the same JSON routes. Screens not
-  rebuilt yet can be shown in a `WKWebView` pointed at the server.
+**Native macOS app (later).** A SwiftUI app over the same API. See
+[native-macos.md](native-macos.md) for each API surface's Swift counterpart
+and what in the API would get in its way.
 
 To keep that possible, the API has to stay plain: JSON bodies, typed error
 bodies (`{ "error": "...", "detail": "..." }`), and WebSocket messages as
-tagged JSON (`{"type": "...", ...}`). Request and response types live in the
-server code as `serde` structs, so an OpenAPI description can be generated
-from them later for a Swift client.
+tagged JSON (`{"type": "...", ...}`).
 
 ## API contract for the first pass
 
@@ -300,8 +397,7 @@ Times are milliseconds since the Unix epoch. A **device** in a response is:
 { "deviceId": "…", "name": "My iPhone", "scopes": ["read", "chat"], "verifiedAt": 1763600000000 }
 ```
 
-The devices list adds `kind` (`"passkey"` or `"token"`), `createdAt`,
-`lastSeenAt` and `revokedAt`. Tokens and their hashes never appear in a
+The devices list adds more fields (see `GET /api/devices`). Tokens and their hashes never appear in a
 response, except the one time a token is created.
 
 - `GET /api/health` → `{ "status": "ok", "service": "yarvis-server" }`, no token.
@@ -332,7 +428,7 @@ Devices (token needed):
   userAgent, createdAt, lastSeenAt, verifiedAt, revokedAt, current }]`.
   `current` marks the calling device.
 - `POST   /api/devices/tokens` `{ name, scopes }` (admin, fresh) → `{ token, device }`.
-  `scopes` can't include `admin` (`400`).
+  `scopes` can't include `admin` or `terminal` (`400`).
 - `DELETE /api/devices/{id}` (admin, fresh) → `{ revokedAt }`
 - `POST   /api/auth/reverify/start` (admin) → `{ ceremonyId, options }`, and
   `/finish` `{ ceremonyId, credential }` → `{ verifiedAt }`: a passkey check
@@ -507,9 +603,10 @@ uses.
 
 Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
 `enabled = false`, `upstream_socket` when set, else the server's own value;
-with `enabled = true`, the socket the server's ssh-agent reports through
-`PtyManager::set_server_ssh_agent`, and none at all until it does (or while
-the vault is locked), so git can't sign through another agent.
+with `enabled = true`, always `<data_dir>/ssh-agent.sock`, never another
+agent. That socket exists only while the vault is unlocked, so a shell signs
+while it's open and fails to sign while it's locked, including a shell started
+while it was locked.
 
 Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
 
@@ -582,7 +679,8 @@ Sidecar:
   `/api/sidecar/api/status`: only `/health` and paths under `/api/` are
   served.
 - While no sidecar process is up (the supervisor is waiting for the secrets,
-  or restarting it), the proxy answers `503` and sends nothing to the
+  restarting it, or has stopped it because the vault locked), the proxy
+  answers `503` and sends nothing to the
   sidecar's port, which another local process could have taken.
 - A response still streaming when its device is revoked ends there.
 - Routes that local processes call on the sidecar with their own scoped
@@ -601,6 +699,35 @@ Core commands that changed on the way from `invoke`:
 - `get_sidecar_info` and `get_sidecar_log_path` are gone. Clients reach the
   sidecar through the proxy, and the log is on the server's disk (the sidecar's
   `/api/logs` serves its recent lines).
+
+## Known gaps
+
+- **OAuth callbacks and the voice turn detector are local-only.** MCP and
+  Google Calendar OAuth redirect to the sidecar's loopback port, and
+  continuous voice mode's turn detector is a loopback WebSocket the page
+  connects to directly (which the CSP's `connect-src 'self'` also blocks).
+  Both work only in a browser on the server's own machine.
+- **Port squatting in local mode.** The Tauri app starts its server on a
+  loopback port and sends it a token. Another local user who binds that port
+  first receives the token. The app doesn't check the server's identity yet.
+- **Revoking a device doesn't revoke what it minted.** Tokens minted by a
+  revoked device stay valid until revoked one by one.
+- **No recovery-key rotation route.** The vault format supports it and it is
+  unit-tested, but no route or CLI exposes it.
+- **The local Tauri app can't do fresh actions.** Its token comes from
+  `yarvis-server device add`, and a token device is never fresh, so minting
+  and revoking devices and switching the secrets backend need a browser
+  signed in with a passkey. A remote Tauri app pasted a token minted over
+  the API, which can't carry `terminal`, so its terminals need a token made
+  with `device add` on the server instead.
+- **The RP ID can't change after the first passkey.** The setup routes close
+  once a passkey exists, and nothing issues a new setup code, so passkeys
+  made for an old RP ID can't be replaced by ones for the new name.
+- **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
+  127.0.0.1, so all clients share one budget on the setup and sign-in routes.
+- Monaco's TypeScript worker contains a `new Function(`. The end-to-end test
+  doesn't reach a Monaco editor (PR review needs the sidecar), so whether it
+  trips `script-src 'self'` is unchecked.
 
 ## Open questions
 
