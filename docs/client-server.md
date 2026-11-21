@@ -401,7 +401,8 @@ Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
   carry `publicKey.extensions.prf.evalByCredential`, credential id →
   `{ first: <salt> }`, both base64url; the client decodes the salts to bytes
   before calling WebAuthn. No `prfFirst` is a `400` saying the browser or
-  authenticator can't do PRF. A PRF output that opens no wrapper is `401`.
+  authenticator can't do PRF, and so is one that isn't 32 bytes. A PRF
+  output that opens no wrapper is `401`.
 - `POST /api/vault/unlock/recovery` `{ recoveryKey }` (admin) → `{ state }`.
   Not fresh, so an admin token made with the CLI can recover a server whose
   passkeys are all lost.
@@ -411,20 +412,25 @@ Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
   credential, prfFirst }` → `{ wrapperId }`: lets an already registered
   passkey unlock the vault. `409` if it already can.
 - `DELETE /api/vault/wrappers/{id}` (admin, fresh, unlocked) → `204`. The last
-  wrapper can't be removed (`409`).
-- The unlock routes are rate-limited per client address, like sign-in.
+  wrapper can't be removed (`409`). Removing a passkey
+  (`DELETE /api/passkeys/{id}`) also removes its wrapper if the vault is
+  unlocked. If it is locked, the wrapper stays in `vault.json`, listed with no
+  `passkeyId`, until it is removed here.
+- The unlock routes need an admin token, so they aren't rate-limited: the
+  per-address budget is spent before auth, and anyone could use it up to
+  block the owner's unlock.
 - `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
   with the key and socket only while the agent runs; 404 when
   `ssh_agent.enabled = false`.
 
 The PRF output isn't signed. webauthn-rs verifies the assertion it came with
 first, and the output then proves itself only by opening a wrapper. webauthn-rs
-0.6 has no PRF support, hence the JSON patch; see `spikes/vault/FINDINGS.md`.
+has no PRF support, hence the JSON patch; see `spikes/vault/FINDINGS.md`.
 
 The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir while the
 vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
-only SSHSIG blobs in the `git` namespace, refusing anything else before asking
-anyone. Each signature is an approval of kind `git.sign`, with the key's
+only SSHSIG blobs in the `git` namespace with a `sha256` or `sha512` hash,
+refusing anything else before asking anyone. Each signature is an approval of kind `git.sign`, with the key's
 fingerprint in the summary; SSHSIG carries only a hash of the commit, so there
 is no repo or message to show. No answer in 60 seconds, a denial, or a lock
 while it waits refuses the signature and fails `git commit`.

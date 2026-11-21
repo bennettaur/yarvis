@@ -16,7 +16,9 @@ use yarvis_server::vault::Vault;
 
 struct Signer {
     harness: Harness,
+    /// Holds the data dir and repo until the test ends.
     _dir: TempDir,
+    public_key: String,
     token: String,
     repo: Repo,
 }
@@ -42,10 +44,12 @@ async fn signer() -> Signer {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let socket = ssh_agent::socket_path(&harness.state).unwrap();
-    let repo = Repo::new(dir.path(), &socket, &created.signing_public_key.unwrap()).await;
+    let public_key = created.signing_public_key.unwrap();
+    let repo = Repo::new(dir.path(), &socket, &public_key).await;
     Signer {
         harness,
         _dir: dir,
+        public_key,
         token,
         repo,
     }
@@ -94,9 +98,15 @@ async fn an_approved_signature_makes_a_commit_that_verifies() {
         .harness
         .call("GET", "/api/vault/ssh-agent", Some(&s.token), None)
         .await;
+    // The approver is shown the key that will sign.
+    assert_eq!(agent["publicKey"], s.public_key.as_str());
+    let fingerprint = ssh_key::PublicKey::from_openssh(&s.public_key)
+        .unwrap()
+        .fingerprint(ssh_key::HashAlg::Sha256)
+        .to_string();
     let summary = pending["summary"].as_str().unwrap();
-    assert!(summary.contains("SHA256:"), "{summary}");
-    assert!(agent["publicKey"].is_string());
+    assert!(summary.contains(&fingerprint), "{summary}");
+    assert_eq!(pending["data"]["keyFingerprint"], fingerprint.as_str());
     s.answer(pending["id"].as_str().unwrap(), true).await;
 
     let out = commit.await.unwrap();
@@ -147,20 +157,34 @@ async fn locking_while_a_signature_waits_refuses_it() {
 
     let out = commit.await.unwrap();
     assert!(!out.status.success(), "a commit was signed after the lock");
-    // The approval was settled as unanswered, so a late "yes" does nothing.
-    let id = pending["id"].as_str().unwrap();
-    let (status, _) = until("the approval to settle", || async {
-        let answer = s
+    // The approval is settled as abandoned, so a late "yes" does nothing.
+    let id = pending["id"].as_str().unwrap().to_string();
+    until("the approval to settle", || async {
+        let (_, list) = s
             .harness
-            .call(
-                "POST",
-                &format!("/api/approvals/{id}"),
-                Some(&s.token),
-                Some(json!({ "approve": true })),
-            )
+            .call("GET", "/api/approvals", Some(&s.token), None)
             .await;
-        (answer.0 == StatusCode::CONFLICT).then_some(answer)
+        list.as_array().unwrap().is_empty().then_some(())
     })
     .await;
+    let (status, _) = s
+        .harness
+        .call(
+            "POST",
+            &format!("/api/approvals/{id}"),
+            Some(&s.token),
+            Some(json!({ "approve": true })),
+        )
+        .await;
     assert_eq!(status, StatusCode::CONFLICT);
+    let answered: Vec<_> = s
+        .harness
+        .events("approval.answered")
+        .await
+        .into_iter()
+        .filter(|e| e.data["id"] == id.as_str())
+        .collect();
+    assert_eq!(answered.len(), 1);
+    assert_eq!(answered[0].data["approve"], false);
+    assert_eq!(answered[0].data["reason"], "abandoned");
 }

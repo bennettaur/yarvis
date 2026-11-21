@@ -45,13 +45,9 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 const SOCKET_NAME: &str = "ssh-agent.sock";
 const KEY_COMMENT: &str = "yarvis-server";
 
-/// Where workspace shells should point `SSH_AUTH_SOCK`, or `None` when the
-/// server runs no agent and the shell should use `ssh_agent.upstream_socket`
-/// (or the server's own `SSH_AUTH_SOCK`).
-///
-/// With the agent on, this is the path even while the vault is locked, so a
-/// shell started then fails to sign until unlock instead of quietly reaching
-/// some other agent.
+/// Where workspace shells point `SSH_AUTH_SOCK`, or `None` when the agent is
+/// off. It is the path even while the vault is locked, so a shell started then
+/// fails to sign until unlock instead of quietly reaching some other agent.
 pub fn socket_path(state: &AppState) -> Option<PathBuf> {
     configured_socket(&state.config)
 }
@@ -113,12 +109,19 @@ pub fn start(state: &AppState) -> Result<(), String> {
     Ok(())
 }
 
-/// Stops the agent and removes its socket. Signatures waiting for approval
-/// are dropped, which denies them.
-pub fn stop(state: &AppState) {
-    if lock(&state.ssh_agent.0).take().is_some() {
+/// Locks the vault, then stops the agent and removes its socket. Signatures
+/// waiting for approval are refused. Returns whether the vault was unlocked.
+///
+/// The agent's lock is held across both steps, and [`start`] takes it before
+/// reading the key, so an unlock racing this can't start an agent after the
+/// stop and leave it running on a locked vault.
+pub fn stop_and_lock(state: &AppState) -> bool {
+    let mut running = lock(&state.ssh_agent.0);
+    let was_unlocked = state.vault.lock();
+    if running.take().is_some() {
         tracing::info!("ssh-agent stopped");
     }
+    was_unlocked
 }
 
 /// One Ed25519 key and the approval every signature needs.
@@ -167,16 +170,15 @@ impl VaultAgent {
 
     /// Asks the approvals route. A denial, a timeout, a failure to ask, or the
     /// agent stopping meanwhile is a refusal.
-    async fn approve(&self, data: &[u8]) -> bool {
+    async fn approve(&self, hash_alg: &str) -> bool {
         let fingerprint = self.public_key().fingerprint(HashAlg::Sha256).to_string();
-        // SSHSIG carries only a hash of the commit, so the key and the hash
-        // are all there is to show.
-        let hash_alg = sshsig_field(data, 2).unwrap_or_default();
+        // SSHSIG carries only a hash of the commit, so the key is all there
+        // is to show.
         let summary = format!("Sign a git commit or tag with {fingerprint}");
         let detail = json!({
             "namespace": "git",
             "keyFingerprint": fingerprint,
-            "hashAlgorithm": String::from_utf8_lossy(hash_alg),
+            "hashAlgorithm": hash_alg,
         });
         let mut stopped = self.shared.stopped.subscribe();
         // Dropping the request when the agent stops settles the approval as
@@ -247,7 +249,14 @@ impl Session for VaultAgent {
         if sshsig_namespace(&request.data).as_deref() != Some("git") {
             return Err(refuse("this agent only signs git objects"));
         }
-        if !self.approve(&request.data).await {
+        // The two algorithms SSHSIG defines. The name is shown to approvers,
+        // so nothing else gets that far.
+        let hash_alg = match sshsig_field(&request.data, 2) {
+            Some(b"sha256") => "sha256",
+            Some(b"sha512") => "sha512",
+            _ => return Err(refuse("unknown SSHSIG hash algorithm")),
+        };
+        if !self.approve(hash_alg).await {
             return Err(refuse("signature denied"));
         }
         let key = lock(&self.shared.key);
@@ -379,17 +388,28 @@ mod tests {
     }
 
     /// Answers the first pending approval once it appears.
-    async fn answer_next(approvals: &Approvals, approve: bool) -> crate::approvals::Pending {
+    /// The first pending approval, failing after 5 seconds without one.
+    async fn next_pending(approvals: &Approvals) -> crate::approvals::Pending {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(pending) = approvals.pending().await.unwrap().into_iter().next() {
-                approvals
-                    .answer(&pending.id, "device", approve)
-                    .await
-                    .unwrap();
                 return pending;
             }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no approval was requested"
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    async fn answer_next(approvals: &Approvals, approve: bool) -> crate::approvals::Pending {
+        let pending = next_pending(approvals).await;
+        approvals
+            .answer(&pending.id, "device", approve)
+            .await
+            .unwrap();
+        pending
     }
 
     #[test]
@@ -452,6 +472,12 @@ mod tests {
         assert!(agent.sign(login).await.is_err());
         let file = request(&agent, sshsig_blob("file"));
         assert!(agent.sign(file).await.is_err());
+        let mut odd_hash = b"SSHSIG".to_vec();
+        for field in [&b"git"[..], b"", b"md5", &[0u8; 16]] {
+            odd_hash.extend_from_slice(&(field.len() as u32).to_be_bytes());
+            odd_hash.extend_from_slice(field);
+        }
+        assert!(agent.sign(request(&agent, odd_hash)).await.is_err());
         assert!(approvals.pending().await.unwrap().is_empty());
     }
 
@@ -477,9 +503,7 @@ mod tests {
             let mut agent = agent.clone();
             async move { agent.sign(request(&agent, sshsig_blob("git"))).await }
         });
-        while approvals.pending().await.unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        next_pending(&approvals).await;
         shared.stop();
         assert!(sign.await.unwrap().is_err());
         assert!(agent.request_identities().await.unwrap().is_empty());

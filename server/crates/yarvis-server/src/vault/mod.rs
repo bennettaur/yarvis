@@ -67,7 +67,7 @@ struct Inner {
     path: PathBuf,
     unlocked: Mutex<Option<Unlocked>>,
     /// `true` while unlocked, for code that waits for secrets to be readable.
-    changes: watch::Sender<bool>,
+    unlocked_signal: watch::Sender<bool>,
 }
 
 impl Vault {
@@ -76,7 +76,7 @@ impl Vault {
         Self(Arc::new(Inner {
             path: data_dir.join(FILE_NAME),
             unlocked: Mutex::new(None),
-            changes: watch::channel(false).0,
+            unlocked_signal: watch::channel(false).0,
         }))
     }
 
@@ -119,7 +119,7 @@ impl Vault {
 
     /// Sees `true` on every unlock and `false` on every lock.
     pub fn subscribe(&self) -> watch::Receiver<bool> {
-        self.0.changes.subscribe()
+        self.0.unlocked_signal.subscribe()
     }
 
     /// The wrappers, from memory while unlocked and from the file otherwise.
@@ -137,7 +137,7 @@ impl Vault {
         }
         *state = Some(self.load()?.unlock_with_recovery(recovery)?);
         drop(state);
-        self.0.changes.send_replace(true);
+        self.0.unlocked_signal.send_replace(true);
         Ok(())
     }
 
@@ -155,7 +155,7 @@ impl Vault {
                 .unlock_with_passkey(credential_id, prf_output)?,
         );
         drop(state);
-        self.0.changes.send_replace(true);
+        self.0.unlocked_signal.send_replace(true);
         Ok(())
     }
 
@@ -164,7 +164,7 @@ impl Vault {
     pub fn lock(&self) -> bool {
         let was_unlocked = self.lock_state().take().is_some();
         if was_unlocked {
-            self.0.changes.send_replace(false);
+            self.0.unlocked_signal.send_replace(false);
         }
         was_unlocked
     }
@@ -271,6 +271,24 @@ impl Vault {
     }
 }
 
+/// Removes the wrapper of a passkey that was just removed, so the vault file
+/// stops opening with it. A locked vault can't be changed, so there the
+/// wrapper stays until the owner removes it; the status route lists it with no
+/// `passkeyId`.
+pub fn forget_passkey(vault: &Vault, credential_id: &[u8]) {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential_id);
+    match vault.remove_wrapper(&file::passkey_wrapper_id(&encoded)) {
+        Ok(()) | Err(VaultError::NoMatchingWrapper | VaultError::Locked) => {}
+        Err(VaultError::LastWrapper) => {
+            tracing::warn!(
+                "a removed passkey's vault wrapper is the vault's last one, so it stays"
+            );
+        }
+        Err(e) => tracing::error!("couldn't remove a removed passkey's vault wrapper: {e}"),
+    }
+}
+
 fn random_seed() -> Zeroizing<[u8; 32]> {
     let mut seed = Zeroizing::new([0u8; 32]);
     rand::rng().fill_bytes(seed.as_mut());
@@ -354,6 +372,14 @@ mod tests {
         assert!(vault.secret(SIGNING_KEY_SECRET).unwrap().is_none());
         let first = vault.signing_seed().unwrap();
         assert_eq!(*vault.signing_seed().unwrap(), *first);
+
+        // It is on disk too, so a restart signs with the same key.
+        vault.lock();
+        let restarted = Vault::new(dir.path());
+        restarted
+            .unlock_with_recovery(&created.recovery_key)
+            .unwrap();
+        assert_eq!(*restarted.signing_seed().unwrap(), *first);
     }
 
     #[test]

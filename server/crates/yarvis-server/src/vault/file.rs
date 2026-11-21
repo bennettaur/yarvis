@@ -206,9 +206,9 @@ fn derive_kek(
     okm
 }
 
-fn wrapper_aad(vault_id: &str, w_id: &str, kind: &WrapperKind) -> Vec<u8> {
+fn wrapper_aad(vault_id: &str, wrapper_id: &str, kind: &WrapperKind) -> Vec<u8> {
     let kind = serde_json::to_string(kind).expect("kind serializes");
-    format!("yarvis-vault/v1/wrapper/{vault_id}/{w_id}/{kind}").into_bytes()
+    format!("yarvis-vault/v1/wrapper/{vault_id}/{wrapper_id}/{kind}").into_bytes()
 }
 
 fn secrets_aad(vault_id: &str) -> Vec<u8> {
@@ -320,10 +320,33 @@ impl VaultFile {
         Ok(file)
     }
 
-    /// Writes atomically (temp file + rename) with 0600 permissions. The temp
-    /// file is created fresh, so a leftover one with wider permissions is
-    /// never reused.
+    /// Writes atomically (temp file + rename) with 0600 permissions.
     pub fn save(&self, path: &Path) -> Result<(), VaultError> {
+        let tmp = self.write_temp(path)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Writes a vault that must not replace one already at `path`: `vault
+    /// init` run twice would otherwise throw away every secret. A hard link
+    /// fails if `path` exists, which a check followed by a rename can't
+    /// promise when two runs race.
+    pub fn save_new(&self, path: &Path) -> Result<(), VaultError> {
+        let tmp = self.write_temp(path)?;
+        let linked = std::fs::hard_link(&tmp, path);
+        std::fs::remove_file(&tmp)?;
+        match linked {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(VaultError::AlreadyExists)
+            }
+            other => Ok(other?),
+        }
+    }
+
+    /// Writes the file beside `path` and syncs it. The temp file is created
+    /// fresh with 0600, so a leftover one with wider permissions is never
+    /// reused.
+    fn write_temp(&self, path: &Path) -> Result<std::path::PathBuf, VaultError> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let tmp = path.with_extension("json.tmp");
@@ -339,17 +362,7 @@ impl VaultFile {
             .open(&tmp)?;
         f.write_all(&json)?;
         f.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    }
-
-    /// Writes a vault that must not replace one already at `path`: `vault
-    /// init` run twice would otherwise throw away every secret.
-    pub fn save_new(&self, path: &Path) -> Result<(), VaultError> {
-        if path.try_exists()? {
-            return Err(VaultError::AlreadyExists);
-        }
-        self.save(path)
+        Ok(tmp)
     }
 
     pub fn passkey_wrapper(&self, credential_id: &str) -> Option<&Wrapper> {
@@ -600,6 +613,60 @@ mod tests {
             locked.unlock_with_recovery(&recovery),
             Err(VaultError::CorruptSecrets)
         ));
+    }
+
+    #[test]
+    fn a_changed_wrapper_does_not_open() {
+        let (mut unlocked, _) = VaultFile::create(sample_secrets());
+        unlocked
+            .add_passkey_wrapper("cred-A", "salt-A", "laptop", &stand_in_prf(7))
+            .unwrap();
+        let locked = unlocked.lock();
+        let tampered = |change: &dyn Fn(&mut VaultFile)| {
+            let mut file = locked.clone();
+            change(&mut file);
+            file.unlock_with_passkey("cred-A", &stand_in_prf(7))
+        };
+        let passkey = |file: &mut VaultFile| -> usize {
+            file.wrappers
+                .iter()
+                .position(|w| w.id == "passkey:cred-A")
+                .unwrap()
+        };
+
+        let flip_key = |file: &mut VaultFile| {
+            let i = passkey(file);
+            let mut ct = decode(&file.wrappers[i].wrapped_key).unwrap();
+            ct[0] ^= 1;
+            file.wrappers[i].wrapped_key = B64.encode(ct);
+        };
+        let change_salt = |file: &mut VaultFile| {
+            let i = passkey(file);
+            file.wrappers[i].kind = WrapperKind::PasskeyPrf {
+                credential_id: "cred-A".into(),
+                prf_salt: "salt-B".into(),
+            };
+        };
+        let rename = |file: &mut VaultFile| {
+            let i = passkey(file);
+            file.wrappers[i].id = "passkey:cred-A2".into();
+            file.wrappers[i].kind = WrapperKind::PasskeyPrf {
+                credential_id: "cred-A".into(),
+                prf_salt: "salt-A".into(),
+            };
+        };
+        let change_vault_id = |file: &mut VaultFile| file.vault_id = "another".into();
+        for change in [
+            &flip_key as &dyn Fn(&mut VaultFile),
+            &change_salt,
+            &rename,
+            &change_vault_id,
+        ] {
+            assert!(matches!(tampered(change), Err(VaultError::WrongKey)));
+        }
+        locked
+            .unlock_with_passkey("cred-A", &stand_in_prf(7))
+            .unwrap();
     }
 
     #[test]

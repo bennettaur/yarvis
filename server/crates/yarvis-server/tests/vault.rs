@@ -31,18 +31,27 @@ struct VaultHarness {
     recovery_key: String,
 }
 
-async fn vault_harness(ssh_agent: bool) -> VaultHarness {
+async fn vault_harness(agent_enabled: bool) -> VaultHarness {
+    let v = vault_harness_without_a_vault(agent_enabled).await;
+    let created = Vault::init(v.dir.path(), agent_enabled).unwrap();
+    VaultHarness {
+        recovery_key: created.recovery_key.expose().to_string(),
+        ..v
+    }
+}
+
+/// The vault backend, before `vault init` has run.
+async fn vault_harness_without_a_vault(agent_enabled: bool) -> VaultHarness {
     let dir = tempfile::tempdir().unwrap();
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.secrets.backend = SecretBackendKind::Vault;
-    config.ssh_agent.enabled = ssh_agent;
+    config.ssh_agent.enabled = agent_enabled;
     config.validate().unwrap();
-    let created = Vault::init(dir.path(), ssh_agent).unwrap();
     VaultHarness {
         harness: Harness::with_config(config).await,
         dir,
-        recovery_key: created.recovery_key.expose().to_string(),
+        recovery_key: String::new(),
     }
 }
 
@@ -185,7 +194,9 @@ async fn recovery_unlock_and_lock_gate_the_secrets_and_append_events() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v.state(&token).await, "locked");
     assert!(matches!(backend.read_root(), Err(SecretError::Locked)));
-    assert_eq!(v.harness.events("vault.locked").await.len(), 1);
+    let locked = v.harness.events("vault.locked").await;
+    assert_eq!(locked.len(), 1);
+    assert_eq!(locked[0].device_id.as_deref(), Some(device_id.as_str()));
 
     // Locking a locked vault is harmless and isn't announced again.
     v.harness
@@ -310,6 +321,8 @@ async fn a_passkey_wrapper_unlocks_with_its_prf_output_only() {
     assert_eq!(unlock_salts.as_object().unwrap(), &enroll_salts);
     assert_eq!(status, StatusCode::UNAUTHORIZED, "the wrong PRF output");
     assert_eq!(v.state(&token).await, "locked");
+    let unlocks_so_far = v.harness.events("vault.unlocked").await.len();
+    assert_eq!(unlocks_so_far, 1, "only the recovery unlock");
 
     let (_, status, body) = v
         .prf_ceremony(&mut pk, "/api/vault/unlock", &token, None, None)
@@ -544,4 +557,294 @@ async fn with_the_agent_on_it_runs_only_while_unlocked() {
         .call("GET", "/api/vault/ssh-agent", Some(&token), None)
         .await;
     assert_eq!(body, json!({ "enabled": true }));
+}
+
+#[tokio::test]
+async fn a_live_server_sees_vault_init() {
+    let mut v = vault_harness_without_a_vault(false).await;
+    let token = v.harness.setup(&mut authenticator()).await;
+    let (_, status) = v
+        .harness
+        .call("GET", "/api/vault/status", Some(&token), None)
+        .await;
+    assert_eq!(status, json!({ "state": "uninitialized", "wrappers": [] }));
+    let (_, auth) = v.harness.call("GET", "/api/auth/status", None, None).await;
+    assert_eq!(auth["vault"], "uninitialized");
+    let (status, body) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/unlock/recovery",
+            Some(&token),
+            Some(json!({ "recoveryKey": B64.encode([1u8; 32]) })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let created = Vault::init(v.dir.path(), false).unwrap();
+    v.recovery_key = created.recovery_key.expose().to_string();
+    assert_eq!(v.state(&token).await, "locked");
+    let (status, _) = v.unlock_with_recovery(&token).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// The secrets matter more than signing, so an agent that can't start leaves
+/// the vault unlocked.
+#[tokio::test]
+async fn an_agent_that_cannot_start_leaves_the_vault_unlocked() {
+    let v = vault_harness(true).await;
+    let token = v.harness.setup(&mut authenticator()).await;
+    // A non-empty directory where the socket goes can't be removed or bound.
+    let socket = ssh_agent::socket_path(&v.harness.state).unwrap();
+    std::fs::create_dir_all(socket.join("in-the-way")).unwrap();
+
+    let (status, body) = v.unlock_with_recovery(&token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(v.state(&token).await, "unlocked");
+    assert_eq!(
+        v.harness.state.vault.secret_backend().read_root().unwrap(),
+        None
+    );
+    let (_, body) = v
+        .harness
+        .call("GET", "/api/vault/ssh-agent", Some(&token), None)
+        .await;
+    assert_eq!(body, json!({ "enabled": true }));
+}
+
+#[tokio::test]
+async fn an_enrollment_that_fails_adds_no_wrapper() {
+    let v = vault_harness(false).await;
+    let mut pk = authenticator();
+    let token = v.harness.setup(&mut pk).await;
+    v.unlock_with_recovery(&token).await;
+    let (_, passkeys) = v
+        .harness
+        .call("GET", "/api/passkeys", Some(&token), None)
+        .await;
+    let enroll = json!({ "passkeyId": passkeys[0]["id"] });
+
+    let (_, status, body) = v
+        .prf_ceremony(
+            &mut pk,
+            "/api/vault/wrappers/passkey",
+            &token,
+            Some(enroll.clone()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no PRF output: {body}");
+
+    // Locked between start and finish.
+    let (status, start) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/wrappers/passkey/start",
+            Some(&token),
+            Some(enroll),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    v.harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    let options: RequestChallengeResponse =
+        serde_json::from_value(start["options"].clone()).unwrap();
+    let credential = pk
+        .do_authentication(Url::parse(ORIGIN).unwrap(), options)
+        .unwrap();
+    let (status, _) = v
+        .harness
+        .call(
+            "POST",
+            "/api/vault/wrappers/passkey/finish",
+            Some(&token),
+            Some(json!({
+                "ceremonyId": start["ceremonyId"],
+                "credential": credential,
+                "prfFirst": stand_in_prf(7),
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (_, status) = v
+        .harness
+        .call("GET", "/api/vault/status", Some(&token), None)
+        .await;
+    let kinds: Vec<_> = status["wrappers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["kind"].clone())
+        .collect();
+    assert_eq!(kinds, vec![json!("recovery")]);
+}
+
+/// `vault init` prints only the recovery key to stdout, makes a signing key
+/// only with the agent on, and never replaces a vault.
+#[tokio::test]
+async fn the_vault_init_command() {
+    let run = |agent_enabled: bool| {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("server.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[server]\ndata_dir = {:?}\n[secrets]\nbackend = \"vault\"\n[ssh_agent]\nenabled = {agent_enabled}\n",
+                dir.path()
+            ),
+        )
+        .unwrap();
+        let init = move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+                .args(["--config", config.to_str().unwrap(), "vault", "init"])
+                .output()
+                .unwrap()
+        };
+        (dir, init)
+    };
+
+    let (dir, init) = run(false);
+    let output = init();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "only the recovery key goes to stdout"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("signing key"));
+    let recovery = yarvis_server::vault::RecoveryKey::parse(stdout.trim()).unwrap();
+    let vault = Vault::new(dir.path());
+    vault.unlock_with_recovery(&recovery).unwrap();
+    assert!(vault.secret(SIGNING_KEY_SECRET).unwrap().is_none());
+
+    let before = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let again = init();
+    assert!(!again.status.success());
+    assert!(again.stdout.is_empty());
+    assert_eq!(
+        std::fs::read(dir.path().join("vault.json")).unwrap(),
+        before
+    );
+
+    let (dir, init) = run(true);
+    let output = init();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let public_key = stderr
+        .lines()
+        .find_map(|l| {
+            l.split(": ")
+                .nth(1)
+                .filter(|k| k.starts_with("ssh-ed25519 "))
+        })
+        .unwrap_or_else(|| panic!("no public key in {stderr}"))
+        .to_string();
+    let recovery =
+        yarvis_server::vault::RecoveryKey::parse(String::from_utf8(output.stdout).unwrap().trim())
+            .unwrap();
+    let vault = Vault::new(dir.path());
+    vault.unlock_with_recovery(&recovery).unwrap();
+    let seed = vault.secret(SIGNING_KEY_SECRET).unwrap().unwrap();
+    let seed: [u8; 32] = seed.as_slice().try_into().unwrap();
+    assert_eq!(ssh_agent::public_key_openssh(&seed), public_key);
+}
+
+#[tokio::test]
+async fn a_short_prf_output_is_refused() {
+    let v = vault_harness(false).await;
+    let mut pk = authenticator();
+    let token = v.harness.setup(&mut pk).await;
+    v.unlock_with_recovery(&token).await;
+    let (_, passkeys) = v
+        .harness
+        .call("GET", "/api/passkeys", Some(&token), None)
+        .await;
+    let (_, status, body) = v
+        .prf_ceremony(
+            &mut pk,
+            "/api/vault/wrappers/passkey",
+            &token,
+            Some(json!({ "passkeyId": passkeys[0]["id"] })),
+            Some("AA"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn removing_a_passkey_removes_its_wrapper() {
+    let v = vault_harness(false).await;
+    let mut laptop = authenticator();
+    let token = v.harness.setup(&mut laptop).await;
+    let mut key = authenticator();
+    let (status, body) = v
+        .harness
+        .register(
+            &mut key,
+            "/api/passkeys/register",
+            Some(&token),
+            json!({ "label": "security key" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key_id = body["passkeyId"].as_str().unwrap().to_string();
+    v.unlock_with_recovery(&token).await;
+    let (_, status, body) = v
+        .prf_ceremony(
+            &mut key,
+            "/api/vault/wrappers/passkey",
+            &token,
+            Some(json!({ "passkeyId": key_id })),
+            Some(&stand_in_prf(9)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, _) = v
+        .harness
+        .call(
+            "DELETE",
+            &format!("/api/passkeys/{key_id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, status) = v
+        .harness
+        .call("GET", "/api/vault/status", Some(&token), None)
+        .await;
+    assert_eq!(status["wrappers"].as_array().unwrap().len(), 1, "{status}");
+    assert_eq!(status["wrappers"][0]["kind"], "recovery");
+}
+
+/// Unlocks and locks raced against each other must never leave the agent
+/// running on a locked vault.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lock_racing_an_unlock_never_leaves_the_agent_running() {
+    let v = vault_harness(true).await;
+    let token = v.harness.setup(&mut authenticator()).await;
+    for _ in 0..30 {
+        let unlock = v.unlock_with_recovery(&token);
+        let lock = v
+            .harness
+            .call("POST", "/api/vault/lock", Some(&token), None);
+        tokio::join!(unlock, lock);
+        let unlocked = v.harness.state.vault.is_unlocked();
+        assert!(
+            unlocked || !v.harness.state.ssh_agent.is_running(),
+            "the agent is running on a locked vault"
+        );
+        v.harness
+            .call("POST", "/api/vault/lock", Some(&token), None)
+            .await;
+    }
 }
