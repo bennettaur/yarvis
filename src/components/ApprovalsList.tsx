@@ -71,10 +71,8 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
             className="flex items-center gap-3 rounded-md border border-zinc-800 px-3 py-2"
           >
             <span className="min-w-0 flex-1 text-sm">
-              <span className="block text-zinc-200">{approval.summary ?? approval.kind}</span>
-              {approval.detail && (
-                <span className="block break-all text-xs text-zinc-500">{approval.detail}</span>
-              )}
+              <span className="block break-all text-zinc-200">{approval.summary}</span>
+              <span className="block text-xs text-zinc-500">{approval.kind}</span>
             </span>
             <button
               type="button"
