@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 pub mod git;
+pub mod pty;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -223,13 +224,17 @@ pub fn authenticator() -> SoftPasskey {
     SoftPasskey::new(true)
 }
 
-/// Polls `check` until it returns `Some`, failing after 5 seconds.
+/// How long a test waits for something it expects before failing. Generous,
+/// since a CI runner can be much slower than a dev machine.
+pub const WAIT: Duration = Duration::from_secs(15);
+
+/// Polls `check` until it returns `Some`, failing the test after [`WAIT`].
 pub async fn until<T, F, Fut>(what: &str, mut check: F) -> T
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Option<T>>,
 {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         if let Some(value) = check().await {
             return value;

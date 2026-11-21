@@ -17,10 +17,12 @@ Three processes, each with a clean ownership boundary:
 - **Rust core** (`src-tauri/`) — native OS integration (window, tray,
   notifications), secret storage (macOS Keychain or 1Password), sidecar
   supervision
-  (port selection, bearer token, secrets injected as env vars), and every PTY
-  session: both the Terminal tab's shells and each workspace's agent session
-  live in `pty.rs`, independent of the webview that renders them. The sidecar
-  reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
+  (port selection, bearer token, secrets injected as env vars).
+- **Yarvis server** (`server/crates/yarvis-server/`) — owns every PTY session:
+  both the Terminal tab's shells and each workspace's agent session live in
+  `src/pty/`, independent of the clients that render them, which attach over
+  the `/api/pty/{id}` WebSocket (`docs/client-server.md`). The sidecar
+  reaches them only through `src/control.rs`, a Unix-domain-socket RPC with a fixed
   method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
   `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
   `github.saveToken`, `alarm.fire`, `alarm.release`, `harness.runEnv`)
@@ -473,20 +475,21 @@ report there and leaves the fixes to the author.
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` and `claude.slash` are the typed paths, and the
   channel below is the only other.
-  `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
+  `claude.send` is guarded on both sides: the server's `prepare_instruction`
+  (`src/pty/guards.rs`)
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
   `foreground_is_agent` refuses to type at all unless the agent the session was
-  launched with (its harness, `harness.rs`) is what's reading the prompt, and
+  launched with (its harness, `server/crates/yarvis-server/src/harness.rs`) is what's reading the prompt, and
   the chat agent's system prompt forbids relaying third-party text as an
   instruction. Text the core would refuse that way is never sent over the
   channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
   same refusal applies. `claude.slash` is the one way a line opening with `/`
   gets in: the core types it only when the command is on an allowlist no sidecar
-  route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
+  route or tool can change (`agent_policy::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the
-  agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
+  agent command) and not on `agent_policy::REFUSED_SLASH_COMMANDS`, holds it to the same
   foreground check, and cleans its arguments like an instruction. A command
   that changes what the session may do never belongs in the defaults. The list
   bounds what Yarvis types as a slash command, not which skills a session can be
@@ -524,7 +527,7 @@ report there and leaves the fixes to the author.
     configured agent command, word for word, and that command has to carry
     the flag. Otherwise it stays idle. `ps` joins argv with spaces, so a flag found anywhere else could
     be text the core adds after the command, such as a workspace name taken
-    from an issue title (`agent_launch_command` in `pty.rs`).
+    from an issue title (`agent_launch_command` in the server's `src/pty/guards.rs`).
     A send goes over the channel only when a relay is polling and its pid is
     one the workspace's SessionStart hook registered. Otherwise it is typed,
     since a session without the flag drops channel events. The first
@@ -819,7 +822,7 @@ report there and leaves the fixes to the author.
   The review workspace's **Ask Claude** tab is the interactive counterpart:
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`, then
-  `spawn_review_claude_session` in `pty.rs`).
+  `spawn_review_claude_session` in the server's `src/pty/mod.rs`).
   - **Settings.** The user drives the session, so their own config loads
     (`--setting-sources user`, no `--strict-mcp-config`): skills, plugins,
     hooks, allow rules, MCP servers. The repos' project config (skills from
