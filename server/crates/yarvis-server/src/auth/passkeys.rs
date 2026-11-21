@@ -71,6 +71,19 @@ pub enum Ceremony {
         auth: PasskeyAuthentication,
         device_id: String,
     },
+    /// A passkey assertion whose PRF output unlocks the vault.
+    VaultUnlock {
+        auth: PasskeyAuthentication,
+        device_id: String,
+    },
+    /// A passkey assertion whose PRF output becomes a new vault wrapper.
+    VaultEnroll {
+        auth: PasskeyAuthentication,
+        device_id: String,
+        credential_id: Vec<u8>,
+        prf_salt: String,
+        label: String,
+    },
 }
 
 impl Ceremony {
