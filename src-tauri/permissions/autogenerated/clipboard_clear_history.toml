@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clipboard-clear-history"
+description = "Enables the clipboard_clear_history command without any pre-configured scope."
+commands.allow = ["clipboard_clear_history"]
+
+[[permission]]
+identifier = "deny-clipboard-clear-history"
+description = "Denies the clipboard_clear_history command without any pre-configured scope."
+commands.deny = ["clipboard_clear_history"]

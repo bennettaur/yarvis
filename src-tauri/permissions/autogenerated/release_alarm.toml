@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-release-alarm"
+description = "Enables the release_alarm command without any pre-configured scope."
+commands.allow = ["release_alarm"]
+
+[[permission]]
+identifier = "deny-release-alarm"
+description = "Denies the release_alarm command without any pre-configured scope."
+commands.deny = ["release_alarm"]
