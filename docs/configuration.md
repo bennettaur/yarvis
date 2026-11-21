@@ -156,6 +156,46 @@ How switching works:
 Writes pass the secrets to `op` on standard input, never as command arguments.
 Other processes can read command arguments with no prompt at all.
 
+### Secrets on `yarvis-server`
+
+`yarvis-server` can keep the secrets item in its own encrypted vault instead of
+the Keychain or 1Password, for a server that starts before anyone logs in. It
+is set in `server.toml`, not the Settings screen. `docs/client-server.md` has
+the full setup and the API.
+
+```toml
+[secrets]
+backend = "vault"
+
+[ssh_agent]
+enabled = true   # the server signs git commits with a key in the vault
+```
+
+- `yarvis-server vault init` creates `vault.json` in the server's data dir and
+  prints a recovery key once. Keep it somewhere safe: with no passkey that can
+  unlock the vault, it is the only way in.
+- The vault starts locked every time the server starts. Unlock it with a
+  passkey or the recovery key. Until then the sidecar can't read its secrets.
+- With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
+  vault is unlocked, and asks for an approval on every commit it signs.
+
+**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+key where it is:
+
+```toml
+[secrets]
+backend = "onepassword"   # or "keychain"
+
+[ssh_agent]
+enabled = false           # the default
+# Needed when launchd starts the server; written out in full, since ~ isn't expanded.
+upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
+With `ssh_agent.enabled = false` the server never makes a signing key or opens
+an agent socket. Workspace shells sign through 1Password's agent, which asks
+for approval on the laptop itself.
+
 ## `~/.yarvis/settings.json`
 
 This file holds everything you set from the Settings screen that isn't a

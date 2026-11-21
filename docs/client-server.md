@@ -119,8 +119,11 @@ This follows `spikes/auth/FINDINGS.md`.
 - A token unused for 90 days stops working.
 - Scopes: `read`, `chat`, `approve`, `admin`. A passkey device gets all four.
   A token made for a bot or script gets only what it is given.
-- **Fresh**: device management, adding a passkey, and vault actions also need
-  a passkey check on this device in the last 10 minutes (`verified_at`).
+- **Fresh**: device management, adding a passkey, and adding or removing a
+  vault wrapper also need a passkey check on this device in the last 10
+  minutes (`verified_at`). Unlocking and locking the vault need only `admin`:
+  a passkey unlock is a passkey check of its own, and the recovery key has to
+  work when every passkey is lost.
   Without one they get `403 { "error": "reauth_required" }`, and
   the client runs `/api/auth/reverify`. A token device can never be fresh,
   so it can never do these things.
@@ -193,6 +196,18 @@ true`. The server starts locked. A passkey unlock (PRF) or the recovery key
 opens the vault, starts the sidecar with its secrets, and starts the ssh-agent.
 Git in a workspace uses `SSH_AUTH_SOCK` pointing at that agent, and every
 signature waits for an approval from any device with the `approve` scope.
+Setting it up:
+
+1. Set `backend = "vault"` and `ssh_agent.enabled = true` in `server.toml`.
+2. Run `yarvis-server vault init`. It writes `vault.json` (`0600`) to the
+   data dir and prints the recovery key to stdout, once. Write the key down.
+   With the agent on it also makes the signing key and prints its public key
+   to stderr, for GitHub's signing keys and for `user.signingkey`.
+3. Start the server, sign in, and unlock with the recovery key. Then add each
+   passkey you want to unlock with as a vault wrapper (this needs a fresh
+   passkey check). From then on a passkey unlocks it.
+4. Point git at the agent: `gpg.format = ssh`, `user.signingkey =
+   "key::<public key>"`. Workspace shells get `SSH_AUTH_SOCK` from the server.
 
 **Work laptop.** `backend = "onepassword"` (or `"keychain"`),
 `ssh_agent.enabled = false`. Secrets and the signing key stay in 1Password,
@@ -206,8 +221,8 @@ out in full). You can still reach this server
 from another device. But 1Password only approves a signature on the laptop
 itself, so commits can only be signed while you are at the laptop. Nothing in
 the server tries to work around that. With `ssh_agent.enabled = false` the
-`/api/vault/ssh-agent/*` routes return 404, and the UI hides the signing
-section.
+server never makes a signing key, never opens an agent socket, and
+`/api/vault/ssh-agent` returns 404, so the UI hides the signing section.
 
 Outbound HTTPS from the server uses the bundled Mozilla roots
 (`webpki-root-certs` with reqwest's `tls_certs_only`), never the macOS
@@ -281,7 +296,9 @@ response, except the one time a token is created.
 
 Auth (no token needed):
 
-- `GET  /api/auth/status` → `{ setupRequired, rpId, vault: "absent"|"locked"|"unlocked" }`
+- `GET  /api/auth/status` → `{ setupRequired, rpId, vault: "absent"|"uninitialized"|"locked"|"unlocked" }`.
+  `absent` means the backend isn't `vault`; `uninitialized` means it is, but
+  `yarvis-server vault init` hasn't run.
 - `POST /api/auth/setup/start` `{ code, deviceName }` → `{ ceremonyId, options }`
   (WebAuthn creation options)
 - `POST /api/auth/setup/finish` `{ ceremonyId, credential }` → `{ token, device }`
@@ -348,7 +365,8 @@ Events and approvals:
   - `passkey.added` and `passkey.removed`.
   - `sidecar.started` and `sidecar.stopped`: the sidecar restarted, so cached
     data may be stale.
-  - `vault.locked` and `vault.unlocked`.
+  - `vault.locked` and `vault.unlocked`. `vault.unlocked` has `via`
+    (`"passkey"` or `"recovery"`) and, for a passkey, `passkeyId`.
   - `pty.exited`: `{ id, code }`.
 - `GET  /api/approvals` (`read`)
 - `POST /api/approvals/{id}` `{ approve: bool }` (`approve`). The first answer
@@ -372,13 +390,50 @@ PTY:
   `"offset": n` to resume. Then the protocol from `spikes/pty-ws`: binary
   frames are output, `{"type":"input"|"resize"|"focus"}` from the client.
 
-Vault (only when `secrets.backend = "vault"`):
+Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
 
-- `GET  /api/vault/status`
-- `POST /api/vault/unlock/start|finish` (passkey PRF) and `/api/vault/unlock/recovery`
-- `POST /api/vault/lock` (admin)
-- `GET  /api/vault/ssh-agent` → `{ enabled, publicKey?, socketPath? }`; 404 when
-  `ssh_agent.enabled = false`
+- `GET  /api/vault/status` (`read`) → `{ state: "uninitialized"|"locked"|"unlocked",
+  wrappers: [{ id, label, kind: "recovery"|"passkey", passkeyId? }] }`
+- `POST /api/vault/unlock/start` (admin) → `{ ceremonyId, options }`, offering
+  every passkey that has a wrapper, and `/finish` `{ ceremonyId, credential,
+  prfFirst }` → `{ state }`. `prfFirst` is
+  `getClientExtensionResults().prf.results.first`, base64url. The options
+  carry `publicKey.extensions.prf.evalByCredential`, credential id →
+  `{ first: <salt> }`, both base64url; the client decodes the salts to bytes
+  before calling WebAuthn. No `prfFirst` is a `400` saying the browser or
+  authenticator can't do PRF, and so is one that isn't 32 bytes. A PRF
+  output that opens no wrapper is `401`.
+- `POST /api/vault/unlock/recovery` `{ recoveryKey }` (admin) → `{ state }`.
+  Not fresh, so an admin token made with the CLI can recover a server whose
+  passkeys are all lost.
+- `POST /api/vault/lock` (admin) → `{ state }`. Stops the ssh-agent first.
+- `POST /api/vault/wrappers/passkey/start` `{ passkeyId }` (admin, fresh,
+  unlocked) → `{ ceremonyId, options }`, and `/finish` `{ ceremonyId,
+  credential, prfFirst }` → `{ wrapperId }`: lets an already registered
+  passkey unlock the vault. `409` if it already can.
+- `DELETE /api/vault/wrappers/{id}` (admin, fresh, unlocked) → `204`. The last
+  wrapper can't be removed (`409`). Removing a passkey
+  (`DELETE /api/passkeys/{id}`) also removes its wrapper if the vault is
+  unlocked. If it is locked, the wrapper stays in `vault.json`, listed with no
+  `passkeyId`, until it is removed here.
+- The unlock routes need an admin token, so they aren't rate-limited: the
+  per-address budget is spent before auth, and anyone could use it up to
+  block the owner's unlock.
+- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
+  with the key and socket only while the agent runs; 404 when
+  `ssh_agent.enabled = false`.
+
+The PRF output isn't signed. webauthn-rs verifies the assertion it came with
+first, and the output then proves itself only by opening a wrapper. webauthn-rs
+has no PRF support, hence the JSON patch; see `spikes/vault/FINDINGS.md`.
+
+The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir while the
+vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
+only SSHSIG blobs in the `git` namespace with a `sha256` or `sha512` hash,
+refusing anything else before asking anyone. Each signature is an approval of kind `git.sign`, with the key's
+fingerprint in the summary; SSHSIG carries only a hash of the commit, so there
+is no repo or message to show. No answer in 60 seconds, a denial, or a lock
+while it waits refuses the signature and fails `git commit`.
 
 Pairing a device without a passkey:
 

@@ -4,14 +4,16 @@ use std::path::PathBuf;
 
 use tracing_subscriber::EnvFilter;
 use yarvis_server::auth::passkeys::PasskeyAuth;
-use yarvis_server::config::Config;
+use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
 use yarvis_server::store::Store;
+use yarvis_server::vault::Vault;
 use yarvis_server::{AppState, app};
 
 const USAGE: &str = "usage: yarvis-server [--config PATH]
-       yarvis-server device add --name NAME --scopes read,chat,approve,admin [--config PATH]";
+       yarvis-server device add --name NAME --scopes read,chat,approve,admin [--config PATH]
+       yarvis-server vault init [--config PATH]";
 
 #[derive(Debug)]
 enum Command {
@@ -22,6 +24,8 @@ enum Command {
         name: String,
         scopes: String,
     },
+    /// Creates the vault and prints its recovery key, once.
+    VaultInit,
 }
 
 #[tokio::main]
@@ -42,6 +46,7 @@ async fn main() {
     match command {
         Command::Serve => serve(config, store).await,
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
+        Command::VaultInit => vault_init(&config),
     }
 }
 
@@ -121,6 +126,26 @@ async fn add_device(store: Store, name: &str, scopes: &str) {
     println!("{}", signed_in.token);
 }
 
+/// The recovery key goes to stdout and nowhere else; the rest goes to
+/// stderr, so `vault init > key.txt` captures only the key.
+fn vault_init(config: &Config) {
+    if config.secrets.backend != SecretBackendKind::Vault {
+        eprintln!(
+            "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
+        );
+    }
+    let data_dir = &config.server.data_dir;
+    let created = Vault::init(data_dir, config.ssh_agent.enabled).unwrap_or_else(|e| fail(e));
+    eprintln!(
+        "Created {}. Write down the recovery key below; it is shown only this once.",
+        data_dir.join("vault.json").display()
+    );
+    println!("{}", created.recovery_key.expose());
+    if let Some(public_key) = created.signing_public_key {
+        eprintln!("Git signing key (add it to GitHub as a signing key): {public_key}");
+    }
+}
+
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1);
@@ -144,6 +169,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
     let command = match words.as_slice() {
         [] if name.is_none() && scopes.is_none() => Command::Serve,
         [] => return Err("--name and --scopes go with `device add`".into()),
+        [vault, init] if vault == "vault" && init == "init" => {
+            if name.is_some() || scopes.is_some() {
+                return Err("--name and --scopes go with `device add`".into());
+            }
+            Command::VaultInit
+        }
         [device, add] if device == "device" && add == "add" => Command::AddDevice {
             name: name.ok_or("device add needs --name")?,
             scopes: scopes.ok_or("device add needs --scopes")?,
@@ -209,5 +240,14 @@ mod tests {
         );
         assert!(parse(&["device", "remove"]).is_err());
         assert!(matches!(parse(&[]).unwrap().0, Command::Serve));
+    }
+
+    #[test]
+    fn parses_vault_init() {
+        assert!(matches!(
+            parse(&["vault", "init", "--config", "x.toml"]).unwrap().0,
+            Command::VaultInit
+        ));
+        assert!(parse(&["vault", "init", "--name", "x"]).is_err());
     }
 }

@@ -71,6 +71,19 @@ pub enum Ceremony {
         auth: PasskeyAuthentication,
         device_id: String,
     },
+    /// A passkey assertion whose PRF output unlocks the vault.
+    VaultUnlock {
+        auth: PasskeyAuthentication,
+        device_id: String,
+    },
+    /// A passkey assertion whose PRF output becomes a new vault wrapper.
+    VaultEnroll {
+        auth: PasskeyAuthentication,
+        device_id: String,
+        credential_id: Vec<u8>,
+        prf_salt: String,
+        label: String,
+    },
 }
 
 impl Ceremony {
@@ -327,7 +340,7 @@ impl PasskeyAuth {
         self.0
             .store
             .call(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let (exists, total): (bool, i64) = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM passkeys WHERE id = ?1), COUNT(*) FROM passkeys",
                     [&id],
@@ -368,7 +381,7 @@ impl PasskeyAuth {
         self.0
             .store
             .call(move |conn| {
-                let tx = conn.transaction()?;
+                let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
                 let found = tx
                     .query_row(
                         "SELECT id, label, created_at, passkey FROM passkeys WHERE credential_id = ?1",
