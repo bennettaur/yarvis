@@ -58,10 +58,10 @@ The expected setup is a server on your Mac reached through
    from your authenticator app (or a backup code).
 
 Each sign-in creates a device on the server, named after the phone unless you
-change it. Sign out revokes that device on the server. If the device hasn't
-confirmed a code in the last 10 minutes, the app asks for one first. If you
-cancel, the app only forgets the token, and the device stays on the server's
-devices list until you revoke it there.
+change it. Sign out revokes that device on the server, with no code needed.
+If the revoke fails (for example, the server can't be reached), the app
+forgets the token anyway and says that the device is still on the server's
+devices list, so you can revoke it there.
 
 ## How it works
 

@@ -75,12 +75,18 @@ class YarvisClient(
 ) : ChatApi, AttentionApi {
     private val rest = Rest(baseUrl, http, token)
 
-    suspend fun device(): Device = rest.get("api/devices/me", Device.serializer())
-
-    /** Revokes this device on the server, so the token stops working everywhere. */
+    /**
+     * Revokes this device on the server, so the token stops working everywhere.
+     * Any valid token may revoke itself with no code, so this deliberately skips
+     * [withFreshAuth]. A 401, or a 404 when another device revoked it a moment
+     * earlier, means the token is already gone, which is the outcome sign-out wants.
+     */
     suspend fun revokeSelf() {
-        val me = device()
-        withFreshAuth { rest.delete("api/devices/${me.deviceId}") }
+        try {
+            rest.delete("api/devices/me")
+        } catch (e: ApiException) {
+            if (e.status != 401 && e.status != 404) throw e
+        }
     }
 
     suspend fun reverify(code: String): Verified =

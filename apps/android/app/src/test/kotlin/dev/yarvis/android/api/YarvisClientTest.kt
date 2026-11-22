@@ -294,16 +294,55 @@ class YarvisClientTest {
     }
 
     @Test
-    fun `sign out revokes this device by its id`() = runTest {
-        server.enqueue(json(200, """{"deviceId":"d7","name":"Pixel","scopes":["read"],"verifiedAt":null}"""))
+    fun `sign out revokes this device with one call and no code`() = runTest {
         server.enqueue(json(200, """{"revokedAt":1763600000000}"""))
 
         client.revokeSelf()
 
-        assertEquals("/api/devices/me", server.next().url.encodedPath)
         val revoke = server.next()
         assertEquals("DELETE", revoke.method)
-        assertEquals("/api/devices/d7", revoke.url.encodedPath)
+        assertEquals("/api/devices/me", revoke.url.encodedPath)
+        assertEquals("Bearer tok-123", revoke.headers["Authorization"])
+        assertEquals(0L, revoke.bodySize)
+        assertEquals(1, server.requestCount)
+        assertEquals(0, prompts)
+    }
+
+    @Test
+    fun `revoking a token that is already gone counts as signed out`() = runTest {
+        server.enqueue(json(401, """{"error":"sign in first"}"""))
+        server.enqueue(json(404, """{"error":"no such active device"}"""))
+
+        client.revokeSelf()
+        client.revokeSelf()
+
+        assertEquals("DELETE", server.next().method)
+        assertEquals("DELETE", server.next().method)
+        assertEquals(0, prompts)
+    }
+
+    @Test
+    fun `revoking never asks for a code`() = runTest {
+        server.enqueue(json(403, """{"error":"reauth_required"}"""))
+        try {
+            client.revokeSelf()
+            fail("expected an error")
+        } catch (e: ApiException) {
+            assertTrue(e.isReauthRequired)
+        }
+        assertEquals(0, prompts)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a revoke the server fails is reported`() = runTest {
+        server.enqueue(json(500, """{"error":"internal error"}"""))
+        try {
+            client.revokeSelf()
+            fail("expected an error")
+        } catch (e: ApiException) {
+            assertEquals(500, e.status)
+        }
     }
 
     @Test
