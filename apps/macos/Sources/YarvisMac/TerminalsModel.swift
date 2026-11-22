@@ -43,24 +43,43 @@ final class TerminalsModel {
     }
 
     func reload() {
-        Task {
-            do {
-                async let listed = client.ptySessions()
-                async let active = client.workspaces()
-                sessions = try await listed
-                workspaces = try await active.filter { $0.status == "active" }
-                pending.removeAll { id in sessions.contains { $0.id == id } }
-                error = nil
-            } catch YarvisError.http(status: 403, _, _) {
-                error = "This device can't open terminals: it has no terminal scope."
-            } catch {
-                self.error = error.localizedDescription
-            }
-        }
+        Task { await refresh() }
     }
 
-    /// Opens a session by id. Returns false for an id that isn't listed or
-    /// shaped like a terminal pane: the id can come from an attention item,
+    private var refreshes = 0
+
+    func refresh() async {
+        refreshes += 1
+        let generation = refreshes
+        var active: [WorkspaceSummary]?
+        var listed: [PtySession]?
+        var problem: String?
+        do {
+            active = try await client.workspaces().filter { $0.status == "active" }
+        } catch {
+            problem = error.localizedDescription
+        }
+        do {
+            listed = try await client.ptySessions()
+        } catch YarvisError.http(status: 403, _, _) {
+            listed = []
+            problem = "This device can't open terminals: it has no terminal scope."
+        } catch {
+            problem = error.localizedDescription
+        }
+        // Reads overlap when events come close together, and an older answer
+        // can land last. Showing it could put Attach on an agent that ended.
+        guard generation == refreshes else { return }
+        if let active { workspaces = active }
+        if let listed {
+            sessions = listed
+            pending.removeAll { id in listed.contains { $0.id == id } }
+        }
+        error = problem
+    }
+
+    /// Opens a session by id. Returns false for an id that isn't listed,
+    /// opened here, a workspace's agent, or shaped like a terminal pane: the id can come from an attention item,
     /// and attaching to an unknown one spawns a shell there.
     @discardableResult
     func select(_ id: String) -> Bool {
@@ -88,7 +107,7 @@ final class TerminalsModel {
             } catch {
                 self.error = error.localizedDescription
             }
-            reload()
+            await refresh()
         }
     }
 
@@ -96,11 +115,13 @@ final class TerminalsModel {
         Task {
             do {
                 try await app.withFreshCode { [client] in try await client.startAgentSession(workspace: ws) }
+                // Listed as running before it's selected, or the Start button would stay up.
+                await refresh()
                 selectedId = ws.agentSessionId
             } catch {
                 self.error = error.localizedDescription
+                await refresh()
             }
-            reload()
         }
     }
 
@@ -128,10 +149,12 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     private let pty: PtyConnection
     private var pump: Task<Void, Never>?
     private unowned let app: AppModel
+    private let client: YarvisClient
 
     /// `agentSession` reconnects only while the agent still runs.
     init(app: AppModel, client: YarvisClient, sessionId: String, agentSession: Bool) {
         self.app = app
+        self.client = client
         view = TerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         let terminal = view.terminalDimensions
         var mayReconnect: (@Sendable () async -> Bool)?
@@ -172,7 +195,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
         case .refused(let code):
             view.feed(text: "\r\n[the server closed the terminal (\(code))]\r\n")
         case .signedOut:
-            app.serverSignedOut()
+            app.serverSignedOut(client: client)
         case .reconnecting, .size:
             break
         }

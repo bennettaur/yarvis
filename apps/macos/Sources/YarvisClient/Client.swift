@@ -174,15 +174,26 @@ public final class YarvisClient: Sendable {
     /// Signs this device out on the server (`DELETE /api/devices/me`). A 401
     /// means it was already gone, which is what was asked for, so it doesn't
     /// count as losing the token.
+    ///
+    /// Gives up with `URLError(.timedOut)` after `timeout` seconds in all: the
+    /// user is waiting on Sign Out, and the app deletes the token either way.
     public func revokeThisDevice(timeout: TimeInterval = 10) async throws {
-        // Short, since the user is waiting on Sign Out and the token goes either way.
-        var req = try request("DELETE", "/api/devices/me")
-        req.timeoutInterval = timeout
-        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
-        do {
-            try Self.check(data, res)
-        } catch YarvisError.unauthorized {
-            return
+        let req = try request("DELETE", "/api/devices/me")
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [session, baseURL] in
+                let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
+                do {
+                    try Self.check(data, res)
+                } catch YarvisError.unauthorized {
+                    return
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            try await group.next()
         }
     }
 

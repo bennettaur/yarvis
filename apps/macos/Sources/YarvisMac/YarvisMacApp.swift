@@ -30,7 +30,7 @@ struct YarvisMacApp: App {
                     .disabled(app.server == nil)
                 Divider()
                 Button("Sign Out") { Task { await app.signOut() } }
-                    .disabled(app.server == nil)
+                    .disabled(app.server == nil || app.signingOut)
             }
         }
 

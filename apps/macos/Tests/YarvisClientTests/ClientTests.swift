@@ -603,10 +603,16 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
             #expect(req.httpMethod == "DELETE")
             #expect(req.url?.path == "/api/devices/me")
             #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
-            #expect(req.timeoutInterval == 10)
             // The app is signing out on purpose; a 401 isn't the server signing it out.
             #expect(lost.value == 0)
         }
+    }
+
+    @Test(.timeLimit(.minutes(1))) func aStalledRevokeGivesUpAtTheDeadline() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [NeverEndingSSE.self]
+        let client = YarvisClient(baseURL: base, token: "t", session: URLSession(configuration: config))
+        await #expect(throws: URLError(.timedOut)) { try await client.revokeThisDevice(timeout: 0.2) }
     }
 
     @Test func aFailedRevokeIsReported() async throws {
@@ -631,6 +637,21 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         ])
     }
 
+    @Test func listsSessionsWithOptionalFieldsLeftOut() async throws {
+        let (session, _) = StubProtocol.session { _, _ in
+            (200, json(#"{"sessions":[{"id":"x","kind":"shell","startedAt":1763600000000,"running":true,"attached":1}]}"#))
+        }
+        let sessions = try await YarvisClient(baseURL: base, token: "t", session: session).ptySessions()
+        #expect(sessions == [PtySession(id: "x", kind: "shell", startedAt: 1_763_600_000_000, running: true, attached: 1)])
+    }
+
+    @Test func listingWithoutTheTerminalScopeIs403() async throws {
+        let (session, _) = StubProtocol.session { _, _ in (403, json(#"{"error":"missing scope"}"#)) }
+        await #expect(throws: YarvisError.http(status: 403, error: "missing scope", detail: nil)) {
+            try await YarvisClient(baseURL: base, token: "t", session: session).ptySessions()
+        }
+    }
+
     @Test func titlesNameTheWorkspaceOrFolderAndAnExit() {
         let names = ["w1": "api"]
         #expect(terminalTitle(PtySession(id: "ws-claude:w1", kind: "agent", workspaceId: "w1", running: true),
@@ -641,5 +662,11 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
                               workspaceNames: names) == "Terminal (exited 2)")
         #expect(terminalTitle(PtySession(id: "review-claude:r1", kind: "review", workspaceId: "r1", running: true),
                               workspaceNames: [:]) == "Review: r1")
+        #expect(terminalTitle(PtySession(id: "ws-claude:w9", kind: "agent", workspaceId: "w9", running: false),
+                              workspaceNames: names) == "Agent (exited)")
+        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "/srv/repo", running: true),
+                              workspaceNames: names) == "repo")
+        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "", running: true),
+                              workspaceNames: names) == "Terminal")
     }
 }

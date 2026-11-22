@@ -38,6 +38,7 @@ struct TerminalsView: View {
                 }
                 ForEach(model.pending, id: \.self) { id in
                     Text("New terminal").foregroundStyle(.secondary).tag(id)
+                        .contextMenu { Button("End the shell") { model.kill(id) } }
                 }
                 Button { model.newTerminal() } label: { Label("New terminal", systemImage: "plus") }
                     .buttonStyle(.borderless)

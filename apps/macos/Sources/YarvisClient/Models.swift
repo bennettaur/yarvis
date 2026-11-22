@@ -385,7 +385,8 @@ public func terminalTitle(_ s: PtySession, workspaceNames: [String: String]) -> 
     case "agent": title = workspace ?? "Agent"
     case "review": title = "Review: \(workspace ?? s.workspaceId ?? s.id)"
     default:
-        let folder = s.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
+        // An empty path would resolve against this process's own folder.
+        let folder = s.cwd.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).lastPathComponent }
         title = [workspace, folder].compactMap { $0 }.joined(separator: " · ")
         if title.isEmpty { title = "Terminal" }
     }

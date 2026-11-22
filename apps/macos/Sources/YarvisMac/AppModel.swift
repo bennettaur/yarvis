@@ -40,6 +40,9 @@ final class AppModel {
     private(set) var terminals: TerminalsModel?
     private var events: EventStream?
     private var eventsTask: Task<Void, Never>?
+    /// Changes on every connect and sign-out, so a 401 or 4401 that an older
+    /// connection reports late can't sign out the current one.
+    private var connection = UUID()
 
     private static let serverKey = "serverURL"
     private static let revokedMessage = "This device was signed out by the server."
@@ -65,8 +68,10 @@ final class AppModel {
     }
 
     private func connect(server: URL, token: String, device: Device?) {
+        let connection = UUID()
+        self.connection = connection
         let client = YarvisClient(baseURL: server, token: token) { [weak self] in
-            Task { @MainActor in self?.serverSignedOut() }
+            Task { @MainActor in self?.serverSignedOut(connection: connection) }
         }
         self.server = server
         self.client = client
@@ -75,13 +80,13 @@ final class AppModel {
         attention = AttentionModel(app: self, client: client)
         terminals = TerminalsModel(app: self, client: client)
         attention?.start()
-        startEvents(server: server, token: token)
+        startEvents(server: server, token: token, connection: connection)
         if device == nil {
             Task { self.device = try? await client.me() }
         }
     }
 
-    private func startEvents(server: URL, token: String) {
+    private func startEvents(server: URL, token: String, connection: UUID) {
         let events = EventStream(baseURL: server, token: token)
         self.events = events
         eventsTask = Task { [weak self] in
@@ -91,7 +96,7 @@ final class AppModel {
                 switch update {
                 case .event(let e): self.handle(e)
                 case .lagged: self.attention?.reloadApprovals()
-                case .signedOut: self.serverSignedOut()
+                case .signedOut: self.serverSignedOut(connection: connection)
                 case .refused, .disconnected: break
                 }
             }
@@ -105,9 +110,9 @@ final class AppModel {
         case "sidecar.started":
             chat?.reloadSessions()
             attention?.reload()
-        // They can arrive in either order, so the list is read again rather
-        // than patched from them.
         case "pty.started", "pty.exited":
+            // These two can arrive in either order, so read the list again
+            // rather than patch it from them.
             terminals?.reload()
         default:
             break
@@ -115,17 +120,20 @@ final class AppModel {
     }
 
     /// True from the user pressing Sign Out until the app has forgotten the token.
-    private var signingOut = false
+    private(set) var signingOut = false
 
-    /// The user's Sign Out: revokes this device on the server, then forgets
-    /// the token here whatever the answer.
+    /// The user's Sign Out: revokes this device on the server, and forgets
+    /// the token here even if the revoke fails.
     func signOut() async {
-        guard let client, !signingOut else { return }
+        guard let client, let server, !signingOut else { return }
         signingOut = true
         defer { signingOut = false }
         // Sockets close first, so the 4401 the revoke sends them isn't taken
         // for the server signing this device out.
         stopConnections()
+        // The Keychain copy goes before the request, so quitting mid-revoke
+        // can't leave it behind.
+        TokenStore.delete(server: server)
         var reason: String?
         do {
             try await client.revokeThisDevice()
@@ -137,9 +145,15 @@ final class AppModel {
     }
 
     /// The server refused this device's token (a 401 or a 4401 close).
-    func serverSignedOut() {
-        guard !signingOut else { return }
+    private func serverSignedOut(connection: UUID) {
+        guard connection == self.connection, !signingOut else { return }
         forget(reason: Self.revokedMessage)
+    }
+
+    /// A terminal's socket was closed with 4401.
+    func serverSignedOut(client: YarvisClient) {
+        guard client === self.client else { return }
+        serverSignedOut(connection: connection)
     }
 
     private func stopConnections() {
@@ -154,7 +168,9 @@ final class AppModel {
     private func forget(reason: String?) {
         guard let server else { return }
         TokenStore.delete(server: server)
+        // Safe to repeat after Sign Out already stopped them.
         stopConnections()
+        connection = UUID()
         events = nil
         client = nil
         device = nil

@@ -27,10 +27,10 @@ unlock screen, devices and Settings.
 Checked against a real `yarvis-server` with the sidecar off: sign-in with a
 passphrase and TOTP, `/api/devices/me`, signing out with
 `DELETE /api/devices/me` (its 4401 close, then a second revoke answered
-`401`), `GET /api/pty` listing an exited shell, a wrong reverify code (`403`, the
-device stays signed in), `/api/events` with `since`, a shell over
-`/api/pty/{id}` and its `pty.exited` event, and the `4401` and `4403`
-closes. Chat and attention need the sidecar and Postgres, so they're tested
+`401`), a wrong reverify code (`403`, the device stays signed in),
+`/api/events` with `since`, a shell over `/api/pty/{id}` with its
+`pty.exited` event and its exited row in `GET /api/pty`, and the `4401` and
+`4403` closes. Chat and attention need the sidecar and Postgres, so they're tested
 against stubs of the sidecar's JSON only.
 
 ## Each API surface and its Swift counterpart
@@ -69,9 +69,9 @@ binary frame is an 8-byte big-endian offset then the bytes: feed the bytes to
 `TerminalView.feed(byteArray:)` and keep the offset. On `mode: "snapshot"`,
 reset the terminal before feeding. Send keystrokes as binary frames, and
 `{"type":"resize"}` from `sizeChanged`. Opening terminals needs the
-`terminal` scope. The list comes from `GET /api/pty`, read again on each
-`pty.started` and `pty.exited` event, since the two can arrive in either
-order.
+`terminal` scope. The list comes from `GET /api/pty`. Read it again on
+each `pty.started` and `pty.exited` event rather than patch it from them,
+since they can arrive in either order.
 
 **WKWebView fallback.** The web view signs in on its own, with the
 passphrase and a code, and becomes a device of its own. The app doesn't
