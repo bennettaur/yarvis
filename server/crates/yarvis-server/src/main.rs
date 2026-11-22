@@ -34,9 +34,8 @@ enum Command {
     /// Removes the account and prints a new setup code, for an owner who lost
     /// both the authenticator and the backup codes. The same trust as
     /// `device add`: whoever runs it can already read the database.
-    /// `sign_out_all` also revokes every device, for a reset after a
-    /// compromise.
     AuthReset {
+        /// Also revokes every device, for a reset after a compromise.
         sign_out_all: bool,
     },
 }
@@ -93,7 +92,12 @@ async fn serve(config: Config, store: Store) {
         Ok(None) => {}
         Err(e) => fail(e),
     }
-    state.auth.watch_outside_revocations();
+    let watch = state.auth.watch_outside_revocations();
+    tokio::spawn(async move {
+        if let Err(e) = watch.await {
+            tracing::error!("stopped closing sockets of devices revoked by the CLI: {e}");
+        }
+    });
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
@@ -226,7 +230,9 @@ fn read_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
 
 /// The new setup code goes to stdout and to the private file the server
 /// would write, and the running server accepts it at once, since both read it
-/// from the database. Signed-in devices stay signed in.
+/// from the database. Signed-in devices stay signed in unless
+/// `sign_out_all`.
+///
 /// Revocations reach a running server's open sockets through its poll of
 /// the devices table; requests refuse the tokens at once.
 async fn auth_reset(config: &Config, store: Store, sign_out_all: bool) {

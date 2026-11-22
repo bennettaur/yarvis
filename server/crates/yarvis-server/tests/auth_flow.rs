@@ -658,7 +658,12 @@ async fn auth_reset_reopens_setup_with_a_new_code() {
         StatusCode::CONFLICT,
         "no codes for an account that's gone: {body}"
     );
-    assert_eq!(h.events("account.reset").await.len(), 1);
+    let reset = h.events("account.reset").await;
+    assert_eq!(
+        reset[0].data,
+        json!({ "signOutAll": false, "revokedDevices": [] })
+    );
+    assert!(h.events("device.revoked").await.is_empty());
     h.setup_code = code;
     h.setup().await;
 }
@@ -671,7 +676,30 @@ async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
     std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
     let h = Harness::on(Store::open(&data_dir.join("server.db")).unwrap()).await;
     let laptop = h.setup().await;
-    let (_, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
+    let (bot_id, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
+    let (old_id, _) = h.mint(&laptop, "old", json!(["read"])).await;
+    let (st, _) = h
+        .call(
+            "DELETE",
+            &format!("/api/devices/{old_id}"),
+            Some(&laptop),
+            None,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, me) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    let laptop_id = me["deviceId"].as_str().unwrap().to_string();
+    let old_revoked_at = || async {
+        let (_, devices) = h.call("GET", "/api/devices", Some(&laptop), None).await;
+        devices
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["deviceId"] == old_id.as_str())
+            .unwrap()["revokedAt"]
+            .clone()
+    };
+    let before = old_revoked_at().await;
     // What `serve` starts: the CLI's revocations reach sockets through it.
     h.state.auth.watch_outside_revocations();
     let url = format!("ws://{}/api/events", h.serve().await);
@@ -698,23 +726,57 @@ async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let closed = tokio::time::timeout(Duration::from_secs(10), async {
+    let code = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some(message) = ws.next().await {
-            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
-                break;
+            if let Ok(Message::Close(Some(frame))) = message {
+                return Some(u16::from(frame.code));
             }
         }
+        None
     })
-    .await;
-    assert!(closed.is_ok(), "the bot's stream didn't close");
+    .await
+    .expect("the bot's stream didn't close");
+    assert_eq!(code, Some(4401), "closed as revoked");
     for token in [&laptop, &bot] {
         let (st, _) = h.call("GET", "/api/devices/me", Some(token), None).await;
         assert_eq!(st, StatusCode::UNAUTHORIZED);
     }
     let reset = h.events("account.reset").await;
     assert_eq!(reset[0].data["signOutAll"], true);
-    assert_eq!(reset[0].data["revokedDevices"].as_array().unwrap().len(), 2);
-    assert_eq!(h.events("device.revoked").await.len(), 2);
+    let mut revoked: Vec<String> = reset[0].data["revokedDevices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_string())
+        .collect();
+    revoked.sort();
+    let mut expected = vec![laptop_id, bot_id];
+    expected.sort();
+    assert_eq!(revoked, expected, "only the live devices");
+    assert_eq!(
+        h.events("device.revoked").await.len(),
+        3,
+        "the old one's, then one per live device"
+    );
+    // Read through the store: no token can list devices now.
+    let old = old_id.clone();
+    let after: Option<i64> = h
+        .state
+        .store
+        .call(move |conn| {
+            conn.query_row(
+                "SELECT revoked_at FROM devices WHERE id = ?1",
+                [old],
+                |row| row.get(0),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        json!(after),
+        before,
+        "an already revoked device keeps its time"
+    );
 }
 
 #[tokio::test]

@@ -134,47 +134,38 @@ impl Auth {
     /// Announces revocations another process wrote, such as
     /// `yarvis-server auth reset --sign-out-all`, so their sockets close
     /// within [`OUTSIDE_REVOCATION_POLL`]. Requests already refuse a revoked
-    /// token, since every one reads the row. In-process revocations are seen
-    /// again here, which is harmless.
+    /// token, since every one reads the row. It compares the set of revoked
+    /// ids rather than timestamps, which two processes' clocks write and a
+    /// clock step could leave behind the poll. In-process revocations are
+    /// seen again here, which is harmless.
     pub fn watch_outside_revocations(&self) -> tokio::task::JoinHandle<()> {
         let auth = self.clone();
         tokio::spawn(async move {
-            let mut since = now_ms();
-            let mut announced_at_since = std::collections::HashSet::new();
+            let mut known: Option<std::collections::HashSet<String>> = None;
             loop {
-                tokio::time::sleep(OUTSIDE_REVOCATION_POLL).await;
-                let from = since;
-                let rows = auth
+                let revoked = auth
                     .store
-                    .call(move |conn| {
-                        let mut stmt = conn
-                            .prepare("SELECT id, revoked_at FROM devices WHERE revoked_at >= ?1")?;
-                        stmt.query_map([from], |row| Ok((row.get::<_, String>(0)?, row.get(1)?)))?
-                            .collect::<rusqlite::Result<Vec<(String, i64)>>>()
+                    .call(|conn| {
+                        let mut stmt =
+                            conn.prepare("SELECT id FROM devices WHERE revoked_at IS NOT NULL")?;
+                        stmt.query_map([], |row| row.get::<_, String>(0))?
+                            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()
                     })
                     .await;
-                let rows = match rows {
-                    Ok(rows) => rows,
-                    Err(e) => {
-                        tracing::warn!("couldn't check for revoked devices: {e}");
-                        continue;
+                match revoked {
+                    Ok(revoked) => {
+                        // The first read is the baseline: those were revoked before
+                        // any socket here opened.
+                        if let Some(known) = &known {
+                            for id in revoked.difference(known) {
+                                auth.announce_revocation(id);
+                            }
+                        }
+                        known = Some(revoked);
                     }
-                };
-                // Rows at `since` were announced last time; anything later is new.
-                let latest = rows.iter().map(|(_, at)| *at).max().unwrap_or(since);
-                if latest > since {
-                    announced_at_since.clear();
+                    Err(e) => tracing::warn!("couldn't check for revoked devices: {e}"),
                 }
-                for (id, at) in rows {
-                    if at == since && announced_at_since.contains(&id) {
-                        continue;
-                    }
-                    auth.announce_revocation(&id);
-                    if at == latest {
-                        announced_at_since.insert(id);
-                    }
-                }
-                since = latest;
+                tokio::time::sleep(OUTSIDE_REVOCATION_POLL).await;
             }
         })
     }

@@ -753,6 +753,20 @@ async fn pty_start_claude_launches_the_configured_agent() {
         async move { busy.then_some(()) }
     })
     .await;
+
+    let (status, body) = get(&server, &token, "/api/pty").await;
+    assert_eq!(status, 200, "{body}");
+    let row = body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("no row for {id}: {body}"))
+        .clone();
+    assert_eq!(row["kind"], "agent");
+    assert_eq!(row["workspaceId"], workspace);
+    assert_eq!(row["harness"], json!({"id": "claude", "name": "Cat"}));
+    assert_eq!(row["cwd"], cwd.as_str());
 }
 
 #[tokio::test]

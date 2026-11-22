@@ -218,6 +218,15 @@ fn session_workspace_id(id: &str) -> Option<&str> {
     })
 }
 
+impl From<&SessionAgent> for SessionHarness {
+    fn from(agent: &SessionAgent) -> Self {
+        Self {
+            id: agent.harness_id.clone(),
+            name: agent.harness_name.clone(),
+        }
+    }
+}
+
 /// The agent a workspace surfaces: the default harness's tab title and base
 /// command, plus every harness a session can be started with.
 #[derive(Serialize)]
@@ -571,10 +580,7 @@ impl PtyManager {
                 kind: session_kind(&id),
                 workspace_id: session_workspace_id(&id).map(str::to_string),
                 cwd: session.cwd().map(str::to_string),
-                harness: session.agent().map(|agent| SessionHarness {
-                    id: agent.harness_id.clone(),
-                    name: agent.harness_name.clone(),
-                }),
+                harness: session.agent().map(SessionHarness::from),
                 started_at: session.started_at(),
                 running: session.is_running(),
                 exit_code: session.exit_code(),
@@ -643,12 +649,7 @@ impl PtyManager {
     /// The harness the live session `id` was launched with, or `None` when no
     /// agent session is running there.
     pub fn session_harness(&self, id: &str) -> Option<SessionHarness> {
-        let session = self.get(id)?;
-        let agent = session.agent()?;
-        Some(SessionHarness {
-            id: agent.harness_id.clone(),
-            name: agent.harness_name.clone(),
-        })
+        self.get(id)?.agent().map(SessionHarness::from)
     }
 
     pub async fn write(&self, id: &str, data: String) -> Result<(), String> {
@@ -1004,4 +1005,23 @@ fn foreground_is_agent(session: &Session, agent_pids: &[u32]) -> bool {
         );
     }
     matched
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::{session_kind, session_workspace_id};
+
+    #[test]
+    fn a_session_id_says_its_kind_and_workspace() {
+        for (id, kind, workspace) in [
+            ("ws-claude:w1", "agent", Some("w1")),
+            ("review-claude:r1", "review", Some("r1")),
+            ("review-claude:", "review", None),
+            ("ws:w1/t1/p1", "shell", Some("w1")),
+            ("tab:terminal/t1/p1", "shell", None),
+        ] {
+            assert_eq!(session_kind(id), kind, "{id}");
+            assert_eq!(session_workspace_id(id), workspace, "{id}");
+        }
+    }
 }

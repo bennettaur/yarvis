@@ -196,8 +196,8 @@ authenticator app (TOTP), or one of its backup codes.
   devices stay signed in, unless it runs with `--sign-out-all`, which revokes
   every device, tokens included: after a compromise, the attacker's device is
   one of them. A running server refuses those tokens at once, and closes
-  their open sockets within 2 seconds, when it next checks the devices table
-  for revocations another process made.
+  their open sockets within about 2 seconds, when it next checks the devices
+  table for revocations another process made.
 - Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`
   or `terminal`. Tokens made with the CLI on the server machine can, since
   whoever runs that can already read the database and open a shell.
@@ -462,7 +462,7 @@ address. Once the account exists the setup routes answer `409`.
 Devices and the account (token needed):
 
 - `GET    /api/devices/me` (`read`) → the calling device
-- `DELETE /api/devices/me` (any valid token, no scope, not fresh) →
+- `DELETE /api/devices/me` (any valid token; needs no scope and no recent code) →
   `{ revokedAt }`: signs this device out. It closes the device's sockets and
   appends `device.revoked` as revoking it from another device would. It can
   only reach the calling device.
@@ -595,11 +595,14 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
   `review-claude:`, or a pane `ws:<workspaceId>/<tab>/<pane>`), else `null`.
   `cwd` is the folder the shell started in, or `null` for the default (the
   home folder). `harness` is `{ id, name }` for an agent session and `null`
-  for a shell. `startedAt` is Unix milliseconds. A session whose shell exited
-  stays listed with `running: false` and its `exitCode` until something
-  attaches to its id again, which starts a new shell there. `attached` counts
+  otherwise. `startedAt` is Unix milliseconds. A session whose shell exited
+  stays listed with `running: false` and its `exitCode` until it is killed
+  or replaced. Attaching to an exited shell's id starts a new shell there; a
+  review session is replaced only by starting a new review. `attached` counts
   the clients attached now. `pty.started` and `pty.exited` events say when to
-  list again.
+  list again. They are appended separately, so for a shell that exits at
+  once `pty.exited` can come first; list again rather than track state from
+  the events.
 - `GET /api/pty/{id}` (WebSocket, `terminal`). `{id}` is the session id,
   URL-encoded (ids such as `ws:<workspaceId>/<tab>/<pane>` hold slashes). The
   hello is:
