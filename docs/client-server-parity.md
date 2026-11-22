@@ -34,19 +34,20 @@ deep links.
 | unsure | 1 |
 | **total** | **163** |
 
-The rows that matter most, riskiest first:
+The rows that matter most, riskiest first. The list holds the missing and
+moved-untested rows, plus the one unsure row, which is the riskiest:
 
-1. **Alarm ringing depends on the page** (moved, untested). On main the core
+1. **Tauri IPC under the server's CSP** (unsure). The server's CSP has
+   `connect-src 'self'` with no `ipc:` or `http://ipc.localhost`, which main's
+   CSP had. If Tauri's postMessage fallback doesn't take over, every bridge
+   command fails in the app: alarms, clipboard, hotkey events, notifications.
+2. **Alarm ringing depends on the page** (moved, untested). On main the core
    rang an alarm straight from the control channel. Now the server only
    appends `alarm.fire`, and the page's JS has to call the `fire_alarm`
    bridge. If the window is on the connect page, the events socket is down, or
    the hidden webview is throttled, the alarm doesn't take over the window or
    ring. The JS step is tested only in `src/lib/alarms.test.ts`, which stubs
    `invoke`.
-2. **Tauri IPC under the server's CSP** (unsure). The server's CSP has
-   `connect-src 'self'` with no `ipc:` or `http://ipc.localhost`, which main's
-   CSP had. If Tauri's postMessage fallback doesn't take over, every bridge
-   command fails in the app: alarms, clipboard, hotkey events, notifications.
 3. **`YARVIS_CORE_SOCK` and `DATABASE_URL` handed to the sidecar** (moved,
    untested). Both are set in `srv/main.rs:serve`, which no test runs. Losing
    the first breaks agent spawn and send, alarms, MCP OAuth refresh and the
@@ -74,7 +75,9 @@ The rows that matter most, riskiest first:
     its sidecar can miss Homebrew and mise tools. The docs don't say so.
 
 The other missing row, `migrate_legacy_app_data_file`, only affects someone
-upgrading from a build older than `main`.
+upgrading from a build before #277 (September 2026). It is marked missing,
+while the `alarms.json` import below is dropped on purpose, because only the
+alarms one has a commit saying it was meant to go.
 
 Loose ends from rows that are fine on their own:
 
@@ -84,7 +87,10 @@ Loose ends from rows that are fine on their own:
   and `src/lib/streamDrop.ts:34` still point at the old path or at
   Diagnostics. The log is now `<server data_dir>/logs/sidecar.log`.
 - The legacy `alarms.json` import is dropped on purpose (ce6ebfc1), but
-  `docs/features/calendar-and-alarms.md:119-122` still describes it.
+  `docs/features/calendar-and-alarms.md:119-122` still describes it, and
+  `sidecar/src/alarms/legacyImport.ts` still reads the variable, so it is dead
+  code. Someone upgrading from a build before #486 (October 2026) loses their
+  alarms.
 - The startup Keychain migrations (legacy settings, the old embeddings item)
   now run only when `server.toml` leaves the backend unset or picks
   `keychain`. Main always ran them. No test runs `start_core`, which calls
@@ -96,7 +102,8 @@ Loose ends from rows that are fine on their own:
   argument structs by reading them, and they match.
 - No frontend test counts for any row except `src/lib/pty.test.ts`, which
   drives the real PTY client against a fake socket. The e2e covers sign-in,
-  the terminal and the devices page. It asserts nothing about settings,
+  devices, the terminal, the event stream and the vault's commit-signing
+  approval. It asserts nothing about settings,
   secrets or alarms.
 
 ## Settings and secrets
@@ -158,7 +165,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | `keychain.rs` one JSON blob, `SECRET_KEYS` allowlist | `srv/secret_blob.rs:SECRET_KEYS`, `check_known` | `srv/secret_blob.rs::an_unknown_key_is_refused_for_every_operation`, `::writing_one_key_preserves_every_other` | covered | `database_url` left the list; see below. |
 | `read_root` is fallible; a failed read writes nothing | `SecretBlob::read_root`, `update_root_locked` | `srv/secret_blob.rs::a_failed_read_names_the_store_and_writes_nothing`, `::an_absent_or_unparseable_blob_reads_as_an_empty_object`; each module's `a_failed_read_writes_nothing` | covered | |
 | `lock_for_write`, in-process mutex | `SecretBlob::lock_for_write` | `srv/secret_blob.rs::concurrent_writers_keep_every_change` | covered | |
-| `~/.yarvis/secrets.lock`, 180s wait | `secret_blob.rs:lock_file`; `SettingsStore::secrets_lock_path` | `srv/secret_blob.rs::the_lock_file_shuts_out_a_second_holder_until_released`, `::the_write_lock_holds_the_shared_lock_file`; `srv/settings.rs::the_secrets_lock_sits_beside_the_settings_file` | covered | Always taken now; main skipped it when the settings path was unknown. |
+| `~/.yarvis/secrets.lock`, 180s wait | `srv/secret_blob.rs:lock_file`; `SettingsStore::secrets_lock_path` | `srv/secret_blob.rs::the_lock_file_shuts_out_a_second_holder_until_released`, `::the_write_lock_holds_the_shared_lock_file`; `srv/settings.rs::the_secrets_lock_sits_beside_the_settings_file` | covered | Always taken now; main skipped it when the settings path was unknown. |
 | `update_root` / `update_subtree`; a no-op edit writes nothing | `SecretBlob::update_root`, `update_subtree`, `edit_subtree` | `srv/secret_blob.rs::an_edit_that_changes_nothing_writes_nothing`, `::a_subtree_edit_keeps_sibling_keys`, `::a_subtree_edit_that_changes_nothing_writes_nothing`, `::a_subtree_that_is_not_an_object_reads_as_empty` | covered | |
 | `store_github_token` validation | `SecretBlob::store_github_token` | `srv/secret_blob.rs::a_github_token_must_be_one_printable_word` | covered | The control method is under "Control channel". |
 | `secret_store.rs::active`: `secretBackend` in settings picks the store | `SecretBlob::from_config`, `active` | `srv/secret_blob.rs::an_unset_backend_follows_settings`, `::onepassword_without_an_item_is_an_error_not_the_keychain` | covered | `server.toml` can now override it, and there is a `vault` backend. |
@@ -169,14 +176,14 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | `copy_secrets` on a backend switch | `srv/settings.rs:copy_secrets` | `srv/settings.rs::an_empty_target_receives_the_source_blob`, `::nothing_is_copied_from_an_empty_source`, `::an_occupied_target_is_left_alone`, `::an_unreachable_or_unwritable_target_is_reported` | covered | The copy step alone. No test runs a whole switch. |
 | Switch order: reach, copy, then save under the lock | `SettingsStore::set_secret_backend` | `srv/settings.rs::re_saving_the_same_item_is_unchanged`, `::with_no_configured_backend_settings_hold_the_choice` | covered | Only the unchanged path. |
 | First 1Password item filled from the Keychain | `SettingsStore::set_secret_backend` (`current = Target::Keychain`) | none | moved, untested | |
-| The desktop app switches the backend itself | `set_secret_backend` needs a fresh device (`core_api.rs:FRESH_COMMANDS`) | `srvt/auth_flow.rs::a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not` | dropped on purpose | The local app's CLI-made token is never fresh, so only a signed-in browser can switch. `docs/client-server.md:879-884`; PR #682. |
+| The desktop app switches the backend itself | `set_secret_backend` needs a fresh device (`core_api.rs:FRESH_COMMANDS`) | `srvt/auth_flow.rs::a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not` | dropped on purpose | The local app's CLI-made token is never fresh, so only a signed-in browser can switch. `docs/client-server.md:882-887`; PR #682. |
 
 ### Startup and `settings.json`
 
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
 | `settings::init`: create `~/.yarvis` as 0700 | `srv/main.rs:start_core` → `SettingsStore::ensure_dir`, `default_path` | none | moved, untested | |
-| `migrate_legacy_app_data_file`: move `settings.json` from the app-data folder to `~/.yarvis` | nothing | none | missing | Not ported, and no doc, PR or commit mentions it. Removed in 40ddfb40 with the rest of `settings.rs`. Only a build older than `main` is affected. |
+| `migrate_legacy_app_data_file`: move `settings.json` from the app-data folder to `~/.yarvis` | nothing | none | missing | Not ported, and no doc, PR or commit mentions it. Removed in 40ddfb40 with the rest of `settings.rs`. Only a build from before #277 (September 2026) is affected. |
 | `migrate_keychain_settings`: legacy non-secret values off the Keychain, once | `SettingsStore::migrate_keychain_settings` from `start_core` | `srv/settings.rs::legacy_keychain_values_are_migrated_and_secrets_stay`, `::migration_never_overwrites_and_discards_a_bad_otp_window`, `::the_migration_moves_values_out_of_the_keychain_once`, `::an_unreadable_keychain_skips_the_migration_until_next_time`, `::a_keychain_that_cannot_be_cleared_still_keeps_the_migrated_values` | covered | The call from `start_core` isn't tested, and it's skipped when `server.toml` picks `onepassword` or `vault`. |
 | `embeddings_secrets::migrate_legacy_item` | `srv/embeddings_secrets.rs:migrate_legacy_item` from `start_core` | `srv/embeddings_secrets.rs::migration_moves_the_legacy_value_in_sets_the_flag_and_deletes_the_old_item`, `::migration_never_overwrites_a_value_already_in_the_shared_item`, `::migration_with_no_legacy_item_still_sets_the_flag_and_runs_once`, `::a_failed_write_keeps_the_legacy_item`, `::migration_writes_nothing_when_the_shared_item_is_unreadable` | covered | Fake legacy item; the real keyring one isn't tested. Skipped under the same condition as the row above. |
 | `save`: atomic rename, 0600, sidecar sections kept | `srv/settings.rs:save` | `srv/settings.rs::a_save_keeps_the_sidecar_sections_and_clears_what_it_clears` | covered | 0600 not asserted, now or on main. |
@@ -252,8 +259,8 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | Agent command (default, `YARVIS_CLAUDE_COMMAND`, blank is unset, control chars stripped) | `srv/agent_policy.rs:resolve_agent_command` | `srv/agent_policy.rs::resolve_agent_command_uses_the_default_when_nothing_is_set`, `::resolve_agent_command_lets_the_env_override_outrank_the_setting`, `::resolve_agent_command_treats_a_blank_value_as_unset`, `::resolve_agent_command_strips_control_characters_from_either_source` | covered | |
 | Agent name | `agent_policy::resolve_agent_name` | `srv/agent_policy.rs::a_blank_agent_name_is_the_default` | covered | |
 | Harness settings and secret env read at launch | `PtyManager::harness_settings`, `launch_harness` | `srv/harness.rs::secret_env_is_read_for_the_harness_and_a_missing_value_is_an_error` | covered | Not run end to end for an interactive launch. |
-| `harness.rs` (resolve, validate, program, prompt args) | `srv/harness.rs` | All 30 old tests present by name in `srv/harness.rs` | covered | |
-| `check_assistant_may_launch` | `srv/harness.rs`, `PtyManager::check_sidecar_harness` | `srv/harness.rs::the_assistant_may_start_only_the_default_the_builtin_and_opted_in_harnesses`; `srv/control.rs::a_spawn_naming_a_harness_the_assistant_may_not_start_is_refused`; `srvt/control_socket.rs::claude_spawn_refuses_a_harness_the_assistant_may_not_start` | covered | |
+| `harness.rs` (resolve, validate, program, prompt args) | `srv/harness.rs` | All 29 old tests present by name in `srv/harness.rs` | covered | |
+| `check_assistant_may_launch` | `srv/harness.rs`, `PtyManager::check_sidecar_harness` | `srv/harness.rs::the_assistant_may_start_only_the_default_the_builtin_and_opted_in_harnesses`; `srv/control.rs::a_spawn_naming_a_harness_the_assistant_may_not_start_is_refused`; `srvt/control_socket.rs::claude_spawn_refuses_a_harness_the_assistant_may_not_start` | covered | The socket test only sends an unknown id; the unit tests cover a real harness that hasn't opted in. |
 | Resume id (UUID only, Claude Code only, before the instruction) | `srv/pty/guards.rs` | `srv/pty/guards.rs::is_valid_resume_id_accepts_only_a_uuid`, `::check_resume_refuses_a_resume_the_agent_cannot_take`, `::agent_launch_command_resumes_a_session_before_any_instruction` | covered | |
 | Remote Control flags and session name | `srv/pty/guards.rs` | `srv/pty/guards.rs::remote_control_command_*` (7), `::check_remote_control_needs_a_claude_code_harness` | covered | |
 | `agent_launch_command` with an instruction | `srv/pty/guards.rs` | `srv/pty/guards.rs::agent_launch_command_appends_an_instruction_as_one_quoted_argument`, `::agent_launch_command_quotes_a_hostile_instruction_placed_by_prompt_args` and 3 more | covered | |
@@ -280,7 +287,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | `claude.slash` | `PtyManager::send_session_slash_command` | `srvt/control_socket.rs::claude_send_types_only_at_the_registered_agent`; `srv/control.rs::reads_the_slash_command_the_sidecar_sends` | covered | |
 | `mcp.saveOAuth` | `srv/mcp.rs:store_oauth` on the server's backend | `srvt/control_socket.rs::mcp_save_oauth_writes_one_servers_oauth_subtree` | covered | |
 | `github.saveToken` | `SecretBlob::store_github_token` | `srvt/control_socket.rs::github_save_token_writes_only_that_key` | covered | |
-| `alarm.fire` (check, then take over the window) | `srv/control.rs:fire_alarm` appends `alarm.fire` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events`, `::a_refused_alarm_records_nothing`; `srv/control.rs::reads_the_alarm_the_sidecar_sends`, `::refuses_a_join_link_that_isnt_a_web_link`, `::cuts_a_long_label`, `::refuses_a_junk_alarm_id` | covered | The method. The takeover is under "Alarms". `docs/client-server.md:741-743`. |
+| `alarm.fire` (check, then take over the window) | `srv/control.rs:fire_alarm` appends `alarm.fire` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events`, `::a_refused_alarm_records_nothing`; `srv/control.rs::reads_the_alarm_the_sidecar_sends`, `::refuses_a_join_link_that_isnt_a_web_link`, `::cuts_a_long_label`, `::refuses_a_junk_alarm_id` | covered | The method. The takeover is under "Alarms". `docs/client-server.md:742-744`. |
 | `alarm.release` | `srv/control.rs:release_alarm` appends `alarm.release` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events` | covered | |
 | `harness.runEnv` | `srv/control.rs:harness_run_env` → `harness::headless_run_env` | `srvt/control_socket.rs::harness_run_env_refuses_a_blank_or_unknown_harness`; `srv/control.rs::reads_the_harness_the_sidecar_asks_for_and_answers_its_run_env`; `srv/harness.rs::a_headless_run_takes_only_a_claude_code_harness_and_only_its_program` and 2 more | covered | The success path over the socket isn't tested. |
 
@@ -349,7 +356,7 @@ Main registered no deep-link scheme, so there is nothing to port.
 
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
-| OAuth redirects to the sidecar's loopback callback; the core did nothing | `GET /api/oauth/mcp/callback`, `GET /api/oauth/google/callback` → `srv/sidecar_proxy.rs:oauth_callback_router`; `YARVIS_PUBLIC_ORIGIN` for the redirect | `srvt/sidecar.rs::an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback`; `sidecar/src/mcp/oauth.test.ts` › "points at the server's origin when it is reached from other machines"; `sidecar/src/google/routes.test.ts` › "is the server's origin when it is reached from other machines, for a Web client" | covered | Google on a `*.ts.net` name is untried (`docs/client-server.md:870-873`). |
+| OAuth redirects to the sidecar's loopback callback; the core did nothing | `GET /api/oauth/mcp/callback`, `GET /api/oauth/google/callback` → `srv/sidecar_proxy.rs:oauth_callback_router`; `YARVIS_PUBLIC_ORIGIN` for the redirect | `srvt/sidecar.rs::an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback`; `sidecar/src/mcp/oauth.test.ts` › "points at the server's origin when it is reached from other machines"; `sidecar/src/google/routes.test.ts` › "is the server's origin when it is reached from other machines, for a Web client" | covered | Google on a `*.ts.net` name is untried (`docs/client-server.md:873-876`). |
 
 ## Added in the new stack
 

@@ -867,6 +867,9 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
+[client-server-parity.md](client-server-parity.md) maps what the old Tauri
+core did to where it lives now, with the test that covers each piece.
+
 - **Google OAuth on a `*.ts.net` name is untried.** Google requires a Web
   application client's redirect host to end in a domain on the Public Suffix
   List, and `ts.net` is on it, but nobody has registered a `ts.net` redirect
