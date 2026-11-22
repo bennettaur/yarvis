@@ -168,7 +168,8 @@ impl SettingsStore {
 
     /// `YARVIS_SETTINGS_PATH`, else `~/.yarvis/settings.json`. The sidecar
     /// resolves the same way (`sidecar/src/settings/store.ts`), and it inherits
-    /// the server's environment, so both read the same file.
+    /// the server's environment, so both read the same file. So does the
+    /// desktop app's move of a pre-#277 file (`src-tauri/src/legacy_settings.rs`).
     pub fn default_path() -> PathBuf {
         if let Some(path) = std::env::var_os("YARVIS_SETTINGS_PATH").filter(|p| !p.is_empty()) {
             return PathBuf::from(path);

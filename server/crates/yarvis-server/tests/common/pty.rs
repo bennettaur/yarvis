@@ -52,6 +52,9 @@ pub async fn serve_with(setup: Setup) -> Server {
         },
         settings.clone(),
     );
+    // Carried over from the manager `AppState::new` built, so a test of what
+    // shells get also checks that it hands them the sidecar's details.
+    let sidecar_env = state.pty.sidecar_env();
     state.pty = PtyManager::new(
         settings,
         blob,
@@ -62,7 +65,7 @@ pub async fn serve_with(setup: Setup) -> Server {
             ..options
         },
     );
-    state.pty.set_sidecar_env(Some(state.sidecar.session_env()));
+    state.pty.set_sidecar_env(sidecar_env);
     state
         .pty
         .set_server_ssh_agent(yarvis_server::ssh_agent::socket_path(&state));
@@ -95,4 +98,11 @@ pub async fn device(state: &AppState, scopes: &[Scope]) -> (String, String) {
     create_device(&state.store, "test", "token", scopes, None)
         .await
         .unwrap()
+}
+
+/// Everything the session has printed so far.
+pub fn output_of(session: &yarvis_server::pty::session::Session) -> String {
+    let attach = session.subscribe(u64::MAX, Some(0));
+    session.detach(u64::MAX);
+    String::from_utf8_lossy(&attach.catchup).into_owned()
 }

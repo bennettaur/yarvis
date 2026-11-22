@@ -15,7 +15,7 @@ use yarvis_server::pty::PtyOptions;
 use yarvis_server::pty::session::Size;
 use yarvis_server::secret_store::SecretBackend;
 
-use common::pty::{Server, Setup, serve_with};
+use common::pty::{Server, Setup, output_of, serve_with};
 use common::{WAIT, until};
 use yarvis_server::secret_store::memory::MemoryBackend;
 
@@ -296,12 +296,6 @@ async fn agent_shell(server: &Server) -> std::sync::Arc<yarvis_server::pty::sess
     .unwrap()
 }
 
-fn output_of(session: &yarvis_server::pty::session::Session) -> String {
-    let attach = session.subscribe(u64::MAX, Some(0));
-    session.detach(u64::MAX);
-    String::from_utf8_lossy(&attach.catchup).into_owned()
-}
-
 /// Starts `cat` in the session under a pid it prints first, and returns that
 /// pid once `cat` leads the terminal's foreground.
 async fn stand_in_agent(session: &std::sync::Arc<yarvis_server::pty::session::Session>) -> u32 {
@@ -510,7 +504,8 @@ async fn a_send_whose_agent_exits_during_the_pause_is_not_submitted() {
     );
 }
 
-/// The session `id` holds now, without spawning one.
+/// The session `id` holds now. Assumes it isn't ending: one that exits
+/// between the two calls is replaced by a plain shell.
 async fn live_session(
     server: &Server,
     id: &str,

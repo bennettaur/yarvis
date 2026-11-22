@@ -946,8 +946,10 @@ async fn printed_var(client: &mut Client, var: &str) -> String {
             .split(label.as_str())
             .skip(1)
             .find(|rest| !rest.starts_with('%'));
-        if let Some(end) = printed.and_then(|rest| rest.find(']')) {
-            return printed.unwrap()[..end].to_string();
+        if let Some(rest) = printed
+            && let Some(end) = rest.find(']')
+        {
+            return rest[..end].to_string();
         }
         assert!(client.read_one().await);
     }
@@ -1029,9 +1031,9 @@ fn running(script: &str) -> usize {
         .count()
 }
 
-/// Attaches racing for one id all get the one session that holds it, and a
-/// spawn that lost the race is killed rather than left running. The race
-/// can't be forced, so it is run several times.
+/// Two attaches racing for one id get the same session, and the shell the
+/// losing spawn started is killed. The race can't be forced, so it runs for
+/// several ids.
 #[tokio::test]
 async fn racing_spawns_for_one_id_leave_one_shell() {
     let dir = tempfile::tempdir().unwrap();

@@ -211,6 +211,8 @@ function TakeRow({ take }: { take: StudioTake }) {
     }
   }
 
+  const savedPath = take.savedPath;
+
   // The app grants this only for the server it started, since the path is on
   // the server's machine; with a remote server the bridge refuses it.
   async function reveal(path: string): Promise<void> {
@@ -234,19 +236,19 @@ function TakeRow({ take }: { take: StudioTake }) {
       {saveError && <span className="text-xs text-red-400">{saveError}</span>}
       {revealError && <span className="text-xs text-red-400">{revealError}</span>}
       <span className="ml-auto flex items-center gap-2">
-        {take.savedPath ? (
+        {savedPath ? (
           // The clip is saved on the server's machine, which only the desktop app can open.
           localFeaturesAvailable() ? (
             <button
               type="button"
-              onClick={() => void reveal(take.savedPath ?? "")}
-              title={take.savedPath}
+              onClick={() => void reveal(savedPath)}
+              title={savedPath}
               className={BUTTON}
             >
               Show in Finder
             </button>
           ) : (
-            <span className="text-xs text-zinc-500" title={take.savedPath}>
+            <span className="text-xs text-zinc-500" title={savedPath}>
               Saved
             </span>
           )

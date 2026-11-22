@@ -285,6 +285,15 @@ impl PtyManager {
             .unwrap_or_else(|e| e.into_inner()) = env;
     }
 
+    /// The sidecar details spawns get now.
+    pub fn sidecar_env(&self) -> Option<SidecarSessionEnv> {
+        self.inner
+            .sidecar_env
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Sets the server ssh-agent's socket path, used when `ssh_agent.enabled`
     /// is on. The path is fixed and the socket comes and goes with the vault,
     /// so a shell started while locked can sign once it unlocks.

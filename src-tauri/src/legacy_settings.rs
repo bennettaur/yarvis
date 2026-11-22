@@ -7,8 +7,9 @@
 use std::path::{Path, PathBuf};
 
 /// Where the server reads `settings.json`: `YARVIS_SETTINGS_PATH`, else
-/// `~/.yarvis/settings.json`. Matches `SettingsStore::default_path` in the
-/// server, which a local server inherits this app's environment for.
+/// `~/.yarvis/settings.json`, as `SettingsStore::default_path` in the server
+/// resolves it from the environment a local server inherits from this app.
+/// `None` without `HOME`, where the move is skipped.
 pub fn server_settings_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("YARVIS_SETTINGS_PATH").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(path));

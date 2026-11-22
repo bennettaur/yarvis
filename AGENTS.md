@@ -721,8 +721,9 @@ report there and leaves the fixes to the author.
   know — a gateway that rejects an unknown field fails the whole turn.
 - Everything the sidecar logs is captured. `lib/log.ts` wraps `console` at boot
   into a bounded in-memory tail that `/api/logs` serves and Settings →
-  Diagnostics reads, and the core pipes the process's stdout/stderr to
-  `app_log_dir/sidecar.log` so a packaged build leaves something behind to read.
+  Diagnostics reads, and the server pipes the process's stdout/stderr to
+  `logs/sidecar.log` under its data folder so a packaged build leaves
+  something behind to read.
   The wrapper writes the *redacted* line to the real console, so both copies are
   redacted — the file is the one a user attaches to a bug report. A new log line therefore just uses
   `console.*` with the usual `[scope]` prefix — that prefix is what the

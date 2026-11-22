@@ -281,9 +281,9 @@ impl Sidecar {
     fn build_command(&self, deps: &SupervisorDeps, secrets: &Value) -> Result<Command, String> {
         // The sidecar inherits the server's environment, so the debug flags
         // (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was started
-        // with reach it, and its PATH unless `[server] path` replaces it.
+        // with reach it, and its PATH unless `[server] path` replaces it. That
+        // PATH is also where a bare program name like `bun` is looked up.
         let mut cmd = command_base(&deps.config)?;
-        // Also where a bare program name like `bun` is looked up.
         if let Some(path) = deps.config.server.spawn_path() {
             cmd.env("PATH", path);
         }

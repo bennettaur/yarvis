@@ -131,6 +131,9 @@ if you like. The non-secret values that used to be in the Keychain (org URLs,
 the JIRA email, the Google client id, the OTP window) move to
 `~/.yarvis/settings.json` by themselves on the first launch. So does the old
 `embeddings_provider_secrets` item, which is folded into the single item.
+A `settings.json` that a build from before September 2026 left in the app's
+data folder moves to `~/.yarvis/settings.json` when the app next starts its
+local server, unless one is already there.
 
 ### Touch ID
 
@@ -233,6 +236,9 @@ The server gives it to the sidecar, which passes it on to the Claude Code runs
 it starts, and to every terminal and agent session. It is also where a bare
 `[sidecar] command` such as `bun` is looked up. Unset, they all inherit the
 server's own `PATH`. A shell's rc files can still change it after it starts.
+The server refuses to start when an entry is empty (a leading, trailing or
+doubled `:`) or not an absolute path, since either is looked up from the
+folder a process runs in, which for a session is a repo checkout.
 
 ## `~/.yarvis/settings.json`
 

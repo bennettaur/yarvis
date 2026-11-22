@@ -282,6 +282,9 @@ impl Config {
         if self.ssh_agent.enabled && self.ssh_agent.upstream_socket.is_some() {
             return invalid("ssh_agent.upstream_socket is only used when ssh_agent.enabled is off");
         }
+        if let Some(path) = self.server.spawn_path() {
+            check_spawn_path(path)?;
+        }
         if self.server.data_dir.is_relative() {
             return invalid(
                 "server.data_dir must be an absolute path (HOME isn't set, so set it explicitly)",
@@ -289,6 +292,27 @@ impl Config {
         }
         Ok(())
     }
+}
+
+/// Every entry of `[server] path` must be an absolute folder. An empty or
+/// relative entry is looked up from the folder a process runs in, which for a
+/// session is a repo checkout, so a `git` or `bun` planted there would run.
+fn check_spawn_path(path: &str) -> Result<(), ConfigError> {
+    for entry in path.split(':') {
+        if entry.is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "server.path has an empty entry (a leading, trailing or doubled ':') in \"{path}\"; \
+                 an empty entry means the current folder"
+            )));
+        }
+        if !Path::new(entry).is_absolute() {
+            return Err(ConfigError::Invalid(format!(
+                "server.path entry \"{entry}\" isn't an absolute path; write it out in full \
+                 (~ isn't expanded)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The database URL can carry a password, so a `server.toml` holding one
@@ -388,6 +412,30 @@ mod tests {
         let blank: Config = toml::from_str("[server]\npath = \"  \"\n").unwrap();
         assert_eq!(blank.server.spawn_path(), None);
         assert_eq!(Config::default().server.spawn_path(), None);
+    }
+
+    #[test]
+    fn refuses_a_path_with_an_empty_or_relative_entry() {
+        let with_path = |path: &str| {
+            let mut config = Config::default();
+            config.server.path = Some(path.into());
+            config.validate().map_err(|e| e.to_string())
+        };
+        with_path("/opt/homebrew/bin:/usr/bin:/bin").unwrap();
+        for bad in ["/usr/bin::/bin", ":/usr/bin", "/usr/bin:"] {
+            let err = with_path(bad).unwrap_err();
+            assert!(err.contains("empty entry"), "{bad}: {err}");
+        }
+        for (bad, entry) in [
+            ("/usr/bin:.", "\".\""),
+            ("node_modules/.bin:/usr/bin", "\"node_modules/.bin\""),
+            ("~/.local/bin:/usr/bin", "\"~/.local/bin\""),
+        ] {
+            let err = with_path(bad).unwrap_err();
+            assert!(err.contains(entry), "{bad}: {err}");
+        }
+        // Blank is unset, not an empty entry.
+        with_path("   ").unwrap();
     }
 
     #[test]

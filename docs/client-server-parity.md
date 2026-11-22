@@ -59,9 +59,10 @@ is the riskiest:
    instead, which is tested.
 
 The rows left as moved, untested are the Keychain and `op` calls, which need
-the real tools, and the desktop shell's: the alarm page step, the
-clipboard, hotkeys, `label_window`, single-instance, autostart and the login
-`PATH` hand-off. Those need a manual check in a release build: ring an alarm
+the real tools; two low-risk server rows, the free port pick and the
+`YARVIS_DEBUG_*` pass-through; and the desktop shell's: the alarm page steps
+for firing and releasing, the clipboard, hotkeys, `label_window`,
+single-instance, autostart and the login `PATH` hand-off. Those need a manual check in a release build: ring an alarm
 with the window hidden, copy and paste through the clipboard palette, press
 both hotkeys, open a second copy and a `dev:instance`, and run `echo $PATH` in
 a terminal of an app opened from Finder.
@@ -160,7 +161,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | `copy_secrets` on a backend switch | `srv/settings.rs:copy_secrets` | `srv/settings.rs::an_empty_target_receives_the_source_blob`, `::nothing_is_copied_from_an_empty_source`, `::an_occupied_target_is_left_alone`, `::an_unreachable_or_unwritable_target_is_reported` | covered | The copy step alone. No test runs a whole switch. |
 | Switch order: reach, copy, then save under the lock | `SettingsStore::set_secret_backend` | `srv/settings.rs::re_saving_the_same_item_is_unchanged`, `::with_no_configured_backend_settings_hold_the_choice` | covered | Only the unchanged path. |
 | First 1Password item filled from the Keychain | `SettingsStore::set_secret_backend` (`current = Target::Keychain`) | `srv/settings.rs::the_first_onepassword_item_is_filled_from_the_keychain`, `::a_failed_probe_copies_and_saves_nothing` | covered | The stores and the probe are fakes passed to `set_secret_backend_with`. |
-| The desktop app switches the backend itself | `set_secret_backend` needs a fresh device (`core_api.rs:FRESH_COMMANDS`) | `srvt/auth_flow.rs::a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not` | dropped on purpose | The local app's CLI-made token is never fresh, so only a signed-in browser can switch. `docs/client-server.md:882-887`; PR #682. |
+| The desktop app switches the backend itself | `set_secret_backend` needs a fresh device (`core_api.rs:FRESH_COMMANDS`) | `srvt/auth_flow.rs::a_backend_switch_needs_a_fresh_device_and_a_secret_write_does_not` | dropped on purpose | The local app's CLI-made token is never fresh, so only a signed-in browser can switch. `docs/client-server.md:886-891`; PR #682. |
 
 ### Startup and `settings.json`
 
@@ -180,7 +181,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
-| `database_url` as a secret, set from Settings and onboarding | Removed from `SECRET_KEYS`; `set_secret` with it is a 400 | `srv/secret_blob.rs::an_unknown_key_is_refused_for_every_operation` | dropped on purpose | The server needs it at boot, before sign-in. 4417669b (PR #710); `docs/client-server.md:341-343`. |
+| `database_url` as a secret, set from Settings and onboarding | Removed from `SECRET_KEYS`; `set_secret` with it is a 400 | `srv/secret_blob.rs::an_unknown_key_is_refused_for_every_operation` | dropped on purpose | The server needs it at boot, before sign-in. 4417669b (PR #710); `docs/client-server.md:343-345`. |
 | Reading it for the sidecar | `srv/database_url.rs:resolve`: env, `server.toml`, legacy blob, default | `srv/database_url.rs::the_env_var_beats_the_config_file_which_beats_the_secret_store`, `::the_secret_store_is_only_read_when_nothing_else_names_a_database`, `::a_vault_install_never_reads_the_secret_store_and_gets_the_default`, `::a_secret_store_that_cant_be_read_stops_the_server_rather_than_using_the_default`, `::a_password_never_shows` | covered | The hand-off to the sidecar is under "Sidecar". |
 | Settings shows whether it is set | `POST /api/core/get_database_info` | `srvt/http.rs::settings_see_where_the_database_url_came_from_but_never_its_password` | covered | Masked URL and its source. |
 
@@ -218,7 +219,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | Dead session reaped on the next attach | `PtyManager::reap` | `srvt/pty_ws.rs::an_exit_reaches_clients_after_the_last_byte_and_the_event_log` | covered | |
 | Sidecar session env (`YARVIS_SIDECAR_PORT`, attention token, session key and HMAC token, MCP token, workspace id) | `srv/pty/env.rs:session_env`, `session_token` | `srv/pty/env.rs::session_env_populates_workspace_claude_sessions` and 8 more | covered | Derivation only; that a real shell gets them isn't tested, as on main. |
 | `YARVIS_AGENT_HARNESS` and its token | `PtyManager::spawn_session`; `env.rs:harness_token` | `srv/pty/env.rs::harness_token_matches_the_sidecars_known_answer`, `::harness_token_is_bound_to_the_session_and_the_harness` | covered | Derivation only. |
-| `ANTHROPIC_API_KEY` stripped for agent and review sessions | `PtyManager::spawn_session` | `srvt/pty_env.rs::sessions_never_get_the_servers_database_url_and_agents_not_its_api_key` | covered | Also checks `YARVIS_DATABASE_URL` is stripped from every shell and a plain terminal keeps the key. A review session uses the same flag; only the agent session is run. |
+| `ANTHROPIC_API_KEY` stripped for agent and review sessions | `PtyManager::spawn_session` | `srvt/pty_env.rs::sessions_never_get_the_servers_database_url_and_agents_not_its_api_key` | covered | Also checks `YARVIS_DATABASE_URL` is stripped from every shell and a plain terminal keeps the key. Only the agent session is run. A review session's launch line also drops the key with `env -u` (`REVIEW_SESSION_UNSET_ENV`, tested in `srv/pty/review.rs`), so a test there couldn't tell the two apart. |
 | `SSH_AUTH_SOCK` inherited from the app | `env.rs:ssh_auth_sock` from `[ssh_agent]` | `srv/pty/env.rs::with_the_agent_off_sessions_get_the_upstream_socket_or_the_servers_own`, `::with_the_agent_on_sessions_get_only_the_servers_agent`; `srvt/pty_ws.rs::shells_get_the_upstream_agent_or_the_servers_own`; e2e terminal test | covered | |
 | `TERM`, `$SHELL` or `/bin/zsh`, cwd or `$HOME` | `spawn_session` | `srvt/pty_ws.rs::the_session_list_shows_what_a_terminal_device_can_attach_to` (cwd) | covered | `TERM` not asserted. |
 | `raise_fd_limit` at startup | `srv/pty/process.rs:raise_fd_limit` from `srv/main.rs:serve` | `srv/pty/process.rs::raises_a_low_inherited_soft_limit` and 4 more | covered | The call site isn't tested, as on main. |
@@ -259,7 +260,7 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
 | Socket `core-control.sock`, 0700 folder, 0600 file, stale socket cleared | `srv/control.rs:start`, in the server's data dir | `srvt/control_socket.rs::the_socket_is_private_to_the_user`; `srv/control.rs::a_stale_socket_is_cleared_but_a_planted_file_is_not` | covered | Permissions now fail closed. |
-| `YARVIS_CORE_SOCK` in the sidecar's env | `srv/main.rs:serve` → `srv/lib.rs:hand_off_to_sidecar` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens` | covered | Checks the path answers. |
+| `YARVIS_CORE_SOCK` in the sidecar's env | `srv/main.rs:serve` → `srv/lib.rs:hand_off_to_sidecar` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens` | covered | Checks the path answers. The call in `srv/main.rs:serve` isn't tested. |
 | NDJSON, 64 KiB line cap, unknown method | `srv/control.rs:handle_conn` | `srvt/control_socket.rs::an_unknown_method_or_a_malformed_line_is_answered_with_an_error`, `::a_request_line_over_the_limit_ends_the_connection` | covered | |
 | `validate_workspace_id` | `srv/control.rs` | `srvt/control_socket.rs::claude_spawn_refuses_a_harness_the_assistant_may_not_start`; `srvt/pty_ws.rs::every_core_command_needs_its_scope` | covered | |
 | Sidecar client `sidecar/src/core/controlClient.ts` | Unchanged | `sidecar/src/core/controlClient.test.ts` | covered | |
@@ -267,11 +268,11 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 | `claude.spawnReview` | `PtyManager::spawn_review_claude_session` | `srvt/control_socket.rs::claude_spawn_review_starts_one_session_and_kill_review_ends_it`; `srv/control.rs::reads_the_review_session_the_sidecar_sends` | covered | Also the refusal for an agent that isn't Claude Code. |
 | `claude.kill` | `PtyManager::kill` | `srvt/control_socket.rs::claude_send_types_only_at_the_registered_agent` | covered | |
 | `claude.killReview` | `PtyManager::kill(review_session_id(..))` | `srvt/control_socket.rs::claude_spawn_review_starts_one_session_and_kill_review_ends_it` | covered | |
-| `claude.send` | `PtyManager::send_session_instruction` | `srvt/control_socket.rs::claude_send_types_only_at_the_registered_agent`, `::client_input_waits_until_an_agent_send_has_pressed_enter`, `::a_send_whose_agent_exits_during_the_pause_is_not_submitted` | covered | Other input now waits until the Enter (`docs/client-server.md:732-734`). |
+| `claude.send` | `PtyManager::send_session_instruction` | `srvt/control_socket.rs::claude_send_types_only_at_the_registered_agent`, `::client_input_waits_until_an_agent_send_has_pressed_enter`, `::a_send_whose_agent_exits_during_the_pause_is_not_submitted` | covered | Other input now waits until the Enter (`docs/client-server.md:736-738`). |
 | `claude.slash` | `PtyManager::send_session_slash_command` | `srvt/control_socket.rs::claude_send_types_only_at_the_registered_agent`; `srv/control.rs::reads_the_slash_command_the_sidecar_sends` | covered | |
 | `mcp.saveOAuth` | `srv/mcp.rs:store_oauth` on the server's backend | `srvt/control_socket.rs::mcp_save_oauth_writes_one_servers_oauth_subtree` | covered | |
 | `github.saveToken` | `SecretBlob::store_github_token` | `srvt/control_socket.rs::github_save_token_writes_only_that_key` | covered | |
-| `alarm.fire` (check, then take over the window) | `srv/control.rs:fire_alarm` appends `alarm.fire` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events`, `::a_refused_alarm_records_nothing`; `srv/control.rs::reads_the_alarm_the_sidecar_sends`, `::refuses_a_join_link_that_isnt_a_web_link`, `::cuts_a_long_label`, `::refuses_a_junk_alarm_id` | covered | The method. The takeover is under "Alarms". `docs/client-server.md:742-744`. |
+| `alarm.fire` (check, then take over the window) | `srv/control.rs:fire_alarm` appends `alarm.fire` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events`, `::a_refused_alarm_records_nothing`; `srv/control.rs::reads_the_alarm_the_sidecar_sends`, `::refuses_a_join_link_that_isnt_a_web_link`, `::cuts_a_long_label`, `::refuses_a_junk_alarm_id` | covered | The method. The takeover is under "Alarms". `docs/client-server.md:746-748`. |
 | `alarm.release` | `srv/control.rs:release_alarm` appends `alarm.release` | `srvt/control_socket.rs::firing_and_releasing_an_alarm_become_events` | covered | |
 | `harness.runEnv` | `srv/control.rs:harness_run_env` → `harness::headless_run_env` | `srvt/control_socket.rs::harness_run_env_refuses_a_blank_or_unknown_harness`; `srv/control.rs::reads_the_harness_the_sidecar_asks_for_and_answers_its_run_env`; `srv/harness.rs::a_headless_run_takes_only_a_claude_code_harness_and_only_its_program` and 2 more | covered | The success path over the socket isn't tested. |
 
@@ -279,14 +280,14 @@ reached from the frontend through `core()` in `src/lib/core.ts`.
 
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
-| `get_sidecar_info` (port and token for the webview) | Dropped; clients use `/api/sidecar/*` | `srvt/sidecar.rs::a_get_reaches_the_sidecar_with_its_token_and_the_device_id`; `srv/core_api.rs::client_local_and_dropped_commands_are_not_served` | dropped on purpose | `docs/client-server.md:864-866`; PR #682. |
-| `get_sidecar_log_path` | Dropped; the sidecar's `/api/logs` serves recent lines | `srv/core_api.rs::client_local_and_dropped_commands_are_not_served` | dropped on purpose | `docs/client-server.md:864-866`. Diagnostics names the file instead. |
+| `get_sidecar_info` (port and token for the webview) | Dropped; clients use `/api/sidecar/*` | `srvt/sidecar.rs::a_get_reaches_the_sidecar_with_its_token_and_the_device_id`; `srv/core_api.rs::client_local_and_dropped_commands_are_not_served` | dropped on purpose | `docs/client-server.md:868-870`; PR #682. |
+| `get_sidecar_log_path` | Dropped; the sidecar's `/api/logs` serves recent lines | `srv/core_api.rs::client_local_and_dropped_commands_are_not_served` | dropped on purpose | `docs/client-server.md:868-870`. Diagnostics names the file instead. |
 | `restart_sidecar` | `POST /api/core/restart_sidecar` → `Sidecar::restart` | `srvt/sidecar.rs::the_restart_route_restarts_the_sidecar`, `::the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidecar` | covered | HTTP. Needs `admin`. |
 | Free loopback port | `srv/sidecar.rs:pick_free_port` | none | moved, untested | Same code; no test on main. The proxy sends nothing while no sidecar runs: `srvt/sidecar.rs::nothing_is_sent_while_no_sidecar_is_running`. |
 | `YARVIS_SIDECAR_TOKEN` | `srv/sidecar.rs:random_token`, `build_command` | `srvt/sidecar.rs::the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidecar`, `::a_get_reaches_the_sidecar_with_its_token_and_the_device_id` | covered | |
-| `YARVIS_ATTENTION_TOKEN`, `YARVIS_MCP_TOKEN` | `srv/sidecar.rs:build_command`; shells get the same through `Sidecar::session_env` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens`; `srvt/pty_ws.rs::workspace_shells_get_the_sidecars_scoped_tokens` | covered | Both ends, so a mismatch would show. |
+| `YARVIS_ATTENTION_TOKEN`, `YARVIS_MCP_TOKEN` | `srv/sidecar.rs:build_command`; shells get the same through `Sidecar::session_env` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens`; `srvt/pty_ws.rs::workspace_shells_get_the_sidecars_scoped_tokens` | covered | Both ends, so a mismatch would show. The shells' test uses the details `AppState::new` handed its PTY manager. |
 | Secrets as env vars (12 keys plus custom provider, MCP and embeddings JSON) | `srv/sidecar.rs:sidecar_env` | `srv/sidecar.rs::secrets_and_settings_reach_the_environment_and_empty_values_do_not`; `srvt/sidecar.rs::the_supervisor_waits_for_the_secrets_then_starts_and_restarts_the_sidecar`; `srv/custom_providers.rs::the_sidecar_env_is_the_subtree_or_nothing`; `srv/mcp.rs::the_sidecar_env_is_the_subtree_or_nothing` | covered | |
-| `DATABASE_URL` | `srv/main.rs:serve` → `srv/lib.rs:hand_off_to_sidecar` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens` | covered | Resolution is covered under "Database URL". |
+| `DATABASE_URL` | `srv/main.rs:serve` → `srv/lib.rs:hand_off_to_sidecar` | `srvt/sidecar.rs::the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens` | covered | Resolution is covered under "Database URL". The call in `srv/main.rs:serve` isn't tested. |
 | Settings as env vars (Azure, JIRA, Google client id, Telegram OTP window) | `srv/sidecar.rs:sidecar_env` | `srv/sidecar.rs::secrets_and_settings_reach_the_environment_and_empty_values_do_not` | covered | |
 | `YARVIS_INSTANCE`, `YARVIS_BACKGROUND_WORKERS` | `srv/sidecar.rs:instance_env` | `srv/sidecar.rs::the_sidecar_is_told_which_instance_it_serves_and_whether_it_owns_the_workers` | covered | |
 | `YARVIS_ALLOWED_ORIGINS` | `srv/sidecar.rs:allowed_origins` from `auth.origins` | `srv/sidecar.rs::an_origin_that_could_widen_the_list_is_dropped` | covered | `tauri://localhost` no longer needed. |
@@ -340,7 +341,7 @@ Main registered no deep-link scheme, so there is nothing to port.
 
 | Old (origin/main) | Now | Test | Status | Notes |
 |---|---|---|---|---|
-| OAuth redirects to the sidecar's loopback callback; the core did nothing | `GET /api/oauth/mcp/callback`, `GET /api/oauth/google/callback` → `srv/sidecar_proxy.rs:oauth_callback_router`; `YARVIS_PUBLIC_ORIGIN` for the redirect | `srvt/sidecar.rs::an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback`; `sidecar/src/mcp/oauth.test.ts` › "points at the server's origin when it is reached from other machines"; `sidecar/src/google/routes.test.ts` › "is the server's origin when it is reached from other machines, for a Web client" | covered | Google on a `*.ts.net` name is untried (`docs/client-server.md:873-876`). |
+| OAuth redirects to the sidecar's loopback callback; the core did nothing | `GET /api/oauth/mcp/callback`, `GET /api/oauth/google/callback` → `srv/sidecar_proxy.rs:oauth_callback_router`; `YARVIS_PUBLIC_ORIGIN` for the redirect | `srvt/sidecar.rs::an_oauth_redirect_on_the_servers_origin_reaches_the_sidecars_callback`; `sidecar/src/mcp/oauth.test.ts` › "points at the server's origin when it is reached from other machines"; `sidecar/src/google/routes.test.ts` › "is the server's origin when it is reached from other machines, for a Web client" | covered | Google on a `*.ts.net` name is untried (`docs/client-server.md:877-880`). |
 
 ## Added in the new stack
 
