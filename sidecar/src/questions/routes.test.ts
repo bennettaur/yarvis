@@ -131,6 +131,29 @@ async function pendingQuestionId(): Promise<string> {
   return (await pendingQuestionIds())[0]!;
 }
 
+async function until(check: () => Promise<boolean>, what: string): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (await check()) return;
+    await Bun.sleep(25);
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/**
+ * Waits for the attention item that points at question `id`. `askQuestions`
+ * stores the question before raising its item, so a test that has only waited
+ * for the question can read `attention_items` too early. A session's item
+ * carries the id of its latest question.
+ */
+async function attentionItemFor(id: string): Promise<postgres.Row> {
+  let item: postgres.Row | undefined;
+  await until(async () => {
+    [item] = await sql`SELECT * FROM attention_items WHERE payload->>'questionId' = ${id}`;
+    return item !== undefined;
+  }, `the attention item for question ${id}`);
+  return item!;
+}
+
 const answer = (id: string, answers: unknown) =>
   app.request(`/api/questions/${id}/answer`, {
     method: "POST",
@@ -146,12 +169,7 @@ describe("ask_user over MCP", () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
 
-    // The attention item is raised after the question is stored, so wait for it too.
-    let item: postgres.Row | undefined;
-    for (let i = 0; i < 100 && !item; i++) {
-      [item] = await sql`SELECT source, kind, status, title, workspace_id FROM attention_items`;
-      if (!item) await Bun.sleep(20);
-    }
+    const item = await attentionItemFor(id);
     expect(item).toMatchObject({
       source: "system",
       kind: "question",
@@ -252,6 +270,7 @@ describe("ask_user over MCP", () => {
   it("keeps a question pending when its session is marked read on view", async () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
+    await attentionItemFor(id);
 
     const cleared = await app.request("/api/attention/clear", {
       method: "POST",
@@ -289,6 +308,7 @@ describe("ask_user over MCP", () => {
       secondId!,
     ]);
     // Both questions share the session's one attention item.
+    await attentionItemFor(secondId!);
     expect(await sql`SELECT id FROM attention_items`).toHaveLength(1);
 
     await decline(firstId!);
@@ -306,8 +326,7 @@ describe("ask_user over MCP", () => {
     const call = callTool("ask_user", ASK, {});
     const id = await pendingQuestionId();
 
-    const [item] =
-      await sql`SELECT session_key, workspace_id, title, nav_target FROM attention_items`;
+    const item = await attentionItemFor(id);
     expect(item).toMatchObject({
       session_key: null,
       workspace_id: null,
@@ -330,9 +349,9 @@ describe("ask_user over MCP", () => {
     });
     const id = await pendingQuestionId();
     const [question] = await sql`SELECT session_key FROM agent_questions`;
-    const [item] = await sql`SELECT session_key FROM attention_items`;
+    const item = await attentionItemFor(id);
     expect(question?.session_key).toBeNull();
-    expect(item?.session_key).toBeNull();
+    expect(item.session_key).toBeNull();
 
     await decline(id);
     await call;
