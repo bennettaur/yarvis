@@ -118,6 +118,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "focus_main_window":
       return null;
 
+    case "get_database_info":
+      return { url: "postgres://localhost:5432/yarvis", source: "default" };
     case "get_settings":
       return settings;
     case "set_max_pty_sessions":
