@@ -50,7 +50,7 @@
     "@lezer/highlight": "^1.2.3",
     "@radix-ui/react-collapsible": "^1.2.1",
     "@tauri-apps/api": "^2.12.4",
-    "@tauri-apps/plugin-notification": "^2.7.0",
+    "@tauri-apps/plugin-notification": "^2.8.1",
     "@tauri-apps/plugin-opener": "^2.7.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
