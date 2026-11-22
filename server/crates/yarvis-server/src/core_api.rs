@@ -39,6 +39,7 @@ const MAX_BODY_BYTES: usize = 256 * 1024;
 /// setting.
 pub const COMMANDS: &[(&str, Scope)] = &[
     ("get_settings", Scope::Read),
+    ("get_database_info", Scope::Read),
     ("get_secret_status", Scope::Read),
     ("list_secret_status", Scope::Read),
     ("list_custom_provider_secret_status", Scope::Read),
@@ -286,6 +287,14 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
         value(settings.view())
     };
     match command {
+        // Read-only: the URL comes from the environment or server.toml, and
+        // changing it means restarting the server.
+        "get_database_info" => value(
+            state
+                .database
+                .as_ref()
+                .map(|d| json!({ "url": d.masked(), "source": d.source })),
+        ),
         "get_secret_status" => {
             let Key { key } = parse(args)?;
             value(secrets.get_secret_status(&key).map_err(failed)?)

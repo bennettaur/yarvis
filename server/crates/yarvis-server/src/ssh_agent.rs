@@ -360,7 +360,6 @@ mod tests {
     use super::*;
     use crate::approvals::Approvals;
     use crate::events::EventLog;
-    use crate::store::Store;
 
     fn sshsig_blob(namespace: &str) -> Vec<u8> {
         let mut blob = b"SSHSIG".to_vec();
@@ -371,8 +370,8 @@ mod tests {
         blob
     }
 
-    fn approvals() -> Approvals {
-        let store = Store::open_in_memory().unwrap();
+    async fn approvals() -> Approvals {
+        let store = crate::store::testing::store().await;
         Approvals::new(store.clone(), EventLog::new(store))
     }
 
@@ -424,7 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_approved_request_signs() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let answer = tokio::spawn({
             let approvals = approvals.clone();
@@ -445,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_denied_request_is_refused() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let answer = tokio::spawn({
             let approvals = approvals.clone();
@@ -458,7 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unanswered_request_times_out_as_denied() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_millis(50));
         let req = request(&agent, sshsig_blob("git"));
         assert!(agent.sign(req).await.is_err());
@@ -467,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_git_data_is_refused_before_anyone_is_asked() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let login = request(&agent, b"session-id-and-userauth".to_vec());
         assert!(agent.sign(login).await.is_err());
@@ -484,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_key_is_refused() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let other = Ed25519Keypair::from_seed(&[4u8; 32]);
         let req = SignRequest {
@@ -497,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_refuses_a_waiting_signature_and_drops_the_key() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(30));
         let shared = agent.shared.clone();
         let sign = tokio::spawn({

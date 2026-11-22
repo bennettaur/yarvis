@@ -16,7 +16,6 @@ use axum::http::request::Parts;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::RngCore;
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
@@ -143,15 +142,7 @@ impl Auth {
         tokio::spawn(async move {
             let mut known: Option<std::collections::HashSet<String>> = None;
             loop {
-                let revoked = auth
-                    .store
-                    .call(|conn| {
-                        let mut stmt =
-                            conn.prepare("SELECT id FROM devices WHERE revoked_at IS NOT NULL")?;
-                        stmt.query_map([], |row| row.get::<_, String>(0))?
-                            .collect::<rusqlite::Result<std::collections::HashSet<String>>>()
-                    })
-                    .await;
+                let revoked = auth.revoked_ids().await;
                 match revoked {
                     Ok(revoked) => {
                         // The first read is the baseline: those were revoked before
@@ -170,42 +161,50 @@ impl Auth {
         })
     }
 
+    async fn revoked_ids(&self) -> Result<std::collections::HashSet<String>, StoreError> {
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM devices WHERE revoked_at IS NOT NULL")
+                .fetch_all(self.store.db()?)
+                .await?;
+        Ok(ids.into_iter().collect())
+    }
+
     /// Looks up a live device by its token and records that it was seen.
     pub async fn authenticate(&self, token: &str) -> Result<Option<DeviceContext>, StoreError> {
         let Some(raw) = URL_SAFE_NO_PAD.decode(token).ok() else {
             return Ok(None);
         };
         let hash = Sha256::digest(&raw).to_vec();
-        self.store
-            .call(move |conn| {
-                let device = conn
-                    .query_row(
-                        "SELECT id, name, scopes, verified_at FROM devices
-                         WHERE token_hash = ?1 AND revoked_at IS NULL
-                           AND COALESCE(last_seen_at, created_at) > ?2",
-                        rusqlite::params![hash, now_ms() - IDLE_EXPIRY_MS],
-                        |row| {
-                            Ok(DeviceContext {
-                                device_id: row.get(0)?,
-                                name: row.get(1)?,
-                                scopes: decode_scopes(&row.get::<_, String>(2)?),
-                                verified_at: row.get(3)?,
-                            })
-                        },
-                    )
-                    .optional()?;
-                if let Some(device) = &device {
-                    // Throttled, so a busy client doesn't turn every read into a write.
-                    let now = now_ms();
-                    conn.execute(
-                        "UPDATE devices SET last_seen_at = ?1
-                         WHERE id = ?2 AND (last_seen_at IS NULL OR last_seen_at < ?3)",
-                        rusqlite::params![now, device.device_id, now - LAST_SEEN_RESOLUTION_MS],
-                    )?;
-                }
-                Ok(device)
-            })
-            .await
+        let db = self.store.db()?;
+        let row: Option<(String, String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT id, name, scopes, verified_at FROM devices
+             WHERE token_hash = $1 AND revoked_at IS NULL
+               AND COALESCE(last_seen_at, created_at) > $2",
+        )
+        .bind(&hash)
+        .bind(now_ms() - IDLE_EXPIRY_MS)
+        .fetch_optional(db)
+        .await?;
+        let Some((device_id, name, scopes, verified_at)) = row else {
+            return Ok(None);
+        };
+        // Throttled, so a busy client doesn't turn every read into a write.
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE devices SET last_seen_at = $1
+             WHERE id = $2 AND (last_seen_at IS NULL OR last_seen_at < $3)",
+        )
+        .bind(now)
+        .bind(&device_id)
+        .bind(now - LAST_SEEN_RESOLUTION_MS)
+        .execute(db)
+        .await?;
+        Ok(Some(DeviceContext {
+            device_id,
+            name,
+            scopes: decode_scopes(&scopes),
+            verified_at,
+        }))
     }
 }
 
@@ -445,23 +444,20 @@ pub async fn create_device(
 ) -> Result<(String, String), StoreError> {
     let (token, hash) = new_token();
     let id = new_id();
-    let (name, kind, scopes, created_by) = (
-        name.to_string(),
-        kind.to_string(),
-        encode_scopes(scopes),
-        created_by.map(str::to_string),
-    );
-    let device_id = id.clone();
-    store
-        .call(move |conn| {
-            conn.execute(
-                "INSERT INTO devices (id, name, kind, scopes, token_hash, created_by, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![id, name, kind, scopes, hash, created_by, now_ms()],
-            )
-        })
-        .await?;
-    Ok((device_id, token))
+    sqlx::query(
+        "INSERT INTO devices (id, name, kind, scopes, token_hash, created_by, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(&id)
+    .bind(name)
+    .bind(kind)
+    .bind(encode_scopes(scopes))
+    .bind(hash)
+    .bind(created_by)
+    .bind(now_ms())
+    .execute(store.db()?)
+    .await?;
+    Ok((id, token))
 }
 
 #[cfg(test)]
@@ -470,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_token_finds_its_device_and_a_wrong_one_finds_nothing() {
-        let store = Store::open_in_memory().unwrap();
+        let store = crate::store::testing::store().await;
         let auth = Auth::new(store.clone());
         let (id, token) = create_device(&store, "laptop", "token", &[Scope::Read], None)
             .await
@@ -485,13 +481,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_revoked_device_is_refused() {
-        let store = Store::open_in_memory().unwrap();
+        let store = crate::store::testing::store().await;
         let auth = Auth::new(store.clone());
         let (id, token) = create_device(&store, "phone", "token", &Scope::ALL, None)
             .await
             .unwrap();
-        store
-            .call(move |conn| conn.execute("UPDATE devices SET revoked_at = 1 WHERE id = ?1", [id]))
+        sqlx::query("UPDATE devices SET revoked_at = 1 WHERE id = $1")
+            .bind(id)
+            .execute(store.db().unwrap())
             .await
             .unwrap();
         assert!(auth.authenticate(&token).await.unwrap().is_none());
@@ -499,19 +496,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_token_idle_past_the_expiry_is_refused() {
-        let store = Store::open_in_memory().unwrap();
+        let store = crate::store::testing::store().await;
         let auth = Auth::new(store.clone());
         let (id, token) = create_device(&store, "old", "token", &[Scope::Read], None)
             .await
             .unwrap();
         let long_ago = now_ms() - IDLE_EXPIRY_MS - 1;
-        store
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE devices SET created_at = ?1, last_seen_at = ?1 WHERE id = ?2",
-                    rusqlite::params![long_ago, id],
-                )
-            })
+        sqlx::query("UPDATE devices SET created_at = $1, last_seen_at = $1 WHERE id = $2")
+            .bind(long_ago)
+            .bind(id)
+            .execute(store.db().unwrap())
             .await
             .unwrap();
         assert!(auth.authenticate(&token).await.unwrap().is_none());

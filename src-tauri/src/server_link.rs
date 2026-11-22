@@ -322,6 +322,7 @@ fn write_server_config(
     #[cfg(not(debug_assertions))]
     let dev_ui_origin: Option<String> = None;
     let agent_socket = local_server::onepassword_agent_socket();
+    let database_schema = crate::instance::server_schema();
     let rendered = local_server::render_server_config(
         &existing,
         &local_server::ServerConfigInputs {
@@ -331,6 +332,7 @@ fn write_server_config(
             paths,
             agent_socket: agent_socket.as_deref(),
             dev_ui_origin: dev_ui_origin.as_deref(),
+            database_schema: database_schema.as_deref(),
         },
     )?;
     std::fs::write(&server_toml, rendered)

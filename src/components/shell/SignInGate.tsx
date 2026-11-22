@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { SidecarError } from "../../lib/api";
 import {
   type AuthStatus,
   type Enrollment,
@@ -30,6 +31,9 @@ const BUTTON =
 const INPUT =
   "w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100";
 const LINK = "self-start text-xs text-zinc-500 underline hover:text-zinc-300";
+
+/** How often sign-in asks again while the server waits for Postgres. */
+const DATABASE_RETRY_MS = 1000;
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -246,12 +250,36 @@ function SignInForm({ onSignedIn }: { onSignedIn: () => void }) {
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [waitingForDatabase, setWaitingForDatabase] = useState(false);
   const [notice] = useState(takeSignOutNotice);
 
   useEffect(() => {
-    getAuthStatus()
-      .then(setStatus)
-      .catch((e) => setStatusError(errorText(e)));
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      getAuthStatus()
+        .then((s) => {
+          if (!active) return;
+          setWaitingForDatabase(false);
+          setStatus(s);
+        })
+        .catch((e) => {
+          if (!active) return;
+          // A 503 is the server up but waiting for Postgres, as at boot, so
+          // keep asking rather than leave the user on an error.
+          if (e instanceof SidecarError && e.status === 503) {
+            setWaitingForDatabase(true);
+            timer = setTimeout(load, DATABASE_RETRY_MS);
+            return;
+          }
+          setStatusError(errorText(e));
+        });
+    };
+    load();
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, []);
 
   return (
@@ -260,6 +288,12 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       {notice && (
         <p className="w-80 text-sm text-amber-300" role="status">
           {notice}
+        </p>
+      )}
+      {waitingForDatabase && (
+        <p className="w-80 text-sm text-amber-300" role="status">
+          The Yarvis server is waiting for its database. Check that PostgreSQL is running; this page
+          carries on once it answers.
         </p>
       )}
       {statusError && (

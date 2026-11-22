@@ -140,6 +140,9 @@ pub struct ServerConfigInputs<'a> {
     /// A dev build's Vite dev server, which serves the UI and proxies `/api`
     /// here, so it has to pass the server's Host and origin checks.
     pub dev_ui_origin: Option<&'a str>,
+    /// The database schema for a named instance's server
+    /// (`instance::server_schema`). Kept if the file already names one.
+    pub database_schema: Option<&'a str>,
 }
 
 /// Merges the keys the app owns into `existing` (the current `server.toml`,
@@ -154,6 +157,7 @@ pub fn render_server_config(existing: &str, inputs: &ServerConfigInputs) -> Resu
         paths,
         agent_socket,
         dev_ui_origin,
+        database_schema,
     } = *inputs;
 
     let mut doc: Table = existing
@@ -202,6 +206,12 @@ pub fn render_server_config(existing: &str, inputs: &ServerConfigInputs) -> Resu
     }
     if sidecar.is_empty() {
         doc.remove("sidecar");
+    }
+
+    if let Some(schema) = database_schema {
+        section(&mut doc, "database")?
+            .entry("schema")
+            .or_insert_with(|| schema.into());
     }
 
     if let Some(socket) = agent_socket {
@@ -303,14 +313,24 @@ fn parse_status(line: &str) -> Result<u16, String> {
     }
 }
 
-/// Waits for `/api/health` to answer 200.
+/// Waits for `/api/health` to answer 200. The server answers 503 while it
+/// waits for Postgres, which gets its own message, since that is the user's
+/// to fix.
 pub async fn wait_healthy(port: u16, limit: Duration) -> Result<(), String> {
     let deadline = Instant::now() + limit;
     loop {
-        if get_status(port, "/api/health", None).await == Ok(200) {
+        let status = get_status(port, "/api/health", None).await;
+        if status == Ok(200) {
             return Ok(());
         }
         if Instant::now() >= deadline {
+            if status == Ok(503) {
+                return Err(format!(
+                    "the local server started but couldn't reach its database within {}s. \
+                     Check that PostgreSQL is running",
+                    limit.as_secs()
+                ));
+            }
             return Err(format!(
                 "the local server didn't start within {}s",
                 limit.as_secs()
@@ -574,6 +594,7 @@ mod tests {
             paths,
             agent_socket: None,
             dev_ui_origin: None,
+            database_schema: None,
         }
     }
 
@@ -681,6 +702,27 @@ mod tests {
                 "http://127.0.0.1:7123",
                 "http://localhost:7123"
             ]
+        );
+    }
+
+    #[test]
+    fn a_named_instance_gets_its_own_schema_unless_the_file_names_one() {
+        let paths = paths(false);
+        let named = ServerConfigInputs {
+            database_schema: Some("yarvis_server_dev"),
+            ..inputs(&paths)
+        };
+        let text = render_server_config("", &named).unwrap();
+        assert_eq!(
+            parse(&text)["database"]["schema"].as_str(),
+            Some("yarvis_server_dev")
+        );
+        let text = render_server_config("[database]\nschema = \"mine\"\n", &named).unwrap();
+        assert_eq!(parse(&text)["database"]["schema"].as_str(), Some("mine"));
+        let text = render_server_config("", &inputs(&paths)).unwrap();
+        assert!(
+            parse(&text).get("database").is_none(),
+            "the primary keeps the default"
         );
     }
 
@@ -946,6 +988,15 @@ mod tests {
         let (port, seen) = fake_http("200 OK").await;
         wait_healthy(port, Duration::from_secs(5)).await.unwrap();
         assert!(seen.lock().unwrap()[0].starts_with("GET /api/health HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn a_server_waiting_for_its_database_says_so() {
+        let (port, _) = fake_http("503 Service Unavailable").await;
+        let err = wait_healthy(port, Duration::from_millis(300))
+            .await
+            .unwrap_err();
+        assert!(err.contains("database"), "{err}");
     }
 
     #[tokio::test]

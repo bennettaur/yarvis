@@ -10,7 +10,6 @@ use yarvis_server::pty::{PtyManager, PtyOptions};
 use yarvis_server::secret_blob::{SecretBlob, Store as SecretStore};
 use yarvis_server::secret_store::memory::MemoryBackend;
 use yarvis_server::settings::SettingsStore;
-use yarvis_server::store::Store;
 use yarvis_server::{AppState, app};
 
 pub struct Server {
@@ -43,7 +42,7 @@ pub async fn serve_with(setup: Setup) -> Server {
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.ssh_agent = setup.ssh_agent;
-    let mut state = AppState::new(config, Store::open_in_memory().unwrap());
+    let mut state = AppState::new(config, yarvis_server::store::testing::store().await);
     let settings = SettingsStore::new(dir.path().join("settings.json"));
     let secrets = setup.secrets.unwrap_or_else(MemoryBackend::empty);
     let blob = SecretBlob::with_store(

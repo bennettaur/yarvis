@@ -173,7 +173,7 @@ async function main() {
   console.log(
     process.env.YARVIS_DATABASE_URL
       ? "[dev-instance] using YARVIS_DATABASE_URL (isolated from the primary database)"
-      : "[dev-instance] sharing the primary database — set YARVIS_DATABASE_URL to isolate it",
+      : "[dev-instance] sharing the primary database (the server's own tables get a schema of their own) — set YARVIS_DATABASE_URL to isolate it",
   );
 
   const child = spawn("bun", ["run", "tauri", "dev", "--config", JSON.stringify(config)], {

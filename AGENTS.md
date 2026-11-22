@@ -24,8 +24,11 @@ the design):
   (`server_link::BRIDGE_PERMISSIONS`); every app command is listed in
   `build.rs` so nothing else is callable from it. A command added for the page
   goes in both, and never one that changes which server the app talks to.
-- **yarvis-server** (`server/crates/yarvis-server/`) — secret storage (macOS
-  Keychain, 1Password or its own vault), settings, sidecar supervision
+- **yarvis-server** (`server/crates/yarvis-server/`) — the account, devices,
+  events and approvals (in the `yarvis_server` schema of the shared Postgres;
+  the URL comes from `YARVIS_DATABASE_URL` or `server.toml`, never Settings),
+  secret storage (macOS Keychain, 1Password or its own vault), settings,
+  sidecar supervision
   (port selection, bearer token, secrets injected as env vars), and every PTY
   session: both the Terminal tab's shells and each workspace's agent session
   live in `src/pty/`, independent of the clients that render them, which attach
@@ -96,7 +99,7 @@ bun run sidecar:dev               # sidecar only (prints a dev bearer token)
 bun run e2e                       # yarvis-server + the built UI in Chromium,
                                   #   signing in with computed TOTP codes;
                                   #   needs `bun run build` and the server
-                                  #   built first
+                                  #   built first, TEST_DATABASE_URL and psql
 bun run demo                      # screenshots + video of the real UI in
                                   #   Chromium, Rust core mocked; see
                                   #   demo/README.md
@@ -122,7 +125,8 @@ cargo fmt --manifest-path src-tauri/Cargo.toml            # Rust format
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
 cargo test --manifest-path server/Cargo.toml --all-targets      # yarvis-server
-                                #   (fmt and clippy the same way); see
+                                #   (fmt and clippy the same way); needs
+                                #   TEST_DATABASE_URL, see
                                 #   docs/client-server.md
 (cd src-tauri && cargo audit)   # Rust advisories — run from src-tauri/ so the
                                 #   accepted-advisory list in
@@ -130,7 +134,8 @@ cargo test --manifest-path server/Cargo.toml --all-targets      # yarvis-server
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
-tests against a `pgvector/pgvector:pg16` service container, the frontend,
+tests, the server tests and the e2e against a `pgvector/pgvector:pg16`
+service container, the frontend,
 sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
 `cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
@@ -259,7 +264,7 @@ report there and leaves the fixes to the author.
 - A fake process writes any file a test polls for under a temp name, then
   `mv`s it into place. The shell creates the file before writing to it, so a
   test that waits only for the file to exist can read it empty.
-- Secrets (provider API keys, tokens, DB URL) are entered in the app's
+- Secrets (provider API keys, tokens) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
   1Password Secure Note reached through the `op` CLI, is `secret_store.rs`'s

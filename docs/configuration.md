@@ -4,12 +4,23 @@ Yarvis keeps its configuration in three places, split by what the value is:
 
 | Kind | Where | Set from |
 | --- | --- | --- |
-| Secrets: the database URL, API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
+| Secrets: API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
 | Everything else you change from the UI | `~/.yarvis/settings.json` | The Settings screen, or by hand |
 | Machine-level overrides | Environment variables | Your shell, before `bun run tauri dev` |
 
 Your data (chat history, memory, tasks, workspaces, PR notes) isn't
 configuration. It lives in Postgres.
+
+## The database URL
+
+The server needs Postgres before anyone can sign in, so its URL is set where
+the server starts, not in Settings. It comes from `YARVIS_DATABASE_URL`, then
+`url` under `[database]` in the server's `server.toml`, then (on an install
+from before this) the `database_url` the Keychain or 1Password item still
+holds, and otherwise `postgres://localhost:5432/yarvis`. The server passes it
+to the sidecar as `DATABASE_URL`. **Settings → Credentials** shows it with any
+password masked, and where it came from. See "Postgres" in
+`docs/client-server.md`.
 
 Secrets never go in env files or in the repo.
 
@@ -25,7 +36,6 @@ reads one back.
 
 | Setting | Used for | Passed to the sidecar as |
 | --- | --- | --- |
-| Database URL | Everything stored in Postgres | `DATABASE_URL` |
 | Anthropic API key | Claude chat | `ANTHROPIC_API_KEY` |
 | Gemini API key | Gemini chat, embeddings, cloud voice | `GEMINI_API_KEY` |
 | Cerebras API key | Cerebras chat | `CEREBRAS_API_KEY` |
@@ -356,7 +366,7 @@ copy of the app, or for debugging.
 | Variable | Effect |
 | --- | --- |
 | `YARVIS_WORKSPACES_ROOT` | Where workspace clones and worktrees go. Default `~/dev/yarvis-workspaces`. |
-| `YARVIS_DATABASE_URL` | Overrides the database URL from the Keychain, for this process only |
+| `YARVIS_DATABASE_URL` | The Postgres database the server and the sidecar use. Wins over `[database] url` in `server.toml`. |
 | `YARVIS_CLAUDE_COMMAND` | Overrides `agentCommand` |
 | `YARVIS_OP_BIN` | Path to the 1Password `op` binary |
 | `YARVIS_INSTANCE` | Names this process as a secondary instance. Use `bun run dev:instance` instead of setting this by hand. |
@@ -384,8 +394,8 @@ URL on `localhost`, `127.0.0.1` or `[::1]`, and ignores half a pair, logging a
 warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
-`DATABASE_URL` or provider key exported in that shell reaches the sidecar
-unless the Keychain has its own value for it. A release build opened from
+provider key exported in that shell reaches the sidecar unless the Keychain
+has its own value for it. `DATABASE_URL` doesn't: the server always sets it. A release build opened from
 Finder has no such shell: it only takes `PATH` from your login shell, and the
 other variables above don't reach it.
 

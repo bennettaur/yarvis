@@ -9,14 +9,16 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use yarvis_server::auth::{Scope, create_device};
 use yarvis_server::config::Config;
-use yarvis_server::store::Store;
 use yarvis_server::{AppState, app};
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn serve() -> (AppState, String) {
-    let state = AppState::new(Config::default(), Store::open_in_memory().unwrap());
+    let state = AppState::new(
+        Config::default(),
+        yarvis_server::store::testing::store().await,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let router = app(state.clone());

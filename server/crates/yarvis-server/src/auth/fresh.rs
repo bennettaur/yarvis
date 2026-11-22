@@ -41,15 +41,12 @@ where
         let Authed { device, .. } = Authed::<S>::from_request_parts(parts, state).await?;
         // Token devices never get `verified_at`, but checking the kind as well
         // keeps a stray write to that column from making a token fresh.
-        let id = device.device_id.clone();
-        let kind: String = Auth::from_ref(state)
-            .store()
-            .call(move |conn| {
-                conn.query_row("SELECT kind FROM devices WHERE id = ?1", [id], |row| {
-                    row.get(0)
-                })
-            })
-            .await?;
+        let auth = Auth::from_ref(state);
+        let kind: String = sqlx::query_scalar("SELECT kind FROM devices WHERE id = $1")
+            .bind(&device.device_id)
+            .fetch_one(auth.store().db()?)
+            .await
+            .map_err(crate::store::StoreError::from)?;
         if kind != super::routes::LOGIN_DEVICE || !is_fresh(device.verified_at, now_ms()) {
             return Err(ApiError::forbidden(REAUTH_REQUIRED).with_detail(
                 "enter a code from your authenticator app first: POST /api/auth/reverify",

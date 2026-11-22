@@ -62,7 +62,6 @@ pub const SECRET_KEYS: &[&str] = &[
     "github_token",
     "azure_devops_token",
     "jira_api_token",
-    "database_url",
     "google_client_secret",
     "verify_agent_signing_key",
     "telegram_bot_token",

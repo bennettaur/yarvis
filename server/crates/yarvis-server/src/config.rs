@@ -18,6 +18,7 @@ pub struct Config {
     pub secrets: SecretsConfig,
     pub ssh_agent: SshAgentConfig,
     pub sidecar: SidecarConfig,
+    pub database: DatabaseConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -26,8 +27,8 @@ pub struct ServerConfig {
     /// Loopback by default. Binding a LAN or tailnet address is a deliberate
     /// choice, since it is what makes the server reachable from other machines.
     pub bind: SocketAddr,
-    /// Where the server keeps its SQLite database and, with the vault backend,
-    /// the vault file.
+    /// Where the server keeps the setup code, its sockets and, with the vault
+    /// backend, the vault file.
     pub data_dir: PathBuf,
     /// The built web UI (`dist/`). Unset means the server serves only `/api`.
     pub web_dir: Option<PathBuf>,
@@ -165,6 +166,37 @@ impl Default for SidecarConfig {
     }
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// The Postgres database the server and the sidecar share, such as
+    /// `postgres://localhost:5432/yarvis`. `YARVIS_DATABASE_URL` wins over it.
+    pub url: Option<String>,
+    /// The schema the server's tables live in. Two servers on one database
+    /// (a dev instance beside the main one, or tests) each need their own,
+    /// or they share one account and devices.
+    pub schema: String,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            schema: crate::store::SCHEMA.to_string(),
+        }
+    }
+}
+
+// By hand, so a password in the URL never reaches a log through `{:?}`.
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("url", &self.url.as_deref().map(crate::database_url::mask))
+            .field("schema", &self.schema)
+            .finish()
+    }
+}
+
 fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".yarvis").join("server"))
@@ -210,6 +242,9 @@ impl Config {
             source,
         })?;
         config.validate()?;
+        if config.database.url.is_some() {
+            warn_if_others_can_read(path);
+        }
         Ok(config)
     }
 
@@ -238,6 +273,24 @@ impl Config {
         Ok(())
     }
 }
+
+/// The database URL can carry a password, so a `server.toml` holding one
+/// should be readable by its owner alone.
+#[cfg(unix)]
+fn warn_if_others_can_read(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        tracing::warn!(
+            "{} holds the database URL and others can read it; run chmod 600 on it",
+            path.display()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_others_can_read(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -293,6 +346,18 @@ mod tests {
         .unwrap();
         assert_eq!(config.secrets.backend, Some(SecretBackendKind::OnePassword));
         assert!(!config.ssh_agent.enabled);
+    }
+
+    #[test]
+    fn reads_the_database_url_and_hides_its_password_from_debug() {
+        let config: Config =
+            toml::from_str("[database]\nurl = \"postgres://me:s3cret@localhost/yarvis\"\n")
+                .unwrap();
+        assert_eq!(
+            config.database.url.as_deref(),
+            Some("postgres://me:s3cret@localhost/yarvis")
+        );
+        assert!(!format!("{config:?}").contains("s3cret"));
     }
 
     #[test]

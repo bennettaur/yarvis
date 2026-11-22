@@ -40,5 +40,5 @@ bun install
 
 echo
 echo "Done. Start the app with: mise exec -- bun run tauri dev"
-echo "Then follow the setup guide in the app, or save postgres://localhost:5432/yarvis and an LLM provider key in Settings -> Credentials."
+echo "Then follow the setup guide in the app, or save an LLM provider key in Settings -> Credentials. The app uses postgres://localhost:5432/yarvis by default."
 """

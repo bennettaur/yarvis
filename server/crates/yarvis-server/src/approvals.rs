@@ -6,9 +6,9 @@
 //! an approval left pending by a restart or by a requester that stopped
 //! waiting: nothing is left to act on a late "yes".
 //!
-//! First-wins is one conditional `UPDATE ... WHERE status = 'pending'`. The
-//! store has one connection, so two devices answering at once are ordered and
-//! the second updates nothing.
+//! First-wins is one conditional `UPDATE ... WHERE status = 'pending'`. Of
+//! two devices answering at once, the second waits on the first's row lock,
+//! then re-checks the status and updates nothing.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,7 +17,6 @@ use std::time::Duration;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
@@ -107,24 +106,7 @@ impl Approvals {
         // once and an answer that arrives first must still find its waiter.
         let (tx, rx) = oneshot::channel();
         lock(&self.waiters).insert(pending.id.clone(), tx);
-        let row = pending.clone();
-        let inserted = self
-            .store
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO approvals (id, kind, summary, data, created_at, expires_at, status)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending')",
-                    rusqlite::params![
-                        row.id,
-                        row.kind,
-                        row.summary,
-                        row.data.to_string(),
-                        row.created_at,
-                        row.expires_at
-                    ],
-                )
-            })
-            .await;
+        let inserted = self.insert(&pending).await;
         if let Err(e) = inserted {
             lock(&self.waiters).remove(&pending.id);
             return Err(e);
@@ -150,6 +132,22 @@ impl Approvals {
         Ok(decision)
     }
 
+    async fn insert(&self, row: &Pending) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO approvals (id, kind, summary, data, created_at, expires_at, status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending')",
+        )
+        .bind(&row.id)
+        .bind(&row.kind)
+        .bind(&row.summary)
+        .bind(row.data.to_string())
+        .bind(row.created_at)
+        .bind(row.expires_at)
+        .execute(self.store.db()?)
+        .await?;
+        Ok(())
+    }
+
     /// Records a device's answer. Only the first one counts.
     pub async fn answer(
         &self,
@@ -157,19 +155,19 @@ impl Approvals {
         device_id: &str,
         approve: bool,
     ) -> Result<Answer, StoreError> {
-        let (row_id, by, now) = (id.to_string(), device_id.to_string(), now_ms());
         let status = if approve { "approved" } else { "denied" };
-        let won = self
-            .store
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE approvals
-                     SET status = ?1, outcome = 'answered', answered_by = ?2, answered_at = ?3
-                     WHERE id = ?4 AND status = 'pending' AND expires_at > ?3",
-                    rusqlite::params![status, by, now, row_id],
-                )
-            })
-            .await?
+        let won = sqlx::query(
+            "UPDATE approvals
+             SET status = $1, outcome = 'answered', answered_by = $2, answered_at = $3
+             WHERE id = $4 AND status = 'pending' AND expires_at > $3",
+        )
+        .bind(status)
+        .bind(device_id)
+        .bind(now_ms())
+        .bind(id)
+        .execute(self.store.db()?)
+        .await?
+        .rows_affected()
             == 1;
         if !won {
             return Ok(match self.settled(id).await? {
@@ -201,53 +199,38 @@ impl Approvals {
 
     /// Approvals still waiting for an answer, oldest first.
     pub async fn pending(&self) -> Result<Vec<Pending>, StoreError> {
-        let now = now_ms();
-        self.store
-            .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, kind, summary, data, created_at, expires_at FROM approvals
-                     WHERE status = 'pending' AND expires_at > ?1 ORDER BY created_at",
-                )?;
-                let rows = stmt.query_map([now], |row| {
-                    let data: String = row.get(3)?;
-                    Ok(Pending {
-                        id: row.get(0)?,
-                        kind: row.get(1)?,
-                        summary: row.get(2)?,
-                        data: serde_json::from_str(&data).unwrap_or(Value::Null),
-                        created_at: row.get(4)?,
-                        expires_at: row.get(5)?,
-                    })
-                })?;
-                rows.collect()
-            })
-            .await
+        let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT id, kind, summary, data, created_at, expires_at FROM approvals
+             WHERE status = 'pending' AND expires_at > $1 ORDER BY created_at",
+        )
+        .bind(now_ms())
+        .fetch_all(self.store.db()?)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, kind, summary, data, created_at, expires_at)| Pending {
+                    id,
+                    kind,
+                    summary,
+                    data: serde_json::from_str(&data).unwrap_or(Value::Null),
+                    created_at,
+                    expires_at,
+                },
+            )
+            .collect())
     }
 
     /// Denies every approval a previous run left pending. Whoever asked is
     /// gone, so an answer now would approve nothing. Run once at startup.
     pub async fn deny_orphaned(&self) -> Result<usize, StoreError> {
-        let now = now_ms();
-        let ids: Vec<String> = self
-            .store
-            .call(move |conn| {
-                let tx =
-                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let ids = {
-                    let mut stmt =
-                        tx.prepare("SELECT id FROM approvals WHERE status = 'pending'")?;
-                    stmt.query_map([], |row| row.get(0))?
-                        .collect::<rusqlite::Result<Vec<String>>>()?
-                };
-                tx.execute(
-                    "UPDATE approvals SET status = 'denied', outcome = 'restart', answered_at = ?1
-                     WHERE status = 'pending'",
-                    [now],
-                )?;
-                tx.commit()?;
-                Ok(ids)
-            })
-            .await?;
+        let ids: Vec<String> = sqlx::query_scalar(
+            "UPDATE approvals SET status = 'denied', outcome = 'restart', answered_at = $1
+             WHERE status = 'pending' RETURNING id",
+        )
+        .bind(now_ms())
+        .fetch_all(self.store.db()?)
+        .await?;
         for id in &ids {
             self.announce_unanswered(id, "restart").await?;
         }
@@ -261,17 +244,16 @@ impl Approvals {
         id: &str,
         outcome: &'static str,
     ) -> Result<Decision, StoreError> {
-        let (row_id, now) = (id.to_string(), now_ms());
-        let changed = self
-            .store
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE approvals SET status = 'denied', outcome = ?1, answered_at = ?2
-                     WHERE id = ?3 AND status = 'pending'",
-                    rusqlite::params![outcome, now, row_id],
-                )
-            })
-            .await?;
+        let changed = sqlx::query(
+            "UPDATE approvals SET status = 'denied', outcome = $1, answered_at = $2
+             WHERE id = $3 AND status = 'pending'",
+        )
+        .bind(outcome)
+        .bind(now_ms())
+        .bind(id)
+        .execute(self.store.db()?)
+        .await?
+        .rows_affected();
         if changed == 1 {
             self.announce_unanswered(id, outcome).await?;
             return Ok(Decision::Unanswered);
@@ -293,24 +275,11 @@ impl Approvals {
     /// What an approval ended as. A pending row past its expiry counts as
     /// unanswered; `None` means there is no such approval.
     async fn settled(&self, id: &str) -> Result<Option<Decision>, StoreError> {
-        let id = id.to_string();
-        let row = self
-            .store
-            .call(move |conn| {
-                conn.query_row(
-                    "SELECT status, outcome, answered_by FROM approvals WHERE id = ?1",
-                    [id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, Option<String>>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                        ))
-                    },
-                )
-                .optional()
-            })
-            .await?;
+        let row: Option<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT status, outcome, answered_by FROM approvals WHERE id = $1")
+                .bind(id)
+                .fetch_optional(self.store.db()?)
+                .await?;
         Ok(row.map(
             |(status, outcome, by)| match (status.as_str(), outcome.as_deref(), by) {
                 ("approved", _, Some(by)) => Decision::Approved { by },

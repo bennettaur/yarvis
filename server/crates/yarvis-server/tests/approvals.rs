@@ -7,11 +7,10 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{Harness, until};
+use common::{Harness, new_schema, store_on, until};
 use serde_json::json;
 use yarvis_server::approvals::{Approvals, Decision};
 use yarvis_server::events::EventLog;
-use yarvis_server::store::Store;
 
 /// Waits for a requester, failing rather than stalling if it was never woken.
 async fn settled(requester: tokio::task::JoinHandle<Decision>) -> Decision {
@@ -229,9 +228,8 @@ async fn an_approval_whose_requester_stopped_waiting_is_denied() {
 
 #[tokio::test]
 async fn approvals_left_pending_by_a_restart_are_denied() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("server.db");
-    let store = Store::open(&path).unwrap();
+    let schema = new_schema().await;
+    let store = store_on(&schema).await;
     let before = Approvals::new(store.clone(), EventLog::new(store.clone()));
     // A request that outlives this "run": the task is never awaited.
     let pending = tokio::spawn({
@@ -248,7 +246,7 @@ async fn approvals_left_pending_by_a_restart_are_denied() {
     .await;
 
     // A second server on the same database, as after a crash.
-    let h = Harness::on(Store::open(&path).unwrap()).await;
+    let h = Harness::on(store_on(&schema).await).await;
     assert_eq!(h.state.approvals.deny_orphaned().await.unwrap(), 1);
     assert!(h.state.approvals.pending().await.unwrap().is_empty());
     let answered = h.events("approval.answered").await;
@@ -278,15 +276,9 @@ async fn an_answer_after_the_deadline_is_refused_even_before_the_timeout_fires()
     let laptop = h.setup().await;
     let (id, requester) = ask(&h, "late", Duration::from_secs(30)).await;
     // Past its deadline in the database, while the requester still waits.
-    let row_id = id.clone();
-    h.state
-        .store
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE approvals SET expires_at = 0 WHERE id = ?1",
-                [row_id],
-            )
-        })
+    sqlx::query("UPDATE approvals SET expires_at = 0 WHERE id = $1")
+        .bind(&id)
+        .execute(h.state.store.db().unwrap())
         .await
         .unwrap();
     let (st, body) = h
@@ -357,15 +349,12 @@ async fn the_requester_and_the_answer_agree_when_an_answer_races_the_timeout() {
     }
 }
 
-/// A second connection writing (a CLI run beside the server) makes the sweep
-/// wait for the lock rather than fail. A transaction that reads and then
-/// writes can't wait once it holds a read in WAL mode, so the sweep has to
-/// take the write lock up front.
+/// A second connection holding the rows (a CLI run beside the server) makes
+/// the sweep wait for it rather than fail or miss the row.
 #[tokio::test]
 async fn the_restart_sweep_waits_for_another_writer() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("server.db");
-    let store = Store::open(&path).unwrap();
+    let schema = new_schema().await;
+    let store = store_on(&schema).await;
     let approvals = Approvals::new(store.clone(), EventLog::new(store));
     let _pending = tokio::spawn({
         let approvals = approvals.clone();
@@ -380,9 +369,13 @@ async fn the_restart_sweep_waits_for_another_writer() {
     })
     .await;
 
-    let after = Store::open(&path).unwrap();
-    let writer = rusqlite::Connection::open(&path).unwrap();
-    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let after = store_on(&schema).await;
+    let writer = store_on(&schema).await;
+    let mut held = writer.begin().await.unwrap();
+    sqlx::query("UPDATE approvals SET summary = summary")
+        .execute(&mut *held)
+        .await
+        .unwrap();
     let sweep = tokio::spawn(async move {
         Approvals::new(after.clone(), EventLog::new(after))
             .deny_orphaned()
@@ -390,6 +383,6 @@ async fn the_restart_sweep_waits_for_another_writer() {
     });
     // Holds the lock long enough for the sweep to run into it.
     tokio::time::sleep(Duration::from_millis(200)).await;
-    writer.execute_batch("COMMIT").unwrap();
+    held.commit().await.unwrap();
     assert_eq!(sweep.await.unwrap().unwrap(), 1);
 }

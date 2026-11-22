@@ -7,7 +7,7 @@ mod common;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 use axum::http::StatusCode;
-use common::{Harness, until};
+use common::{Harness, cli_config, new_schema, server_command, until};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use yarvis_server::config::{Config, SecretBackendKind};
@@ -308,20 +308,21 @@ async fn an_agent_that_cannot_start_leaves_the_vault_unlocked() {
 
 #[tokio::test]
 async fn the_vault_init_command() {
+    let schema = new_schema().await;
     let run = |agent_enabled: bool| {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("server.toml");
         std::fs::write(
             &config,
             format!(
-                "[server]\ndata_dir = {:?}\n[secrets]\nbackend = \"vault\"\n[ssh_agent]\nenabled = {agent_enabled}\n",
-                dir.path()
+                "{}[secrets]\nbackend = \"vault\"\n[ssh_agent]\nenabled = {agent_enabled}\n",
+                cli_config(dir.path(), &schema)
             ),
         )
         .unwrap();
         let init = move || {
             use std::io::Write;
-            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+            let mut child = server_command()
                 .args([
                     "--config",
                     config.to_str().unwrap(),

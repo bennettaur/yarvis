@@ -122,8 +122,20 @@ database URL is therefore:
 postgres://localhost:5432/yarvis
 ```
 
-You enter that URL in the app in step 5. The app creates the tables itself the
-first time it connects.
+That is the URL the app uses when you set none, so with these defaults there
+is nothing to enter. The app creates the tables itself the first time it
+connects. For a different URL (one with a password, say), add it to the local
+server's config, `~/Library/Application Support/com.mikebennett.yarvis/server.toml`,
+and restart the app:
+
+```toml
+[database]
+url = "postgres://USER:PASSWORD@localhost:5432/yarvis"
+```
+
+The server needs the database before anyone can sign in, so the URL isn't
+something you set in Settings. `YARVIS_DATABASE_URL` in the environment of
+`bun run tauri dev` works too.
 
 Homebrew's Postgres only listens on your own machine, so the network can't
 reach it. It does trust every local connection, though. Any program running as
@@ -178,10 +190,10 @@ tour of each page. You can skip it and reopen it, or the tour, at any time from 
 To do the same by hand, open **Settings** (the gear at the bottom of the nav
 rail on the left) and do these three things.
 
-1. **Connect the database.** Go to **Settings → Credentials**. In **Database
-   URL**, enter `postgres://localhost:5432/yarvis` and press **Save**. The
-   sidecar restarts and creates its tables. You see "Preparing your
-   database…" for a moment.
+1. **Check the database.** **Settings → Credentials** shows the Database URL
+   the app uses and where it came from. With the defaults above there is
+   nothing to do. You see "Preparing your database…" for a moment on the first
+   start, while the tables are created.
 2. **Add an LLM provider.** On the same Credentials tab, save one of:
    - **Anthropic API key** (`sk-ant-…`) from the
      [Anthropic Console](https://console.anthropic.com). This is the best-tested
@@ -248,6 +260,11 @@ rest of the app is built around.
 
 ## Troubleshooting
 
+**The sign-in screen says the server is waiting for its database.** The local
+server can't reach Postgres, or the database doesn't exist yet. It keeps
+trying, and the screen moves on by itself once it gets through. The causes
+are the ones below; the server's log names the one it hit.
+
 **"Couldn't start the local service."** The sidecar failed to start, usually on
 the database. The screen shows the error. Common causes:
 
@@ -259,7 +276,8 @@ the database. The screen shows the error. Common causes:
   `psql --version` reports 17.
 
 Fix the cause, then press **Retry**. **Continue anyway** opens the app without
-the database, so you can change the URL in Settings.
+the sidecar. To use a different database, set its URL as in step 2 and restart
+the app.
 
 **The provider picker says "(no key)".** That provider has no key saved. Save
 one in Settings → Credentials.

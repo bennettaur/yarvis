@@ -74,9 +74,24 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// The error a client answers by retrying later: the server is up but its
+/// database isn't reachable.
+pub const DATABASE_UNAVAILABLE: &str = "database_unavailable";
+
 impl From<crate::store::StoreError> for ApiError {
     fn from(e: crate::store::StoreError) -> Self {
+        if e.is_unavailable() {
+            tracing::warn!("{e}");
+            return Self::new(StatusCode::SERVICE_UNAVAILABLE, DATABASE_UNAVAILABLE)
+                .with_detail("the server can't reach its database; try again shortly");
+        }
         Self::internal(e)
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    fn from(e: sqlx::Error) -> Self {
+        crate::store::StoreError::from(e).into()
     }
 }
 

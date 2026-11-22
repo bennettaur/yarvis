@@ -12,8 +12,16 @@ import { stubServerRoutes } from "../../test/serverRoutes";
 import SignInGate from "./SignInGate";
 
 let setupRequired = false;
+/** How many more status checks answer as if Postgres were still down. */
+let databaseDownFor = 0;
 const server = stubServerRoutes({
-  "GET /api/auth/status": () => Response.json({ setupRequired, vault: "absent" }),
+  "GET /api/auth/status": () => {
+    if (databaseDownFor > 0) {
+      databaseDownFor -= 1;
+      return Response.json({ error: "database_unavailable" }, { status: 503 });
+    }
+    return Response.json({ setupRequired, vault: "absent" });
+  },
   "GET /api/devices/me": () => Response.json({ error: "sign in first" }, { status: 401 }),
   "DELETE /api/devices/me": () => Response.json({ error: "boom" }, { status: 500 }),
   "POST /api/auth/login": () =>
@@ -42,6 +50,7 @@ afterEach(() => {
   unmount?.();
   unmount = undefined;
   setupRequired = false;
+  databaseDownFor = 0;
   server.calls.length = 0;
 });
 
@@ -72,6 +81,19 @@ async function press(host: HTMLElement, text: string) {
 }
 
 describe("SignInGate", () => {
+  it("waits for the server's database, then offers sign-in", async () => {
+    databaseDownFor = 1;
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("waiting for its database") === true,
+      "the waiting notice",
+    );
+    expect(mounted.host.querySelector("[role=alert]")).toBeNull();
+    await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form", 4_000);
+    expect(mounted.host.textContent).not.toContain("waiting for its database");
+  });
+
   it("shows the app to a signed-in device, and sign-in once the server rejects it", async () => {
     saveDeviceToken("tok-me");
     const mounted = await mountForInteraction(gate());

@@ -459,12 +459,6 @@ pub fn sidecar_env(secrets: &Value, settings: &Settings) -> Vec<(&'static str, S
         ("telegram_otp_secret", "TELEGRAM_OTP_SECRET"),
     ];
     let mut env = Vec::new();
-    if let Some(url) = database_url(
-        database_url_override(),
-        secret_from_root(secrets, "database_url"),
-    ) {
-        env.push(("DATABASE_URL", url));
-    }
     for (key, var) in SECRET_VARS {
         if let Some(value) = secret_from_root(secrets, key) {
             env.push((*var, value));
@@ -538,17 +532,6 @@ fn allowed_origins(origins: &[String]) -> String {
         .map(|o| o.trim())
         .collect::<Vec<_>>()
         .join(",")
-}
-
-/// Picks the database the sidecar connects to. The `YARVIS_DATABASE_URL`
-/// override wins, so a server run for testing a migration uses its own
-/// database rather than the one stored for everyday use.
-fn database_url(override_url: Option<String>, stored_url: Option<String>) -> Option<String> {
-    override_url.or(stored_url)
-}
-
-fn database_url_override() -> Option<String> {
-    env_value("YARVIS_DATABASE_URL")
 }
 
 /// Reads an env var, treating an empty value as unset.
@@ -681,22 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn an_override_beats_the_stored_database_url() {
-        assert_eq!(
-            database_url(
-                Some("postgres://dev".into()),
-                Some("postgres://main".into())
-            ),
-            Some("postgres://dev".into())
-        );
-        assert_eq!(
-            database_url(None, Some("postgres://main".into())),
-            Some("postgres://main".into())
-        );
-        assert_eq!(database_url(None, None), None);
-    }
-
-    #[test]
     fn the_sidecar_is_told_which_instance_it_serves_and_whether_it_owns_the_workers() {
         // The names and the "1"/"0" encoding are a contract with
         // `sidecar/src/config.ts`; drifting either side fails open.
@@ -748,11 +715,9 @@ mod tests {
         assert_eq!(get("JIRA_EMAIL"), Some("dev@acme.com"));
         assert_eq!(get("TELEGRAM_OTP_WINDOW_MINUTES"), Some("30"));
         assert_eq!(get("JIRA_BASE_URL"), None);
-        // The override, when the test runs with one, wins; see the test above.
-        assert_eq!(
-            get("DATABASE_URL"),
-            database_url(database_url_override(), Some("postgres://main".into())).as_deref()
-        );
+        // The server hands over the URL it connected with (`set_env`), not
+        // one left in the secrets.
+        assert_eq!(get("DATABASE_URL"), None);
         assert_eq!(
             get("YARVIS_CUSTOM_PROVIDER_SECRETS"),
             Some(r#"{"litellm":{"apiKey":"k"}}"#)

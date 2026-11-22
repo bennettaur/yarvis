@@ -7,6 +7,7 @@ pub mod config;
 pub mod control;
 pub mod core_api;
 pub mod custom_providers;
+pub mod database_url;
 pub mod devices;
 pub mod embeddings_secrets;
 pub mod error;
@@ -30,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::FromRef;
+use axum::extract::{FromRef, State};
 use axum::routing::{any, get, post};
 
 use crate::approvals::Approvals;
@@ -73,6 +74,9 @@ pub struct AppState {
     pub secrets: SecretBlob,
     pub sidecar: Sidecar,
     pub pty: PtyManager,
+    /// The database the server connected to, for Settings to show. `None` in
+    /// tests, which hand the store in directly.
+    pub database: Option<database_url::DatabaseUrl>,
 }
 
 impl AppState {
@@ -115,6 +119,7 @@ impl AppState {
             auth: Auth::new(store.clone()),
             events,
             store,
+            database: None,
         }
     }
 }
@@ -153,8 +158,27 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "status": "ok", "service": "yarvis-server" }))
+/// 503 until the database is reachable and migrated, so a client waiting for
+/// the server to start waits for that too.
+async fn health(State(state): State<AppState>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if state.store.is_ready() {
+        return axum::Json(serde_json::json!({
+            "status": "ok",
+            "service": "yarvis-server",
+            "database": "ok",
+        }))
+        .into_response();
+    }
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "status": "starting",
+            "service": "yarvis-server",
+            "database": "unavailable",
+        })),
+    )
+        .into_response()
 }
 
 async fn me(Authed { device, .. }: Authed<Read>) -> axum::Json<DeviceContext> {

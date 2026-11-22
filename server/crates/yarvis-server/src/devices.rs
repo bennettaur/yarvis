@@ -42,6 +42,20 @@ pub fn device_name(raw: &str) -> ApiResult<String> {
     Ok(name.to_string())
 }
 
+#[derive(sqlx::FromRow)]
+struct DeviceRecord {
+    id: String,
+    name: String,
+    kind: String,
+    scopes: String,
+    created_by: Option<String>,
+    user_agent: Option<String>,
+    created_at: i64,
+    last_seen_at: Option<i64>,
+    verified_at: Option<i64>,
+    revoked_at: Option<i64>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceRow {
@@ -64,33 +78,30 @@ async fn list(
     State(state): State<AppState>,
     Authed { device, .. }: Authed<Admin>,
 ) -> ApiResult<Json<Vec<DeviceRow>>> {
-    let rows = state
-        .store
-        .call(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, kind, scopes, created_by, user_agent,
-                        created_at, last_seen_at, verified_at, revoked_at
-                 FROM devices ORDER BY created_at",
-            )?;
-            let rows = stmt.query_map([], |row| {
-                let id: String = row.get(0)?;
-                Ok(DeviceRow {
-                    current: id == device.device_id,
-                    device_id: id,
-                    name: row.get(1)?,
-                    kind: row.get(2)?,
-                    scopes: decode_scopes(&row.get::<_, String>(3)?),
-                    created_by: row.get(4)?,
-                    user_agent: row.get(5)?,
-                    created_at: row.get(6)?,
-                    last_seen_at: row.get(7)?,
-                    verified_at: row.get(8)?,
-                    revoked_at: row.get(9)?,
-                })
-            })?;
-            rows.collect()
+    let rows: Vec<DeviceRecord> = sqlx::query_as(
+        "SELECT id, name, kind, scopes, created_by, user_agent,
+                created_at, last_seen_at, verified_at, revoked_at
+         FROM devices ORDER BY created_at",
+    )
+    .fetch_all(state.store.db()?)
+    .await
+    .map_err(StoreError::from)?;
+    let rows = rows
+        .into_iter()
+        .map(|row| DeviceRow {
+            current: row.id == device.device_id,
+            device_id: row.id,
+            name: row.name,
+            kind: row.kind,
+            scopes: decode_scopes(&row.scopes),
+            created_by: row.created_by,
+            user_agent: row.user_agent,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+            verified_at: row.verified_at,
+            revoked_at: row.revoked_at,
         })
-        .await?;
+        .collect();
     Ok(Json(rows))
 }
 
@@ -198,16 +209,14 @@ pub(crate) async fn revoke_self(
 /// Revokes `id`, closes its sockets, and records that `by` did it.
 async fn revoke_device(state: &AppState, by: &str, id: String) -> ApiResult<Json<Revoked>> {
     let revoked_at = now_ms();
-    let row_id = id.clone();
-    let changed = state
-        .store
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE devices SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
-                rusqlite::params![revoked_at, row_id],
-            )
-        })
-        .await?;
+    let changed =
+        sqlx::query("UPDATE devices SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL")
+            .bind(revoked_at)
+            .bind(&id)
+            .execute(state.store.db()?)
+            .await
+            .map_err(StoreError::from)?
+            .rows_affected();
     if changed == 0 {
         return Err(ApiError::new(
             StatusCode::NOT_FOUND,

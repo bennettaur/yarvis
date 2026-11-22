@@ -1,9 +1,11 @@
 use std::future::IntoFuture;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use tracing_subscriber::EnvFilter;
 use yarvis_server::config::{Config, SecretBackendKind};
+use yarvis_server::database_url::{self, DatabaseUrl, UrlSource};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
 use yarvis_server::secret_blob::Store as SecretStore;
@@ -33,7 +35,7 @@ enum Command {
     },
     /// Removes the account and prints a new setup code, for an owner who lost
     /// both the authenticator and the backup codes. The same trust as
-    /// `device add`: whoever runs it can already read the database.
+    /// `device add`: whoever runs it can already reach the database.
     AuthReset {
         /// Also revokes every device, for a reset after a compromise.
         sign_out_all: bool,
@@ -42,10 +44,6 @@ enum Command {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
-
     let (command, config_path) = match parse_args(std::env::args().skip(1)) {
         Ok(parsed) => parsed,
         Err(message) => {
@@ -53,10 +51,41 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // sqlx logs every Postgres notice ("schema already exists") at info.
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,sqlx=warn".into());
+    let logs = tracing_subscriber::fmt().with_env_filter(filter);
+    // A CLI command's stdout is its result (a token, a code), so its logs go
+    // to stderr.
+    if let Command::Serve = command {
+        logs.init();
+    } else {
+        logs.with_writer(std::io::stderr).init();
+    }
     let config = Config::load(&config_path).unwrap_or_else(|e| fail(e));
-    let store = Store::open(&config.server.data_dir.join("server.db")).unwrap_or_else(|e| fail(e));
+    create_private_dir(&config.server.data_dir).unwrap_or_else(|e| {
+        fail(format!(
+            "couldn't create {}: {e}",
+            config.server.data_dir.display()
+        ))
+    });
+    note_unused_sqlite_database(&config.server.data_dir);
+    let database = find_database(&config).await;
+    let store =
+        Store::connect_lazy(&database.url, &config.database.schema).unwrap_or_else(|e| fail(e));
+    if let Command::Serve = command {
+        return serve(config, store, database).await;
+    }
+    store
+        .connect_with_retry(Some(CLI_DATABASE_WAIT))
+        .await
+        .unwrap_or_else(|e| {
+            fail(format!(
+                "couldn't open the database at {}: {e}",
+                database.masked()
+            ))
+        });
     match command {
-        Command::Serve => serve(config, store).await,
+        Command::Serve => unreachable!("handled above"),
         Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
         Command::VaultInit { passphrase_stdin } => {
             vault_init(&config, store, passphrase_stdin).await
@@ -65,39 +94,73 @@ async fn main() {
     }
 }
 
-async fn serve(config: Config, store: Store) {
+/// How long a CLI command waits for Postgres before giving up.
+const CLI_DATABASE_WAIT: Duration = Duration::from_secs(10);
+
+/// The database URL, from the environment, `server.toml`, on an older
+/// install the secret store, or else the default.
+async fn find_database(config: &Config) -> DatabaseUrl {
+    let legacy_config = config.clone();
+    let database = tokio::task::spawn_blocking(move || {
+        // Only reached when the env var and server.toml name nothing.
+        database_url::resolve(&legacy_config, database_url::from_env(), || {
+            database_url::from_legacy_secret_store(&legacy_config)
+        })
+    })
+    .await
+    .unwrap_or_else(|e| fail(format!("finding the database failed: {e}")));
+    if database.source == UrlSource::Default {
+        tracing::info!(
+            "no database URL set ({} or [database] url in server.toml), so using {}",
+            database_url::ENV_VAR,
+            database_url::DEFAULT_URL
+        );
+    }
+    if database.source == UrlSource::SecretStore {
+        tracing::warn!(
+            "using the database URL saved in the secret store. Set {} or `url` under [database] \
+             in server.toml instead: the server can't read the secret store before the vault \
+             is unlocked or outside a login session",
+            database_url::ENV_VAR
+        );
+    }
+    database
+}
+
+/// Server state lived in `<data_dir>/server.db` before it moved to Postgres.
+/// Nothing is copied from it, so the account has to be set up again.
+fn note_unused_sqlite_database(data_dir: &Path) {
+    let old = data_dir.join("server.db");
+    if old.exists() {
+        tracing::info!(
+            "{} isn't used: the server keeps its state in Postgres, so set the account up again. \
+             The file can be deleted.",
+            old.display()
+        );
+    }
+}
+
+/// The data dir holds the setup code, the sockets and, with the vault
+/// backend, the vault, so only its owner may enter it.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+async fn serve(config: Config, store: Store, database: DatabaseUrl) {
     #[cfg(unix)]
     if let Err(e) = yarvis_server::pty::process::raise_fd_limit() {
         tracing::warn!("couldn't raise the file descriptor limit: {e}");
     }
     let bind = config.server.bind;
-    let setup_code_file = config.server.data_dir.join("setup-code");
-    let state = AppState::new(config, store);
-    match state.approvals.deny_orphaned().await {
-        Ok(0) => {}
-        Ok(n) => tracing::info!("denied {n} approvals left pending by the last run"),
-        Err(e) => fail(e),
-    }
-    // stdout and a private file, never the log: whoever holds this code can
-    // claim the server.
-    match state
-        .account
-        .issue_setup_code_if_needed(Some(&setup_code_file))
-        .await
-    {
-        Ok(Some(code)) => println!(
-            "This server isn't set up yet. Setup code: {code} (also in {})",
-            setup_code_file.display()
-        ),
-        Ok(None) => {}
-        Err(e) => fail(e),
-    }
-    let watch = state.auth.watch_outside_revocations();
-    tokio::spawn(async move {
-        if let Err(e) = watch.await {
-            tracing::error!("stopped closing sockets of devices revoked by the CLI: {e}");
-        }
-    });
+    let mut state = AppState::new(config, store);
+    state.sidecar.set_env("DATABASE_URL", &database.url);
+    state.database = Some(database);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
@@ -110,7 +173,9 @@ async fn serve(config: Config, store: Store) {
         Err(e) => tracing::error!("the control socket isn't available: {e}"),
     }
     let pty = state.pty.clone();
-    let supervisor = start_core(&state).await;
+    // Listening first, so `/api/health` answers 503 while Postgres comes up
+    // rather than the port refusing connections.
+    let startup = tokio::spawn(start_when_database_ready(state.clone()));
     tracing::info!("listening on http://{bind}");
     // The peer address feeds the per-IP limit on the sign-in routes.
     let server = axum::serve(
@@ -130,11 +195,49 @@ async fn serve(config: Config, store: Store) {
     }
     // Dropping the supervisor kills the sidecar (`kill_on_drop`), so it never
     // outlives the server.
-    if let Some(supervisor) = supervisor {
+    startup.abort();
+    if let Ok(Some(supervisor)) = startup.await {
         supervisor.abort();
         let _ = supervisor.await;
     }
     pty.kill_all();
+}
+
+/// Waits for Postgres, then does the startup work that needs it and starts
+/// the sidecar, which uses the same database. Returns the sidecar
+/// supervisor's task, if the sidecar runs.
+async fn start_when_database_ready(state: AppState) -> Option<tokio::task::JoinHandle<()>> {
+    if let Err(e) = state.store.connect_with_retry(None).await {
+        fail(format!("couldn't set up the database: {e}"));
+    }
+    tracing::info!("connected to the database");
+    match state.approvals.deny_orphaned().await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("denied {n} approvals left pending by the last run"),
+        Err(e) => fail(e),
+    }
+    // stdout and a private file, never the log: whoever holds this code can
+    // claim the server.
+    let setup_code_file = state.config.server.data_dir.join("setup-code");
+    match state
+        .account
+        .issue_setup_code_if_needed(Some(&setup_code_file))
+        .await
+    {
+        Ok(Some(code)) => println!(
+            "This server isn't set up yet. Setup code: {code} (also in {})",
+            setup_code_file.display()
+        ),
+        Ok(None) => {}
+        Err(e) => fail(e),
+    }
+    let watch = state.auth.watch_outside_revocations();
+    tokio::spawn(async move {
+        if let Err(e) = watch.await {
+            tracing::error!("stopped closing sockets of devices revoked by the CLI: {e}");
+        }
+    });
+    start_core(&state).await
 }
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -236,8 +339,7 @@ fn read_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
 /// Revocations reach a running server's open sockets through its poll of
 /// the devices table; requests refuse the tokens at once.
 async fn auth_reset(config: &Config, store: Store, sign_out_all: bool) {
-    let reset = store
-        .call(move |conn| yarvis_server::auth::account::reset(conn, sign_out_all))
+    let reset = yarvis_server::auth::account::reset(&store, sign_out_all)
         .await
         .unwrap_or_else(|e| fail(e));
     let code = reset.setup_code;
@@ -439,6 +541,17 @@ mod tests {
         assert!(parse(&["auth", "reset", "--name", "x"]).is_err());
         assert!(parse(&["--sign-out-all"]).is_err());
         assert!(parse(&["vault", "init", "--sign-out-all"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_data_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("nested").join("data");
+        create_private_dir(&data).unwrap();
+        let mode = std::fs::metadata(&data).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]
