@@ -140,17 +140,18 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
 }
 
 /**
- * Waits for the attention item that points at question `id`. `askQuestions`
+ * Waits for the attention item that points at `questionId`. `askQuestions`
  * stores the question before raising its item, so a test that has only waited
- * for the question can read `attention_items` too early. A session's item
- * carries the id of its latest question.
+ * for the question can read `attention_items` too early. A session's questions
+ * share one item whose payload names the latest of them, so look it up by the
+ * newest id.
  */
-async function attentionItemFor(id: string): Promise<postgres.Row> {
+async function attentionItemFor(questionId: string): Promise<postgres.Row> {
   let item: postgres.Row | undefined;
   await until(async () => {
-    [item] = await sql`SELECT * FROM attention_items WHERE payload->>'questionId' = ${id}`;
+    [item] = await sql`SELECT * FROM attention_items WHERE payload->>'questionId' = ${questionId}`;
     return item !== undefined;
-  }, `the attention item for question ${id}`);
+  }, `the attention item for question ${questionId}`);
   return item!;
 }
 
@@ -270,6 +271,7 @@ describe("ask_user over MCP", () => {
   it("keeps a question pending when its session is marked read on view", async () => {
     const call = callTool("ask_user", ASK);
     const id = await pendingQuestionId();
+    // Without the item in place, the clear below has nothing to skip.
     await attentionItemFor(id);
 
     const cleared = await app.request("/api/attention/clear", {
@@ -295,9 +297,11 @@ describe("ask_user over MCP", () => {
 
   it("keeps a session's bell up until its last question is answered", async () => {
     const first = callTool("ask_user", ASK);
-    await pendingQuestionIds(1);
+    const [firstId] = await pendingQuestionIds(1);
+    // The first item is up before the second ask, so the second must coalesce onto it.
+    const firstItem = await attentionItemFor(firstId!);
     const second = callTool("ask_user", { ...ASK, task: "A second question" });
-    const [firstId, secondId] = await pendingQuestionIds(2);
+    const [, secondId] = await pendingQuestionIds(2);
 
     const listed = await app.request(
       `/api/questions?sessionKey=${encodeURIComponent(sessionKey)}`,
@@ -308,7 +312,7 @@ describe("ask_user over MCP", () => {
       secondId!,
     ]);
     // Both questions share the session's one attention item.
-    await attentionItemFor(secondId!);
+    expect((await attentionItemFor(secondId!)).id).toBe(firstItem.id);
     expect(await sql`SELECT id FROM attention_items`).toHaveLength(1);
 
     await decline(firstId!);
