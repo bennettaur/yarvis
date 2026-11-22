@@ -67,7 +67,8 @@ YARVIS_E2E_URL=http://localhost:7878 YARVIS_E2E_TOKEN=<token> scripts/test.sh
 They also take `YARVIS_E2E_READ_TOKEN` (a `read`-only token, for the scope
 check), and `YARVIS_E2E_PASSPHRASE` with `YARVIS_E2E_TOTP_SECRET` (the
 base32 secret setup showed) to test signing in. They cover sign-in,
-`/api/devices/me`, the events socket, a shell over `/api/pty/{id}`, and the
+`/api/devices/me`, signing out with `DELETE /api/devices/me`, the events
+socket, a shell over `/api/pty/{id}` and its row in `GET /api/pty`, and the
 4401 and 4403 closes. Chat and attention need the sidecar and Postgres, so
 they're tested only against stubs.
 
@@ -78,9 +79,11 @@ app (or a backup code). The URL must be `https`, or `http` on loopback
 (`localhost`, any `127.x.x.x`, `::1`). Requests don't follow a redirect off
 the server's origin. The device token goes in the login
 Keychain as a generic password, service `dev.yarvis.mac.device-token`,
-account = the server URL. Sign Out (in the app menu) deletes it from this
-Mac. The device stays valid on the server until you revoke it in the web
-UI's Settings → Devices.
+account = the server URL. Sign Out (in the app menu) revokes the device on
+the server (`DELETE /api/devices/me`) and deletes the token from this Mac.
+The token is deleted even when the server can't be reached; the app then
+says the device may still be listed under Settings → Devices in the web UI,
+where you can revoke it.
 
 A server that isn't set up yet needs the web UI first: setup (the setup
 code, the passphrase, the authenticator, the backup codes) isn't built here.
@@ -102,13 +105,15 @@ Native:
   (AskUserQuestion prompts get a question form), dismiss an item, or open it.
   Opening goes to the chat thread or terminal it names, or to the web UI.
   New items post a macOS notification from the wrapped app.
-- **Terminals.** Each active workspace's agent session (`ws-claude:<id>`),
-  with Start when none is running, and terminals opened from this app, in
-  SwiftTerm. They resume where they left off after a dropped connection; an
-  agent session that ended meanwhile isn't reattached, since that would
-  start a plain shell under its id. The server has no route that lists live
-  PTYs, so the app lists only those. Programs in a terminal can't write the
-  clipboard (OSC 52 is ignored), and only http(s) links open.
+- **Terminals.** Every session `GET /api/pty` lists, in SwiftTerm: each
+  active workspace's agent session (`ws-claude:<id>`, with Start when none
+  is running), shells from any client, and running review sessions. The list
+  is read again on each `pty.started` and `pty.exited` event. Exited shells
+  stay listed until you end them; opening one starts a new shell. Sessions
+  resume where they left off after a dropped connection; an agent session
+  that ended isn't reattached, since that would start a plain shell under
+  its id. Programs in a terminal can't write the clipboard (OSC 52 is
+  ignored), and only http(s) links open.
 
 Web (Show Web UI, Shift-Cmd-U, or the globe button):
 

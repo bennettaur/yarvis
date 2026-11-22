@@ -25,7 +25,9 @@ In a `WKWebView`: everything else, including first-run setup, the vault
 unlock screen, devices and Settings.
 
 Checked against a real `yarvis-server` with the sidecar off: sign-in with a
-passphrase and TOTP, `/api/devices/me`, a wrong reverify code (`403`, the
+passphrase and TOTP, `/api/devices/me`, signing out with
+`DELETE /api/devices/me` (its 4401 close, then a second revoke answered
+`401`), `GET /api/pty` listing an exited shell, a wrong reverify code (`403`, the
 device stays signed in), `/api/events` with `since`, a shell over
 `/api/pty/{id}` and its `pty.exited` event, and the `4401` and `4403`
 closes. Chat and attention need the sidecar and Postgres, so they're tested
@@ -67,7 +69,9 @@ binary frame is an 8-byte big-endian offset then the bytes: feed the bytes to
 `TerminalView.feed(byteArray:)` and keep the offset. On `mode: "snapshot"`,
 reset the terminal before feeding. Send keystrokes as binary frames, and
 `{"type":"resize"}` from `sizeChanged`. Opening terminals needs the
-`terminal` scope.
+`terminal` scope. The list comes from `GET /api/pty`, read again on each
+`pty.started` and `pty.exited` event, since the two can arrive in either
+order.
 
 **WKWebView fallback.** The web view signs in on its own, with the
 passphrase and a code, and becomes a device of its own. The app doesn't
@@ -83,12 +87,6 @@ stream (`/api/attention/stream`) replays nothing, so the list is reloaded
 each time it reconnects.
 
 ## What in the API gets in the way
-
-- **No route lists live PTY sessions.** The web UI keeps its terminal tab ids
-  in the browser, so a native client can only list the sessions it can name:
-  each workspace's `ws-claude:<id>` (checked with `pty_exists`) and the ones
-  it opened itself. A `GET /api/pty` listing ids would let every client show
-  the same terminals.
 
 - **The sidecar has no typed schema.** `/api/sidecar/*` is a proxy to a few
   hundred Hono routes. A Swift client hand-writes types for each screen it

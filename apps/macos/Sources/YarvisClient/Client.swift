@@ -171,6 +171,21 @@ public final class YarvisClient: Sendable {
         try await get(Device.self, "/api/devices/me")
     }
 
+    /// Signs this device out on the server (`DELETE /api/devices/me`). A 401
+    /// means it was already gone, which is what was asked for, so it doesn't
+    /// count as losing the token.
+    public func revokeThisDevice(timeout: TimeInterval = 10) async throws {
+        // Short, since the user is waiting on Sign Out and the token goes either way.
+        var req = try request("DELETE", "/api/devices/me")
+        req.timeoutInterval = timeout
+        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
+        do {
+            try Self.check(data, res)
+        } catch YarvisError.unauthorized {
+            return
+        }
+    }
+
     /// Makes this device fresh for 10 minutes with an authenticator code.
     public func reverify(code: String) async throws {
         try await send("POST", "/api/auth/reverify", body: .object(["code": .string(code)]))
@@ -218,6 +233,12 @@ public final class YarvisClient: Sendable {
     /// `POST /api/core/{command}`, with the frontend's camelCase arguments.
     func core(_ command: String, _ args: [String: JSONValue] = [:]) async throws -> Data {
         try await send("POST", "/api/core/\(encodePathSegment(command))", body: .object(args))
+    }
+
+    /// Every PTY session on the server, oldest first. Needs `terminal`.
+    public func ptySessions() async throws -> [PtySession] {
+        struct List: Decodable { var sessions: [PtySession] }
+        return try await get(List.self, "/api/pty").sessions
     }
 
     /// True while a shell runs in session `id`, without spawning one.

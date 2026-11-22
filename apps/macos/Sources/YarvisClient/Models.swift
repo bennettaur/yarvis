@@ -340,6 +340,61 @@ public struct QuestionAnswer: Codable, Sendable, Equatable {
     }
 }
 
+// MARK: - PTY sessions
+
+/// A PTY session the server holds (`GET /api/pty`). Exited ones stay listed
+/// until they're killed or replaced.
+public struct PtySession: Codable, Sendable, Identifiable, Equatable, Hashable {
+    public struct Harness: Codable, Sendable, Equatable, Hashable {
+        public var id: String
+        public var name: String
+    }
+
+    public var id: String
+    /// `agent` (a workspace's `ws-claude:`), `review` (`review-claude:`) or `shell`.
+    public var kind: String
+    public var workspaceId: String?
+    public var cwd: String?
+    public var harness: Harness?
+    public var startedAt: Int64
+    public var running: Bool
+    public var exitCode: Int?
+    /// Clients attached right now.
+    public var attached: Int
+
+    public init(id: String, kind: String, workspaceId: String? = nil, cwd: String? = nil, harness: Harness? = nil,
+                startedAt: Int64 = 0, running: Bool, exitCode: Int? = nil, attached: Int = 0) {
+        self.id = id
+        self.kind = kind
+        self.workspaceId = workspaceId
+        self.cwd = cwd
+        self.harness = harness
+        self.startedAt = startedAt
+        self.running = running
+        self.exitCode = exitCode
+        self.attached = attached
+    }
+}
+
+/// A session's name in a list: the workspace for an agent or one of its
+/// panes, the folder for a shell, and whether it has exited.
+public func terminalTitle(_ s: PtySession, workspaceNames: [String: String]) -> String {
+    let workspace = s.workspaceId.flatMap { workspaceNames[$0] }
+    var title: String
+    switch s.kind {
+    case "agent": title = workspace ?? "Agent"
+    case "review": title = "Review: \(workspace ?? s.workspaceId ?? s.id)"
+    default:
+        let folder = s.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }.flatMap { $0.isEmpty ? nil : $0 }
+        title = [workspace, folder].compactMap { $0 }.joined(separator: " · ")
+        if title.isEmpty { title = "Terminal" }
+    }
+    if !s.running {
+        title += s.exitCode.map { " (exited \($0))" } ?? " (exited)"
+    }
+    return title
+}
+
 // MARK: - Workspaces
 
 public let agentSessionPrefix = "ws-claude:"

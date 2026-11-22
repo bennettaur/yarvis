@@ -77,6 +77,11 @@ struct LiveServerTests {
             }
         }
         #expect(screen.contains("yarvis-42"))
+        // An exited shell stays listed until it's killed or replaced.
+        let listed = try await YarvisClient(baseURL: url, token: token).ptySessions().first { $0.id == id }
+        #expect(listed?.kind == "shell")
+        #expect(listed?.running == false)
+        #expect(listed?.exitCode == 3)
         #expect(exitCode == .some(3))
         #expect(await exited.value == .number(3))
         await events.stop()
@@ -117,6 +122,18 @@ struct LiveSignInTests {
             return
         }
         #expect(lost.value == 0)
+
+        // Signing out revokes this device: its socket closes with 4401, its
+        // token stops working, and a second revoke is a quiet no-op.
+        let events = EventStream(baseURL: url, token: signedIn!.token)
+        await events.start()
+        let closed = Task { await collect(events.updates) }
+        // The socket is up once it has authenticated; `me` over HTTP orders the check.
+        _ = try await client.me()
+        try await client.revokeThisDevice()
+        await #expect(throws: YarvisError.unauthorized) { try await client.me() }
+        try await client.revokeThisDevice()
+        #expect(await closed.value.last == .signedOut)
     }
 }
 

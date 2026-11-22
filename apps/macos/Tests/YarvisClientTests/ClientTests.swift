@@ -591,3 +591,55 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         #expect(WorkspaceSummary.agentSessionId(workspaceId: "w1") == "ws-claude:w1")
     }
 }
+
+@Suite struct SignOutAndSessionsTests {
+    @Test func revokesThisDeviceAndTakesA401AsDone() async throws {
+        for (status, body) in [(200, #"{"revokedAt":5}"#), (401, #"{"error":"sign in first"}"#)] {
+            let (session, id) = StubProtocol.session { _, _ in (status, json(body)) }
+            let lost = Counter()
+            let client = YarvisClient(baseURL: base, token: "tok", session: session, onUnauthorized: { lost.bump() })
+            try await client.revokeThisDevice()
+            let req = try #require(StubProtocol.recorded(id).first?.0)
+            #expect(req.httpMethod == "DELETE")
+            #expect(req.url?.path == "/api/devices/me")
+            #expect(req.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
+            #expect(req.timeoutInterval == 10)
+            // The app is signing out on purpose; a 401 isn't the server signing it out.
+            #expect(lost.value == 0)
+        }
+    }
+
+    @Test func aFailedRevokeIsReported() async throws {
+        let (session, _) = StubProtocol.session { _, _ in (503, json(#"{"error":"down"}"#)) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        await #expect(throws: YarvisError.http(status: 503, error: "down", detail: nil)) {
+            try await client.revokeThisDevice()
+        }
+    }
+
+    @Test func listsSessions() async throws {
+        let (session, id) = StubProtocol.session { _, _ in
+            (200, json(#"{"sessions":[{"id":"ws-claude:w1","kind":"agent","workspaceId":"w1","cwd":"/srv/w1","harness":{"id":"claude","name":"Claude Code"},"startedAt":1,"running":true,"exitCode":null,"attached":2},{"id":"tab:terminal/t1/p1","kind":"shell","workspaceId":null,"cwd":null,"harness":null,"startedAt":2,"running":false,"exitCode":1,"attached":0}]}"#))
+        }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        let sessions = try await client.ptySessions()
+        #expect(StubProtocol.recorded(id).first?.0.url?.path == "/api/pty")
+        #expect(sessions == [
+            PtySession(id: "ws-claude:w1", kind: "agent", workspaceId: "w1", cwd: "/srv/w1",
+                       harness: .init(id: "claude", name: "Claude Code"), startedAt: 1, running: true, attached: 2),
+            PtySession(id: "tab:terminal/t1/p1", kind: "shell", startedAt: 2, running: false, exitCode: 1),
+        ])
+    }
+
+    @Test func titlesNameTheWorkspaceOrFolderAndAnExit() {
+        let names = ["w1": "api"]
+        #expect(terminalTitle(PtySession(id: "ws-claude:w1", kind: "agent", workspaceId: "w1", running: true),
+                              workspaceNames: names) == "api")
+        #expect(terminalTitle(PtySession(id: "ws:w1/t/p", kind: "shell", workspaceId: "w1", cwd: "/srv/w1/repo",
+                                         running: true), workspaceNames: names) == "api · repo")
+        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", running: false, exitCode: 2),
+                              workspaceNames: names) == "Terminal (exited 2)")
+        #expect(terminalTitle(PtySession(id: "review-claude:r1", kind: "review", workspaceId: "r1", running: true),
+                              workspaceNames: [:]) == "Review: r1")
+    }
+}

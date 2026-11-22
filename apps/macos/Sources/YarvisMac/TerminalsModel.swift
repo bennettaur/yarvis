@@ -4,40 +4,27 @@ import Observation
 import SwiftTerm
 import YarvisClient
 
-/// A terminal this app opened. Its id has the web's Terminal-tab shape
-/// (`tab:terminal/<tab>/<pane>`), so attention items raised from it open it.
-struct TerminalTab: Codable, Hashable, Identifiable {
-    var id: String
-    var title: String
-}
-
-/// The sessions the Terminals section lists. The server has no route that
-/// lists live PTYs, so this is each workspace's agent session plus the
-/// terminals this app opened, kept per server in UserDefaults.
+/// The Terminals section: every PTY session the server lists, and each active
+/// workspace, so a workspace with no agent running can start one.
 @MainActor @Observable
 final class TerminalsModel {
     private unowned let app: AppModel
     private let client: YarvisClient
 
     var workspaces: [WorkspaceSummary] = []
-    /// Which workspace agent sessions have a running shell.
-    var agentRunning: [String: Bool] = [:]
-    var tabs: [TerminalTab] = []
+    var sessions: [PtySession] = []
+    /// Terminals opened here that the server hasn't listed yet. A shell
+    /// starts on first attach, and the next list picks it up.
+    private(set) var pending: [String] = []
     var selectedId: String?
     var error: String?
     /// One live view per attached session, so switching keeps scrollback and
     /// the socket.
     private var controllers: [String: TerminalController] = [:]
 
-    private var tabsKey: String { "terminals.\(client.baseURL.absoluteString)" }
-
     init(app: AppModel, client: YarvisClient) {
         self.app = app
         self.client = client
-        if let data = UserDefaults.standard.data(forKey: tabsKey),
-           let saved = try? JSONDecoder().decode([TerminalTab].self, from: data) {
-            tabs = saved
-        }
         reload()
     }
 
@@ -46,72 +33,81 @@ final class TerminalsModel {
         controllers = [:]
     }
 
+    var shells: [PtySession] { sessions.filter { $0.kind == "shell" } }
+    var reviews: [PtySession] { sessions.filter { $0.kind == "review" && $0.running } }
+
+    func session(_ id: String) -> PtySession? { sessions.first { $0.id == id } }
+
+    func title(_ s: PtySession) -> String {
+        terminalTitle(s, workspaceNames: Dictionary(workspaces.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a }))
+    }
+
     func reload() {
         Task {
             do {
-                workspaces = try await client.workspaces().filter { $0.status == "active" }
-                for ws in workspaces {
-                    agentRunning[ws.agentSessionId] = try await client.ptyExists(ws.agentSessionId)
-                }
+                async let listed = client.ptySessions()
+                async let active = client.workspaces()
+                sessions = try await listed
+                workspaces = try await active.filter { $0.status == "active" }
+                pending.removeAll { id in sessions.contains { $0.id == id } }
                 error = nil
+            } catch YarvisError.http(status: 403, _, _) {
+                error = "This device can't open terminals: it has no terminal scope."
             } catch {
                 self.error = error.localizedDescription
             }
         }
     }
 
-    /// Opens a session by id. Returns false for an id that isn't a known
-    /// agent session or shaped like a terminal pane: the id can come from an
-    /// attention item, and attaching to an unknown one spawns a shell there.
+    /// Opens a session by id. Returns false for an id that isn't listed or
+    /// shaped like a terminal pane: the id can come from an attention item,
+    /// and attaching to an unknown one spawns a shell there.
     @discardableResult
     func select(_ id: String) -> Bool {
-        let known = tabs.contains { $0.id == id } || workspaces.contains { $0.agentSessionId == id }
+        let known = session(id) != nil || pending.contains(id) || workspaces.contains { $0.agentSessionId == id }
         guard known || isTerminalPaneId(id, workspaceIds: workspaces.map(\.id)) else { return false }
+        if !known { pending.append(id) }
         selectedId = id
-        if !known, id.hasPrefix("tab:terminal/") {
-            tabs.append(TerminalTab(id: id, title: "Terminal"))
-            saveTabs()
-        }
         return true
     }
 
-
     func newTerminal() {
         let stamp = String(Int(Date().timeIntervalSince1970 * 1000), radix: 36)
-        let tab = TerminalTab(id: "tab:terminal/t\(stamp)/p\(stamp)", title: "Terminal \(tabs.count + 1)")
-        tabs.append(tab)
-        saveTabs()
-        selectedId = tab.id
+        let id = "tab:terminal/t\(stamp)/p\(stamp)"
+        pending.append(id)
+        selectedId = id
     }
 
-    func close(_ tab: TerminalTab) {
-        tabs.removeAll { $0.id == tab.id }
-        saveTabs()
-        controllers.removeValue(forKey: tab.id)?.stop()
-        if selectedId == tab.id { selectedId = nil }
-        Task { try? await client.ptyKill(tab.id) }
+    func kill(_ id: String) {
+        pending.removeAll { $0 == id }
+        controllers.removeValue(forKey: id)?.stop()
+        if selectedId == id { selectedId = nil }
+        Task {
+            do {
+                try await app.withFreshCode { [client] in try await client.ptyKill(id) }
+            } catch {
+                self.error = error.localizedDescription
+            }
+            reload()
+        }
     }
 
     func startAgent(_ ws: WorkspaceSummary) {
         Task {
             do {
                 try await app.withFreshCode { [client] in try await client.startAgentSession(workspace: ws) }
-                agentRunning[ws.agentSessionId] = true
                 selectedId = ws.agentSessionId
             } catch {
                 self.error = error.localizedDescription
             }
+            reload()
         }
-    }
-
-    func sessionExited(_ id: String) {
-        if agentRunning[id] != nil { agentRunning[id] = false }
     }
 
     /// Attaching to an agent id with nothing running would spawn a plain
     /// shell under it, so a stopped agent shows a Start button instead.
     func canAttach(_ id: String) -> Bool {
-        !id.hasPrefix(agentSessionPrefix) || agentRunning[id] == true
+        !id.hasPrefix(agentSessionPrefix) || session(id)?.running == true
     }
 
     func controller(for id: String) -> TerminalController {
@@ -122,10 +118,6 @@ final class TerminalsModel {
                                             agentSession: id.hasPrefix(agentSessionPrefix))
         controllers[id] = controller
         return controller
-    }
-
-    private func saveTabs() {
-        UserDefaults.standard.set(try? JSONEncoder().encode(tabs), forKey: tabsKey)
     }
 }
 
@@ -180,7 +172,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
         case .refused(let code):
             view.feed(text: "\r\n[the server closed the terminal (\(code))]\r\n")
         case .signedOut:
-            app.signOut(reason: AppModel.revokedMessage)
+            app.serverSignedOut()
         case .reconnecting, .size:
             break
         }

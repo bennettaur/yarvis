@@ -17,21 +17,37 @@ struct TerminalsView: View {
             SwiftUI.Section("Workspace agents") {
                 ForEach(model.workspaces) { ws in
                     HStack {
-                        Circle().fill(model.agentRunning[ws.agentSessionId] == true ? .green : .secondary)
+                        Circle().fill(model.session(ws.agentSessionId)?.running == true ? .green : .secondary)
                             .frame(width: 7, height: 7)
                         Text(ws.name).lineLimit(1)
+                        Spacer()
+                        attachedCount(model.session(ws.agentSessionId))
                     }
                     .tag(ws.agentSessionId)
                 }
             }
             SwiftUI.Section("Terminals") {
-                ForEach(model.tabs) { tab in
-                    Text(tab.title)
-                        .tag(tab.id)
-                        .contextMenu { Button("Close and end the shell") { model.close(tab) } }
+                ForEach(model.shells) { s in
+                    HStack {
+                        Text(model.title(s)).lineLimit(1).foregroundStyle(s.running ? .primary : .secondary)
+                        Spacer()
+                        attachedCount(s)
+                    }
+                    .tag(s.id)
+                    .contextMenu { Button("End the shell") { model.kill(s.id) } }
+                }
+                ForEach(model.pending, id: \.self) { id in
+                    Text("New terminal").foregroundStyle(.secondary).tag(id)
                 }
                 Button { model.newTerminal() } label: { Label("New terminal", systemImage: "plus") }
                     .buttonStyle(.borderless)
+            }
+            if !model.reviews.isEmpty {
+                SwiftUI.Section("Review sessions") {
+                    ForEach(model.reviews) { s in
+                        Text(model.title(s)).lineLimit(1).tag(s.id)
+                    }
+                }
             }
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(.red)
@@ -41,6 +57,15 @@ struct TerminalsView: View {
             ToolbarItem {
                 Button { model.reload() } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             }
+        }
+    }
+
+    /// How many clients are attached, this one included.
+    @ViewBuilder private func attachedCount(_ s: PtySession?) -> some View {
+        if let s, s.attached > 0 {
+            Label("\(s.attached)", systemImage: "person.2").labelStyle(.titleAndIcon)
+                .font(.caption2).foregroundStyle(.secondary)
+                .help("\(s.attached) attached")
         }
     }
 

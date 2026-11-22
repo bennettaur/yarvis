@@ -42,7 +42,7 @@ final class AppModel {
     private var eventsTask: Task<Void, Never>?
 
     private static let serverKey = "serverURL"
-    static let revokedMessage = "This device was signed out by the server."
+    private static let revokedMessage = "This device was signed out by the server."
 
     var lastServer: String { UserDefaults.standard.string(forKey: Self.serverKey) ?? "" }
 
@@ -66,7 +66,7 @@ final class AppModel {
 
     private func connect(server: URL, token: String, device: Device?) {
         let client = YarvisClient(baseURL: server, token: token) { [weak self] in
-            Task { @MainActor in self?.signOut(reason: Self.revokedMessage) }
+            Task { @MainActor in self?.serverSignedOut() }
         }
         self.server = server
         self.client = client
@@ -91,7 +91,7 @@ final class AppModel {
                 switch update {
                 case .event(let e): self.handle(e)
                 case .lagged: self.attention?.reloadApprovals()
-                case .signedOut: self.signOut(reason: Self.revokedMessage)
+                case .signedOut: self.serverSignedOut()
                 case .refused, .disconnected: break
                 }
             }
@@ -105,22 +105,56 @@ final class AppModel {
         case "sidecar.started":
             chat?.reloadSessions()
             attention?.reload()
-        case "pty.exited":
-            if let id = event.data["id"]?.stringValue { terminals?.sessionExited(id) }
+        // They can arrive in either order, so the list is read again rather
+        // than patched from them.
+        case "pty.started", "pty.exited":
+            terminals?.reload()
         default:
             break
         }
     }
 
-    /// Forgets the token and goes back to sign-in.
-    func signOut(reason: String? = nil) {
-        guard let server else { return }
-        TokenStore.delete(server: server)
+    /// True from the user pressing Sign Out until the app has forgotten the token.
+    private var signingOut = false
+
+    /// The user's Sign Out: revokes this device on the server, then forgets
+    /// the token here whatever the answer.
+    func signOut() async {
+        guard let client, !signingOut else { return }
+        signingOut = true
+        defer { signingOut = false }
+        // Sockets close first, so the 4401 the revoke sends them isn't taken
+        // for the server signing this device out.
+        stopConnections()
+        var reason: String?
+        do {
+            try await client.revokeThisDevice()
+        } catch {
+            reason = "Signed out on this Mac, but the server may not have heard (\(error.localizedDescription)). "
+                + "This device may still be listed under Settings → Devices in the web UI; revoke it there."
+        }
+        forget(reason: reason)
+    }
+
+    /// The server refused this device's token (a 401 or a 4401 close).
+    func serverSignedOut() {
+        guard !signingOut else { return }
+        forget(reason: Self.revokedMessage)
+    }
+
+    private func stopConnections() {
         eventsTask?.cancel()
         if let events { Task { await events.stop() } }
         attention?.stop()
         chat?.stop()
         terminals?.stop()
+    }
+
+    /// Drops the token and everything signed in with it, and shows sign-in.
+    private func forget(reason: String?) {
+        guard let server else { return }
+        TokenStore.delete(server: server)
+        stopConnections()
         events = nil
         client = nil
         device = nil

@@ -29,7 +29,7 @@ struct YarvisMacApp: App {
                     .keyboardShortcut("u", modifiers: [.command, .shift])
                     .disabled(app.server == nil)
                 Divider()
-                Button("Sign Out") { app.signOut() }
+                Button("Sign Out") { Task { await app.signOut() } }
                     .disabled(app.server == nil)
             }
         }
