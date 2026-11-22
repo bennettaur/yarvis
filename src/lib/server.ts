@@ -59,6 +59,7 @@ export function saveDeviceToken(token: string): void {
     // Storage blocked: the token still lasts for this page load.
   }
   tokenPromise = Promise.resolve(token);
+  signedOut = false;
   notifyAuth(true);
 }
 
@@ -69,12 +70,20 @@ function notifyAuth(signedIn: boolean): void {
   for (const listener of authListeners) listener(signedIn);
 }
 
+/** True once signed out, so the 401s and 4401 closes that follow don't sign out again. */
+let signedOut = false;
+/** True while `signOutThisDevice` waits on the server; it signs out itself after. */
+let signingOut = false;
+let signOutNotice: string | null = null;
+
 /**
  * Forgets the token and tells the app to show sign-in. Called on any 401, so a
  * revoked or expired device lands on the sign-in screen rather than on a page
  * of failed requests.
  */
 export function signOut(): void {
+  if (signedOut || signingOut) return;
+  signedOut = true;
   try {
     localStorage.removeItem(TOKEN_KEY);
   } catch {
@@ -82,6 +91,47 @@ export function signOut(): void {
   }
   tokenPromise = Promise.resolve(null);
   notifyAuth(false);
+}
+
+/** Shown on the sign-in screen when the server may still list this device. */
+export const STILL_LISTED_NOTICE =
+  "Signed out here, but the server couldn't be told, so this device may still be listed under Settings → Devices. Revoke it there.";
+
+/**
+ * Signs this device out: asks the server to revoke its token, then forgets
+ * the token whatever the answer, so a server that can't be reached never
+ * keeps anyone signed in. A 401 means the token was already gone. Any other
+ * failure leaves a notice for the sign-in screen, since the device may still
+ * be listed. The revocation closes this device's sockets with 4401 while the
+ * request is out; those don't sign out a second time.
+ */
+export async function signOutThisDevice(): Promise<void> {
+  const token = await deviceToken();
+  let notice: string | null = null;
+  signingOut = true;
+  try {
+    if (token) {
+      // A bare fetch: serverFetch would sign out on the 401 itself.
+      const res = await fetch("/api/devices/me", {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok && res.status !== 401) notice = STILL_LISTED_NOTICE;
+    }
+  } catch {
+    notice = STILL_LISTED_NOTICE;
+  } finally {
+    signingOut = false;
+  }
+  signOutNotice = notice;
+  signOut();
+}
+
+/** The notice the last sign-out left, once. */
+export function takeSignOutNotice(): string | null {
+  const notice = signOutNotice;
+  signOutNotice = null;
+  return notice;
 }
 
 /** Calls `cb` with true after a sign-in and false after a sign-out. */

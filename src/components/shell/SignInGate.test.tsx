@@ -1,6 +1,12 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { deviceToken, saveDeviceToken, serverFetch, signOut } from "../../lib/server";
+import {
+  deviceToken,
+  saveDeviceToken,
+  serverFetch,
+  signOut,
+  signOutThisDevice,
+} from "../../lib/server";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { stubServerRoutes } from "../../test/serverRoutes";
 import SignInGate from "./SignInGate";
@@ -9,6 +15,7 @@ let setupRequired = false;
 const server = stubServerRoutes({
   "GET /api/auth/status": () => Response.json({ setupRequired, vault: "absent" }),
   "GET /api/devices/me": () => Response.json({ error: "sign in first" }, { status: 401 }),
+  "DELETE /api/devices/me": () => Response.json({ error: "boom" }, { status: 500 }),
   "POST /api/auth/login": () =>
     Response.json({ token: "tok-new", device: { deviceId: "d2", name: "x", scopes: [] } }),
   "POST /api/auth/setup/start": () =>
@@ -73,6 +80,19 @@ describe("SignInGate", () => {
 
     await serverFetch("/api/devices/me");
     await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form");
+  });
+
+  it("says the device may still be listed when the server couldn't revoke it", async () => {
+    saveDeviceToken("tok-me");
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(() => mounted.host.textContent === "the app", "the app");
+
+    await signOutThisDevice();
+    await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form");
+    expect(mounted.host.querySelector('[role="status"]')?.textContent).toContain(
+      "may still be listed",
+    );
   });
 
   it("signs in with the passphrase and a code, or a backup code", async () => {

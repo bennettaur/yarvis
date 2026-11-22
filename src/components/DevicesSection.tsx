@@ -12,7 +12,7 @@ import {
 } from "../lib/auth";
 import { writeClipboard } from "../lib/clipboard";
 import { invalidate, SIDECAR_FRESHNESS, useCachedResource } from "../lib/resourceCache";
-import { signOut } from "../lib/server";
+import { inTauri, signOut, signOutThisDevice } from "../lib/server";
 
 const DEVICES_KEY = "server:devices";
 const ME_KEY = "server:devices:me";
@@ -43,6 +43,7 @@ export default function DevicesSection() {
   const [minting, setMinting] = useState(false);
   const [minted, setMinted] = useState<SignedIn | null>(null);
   const [copied, setCopied] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
   const reload = useCallback(() => {
     invalidate(DEVICES_KEY);
@@ -124,10 +125,26 @@ export default function DevicesSection() {
       )}
 
       {me.data && (
-        <p className="mb-3 text-sm text-zinc-300">
-          This device: <span className="font-medium">{me.data.name}</span>{" "}
-          <span className="text-xs text-zinc-500">({me.data.scopes.join(", ")})</span>
-        </p>
+        <div className="mb-3 flex items-center gap-3 text-sm text-zinc-300">
+          <p className="min-w-0 flex-1">
+            This device: <span className="font-medium">{me.data.name}</span>{" "}
+            <span className="text-xs text-zinc-500">({me.data.scopes.join(", ")})</span>
+          </p>
+          {/* The desktop app's token is its pairing, kept in the Keychain. */}
+          {!inTauri() && (
+            <button
+              type="button"
+              className={BUTTON}
+              disabled={signingOut}
+              onClick={() => {
+                setSigningOut(true);
+                void signOutThisDevice();
+              }}
+            >
+              {signingOut ? "Signing out…" : "Sign out"}
+            </button>
+          )}
+        </div>
       )}
 
       {!isAdmin && me.data && (

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Device } from "../lib/auth";
-import { saveDeviceToken, signOut } from "../lib/server";
+import { deviceToken, onAuthChange, saveDeviceToken, signOut } from "../lib/server";
 import { clipboardWrites, resetClipboardWrites } from "../test/clipboard";
 import { mountForInteraction, waitFor } from "../test/render";
 import { stubServerRoutes } from "../test/serverRoutes";
@@ -25,6 +25,7 @@ const server = stubServerRoutes({
     devices = [...devices, device];
     return Response.json({ token: "yv_secret_once", device });
   },
+  "DELETE /api/devices/me": () => Response.json({ revokedAt: 1 }),
   "DELETE /api/devices/d-phone": () => {
     devices = devices.filter((d) => d.deviceId !== "d-phone");
     return new Response(null, { status: 204 });
@@ -119,5 +120,22 @@ describe("DevicesSection", () => {
       "the notice",
     );
     expect(server.calls.map((c) => c.route)).not.toContain("GET /api/devices");
+  });
+
+  it("signs any device out, revoking its token on the server first", async () => {
+    current = { ...me, scopes: ["read"] };
+    const mounted = await mountForInteraction(createElement(DevicesSection));
+    unmount = mounted.unmount;
+    await waitFor(() => buttonNamed(mounted.host, "Sign out") !== undefined, "the button");
+    let signedOut = false;
+    const off = onAuthChange((signedIn) => {
+      if (!signedIn) signedOut = true;
+    });
+    buttonNamed(mounted.host, "Sign out")?.click();
+    await waitFor(() => signedOut, "the sign-out");
+    off();
+    expect(await deviceToken()).toBeNull();
+    expect(server.calls.map((c) => c.route)).toContain("DELETE /api/devices/me");
+    saveDeviceToken("tok-me");
   });
 });

@@ -10,7 +10,7 @@ import {
   startSetup,
 } from "../../lib/auth";
 import { clearResourceCache } from "../../lib/resourceCache";
-import { deviceToken, onAuthChange, saveDeviceToken } from "../../lib/server";
+import { deviceToken, onAuthChange, saveDeviceToken, takeSignOutNotice } from "../../lib/server";
 import { restartEvents } from "../../lib/serverEvents";
 import CodePrompt from "./CodePrompt";
 import { BackupCodes, cleanCode, TotpEnrollment } from "./TotpEnrollment";
@@ -246,6 +246,7 @@ function SignInForm({ onSignedIn }: { onSignedIn: () => void }) {
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [notice] = useState(takeSignOutNotice);
 
   useEffect(() => {
     getAuthStatus()
@@ -256,6 +257,11 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   return (
     <div className="flex h-screen flex-col items-center justify-center gap-5 bg-zinc-950 text-zinc-100">
       <div className="text-lg font-semibold tracking-tight">Yarvis</div>
+      {notice && (
+        <p className="w-80 text-sm text-amber-300" role="status">
+          {notice}
+        </p>
+      )}
       {statusError && (
         <p className="w-80 text-sm text-red-400" role="alert">
           Couldn't reach the Yarvis server: {statusError}
