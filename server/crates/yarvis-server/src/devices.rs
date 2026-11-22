@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::AppState;
 use crate::auth::fresh::Fresh;
 use crate::auth::routes::SignedIn;
-use crate::auth::{Admin, Authed, DeviceContext, Scope, create_device, decode_scopes};
+use crate::auth::{Admin, AnyDevice, Authed, DeviceContext, Scope, create_device, decode_scopes};
 use crate::error::{ApiError, ApiResult};
 use crate::events::EventLog;
 use crate::store::{Store, StoreError, now_ms};
@@ -173,7 +173,7 @@ fn normalize_scopes(scopes: Vec<Scope>) -> Vec<Scope> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Revoked {
+pub(crate) struct Revoked {
     revoked_at: i64,
 }
 
@@ -182,6 +182,21 @@ async fn revoke(
     Fresh { device, .. }: Fresh<Admin>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Revoked>> {
+    revoke_device(&state, &device.device_id, id).await
+}
+
+/// Signing out: any valid token may revoke itself, with no scope and no
+/// recent code, since giving up its own access can't harm anyone.
+pub(crate) async fn revoke_self(
+    State(state): State<AppState>,
+    AnyDevice { device }: AnyDevice,
+) -> ApiResult<Json<Revoked>> {
+    let id = device.device_id.clone();
+    revoke_device(&state, &device.device_id, id).await
+}
+
+/// Revokes `id`, closes its sockets, and records that `by` did it.
+async fn revoke_device(state: &AppState, by: &str, id: String) -> ApiResult<Json<Revoked>> {
     let revoked_at = now_ms();
     let row_id = id.clone();
     let changed = state
@@ -202,11 +217,7 @@ async fn revoke(
     state.auth.announce_revocation(&id);
     state
         .events
-        .append(
-            Some(&device.device_id),
-            "device.revoked",
-            json!({ "deviceId": id }),
-        )
+        .append(Some(by), "device.revoked", json!({ "deviceId": id }))
         .await?;
     Ok(Json(Revoked { revoked_at }))
 }

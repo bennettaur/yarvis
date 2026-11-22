@@ -663,6 +663,85 @@ async fn auth_reset_reopens_setup_with_a_new_code() {
     h.setup().await;
 }
 
+#[tokio::test]
+async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    let data_dir = dir.path().join("data");
+    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
+    let h = Harness::on(Store::open(&data_dir.join("server.db")).unwrap()).await;
+    let laptop = h.setup().await;
+    let (_, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
+    // What `serve` starts: the CLI's revocations reach sockets through it.
+    h.state.auth.watch_outside_revocations();
+    let url = format!("ws://{}/api/events", h.serve().await);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let hello = json!({ "type": "auth", "token": bot, "since": 0 });
+    ws.send(Message::Text(hello.to_string().into()))
+        .await
+        .unwrap();
+    ws.next().await.unwrap().unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "auth",
+            "reset",
+            "--sign-out-all",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let closed = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(message) = ws.next().await {
+            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the bot's stream didn't close");
+    for token in [&laptop, &bot] {
+        let (st, _) = h.call("GET", "/api/devices/me", Some(token), None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+    let reset = h.events("account.reset").await;
+    assert_eq!(reset[0].data["signOutAll"], true);
+    assert_eq!(reset[0].data["revokedDevices"].as_array().unwrap().len(), 2);
+    assert_eq!(h.events("device.revoked").await.len(), 2);
+}
+
+#[tokio::test]
+async fn any_device_can_sign_itself_out_and_only_itself() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let (bot_id, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
+
+    // A read-only token, which can never be fresh.
+    let (st, body) = h.call("DELETE", "/api/devices/me", Some(&bot), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(body["revokedAt"].as_i64().unwrap() > 0);
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&bot), None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
+    assert_eq!(st, StatusCode::OK, "the others stay signed in");
+    let revoked = h.events("device.revoked").await;
+    assert_eq!(revoked[0].data, json!({ "deviceId": bot_id }));
+    assert_eq!(revoked[0].device_id.as_deref(), Some(bot_id.as_str()));
+
+    let (st, _) = h.call("DELETE", "/api/devices/me", Some(&bot), None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "a revoked token is gone");
+    let (st, _) = h.call("DELETE", "/api/devices/me", None, None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+}
+
 /// Switching the secrets backend needs a fresh device; writing a secret needs
 /// only `admin`. With `secrets.backend` set in the config, a switch that gets
 /// past the check is refused with 409, so no real store is touched.

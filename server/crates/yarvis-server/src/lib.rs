@@ -129,13 +129,14 @@ impl FromRef<AppState> for Auth {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
-        .route("/api/devices/me", get(me))
+        .route("/api/devices/me", get(me).delete(devices::revoke_self))
         .route("/api/events", get(events::ws))
         .merge(auth::routes::router(&state))
         .merge(devices::router())
         .merge(approvals::router())
         .merge(vault::routes::router(&state))
         .merge(ssh_agent::router(&state))
+        .route("/api/pty", get(pty::list_route))
         .route("/api/pty/{id}", get(pty::ws::ws))
         .route(
             "/api/voice/turn-detector/socket",

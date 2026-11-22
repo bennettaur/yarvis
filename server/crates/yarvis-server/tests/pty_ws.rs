@@ -514,10 +514,16 @@ async fn an_exit_reaches_clients_after_the_last_byte_and_the_event_log() {
     assert!(String::from_utf8_lossy(&client.output).contains("bye-42"));
     assert_eq!(client.wait_for_close().await, 1000);
 
-    let event = tokio::time::timeout(WAIT, events.recv())
-        .await
-        .expect("no event in time")
-        .unwrap();
+    let event = tokio::time::timeout(WAIT, async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.kind != "pty.started" {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("no event in time");
     assert_eq!(event.kind, "pty.exited");
     assert_eq!(event.data, json!({"id": id, "code": 3}));
     assert_eq!(event.device_id, None);
@@ -847,4 +853,67 @@ async fn shells_get_the_upstream_agent_or_the_servers_own() {
     // the vault opens.
     let seen = ssh_auth_sock_seen_with(on, None).await;
     assert!(seen.ends_with("/ssh-agent.sock"), "{seen}");
+}
+
+async fn get(server: &Server, token: &str, path: &str) -> (u16, Value) {
+    let response = app(server.state.clone())
+        .oneshot(
+            Request::get(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("host", "localhost:7878")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn the_session_list_shows_what_a_terminal_device_can_attach_to() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
+    let (_, reader) = device(&server.state, &[Scope::Read]).await;
+    let (status, _) = get(&server, &reader, "/api/pty").await;
+    assert_eq!(status, 403, "listing needs the scope attaching does");
+
+    let mut client = Client::connect(&server, "ws:w1/t1/p1", hello(&token, &server)).await;
+    client.wait_for_text("attached").await;
+    let (status, body) = get(&server, &token, "/api/pty").await;
+    assert_eq!(status, 200, "{body}");
+    let sessions = body["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{body}");
+    let row = &sessions[0];
+    assert_eq!(row["id"], "ws:w1/t1/p1");
+    assert_eq!(row["kind"], "shell");
+    assert_eq!(row["workspaceId"], "w1");
+    assert_eq!(row["cwd"], server.dir.path().to_str().unwrap());
+    assert_eq!(row["harness"], Value::Null);
+    assert_eq!(row["running"], true);
+    assert_eq!(row["exitCode"], Value::Null);
+    assert_eq!(row["attached"], 1);
+    assert!(row["startedAt"].as_i64().unwrap() > 0);
+
+    let started = until("the pty.started event", || async {
+        let events = server.state.events.since(0).await.unwrap();
+        events.into_iter().find(|e| e.kind == "pty.started")
+    })
+    .await;
+    assert_eq!(
+        started.data,
+        json!({ "id": "ws:w1/t1/p1", "kind": "shell", "workspaceId": "w1" })
+    );
+
+    client.input("exit 3\n").await;
+    client.wait_for_close().await;
+    let (_, body) = get(&server, &token, "/api/pty").await;
+    let row = &body["sessions"][0];
+    assert_eq!(row["running"], false, "{body}");
+    assert_eq!(row["exitCode"], 3);
+    assert_eq!(row["attached"], 0);
 }

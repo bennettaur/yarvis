@@ -14,7 +14,7 @@ use yarvis_server::{AppState, app};
 
 const USAGE: &str = "usage: yarvis-server [--config PATH]
        yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin [--config PATH]
-       yarvis-server auth reset [--config PATH]
+       yarvis-server auth reset [--sign-out-all] [--config PATH]
        yarvis-server vault init [--passphrase-stdin] [--config PATH]";
 
 #[derive(Debug)]
@@ -34,7 +34,11 @@ enum Command {
     /// Removes the account and prints a new setup code, for an owner who lost
     /// both the authenticator and the backup codes. The same trust as
     /// `device add`: whoever runs it can already read the database.
-    AuthReset,
+    /// `sign_out_all` also revokes every device, for a reset after a
+    /// compromise.
+    AuthReset {
+        sign_out_all: bool,
+    },
 }
 
 #[tokio::main]
@@ -58,7 +62,7 @@ async fn main() {
         Command::VaultInit { passphrase_stdin } => {
             vault_init(&config, store, passphrase_stdin).await
         }
-        Command::AuthReset => auth_reset(&config, store).await,
+        Command::AuthReset { sign_out_all } => auth_reset(&config, store, sign_out_all).await,
     }
 }
 
@@ -89,6 +93,7 @@ async fn serve(config: Config, store: Store) {
         Ok(None) => {}
         Err(e) => fail(e),
     }
+    state.auth.watch_outside_revocations();
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
@@ -222,11 +227,14 @@ fn read_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
 /// The new setup code goes to stdout and to the private file the server
 /// would write, and the running server accepts it at once, since both read it
 /// from the database. Signed-in devices stay signed in.
-async fn auth_reset(config: &Config, store: Store) {
-    let code = store
-        .call(yarvis_server::auth::account::reset)
+/// Revocations reach a running server's open sockets through its poll of
+/// the devices table; requests refuse the tokens at once.
+async fn auth_reset(config: &Config, store: Store, sign_out_all: bool) {
+    let reset = store
+        .call(move |conn| yarvis_server::auth::account::reset(conn, sign_out_all))
         .await
         .unwrap_or_else(|e| fail(e));
+    let code = reset.setup_code;
     let file = config.server.data_dir.join("setup-code");
     if let Err(e) = yarvis_server::auth::account::remove_if_present(&file)
         .and_then(|()| yarvis_server::auth::account::write_private(&file, &format!("{code}\n")))
@@ -234,11 +242,27 @@ async fn auth_reset(config: &Config, store: Store) {
         eprintln!("couldn't write {}: {e}", file.display());
     }
     let events = EventLog::new(store);
-    if let Err(e) = events
-        .append(None, "account.reset", serde_json::json!({}))
-        .await
-    {
+    for id in &reset.revoked_devices {
+        if let Err(e) = events
+            .append(
+                None,
+                "device.revoked",
+                serde_json::json!({ "deviceId": id }),
+            )
+            .await
+        {
+            eprintln!("couldn't record revoking {id}: {e}");
+        }
+    }
+    let data = serde_json::json!({
+        "signOutAll": sign_out_all,
+        "revokedDevices": reset.revoked_devices,
+    });
+    if let Err(e) = events.append(None, "account.reset", data).await {
         eprintln!("couldn't record the reset: {e}");
+    }
+    if sign_out_all {
+        eprintln!("Signed out {} devices.", reset.revoked_devices.len());
     }
     eprintln!(
         "The account is removed. Open the server and set it up again with this code (also in {}):",
@@ -256,7 +280,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 /// put `--config` first for every command.
 fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), String> {
     let (mut words, mut config, mut name, mut scopes) = (Vec::new(), None, None, None);
-    let mut passphrase_stdin = false;
+    let (mut passphrase_stdin, mut sign_out_all) = (false, false);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
@@ -265,12 +289,16 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
             "--name" => name = Some(value("--name")?),
             "--scopes" => scopes = Some(value("--scopes")?),
             "--passphrase-stdin" => passphrase_stdin = true,
+            "--sign-out-all" => sign_out_all = true,
             flag if flag.starts_with('-') => return Err(format!("unknown argument: {flag}")),
             _ => words.push(arg),
         }
     }
     if passphrase_stdin && words != ["vault", "init"] {
         return Err("--passphrase-stdin goes with `vault init`".into());
+    }
+    if sign_out_all && words != ["auth", "reset"] {
+        return Err("--sign-out-all goes with `auth reset`".into());
     }
     let command = match words.as_slice() {
         [] if name.is_none() && scopes.is_none() => Command::Serve,
@@ -279,7 +307,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
             if name.is_some() || scopes.is_some() {
                 return Err("--name and --scopes go with `device add`".into());
             }
-            Command::AuthReset
+            Command::AuthReset { sign_out_all }
         }
         [vault, init] if vault == "vault" && init == "init" => {
             if name.is_some() || scopes.is_some() {
@@ -394,9 +422,17 @@ mod tests {
     fn parses_auth_reset() {
         assert!(matches!(
             parse(&["auth", "reset", "--config", "x.toml"]).unwrap().0,
-            Command::AuthReset
+            Command::AuthReset {
+                sign_out_all: false
+            }
+        ));
+        assert!(matches!(
+            parse(&["--sign-out-all", "auth", "reset"]).unwrap().0,
+            Command::AuthReset { sign_out_all: true }
         ));
         assert!(parse(&["auth", "reset", "--name", "x"]).is_err());
+        assert!(parse(&["--sign-out-all"]).is_err());
+        assert!(parse(&["vault", "init", "--sign-out-all"]).is_err());
     }
 
     #[test]

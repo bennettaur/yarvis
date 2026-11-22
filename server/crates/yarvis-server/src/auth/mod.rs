@@ -131,6 +131,54 @@ impl Auth {
         let _ = self.revoked.send(device_id.to_string());
     }
 
+    /// Announces revocations another process wrote, such as
+    /// `yarvis-server auth reset --sign-out-all`, so their sockets close
+    /// within [`OUTSIDE_REVOCATION_POLL`]. Requests already refuse a revoked
+    /// token, since every one reads the row. In-process revocations are seen
+    /// again here, which is harmless.
+    pub fn watch_outside_revocations(&self) -> tokio::task::JoinHandle<()> {
+        let auth = self.clone();
+        tokio::spawn(async move {
+            let mut since = now_ms();
+            let mut announced_at_since = std::collections::HashSet::new();
+            loop {
+                tokio::time::sleep(OUTSIDE_REVOCATION_POLL).await;
+                let from = since;
+                let rows = auth
+                    .store
+                    .call(move |conn| {
+                        let mut stmt = conn
+                            .prepare("SELECT id, revoked_at FROM devices WHERE revoked_at >= ?1")?;
+                        stmt.query_map([from], |row| Ok((row.get::<_, String>(0)?, row.get(1)?)))?
+                            .collect::<rusqlite::Result<Vec<(String, i64)>>>()
+                    })
+                    .await;
+                let rows = match rows {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        tracing::warn!("couldn't check for revoked devices: {e}");
+                        continue;
+                    }
+                };
+                // Rows at `since` were announced last time; anything later is new.
+                let latest = rows.iter().map(|(_, at)| *at).max().unwrap_or(since);
+                if latest > since {
+                    announced_at_since.clear();
+                }
+                for (id, at) in rows {
+                    if at == since && announced_at_since.contains(&id) {
+                        continue;
+                    }
+                    auth.announce_revocation(&id);
+                    if at == latest {
+                        announced_at_since.insert(id);
+                    }
+                }
+                since = latest;
+            }
+        })
+    }
+
     /// Looks up a live device by its token and records that it was seen.
     pub async fn authenticate(&self, token: &str) -> Result<Option<DeviceContext>, StoreError> {
         let Some(raw) = URL_SAFE_NO_PAD.decode(token).ok() else {
@@ -225,16 +273,7 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
-        let token = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or_else(ApiError::unauthorized)?;
-        let device = Auth::from_ref(state)
-            .authenticate(token)
-            .await?
-            .ok_or_else(ApiError::unauthorized)?;
+        let device = bearer_device(parts, state).await?;
         if !device.has(S::SCOPE) {
             return Err(ApiError::forbidden(format!(
                 "this device doesn't have the {} scope",
@@ -248,9 +287,49 @@ where
     }
 }
 
+/// Extracts the calling device whatever its scopes, for the few routes any
+/// valid token may call, such as signing itself out.
+pub struct AnyDevice {
+    pub device: DeviceContext,
+}
+
+impl<St> FromRequestParts<St> for AnyDevice
+where
+    Auth: FromRef<St>,
+    St: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &St) -> Result<Self, Self::Rejection> {
+        Ok(Self {
+            device: bearer_device(parts, state).await?,
+        })
+    }
+}
+
+/// The live device the request's bearer token names, or 401.
+async fn bearer_device<St>(parts: &Parts, state: &St) -> Result<DeviceContext, ApiError>
+where
+    Auth: FromRef<St>,
+{
+    let token = parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(ApiError::unauthorized)?;
+    Auth::from_ref(state)
+        .authenticate(token)
+        .await?
+        .ok_or_else(ApiError::unauthorized)
+}
+
 /// A token unused for this long stops working, so one left behind in a
 /// forgotten browser profile doesn't stay valid for good.
 pub const IDLE_EXPIRY_MS: i64 = 90 * 24 * 60 * 60 * 1000;
+
+/// How often the server looks for revocations made by another process.
+const OUTSIDE_REVOCATION_POLL: Duration = Duration::from_secs(2);
 
 /// How stale `last_seen_at` may get. It's for the devices list, not security.
 const LAST_SEEN_RESOLUTION_MS: i64 = 60_000;

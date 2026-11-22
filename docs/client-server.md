@@ -193,7 +193,11 @@ authenticator app (TOTP), or one of its backup codes.
   those gone too, `yarvis-server auth reset` on the server removes the account
   and prints a new setup code, which the running server accepts at once. It
   needs the same trust as `device add`: a shell on the server. Signed-in
-  devices stay signed in.
+  devices stay signed in, unless it runs with `--sign-out-all`, which revokes
+  every device, tokens included: after a compromise, the attacker's device is
+  one of them. A running server refuses those tokens at once, and closes
+  their open sockets within 2 seconds, when it next checks the devices table
+  for revocations another process made.
 - Tokens minted over the API (`POST /api/devices/tokens`) can't have `admin`
   or `terminal`. Tokens made with the CLI on the server machine can, since
   whoever runs that can already read the database and open a shell.
@@ -458,6 +462,10 @@ address. Once the account exists the setup routes answer `409`.
 Devices and the account (token needed):
 
 - `GET    /api/devices/me` (`read`) → the calling device
+- `DELETE /api/devices/me` (any valid token, no scope, not fresh) →
+  `{ revokedAt }`: signs this device out. It closes the device's sockets and
+  appends `device.revoked` as revoking it from another device would. It can
+  only reach the calling device.
 - `GET    /api/devices` (admin) → every device, revoked ones included:
   `[{ deviceId, name, kind: "login"|"token", scopes, createdBy,
   userAgent, createdAt, lastSeenAt, verifiedAt, revokedAt, current }]`.
@@ -516,12 +524,15 @@ Events and approvals:
   - `approval.requested` and `approval.answered`: see below.
   - `device.created` and `device.revoked`.
   - `account.created`, `account.changed` (`{ what: "passphrase"|"totp"|"backupCodes" }`),
-    `account.backup_code_used` (`{ left }`) and `account.reset`.
+    `account.backup_code_used` (`{ left }`) and `account.reset`
+    (`{ signOutAll, revokedDevices }`, preceded by a `device.revoked` for each
+    device it signed out).
   - `sidecar.started` and `sidecar.stopped`: the sidecar restarted, so cached
     data may be stale.
   - `vault.locked` and `vault.unlocked`. `vault.unlocked` has `via`
     (`"passphrase"` or `"recovery"`). `vault.passphrase_changed` and
     `vault.recovery_key_rotated` follow those changes.
+  - `pty.started`: `{ id, kind, workspaceId }`, as in `GET /api/pty`.
   - `pty.exited`: `{ id, code }`.
 - `GET  /api/approvals` (`read`) → the pending ones, oldest first:
   `[{ id, kind, summary, data, createdAt, expiresAt }]`. `kind` names the
@@ -575,6 +586,20 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
 - `POST /api/core/get_agent_config` → `{ name, command, harnesses, defaultHarness }`.
   `terminal`, since the commands are user-written and can carry a `VAR=secret`.
 
+- `GET /api/pty` (`terminal`, as attaching needs) → `{ sessions: [{ id, kind,
+  workspaceId, cwd, harness, startedAt, running, exitCode, attached }] }`,
+  oldest first. `kind` is `"agent"` for a workspace's agent session
+  (`ws-claude:<workspaceId>`), `"review"` for a review workspace's Ask Claude
+  session (`review-claude:<workspaceId>`), and `"shell"` for every other
+  terminal. `workspaceId` is the workspace the id names (`ws-claude:`,
+  `review-claude:`, or a pane `ws:<workspaceId>/<tab>/<pane>`), else `null`.
+  `cwd` is the folder the shell started in, or `null` for the default (the
+  home folder). `harness` is `{ id, name }` for an agent session and `null`
+  for a shell. `startedAt` is Unix milliseconds. A session whose shell exited
+  stays listed with `running: false` and its `exitCode` until something
+  attaches to its id again, which starts a new shell there. `attached` counts
+  the clients attached now. `pty.started` and `pty.exited` events say when to
+  list again.
 - `GET /api/pty/{id}` (WebSocket, `terminal`). `{id}` is the session id,
   URL-encoded (ids such as `ws:<workspaceId>/<tab>/<pane>` hold slashes). The
   hello is:

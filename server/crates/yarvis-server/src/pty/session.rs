@@ -169,6 +169,10 @@ pub struct Session {
     /// the instruction or submit it early.
     input_gate: tokio::sync::Mutex<()>,
     agent: Option<SessionAgent>,
+    /// When the shell was spawned, in Unix milliseconds.
+    started_at: i64,
+    /// The folder the shell started in, when the spawn named one.
+    cwd: Option<String>,
 }
 
 /// Takes a lock, recovering from poisoning rather than propagating: a reader
@@ -188,6 +192,7 @@ pub(crate) struct Start {
     pub start_offset: u64,
     pub initial_command: Option<String>,
     pub agent: Option<SessionAgent>,
+    pub cwd: Option<String>,
     pub limits: Limits,
     pub on_exit: OnExit,
 }
@@ -232,6 +237,8 @@ impl Session {
             input: input_tx,
             input_gate: tokio::sync::Mutex::new(()),
             agent: start.agent,
+            started_at: crate::store::now_ms(),
+            cwd: start.cwd,
         });
 
         // PTY reads and writes block, so both live on OS threads rather than
@@ -505,6 +512,19 @@ impl Session {
 
     pub fn exit_code(&self) -> Option<u32> {
         lock(&self.inner).exit
+    }
+
+    pub fn started_at(&self) -> i64 {
+        self.started_at
+    }
+
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+
+    /// How many clients are attached now.
+    pub fn attached(&self) -> usize {
+        lock(&self.inner).subs.len()
     }
 
     pub fn agent(&self) -> Option<&SessionAgent> {

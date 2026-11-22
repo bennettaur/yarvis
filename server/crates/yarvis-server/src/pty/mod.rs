@@ -171,6 +171,53 @@ pub struct SessionHarness {
     name: String,
 }
 
+/// One row of `GET /api/pty`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PtySessionRow {
+    pub id: String,
+    pub kind: &'static str,
+    /// The workspace its id names, for a workspace's agent or one of its panes.
+    pub workspace_id: Option<String>,
+    pub cwd: Option<String>,
+    /// The harness an agent session was launched with; `None` for a shell.
+    pub harness: Option<SessionHarness>,
+    pub started_at: i64,
+    pub running: bool,
+    pub exit_code: Option<u32>,
+    /// Clients attached now.
+    pub attached: usize,
+}
+
+/// What a session id says it is: a workspace's agent (`ws-claude:`), a review
+/// workspace's Ask Claude session (`review-claude:`), or a shell.
+fn session_kind(id: &str) -> &'static str {
+    if id.starts_with("ws-claude:") {
+        "agent"
+    } else if review::is_review_session(id) {
+        "review"
+    } else {
+        "shell"
+    }
+}
+
+/// `GET /api/pty`: the sessions a terminal device can attach to at
+/// `/api/pty/{id}`.
+pub async fn list_route(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    _: crate::auth::Authed<crate::auth::Terminal>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "sessions": state.pty.list() }))
+}
+
+/// The workspace (or review workspace) a session id names.
+fn session_workspace_id(id: &str) -> Option<&str> {
+    env::attention_workspace_id(id).or_else(|| {
+        id.strip_prefix(review::REVIEW_CLAUDE_PREFIX)
+            .filter(|rest| !rest.is_empty())
+    })
+}
+
 /// The agent a workspace surfaces: the default harness's tab title and base
 /// command, plus every harness a session can be started with.
 #[derive(Serialize)]
@@ -426,6 +473,7 @@ impl PtyManager {
                 start_offset: spec.start_offset,
                 initial_command: spec.initial_command.clone(),
                 agent: spec.agent.as_ref().map(|a| a.identity.clone()),
+                cwd: spec.cwd.clone().filter(|d| !d.is_empty()),
                 limits: Limits {
                     scrollback_cap: self.inner.options.scrollback_cap,
                     client_queue: self.inner.options.client_queue,
@@ -486,7 +534,56 @@ impl PtyManager {
             return Err(too_many(cap));
         }
         sessions.insert(id.to_string(), session.clone());
+        drop(sessions);
+        self.announce_start(id);
         Ok(session)
+    }
+
+    /// Appends `pty.started`, so clients listing sessions see a new one
+    /// without polling.
+    fn announce_start(&self, id: &str) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let events = self.inner.events.clone();
+        let data = serde_json::json!({
+            "id": id,
+            "kind": session_kind(id),
+            "workspaceId": session_workspace_id(id),
+        });
+        runtime.spawn(async move {
+            if let Err(e) = events.append(None, "pty.started", data).await {
+                tracing::error!("couldn't record a PTY start: {e}");
+            }
+        });
+    }
+
+    /// Every session the server holds, exited ones included until something
+    /// attaches there again and replaces them. Sorted oldest first.
+    pub fn list(&self) -> Vec<PtySessionRow> {
+        let sessions: Vec<(String, Arc<Session>)> = lock(&self.inner.sessions)
+            .iter()
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
+        let mut rows: Vec<PtySessionRow> = sessions
+            .into_iter()
+            .map(|(id, session)| PtySessionRow {
+                kind: session_kind(&id),
+                workspace_id: session_workspace_id(&id).map(str::to_string),
+                cwd: session.cwd().map(str::to_string),
+                harness: session.agent().map(|agent| SessionHarness {
+                    id: agent.harness_id.clone(),
+                    name: agent.harness_name.clone(),
+                }),
+                started_at: session.started_at(),
+                running: session.is_running(),
+                exit_code: session.exit_code(),
+                attached: session.attached(),
+                id,
+            })
+            .collect();
+        rows.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.id.cmp(&b.id)));
+        rows
     }
 
     /// Removes a dead session under `id` and returns the offset its stream

@@ -693,16 +693,40 @@ impl Account {
     }
 }
 
+/// What [`reset`] did.
+pub struct Reset {
+    pub setup_code: String,
+    /// The devices it revoked; empty unless asked to sign everything out.
+    pub revoked_devices: Vec<String>,
+}
+
 /// Removes the account so setup runs again, and issues a new setup code. For
 /// `yarvis-server auth reset`, run by whoever can use the server's terminal,
-/// the same trust the first setup code needs. Signed-in devices stay signed in.
-pub fn reset(conn: &mut rusqlite::Connection) -> rusqlite::Result<String> {
+/// the same trust the first setup code needs. Signed-in devices stay signed in
+/// unless `sign_out_all`, which revokes every live device, tokens included:
+/// after a compromise, the attacker's device is one of them.
+pub fn reset(conn: &mut rusqlite::Connection, sign_out_all: bool) -> rusqlite::Result<Reset> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     tx.execute("DELETE FROM backup_codes", [])?;
     tx.execute("DELETE FROM account", [])?;
-    let code = setup_code::issue(&tx)?;
+    let mut revoked_devices = Vec::new();
+    if sign_out_all {
+        let mut stmt = tx.prepare("SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY id")?;
+        revoked_devices = stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        drop(stmt);
+        tx.execute(
+            "UPDATE devices SET revoked_at = ?1 WHERE revoked_at IS NULL",
+            [now_ms()],
+        )?;
+    }
+    let setup_code = setup_code::issue(&tx)?;
     tx.commit()?;
-    Ok(code)
+    Ok(Reset {
+        setup_code,
+        revoked_devices,
+    })
 }
 
 fn new_backup_codes() -> (Vec<String>, Vec<CodeHash>) {

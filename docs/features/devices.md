@@ -30,7 +30,8 @@ shows the sign-in screen.
   authenticator under **Settings → Devices → Account**. With no backup codes
   left either, run `yarvis-server auth reset` on the server: it prints a new
   setup code, and you set the account up again. Devices already signed in
-  stay signed in.
+  stay signed in. Add `--sign-out-all` to sign every device out as well, for
+  when you think someone else got in.
 
 A browser keeps its device token in local storage, so it stays signed in
 across reloads. A script running in the page could read it, so revoke a
