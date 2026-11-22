@@ -225,7 +225,7 @@ function notificationBody(text: string | null | undefined): string | null {
  * own, while other errors can carry text the model wrote. Loose on wording, so
  * a rephrased CLI message still matches.
  */
-const EXITED_EARLY = "claude exited with code ";
+const EXITED_EARLY = "Claude Code exited with code ";
 const TOO_OLD_BUILD = /(unknown|unrecognized) option\W+--(restricted|permission-prompts)(?![\w-])/i;
 
 function explainError(error: string): string {
