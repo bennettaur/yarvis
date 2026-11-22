@@ -91,7 +91,7 @@ describe("SignInGate", () => {
     await signOutThisDevice();
     await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form");
     expect(mounted.host.querySelector('[role="status"]')?.textContent).toContain(
-      "may still be listed",
+      "didn't confirm it revoked",
     );
   });
 

@@ -72,9 +72,10 @@ scopes and when it was last seen. Managing them needs the `admin` scope.
 - **Sign out**, beside this device's name, signs this browser out. It works
   on any device, whatever its scopes, and asks for no code: it revokes this
   device's token on the server, then forgets it. If the server can't be
-  reached, the browser forgets the token anyway, and the sign-in screen says
-  the device may still be listed, so you can revoke it from another one. The
-  desktop app has no button: its token is its pairing with the server.
+  reached or doesn't confirm, the browser forgets the token anyway, and the
+  sign-in screen says the device may still be listed, so you can revoke it
+  from another one. The desktop app has no button: its token is its pairing
+  with the server.
 - **Revoke** signs a device out at once. Its next request fails and its open
   connections close. Revoking the device you're using signs you out.
 - **Pair a device with a token** is for a client that can't sign in itself: a

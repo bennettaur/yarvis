@@ -10,14 +10,15 @@ import {
   takeSignOutNotice,
 } from "./server";
 
-let answer: () => Response | Promise<Response> = () => Response.json({ revokedAt: 1 });
+let answer: (init?: RequestInit) => Response | Promise<Response> = () =>
+  Response.json({ revokedAt: 1 });
 const calls: { url: string; init?: RequestInit }[] = [];
 const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (
   url: string | URL | Request,
   init?: RequestInit,
 ) => {
   calls.push({ url: String(url), init });
-  return answer();
+  return answer(init);
 }) as typeof fetch);
 
 let signOuts = 0;
@@ -74,6 +75,17 @@ describe("signing this device out", () => {
       expect(takeSignOutNotice()).toBeNull();
     });
   }
+
+  it("forgets the token when the server never answers", async () => {
+    answer = (init) =>
+      new Promise((_, reject) =>
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason)),
+      );
+    await signOutThisDevice(50);
+    expect(await deviceToken()).toBeNull();
+    expect(signOuts).toBe(1);
+    expect(takeSignOutNotice()).toBe(STILL_LISTED_NOTICE);
+  });
 
   it("signs out once, though the revocation closes sockets and fails requests meanwhile", async () => {
     answer = async () => {

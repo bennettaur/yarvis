@@ -95,7 +95,10 @@ export function signOut(): void {
 
 /** Shown on the sign-in screen when the server may still list this device. */
 export const STILL_LISTED_NOTICE =
-  "Signed out here, but the server couldn't be told, so this device may still be listed under Settings → Devices. Revoke it there.";
+  "Signed out of this browser, but the server didn't confirm it revoked this device. If it's still listed under Settings → Devices, revoke it from another device.";
+
+/** How long sign-out waits for the server before forgetting the token anyway. */
+const SIGN_OUT_TIMEOUT_MS = 5_000;
 
 /**
  * Signs this device out: asks the server to revoke its token, then forgets
@@ -105,16 +108,19 @@ export const STILL_LISTED_NOTICE =
  * be listed. The revocation closes this device's sockets with 4401 while the
  * request is out; those don't sign out a second time.
  */
-export async function signOutThisDevice(): Promise<void> {
-  const token = await deviceToken();
-  let notice: string | null = null;
+export async function signOutThisDevice(timeoutMs = SIGN_OUT_TIMEOUT_MS): Promise<void> {
+  if (signingOut) return;
   signingOut = true;
+  let notice: string | null = null;
   try {
+    const token = await deviceToken();
     if (token) {
-      // A bare fetch: serverFetch would sign out on the 401 itself.
+      // A bare fetch: serverFetch would sign out on the 401 itself. The
+      // timeout keeps a stalled server from keeping anyone signed in.
       const res = await fetch("/api/devices/me", {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok && res.status !== 401) notice = STILL_LISTED_NOTICE;
     }

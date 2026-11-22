@@ -131,11 +131,14 @@ describe("DevicesSection", () => {
     const off = onAuthChange((signedIn) => {
       if (!signedIn) signedOut = true;
     });
-    buttonNamed(mounted.host, "Sign out")?.click();
-    await waitFor(() => signedOut, "the sign-out");
-    off();
-    expect(await deviceToken()).toBeNull();
-    expect(server.calls.map((c) => c.route)).toContain("DELETE /api/devices/me");
-    saveDeviceToken("tok-me");
+    try {
+      buttonNamed(mounted.host, "Sign out")?.click();
+      await waitFor(() => signedOut, "the sign-out");
+      expect(await deviceToken()).toBeNull();
+      expect(server.calls.map((c) => c.route)).toContain("DELETE /api/devices/me");
+    } finally {
+      off();
+      saveDeviceToken("tok-me");
+    }
   });
 });
