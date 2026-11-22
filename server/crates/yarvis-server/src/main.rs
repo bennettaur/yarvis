@@ -172,19 +172,10 @@ async fn serve(config: Config, store: Store, database: DatabaseUrl) {
     }
     let bind = config.server.bind;
     let mut state = AppState::new(config, store);
-    state.sidecar.set_env("DATABASE_URL", &database.url);
-    state.database = Some(database);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
-    // Before the sidecar starts, since it gets the path as `YARVIS_CORE_SOCK`.
-    #[cfg(unix)]
-    match yarvis_server::control::start(state.clone()).await {
-        Ok(path) => state
-            .sidecar
-            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy()),
-        Err(e) => tracing::error!("the control socket isn't available: {e}"),
-    }
+    yarvis_server::hand_off_to_sidecar(&mut state, database).await;
     let pty = state.pty.clone();
     // Listening first, so `/api/health` answers 503 while Postgres comes up
     // rather than the port refusing connections.

@@ -214,6 +214,26 @@ With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
 for approval on the laptop itself.
 
+### `PATH` for a server launchd starts
+
+A server the desktop app starts gets your login shell's `PATH`. One that
+launchd starts gets launchd's short one (`/usr/bin:/bin:/usr/sbin:/sbin`), so
+the sidecar, terminals and agent sessions can't find `claude`, `git`, `gh` or
+`bun` from Homebrew or mise. Set `path` under `[server]` in `server.toml` to
+the `PATH` they should have:
+
+```toml
+[server]
+# Written out in full, since ~ isn't expanded. `echo $PATH` in a terminal
+# prints yours.
+path = "/Users/<you>/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+```
+
+The server gives it to the sidecar, which passes it on to the Claude Code runs
+it starts, and to every terminal and agent session. It is also where a bare
+`[sidecar] command` such as `bun` is looked up. Unset, they all inherit the
+server's own `PATH`. A shell's rc files can still change it after it starts.
+
 ## `~/.yarvis/settings.json`
 
 This file holds everything you set from the Settings screen that isn't a
@@ -398,7 +418,9 @@ provider key exported in that shell reaches the sidecar unless the Keychain
 has its own value for it. A `DATABASE_URL` there is ignored: the server sets
 the sidecar's from its own database URL. A release build opened from
 Finder has no such shell: it only takes `PATH` from your login shell, and the
-other variables above don't reach it.
+other variables above don't reach it. A server launchd starts gets neither, so
+set `[server] path` for it (see
+[`PATH` for a server launchd starts](#path-for-a-server-launchd-starts)).
 
 ## Settings screen map
 

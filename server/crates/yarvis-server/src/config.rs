@@ -36,6 +36,22 @@ pub struct ServerConfig {
     /// tokens in the clear, so it is refused unless this is set, which is
     /// for a server behind something that adds TLS, such as `tailscale serve`.
     pub allow_plain_http: bool,
+    /// The `PATH` the server gives the processes it starts: the sidecar, and
+    /// the terminal and agent sessions. Unset means they inherit the server's
+    /// own. A server started by launchd gets launchd's short `PATH`, which
+    /// misses Homebrew and mise, so `claude`, `git`, `gh` and `bun` aren't
+    /// found without this.
+    pub path: Option<String>,
+}
+
+impl ServerConfig {
+    /// [`Self::path`], with a blank value read as unset.
+    pub fn spawn_path(&self) -> Option<&str> {
+        self.path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+    }
 }
 
 impl Default for ServerConfig {
@@ -45,6 +61,7 @@ impl Default for ServerConfig {
             data_dir: default_data_dir(),
             web_dir: None,
             allow_plain_http: false,
+            path: None,
         }
     }
 }
@@ -358,6 +375,19 @@ mod tests {
             Some("postgres://me:s3cret@localhost/yarvis")
         );
         assert!(!format!("{config:?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn reads_the_path_for_spawned_processes_and_a_blank_one_is_unset() {
+        let config: Config =
+            toml::from_str("[server]\npath = \"/opt/homebrew/bin:/usr/bin:/bin\"\n").unwrap();
+        assert_eq!(
+            config.server.spawn_path(),
+            Some("/opt/homebrew/bin:/usr/bin:/bin")
+        );
+        let blank: Config = toml::from_str("[server]\npath = \"  \"\n").unwrap();
+        assert_eq!(blank.server.spawn_path(), None);
+        assert_eq!(Config::default().server.spawn_path(), None);
     }
 
     #[test]

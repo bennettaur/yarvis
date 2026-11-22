@@ -255,7 +255,7 @@ rest of the app is built around.
 | Your own heads-down routines | `~/.yarvis/routines/*.md` |
 | Chat, memory, tasks, workspaces, PR notes | The Postgres database |
 | Workspace clones and worktrees | `~/dev/yarvis-workspaces` (set `YARVIS_WORKSPACES_ROOT` to change it) |
-| Sidecar log | `~/Library/Logs/com.mikebennett.yarvis/sidecar.log`, and **Settings → Diagnostics** |
+| Sidecar log | `logs/sidecar.log` in the local server's data folder (`~/Library/Application Support/com.mikebennett.yarvis/server/`), and **Settings → Diagnostics** |
 | Which server the app uses | `~/Library/Application Support/com.mikebennett.yarvis/connection.json`; change it from the tray's **Server connection…** |
 | The local server's config, data and log | `server.toml` and `server/` in that same folder; `~/Library/Logs/com.mikebennett.yarvis/server.log` |
 

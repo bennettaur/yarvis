@@ -33,6 +33,7 @@ use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::events::EventLog;
+use crate::pty::SidecarSessionEnv;
 use crate::secret_blob::{SecretBlob, secret_from_root};
 use crate::settings::{Settings, SettingsStore};
 
@@ -142,6 +143,18 @@ impl Sidecar {
 
     pub fn mcp_token(&self) -> &str {
         &self.inner.mcp_token
+    }
+
+    /// What a terminal or agent session needs to reach the sidecar: its port,
+    /// the two scoped tokens, and the bearer its session tokens are signed
+    /// with (never handed to the session itself).
+    pub fn session_env(&self) -> SidecarSessionEnv {
+        SidecarSessionEnv {
+            port: self.endpoint().port,
+            attention_token: self.attention_token().to_string(),
+            signing_key: self.endpoint().token.clone(),
+            mcp_token: Some(self.mcp_token().to_string()),
+        }
     }
 
     /// Where the sidecar's output is kept. A server run as a LaunchAgent has
@@ -266,10 +279,14 @@ impl Sidecar {
     }
 
     fn build_command(&self, deps: &SupervisorDeps, secrets: &Value) -> Result<Command, String> {
-        // The sidecar inherits the server's environment, so the PATH and debug
-        // flags (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was
-        // started with reach it.
+        // The sidecar inherits the server's environment, so the debug flags
+        // (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was started
+        // with reach it, and its PATH unless `[server] path` replaces it.
         let mut cmd = command_base(&deps.config)?;
+        // Also where a bare program name like `bun` is looked up.
+        if let Some(path) = deps.config.server.spawn_path() {
+            cmd.env("PATH", path);
+        }
         let endpoint = self.endpoint();
         cmd.env("YARVIS_SIDECAR_PORT", endpoint.port.to_string());
         cmd.env("YARVIS_SIDECAR_TOKEN", &endpoint.token);

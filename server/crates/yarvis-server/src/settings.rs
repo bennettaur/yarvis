@@ -477,6 +477,31 @@ impl SettingsStore {
         vault: Option<String>,
         item: Option<String>,
     ) -> Result<Copied, BackendSwitchError> {
+        self.set_secret_backend_with(
+            secrets,
+            configured,
+            backend,
+            vault,
+            item,
+            Target::store,
+            onepassword::probe,
+        )
+    }
+
+    /// [`Self::set_secret_backend`] with the stores it opens and the 1Password
+    /// probe passed in, so tests can run a switch that copies without the
+    /// Keychain or `op`.
+    #[allow(clippy::too_many_arguments)]
+    fn set_secret_backend_with(
+        &self,
+        secrets: &SecretBlob,
+        configured: Option<SecretBackendKind>,
+        backend: &str,
+        vault: Option<String>,
+        item: Option<String>,
+        open: impl Fn(&Target) -> Store,
+        probe: impl Fn(&ItemRef) -> Result<(), String>,
+    ) -> Result<Copied, BackendSwitchError> {
         let requested = match backend {
             "keychain" => SecretBackendKind::Keychain,
             "onepassword" => SecretBackendKind::OnePassword,
@@ -529,9 +554,9 @@ impl SettingsStore {
             Copied::Unchanged
         } else {
             if let Target::OnePassword(item) = &target {
-                onepassword::probe(item).map_err(BackendSwitchError::Failed)?;
+                probe(item).map_err(BackendSwitchError::Failed)?;
             }
-            copy_secrets(&guard, &current.store(), &target.store())
+            copy_secrets(&guard, &open(&current), &open(&target))
                 .map_err(BackendSwitchError::Failed)?
         };
         self.update(|s| {
@@ -1209,6 +1234,56 @@ mod tests {
         assert_eq!(store.snapshot().azure_devops_org_url, None);
     }
 
+    /// Each field the Settings screen saves lands in its own key and reaches
+    /// the sidecar under the variable it reads.
+    #[test]
+    fn the_jira_and_google_fields_are_stored_and_reach_the_sidecar() {
+        let (_dir, store) = temp_store();
+        store
+            .set_text_field(
+                TextField::JiraBaseUrl,
+                Some(" https://acme.atlassian.net ".into()),
+            )
+            .unwrap();
+        store
+            .set_text_field(
+                TextField::GoogleClientId,
+                Some("123.apps.googleusercontent.com".into()),
+            )
+            .unwrap();
+        let doc = read_document(&store);
+        assert_eq!(doc["jiraBaseUrl"], "https://acme.atlassian.net");
+        assert_eq!(doc["googleClientId"], "123.apps.googleusercontent.com");
+        let env = crate::sidecar::sidecar_env(&json!({}), &store.snapshot());
+        assert!(env.contains(&("JIRA_BASE_URL", "https://acme.atlassian.net".into())));
+        assert!(env.contains(&("GOOGLE_CLIENT_ID", "123.apps.googleusercontent.com".into())));
+
+        store.set_text_field(TextField::JiraBaseUrl, None).unwrap();
+        store
+            .set_text_field(TextField::GoogleClientId, Some("".into()))
+            .unwrap();
+        let settings = store.snapshot();
+        assert_eq!(settings.jira_base_url, None);
+        assert_eq!(settings.google_client_id, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_folder_is_created_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let yarvis = dir.path().join("home").join(".yarvis");
+        let store = SettingsStore::new(yarvis.join("settings.json"));
+        store.ensure_dir();
+        let mode = std::fs::metadata(&yarvis).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        // A folder another tool made too open is tightened.
+        std::fs::set_permissions(&yarvis, std::fs::Permissions::from_mode(0o755)).unwrap();
+        store.ensure_dir();
+        let mode = std::fs::metadata(&yarvis).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
     #[test]
     fn small_settings_round_trip_and_zero_is_rejected() {
         let (_dir, store) = temp_store();
@@ -1496,6 +1571,76 @@ mod tests {
             .unwrap();
         assert_eq!(copied, Copied::Unchanged);
         assert!(store.snapshot().selects_onepassword());
+    }
+
+    /// A server whose `server.toml` picks 1Password, given its first item:
+    /// the secrets the desktop app kept in the Keychain are copied in before
+    /// the item is saved, so the switch doesn't leave the user with no keys.
+    #[test]
+    fn the_first_onepassword_item_is_filled_from_the_keychain() {
+        let (_dir, store) = temp_store();
+        let secrets = blob(&store, MemoryBackend::empty());
+        let keychain = MemoryBackend::holding(r#"{"github_token":"gho_kept"}"#);
+        let item = MemoryBackend::empty();
+        let probed = std::sync::Mutex::new(Vec::new());
+        let copied = store
+            .set_secret_backend_with(
+                &secrets,
+                Some(SecretBackendKind::OnePassword),
+                "onepassword",
+                Some("Private".into()),
+                Some("Yarvis".into()),
+                |target| match target {
+                    Target::Keychain => memory(keychain.clone()),
+                    Target::OnePassword(_) => memory(item.clone()),
+                },
+                |item| {
+                    probed.lock().unwrap().push(item.clone());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(copied, Copied::Secrets);
+        assert_eq!(
+            item.contents().as_deref(),
+            Some(r#"{"github_token":"gho_kept"}"#)
+        );
+        assert_eq!(
+            *probed.lock().unwrap(),
+            vec![ItemRef::new("Private", "Yarvis").unwrap()]
+        );
+        // The Keychain copy stays, so a mistyped item can be switched back from.
+        assert!(keychain.writes().is_empty());
+        let settings = store.snapshot();
+        assert_eq!(settings.one_password_vault.as_deref(), Some("Private"));
+        assert_eq!(settings.one_password_item.as_deref(), Some("Yarvis"));
+        assert!(settings.selects_onepassword());
+    }
+
+    /// A vault that can't be reached stops the switch before anything is
+    /// copied or saved.
+    #[test]
+    fn a_failed_probe_copies_and_saves_nothing() {
+        let (_dir, store) = temp_store();
+        let secrets = blob(&store, MemoryBackend::empty());
+        let item = MemoryBackend::empty();
+        let err = store
+            .set_secret_backend_with(
+                &secrets,
+                Some(SecretBackendKind::OnePassword),
+                "onepassword",
+                Some("Privat".into()),
+                Some("Yarvis".into()),
+                |target| match target {
+                    Target::Keychain => memory(MemoryBackend::holding(r#"{"github_token":"t"}"#)),
+                    Target::OnePassword(_) => memory(item.clone()),
+                },
+                |_| Err("1Password has no vault named 'Privat'".into()),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("Privat"), "{err}");
+        assert!(item.writes().is_empty());
+        assert!(!store.path().exists());
     }
 
     /// Re-saving the item already in use touches no store at all, so no `op`

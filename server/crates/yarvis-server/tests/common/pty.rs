@@ -1,6 +1,6 @@
 //! For the PTY and control-socket tests: a server on a real socket with PTY
-//! sessions running `/bin/sh`, its own settings file and secrets store, and a
-//! data dir in a temp folder.
+//! sessions running `/bin/sh` (or the shell a test names), its own settings
+//! file and secrets store, and a data dir in a temp folder.
 
 use std::sync::Arc;
 
@@ -58,10 +58,11 @@ pub async fn serve_with(setup: Setup) -> Server {
         state.events.clone(),
         state.config.ssh_agent.clone(),
         PtyOptions {
-            shell: Some("/bin/sh".into()),
+            shell: options.shell.clone().or_else(|| Some("/bin/sh".into())),
             ..options
         },
     );
+    state.pty.set_sidecar_env(Some(state.sidecar.session_env()));
     state
         .pty
         .set_server_ssh_agent(yarvis_server::ssh_agent::socket_path(&state));

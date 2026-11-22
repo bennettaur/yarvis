@@ -11,6 +11,7 @@ mod clipboard;
 mod connection;
 mod device_token;
 mod instance;
+mod legacy_settings;
 mod local_server;
 // Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
 #[cfg_attr(debug_assertions, allow(dead_code))]

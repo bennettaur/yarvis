@@ -244,6 +244,8 @@ bind = "127.0.0.1:7878"
 data_dir = "~/.yarvis/server"   # written out in full; ~ isn't expanded
 # web_dir = "/path/to/dist"     # the built web UI; unset serves only /api
 allow_plain_http = false        # needed for any bind that isn't loopback
+# path = "/opt/homebrew/bin:/usr/bin:/bin"  # PATH for the sidecar and sessions;
+                                # unset, they get the server's own
 
 [auth]
 origins = ["http://localhost:7878"]
@@ -403,6 +405,8 @@ server runs on an always-on Mac and you reach it from anywhere on the tailnet.
    bind = "127.0.0.1:7878"              # tailscale serve connects here
    data_dir = "/Users/me/.yarvis/server"
    web_dir = "/Users/me/yarvis/dist"
+   # launchd's PATH misses Homebrew and mise, where claude, git, gh and bun are
+   path = "/Users/me/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
    [auth]
    origins = ["https://mac-mini.example-tailnet.ts.net"]

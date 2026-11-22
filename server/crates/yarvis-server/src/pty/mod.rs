@@ -118,11 +118,16 @@ struct SpawnAgent {
     env: Vec<(String, String)>,
 }
 
-/// Knobs tests turn; the defaults are what the server runs with.
+/// How sessions are spawned. The server sets only `path`, from `server.toml`;
+/// the rest are knobs tests turn, and their defaults are what the server runs
+/// with.
 #[derive(Clone, Debug)]
 pub struct PtyOptions {
     /// The shell every session runs. `None` means `$SHELL`, else `/bin/zsh`.
     pub shell: Option<String>,
+    /// The `PATH` every shell starts with (`[server] path`). `None` means the
+    /// server's own.
+    pub path: Option<String>,
     pub scrollback_cap: usize,
     pub client_queue: usize,
     /// How long one WebSocket send may block before the client is dropped.
@@ -136,6 +141,7 @@ impl Default for PtyOptions {
     fn default() -> Self {
         Self {
             shell: None,
+            path: None,
             scrollback_cap: MAX_SCROLLBACK,
             client_queue: CLIENT_QUEUE,
             send_timeout: Duration::from_secs(10),
@@ -403,6 +409,9 @@ impl PtyManager {
             .unwrap_or_else(|| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(shell);
         cmd.env("TERM", "xterm-256color");
+        if let Some(path) = &self.inner.options.path {
+            cmd.env("PATH", path);
+        }
         let server_agent = self
             .inner
             .server_ssh_agent

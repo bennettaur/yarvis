@@ -509,3 +509,129 @@ async fn a_send_whose_agent_exits_during_the_pause_is_not_submitted() {
         "{reply}"
     );
 }
+
+/// The session `id` holds now, without spawning one.
+async fn live_session(
+    server: &Server,
+    id: &str,
+) -> Option<std::sync::Arc<yarvis_server::pty::session::Session>> {
+    if !server.state.pty.exists(id) {
+        return None;
+    }
+    let (pty, id) = (server.state.pty.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        pty.attach_or_spawn(
+            &id,
+            Size {
+                cols: 120,
+                rows: 32,
+            },
+            None,
+        )
+    })
+    .await
+    .unwrap()
+    .ok()
+}
+
+/// A review workspace's Ask Claude session: started over the socket in its
+/// own folder with the files it reads, left alone while it runs, replaced
+/// once it has exited, and ended by `claude.killReview`. A fake `claude`
+/// prints its arguments and exits on the first line it reads.
+#[tokio::test]
+async fn claude_spawn_review_starts_one_session_and_kill_review_ends_it() {
+    let (server, path) = start().await;
+    let mut control = Control::connect(&path).await;
+    // Real paths, since the core compares the folders as real paths.
+    let root = std::fs::canonicalize(server.dir.path()).unwrap();
+    let cwd = root.join(".review-sessions").join(WORKSPACE);
+    let checkout = root.join(".review").join(WORKSPACE).join("pr1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&checkout).unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\necho \"fake-claude $*\"\nread -r line\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = format!("review-claude:{WORKSPACE}");
+    let spawn = json!({
+        "workspaceId": WORKSPACE,
+        "cwd": cwd,
+        "addDirs": [checkout],
+        "settings": "{\"disableAllHooks\":true}",
+        "context": "github/o/r/1 in pr1.",
+        "loadRepoConfig": false,
+    });
+
+    // The lockdown is made of Claude Code flags, so another agent is refused.
+    server.write_settings(json!({ "agentCommand": "cat" }));
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert!(
+        reply["error"].as_str().unwrap().contains("not Claude Code"),
+        "{reply}"
+    );
+    assert!(!server.state.pty.exists(&id));
+
+    server.write_settings(json!({ "agentCommand": claude.to_string_lossy() }));
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let first = live_session(&server, &id).await.expect("a running session");
+    until("the fake claude to start", || {
+        let first = first.clone();
+        async move {
+            output_of(&first)
+                .contains("fake-claude --setting-sources user")
+                .then_some(())
+        }
+    })
+    .await;
+    let files = root.join(".review").join(WORKSPACE).join(".ask-claude");
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(files.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["disableAllHooks"], true);
+    assert_eq!(
+        settings["permissions"]["additionalDirectories"],
+        json!([checkout])
+    );
+    let prompt = std::fs::read_to_string(files.join("system-prompt.md")).unwrap();
+    assert!(prompt.ends_with("github/o/r/1 in pr1."), "{prompt}");
+
+    // A start while it runs leaves it alone.
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert_eq!(reply["ok"], true);
+    let again = live_session(&server, &id).await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+
+    // Once it has exited, a start replaces it.
+    first.write(None, b"\n".to_vec()).await.unwrap();
+    until("the fake claude to exit", || {
+        let running = first.is_running();
+        async move { (!running).then_some(()) }
+    })
+    .await;
+    let reply = control.call("claude.spawnReview", spawn).await;
+    assert_eq!(reply["ok"], true);
+    let replaced = live_session(&server, &id).await.expect("a new session");
+    assert!(!std::sync::Arc::ptr_eq(&first, &replaced));
+
+    let reply = control
+        .call("claude.killReview", json!({ "workspaceId": WORKSPACE }))
+        .await;
+    assert_eq!(reply["ok"], true);
+    assert!(!server.state.pty.exists(&id));
+    until("the session to end", || {
+        let running = replaced.is_running();
+        async move { (!running).then_some(()) }
+    })
+    .await;
+    let reply = control
+        .call("claude.killReview", json!({ "workspaceId": "a/b" }))
+        .await;
+    assert_eq!(reply["error"], "invalid workspaceId");
+}

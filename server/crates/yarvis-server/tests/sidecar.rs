@@ -1199,3 +1199,167 @@ async fn the_turn_detector_socket_is_relayed_through_the_server() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A fake sidecar that writes `vars`, one `NAME=value` per line, to `file`,
+/// under a temp name first, then waits.
+fn env_dump_script(vars: &[&str], file: &std::path::Path) -> String {
+    let lines: String = vars
+        .iter()
+        .map(|var| format!("printf '%s=%s\\n' {var} \"${var}\"; "))
+        .collect();
+    format!(
+        "{{ {lines}}} > '{0}.tmp' && mv '{0}.tmp' '{0}'; exec sleep 30",
+        file.display()
+    )
+}
+
+fn read_env_dump(file: &std::path::Path) -> std::collections::HashMap<String, String> {
+    std::fs::read_to_string(file)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn supervisor_deps(state: &AppState) -> SupervisorDeps {
+    SupervisorDeps {
+        config: state.config.clone(),
+        settings: state.settings.clone(),
+        secrets: state.secrets.clone(),
+        events: state.events.clone(),
+        vault_unlocked: None,
+    }
+}
+
+/// What `serve` hands the sidecar on top of its secrets: the database URL the
+/// server connected with, the control socket it can reach the server on, and
+/// the two scoped tokens the server also gives workspace shells. A lost one
+/// fails quietly in the sidecar, as a fresh install or a 401. It binds a Unix
+/// socket, which Claude Code's sandbox refuses.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens() {
+    let data = tempfile::tempdir().unwrap();
+    let env_file = data.path().join("env");
+    let mut config = Config::default();
+    config.server.data_dir = data.path().to_path_buf();
+    config.sidecar.command = Some(vec![
+        "sh".into(),
+        "-c".into(),
+        env_dump_script(
+            &[
+                "DATABASE_URL",
+                "YARVIS_CORE_SOCK",
+                "YARVIS_ATTENTION_TOKEN",
+                "YARVIS_MCP_TOKEN",
+            ],
+            &env_file,
+        ),
+    ]);
+    let mut h = test_server(config, MemoryBackend::empty(), 1).await;
+    let database = yarvis_server::database_url::DatabaseUrl {
+        url: "postgres://localhost:5432/handed-over".into(),
+        source: yarvis_server::database_url::UrlSource::ConfigFile,
+    };
+    yarvis_server::hand_off_to_sidecar(&mut h.state, database).await;
+    assert_eq!(
+        h.state.database.as_ref().map(|d| d.url.as_str()),
+        Some("postgres://localhost:5432/handed-over"),
+        "Settings shows the URL the sidecar was given"
+    );
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(supervisor_deps(&h.state)));
+    until("the env file", async || env_file.exists()).await;
+    let env = read_env_dump(&env_file);
+    supervisor.abort();
+
+    assert_eq!(env["DATABASE_URL"], "postgres://localhost:5432/handed-over");
+    let socket = std::path::Path::new(&env["YARVIS_CORE_SOCK"]);
+    assert_eq!(socket.parent(), Some(data.path()));
+    // The socket answers, so the path the sidecar got is one it can use.
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    write
+        .write_all(b"{\"id\":1,\"method\":\"nope\"}\n")
+        .await
+        .unwrap();
+    let mut reply = String::new();
+    tokio::io::BufReader::new(read)
+        .read_line(&mut reply)
+        .await
+        .unwrap();
+    assert!(reply.contains("unknown method"), "{reply}");
+    assert_eq!(
+        env["YARVIS_ATTENTION_TOKEN"],
+        h.state.sidecar.attention_token()
+    );
+    assert_eq!(env["YARVIS_MCP_TOKEN"], h.state.sidecar.mcp_token());
+    assert_ne!(env["YARVIS_ATTENTION_TOKEN"], env["YARVIS_MCP_TOKEN"]);
+    assert_ne!(env["YARVIS_ATTENTION_TOKEN"], SIDECAR_TOKEN);
+}
+
+/// Under launchd the server's own `PATH` misses Homebrew and mise, so
+/// `[server] path` is where the sidecar's program is looked up and what it
+/// passes on to what it starts.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_configured_path_finds_the_sidecar_and_reaches_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let env_file = dir.path().join("env");
+    let program = bin.join("fake-yarvis-sidecar");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\n{}\n", env_dump_script(&["PATH"], &env_file)),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let mut config = Config::default();
+    config.server.path = Some(path.clone());
+    config.sidecar.command = Some(vec!["fake-yarvis-sidecar".into()]);
+    let h = test_server(config, MemoryBackend::empty(), 1).await;
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(supervisor_deps(&h.state)));
+    until("the env file", async || env_file.exists()).await;
+    supervisor.abort();
+    assert_eq!(read_env_dump(&env_file)["PATH"], path);
+}
+
+/// Settings calls this after saving a secret or an integration setting, so a
+/// fresh sidecar reads the new value. Only an admin device may.
+#[tokio::test]
+async fn the_restart_route_restarts_the_sidecar() {
+    let mut config = Config::default();
+    config.sidecar.command = Some(vec!["sh".into(), "-c".into(), "exec sleep 30".into()]);
+    let h = test_server(config, MemoryBackend::empty(), 1).await;
+    let (_, reader) = token(&h.state, &[Scope::Read, Scope::Chat, Scope::Terminal]).await;
+    let (_, admin) = token(&h.state, &[Scope::Admin]).await;
+    let supervisor = tokio::spawn(h.state.sidecar.clone().supervise(supervisor_deps(&h.state)));
+    until("sidecar.started", async || {
+        kinds(&h.state).await == ["sidecar.started"]
+    })
+    .await;
+
+    let (status, _) = send(
+        &h.state,
+        request("POST", "/api/core/restart_sidecar", &reader, json!(null)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send(
+        &h.state,
+        request("POST", "/api/core/restart_sidecar", &admin, json!(null)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    until("a second start", async || {
+        kinds(&h.state).await == ["sidecar.started", "sidecar.stopped", "sidecar.started"]
+    })
+    .await;
+    let stopped = h.state.events.since(0).await.unwrap()[1].clone();
+    assert_eq!(stopped.data["reason"], "restart");
+    supervisor.abort();
+}

@@ -114,8 +114,6 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
   switch (cmd) {
     case "get_server_connection":
       return { token: "demo-device-token" };
-    case "get_sidecar_log_path":
-      return "~/Library/Logs/Yarvis/sidecar.log";
     case "restart_sidecar":
     case "focus_main_window":
       return null;
