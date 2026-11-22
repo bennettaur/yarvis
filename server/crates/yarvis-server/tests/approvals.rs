@@ -383,6 +383,10 @@ async fn the_restart_sweep_waits_for_another_writer() {
     });
     // Holds the lock long enough for the sweep to run into it.
     tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !sweep.is_finished(),
+        "the sweep went ahead of the held rows"
+    );
     held.commit().await.unwrap();
     assert_eq!(sweep.await.unwrap().unwrap(), 1);
 }

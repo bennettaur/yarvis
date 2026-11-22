@@ -543,11 +543,14 @@ impl Account {
     /// racing with one code, even from two processes, can't both pass.
     async fn use_totp(&self, code: &str, consume: bool) -> Result<bool, StoreError> {
         let mut tx = self.0.store.begin().await?;
-        let row: Option<(Vec<u8>, Option<i64>)> = sqlx::query_as(
-            "SELECT totp_secret, totp_last_step FROM account WHERE id = 1 FOR UPDATE",
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
+        // A check that uses nothing up needn't make others wait for it.
+        let sql = if consume {
+            "SELECT totp_secret, totp_last_step FROM account WHERE id = 1 FOR UPDATE"
+        } else {
+            "SELECT totp_secret, totp_last_step FROM account WHERE id = 1"
+        };
+        let row: Option<(Vec<u8>, Option<i64>)> =
+            sqlx::query_as(sql).fetch_optional(&mut *tx).await?;
         let Some((secret, last_step)) = row else {
             return Ok(false);
         };
@@ -777,7 +780,8 @@ mod tests {
 
     #[tokio::test]
     async fn ten_failures_lock_the_account_and_a_success_resets_the_count() {
-        // Lockout is in memory, so a store that never connects will do.
+        // Lockout is kept in memory. The pool is lazy and this test never
+        // queries it, so the address and schema are never used.
         let account =
             Account::new(Store::connect_lazy("postgres://127.0.0.1:1/x", "unused").unwrap());
         for _ in 0..MAX_FAILURES - 1 {

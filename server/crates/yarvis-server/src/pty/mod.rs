@@ -420,6 +420,10 @@ impl PtyManager {
         if spec.strip_provider_secrets {
             cmd.env_remove("ANTHROPIC_API_KEY");
         }
+        // The server's own database URL, which reaches its account and device
+        // tables. A shell's rc files can still set one; this only stops the
+        // server handing over its own.
+        cmd.env_remove(crate::database_url::ENV_VAR);
         // After the strip, so a harness that sets its own provider key keeps it.
         if let Some(agent) = &spec.agent {
             for (key, value) in &agent.env {

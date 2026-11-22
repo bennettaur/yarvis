@@ -65,10 +65,10 @@ fn is_primary() -> bool {
     env_value("YARVIS_INSTANCE").is_none()
 }
 
-/// The schema a named instance's local server keeps its tables in. Instances
-/// can share one database, and on a shared schema the second would share the
-/// first's account and devices, and deny its pending approvals as left over
-/// on every start. `None` for the primary, which uses the server's default.
+/// The schema a named instance's local server keeps its tables in, so
+/// instances sharing a database don't share an account or devices. `None` for
+/// the primary, which uses the server's default. Names that differ only in
+/// punctuation (`a-b`, `a_b`) map to the same schema.
 pub fn server_schema() -> Option<String> {
     (!is_primary()).then(|| schema_for(&name()))
 }
@@ -143,14 +143,13 @@ pub fn label_window(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn an_instance_schema_is_a_plain_name() {
         assert_eq!(schema_for("migration-test"), "yarvis_server_migration_test");
         assert_eq!(schema_for("Ünï Cödé"), "yarvis_server__n__c_d_");
     }
-
-    use super::*;
 
     #[test]
     fn unset_or_blank_name_is_the_primary_instance() {

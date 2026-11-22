@@ -52,11 +52,12 @@ pub async fn store_on(schema: &str) -> Store {
 
 /// A `server.toml` for running the binary against `schema`.
 pub fn cli_config(data_dir: &Path, schema: &str) -> String {
+    let string = |s: &str| toml::Value::String(s.to_string()).to_string();
     format!(
-        "[server]\ndata_dir = {:?}\n[database]\nurl = {:?}\nschema = {:?}\n",
-        data_dir,
-        testing::test_database_url(),
-        schema
+        "[server]\ndata_dir = {}\n[database]\nurl = {}\nschema = {}\n",
+        string(&data_dir.to_string_lossy()),
+        string(&testing::test_database_url()),
+        string(schema)
     )
 }
 

@@ -32,6 +32,10 @@ const INPUT =
   "w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100";
 const LINK = "self-start text-xs text-zinc-500 underline hover:text-zinc-300";
 
+/** The server's 503 for a database it can't reach, as opposed to a proxy's. */
+const isDatabaseUnavailable = (e: unknown) =>
+  e instanceof SidecarError && e.status === 503 && e.message.includes("database_unavailable");
+
 /** How often sign-in asks again while the server waits for Postgres. */
 const DATABASE_RETRY_MS = 1000;
 
@@ -256,7 +260,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const load = () => {
+    const loadAuthStatus = () => {
       getAuthStatus()
         .then((s) => {
           if (!active) return;
@@ -265,17 +269,18 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         })
         .catch((e) => {
           if (!active) return;
-          // A 503 is the server up but waiting for Postgres, as at boot, so
-          // keep asking rather than leave the user on an error.
-          if (e instanceof SidecarError && e.status === 503) {
+          // The server up but waiting for Postgres, as at boot, so keep asking
+          // rather than leave the user on an error.
+          if (isDatabaseUnavailable(e)) {
             setWaitingForDatabase(true);
-            timer = setTimeout(load, DATABASE_RETRY_MS);
+            timer = setTimeout(loadAuthStatus, DATABASE_RETRY_MS);
             return;
           }
+          setWaitingForDatabase(false);
           setStatusError(errorText(e));
         });
     };
-    load();
+    loadAuthStatus();
     return () => {
       active = false;
       clearTimeout(timer);
@@ -292,8 +297,11 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
       )}
       {waitingForDatabase && (
         <p className="w-80 text-sm text-amber-300" role="status">
-          The Yarvis server is waiting for its database. Check that PostgreSQL is running; this page
-          carries on once it answers.
+          The Yarvis server is waiting for its database. Start PostgreSQL (
+          <code>brew services start postgresql@17</code>), or point the server at another database
+          with <code>YARVIS_DATABASE_URL</code> or <code>url</code> under <code>[database]</code> in
+          its <code>server.toml</code> and restart it. This page carries on once the database
+          answers.
         </p>
       )}
       {statusError && (

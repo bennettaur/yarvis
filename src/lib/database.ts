@@ -12,14 +12,14 @@ export interface DatabaseInfo {
   source: DatabaseSource;
 }
 
-/** The database the server connected to, or null when it can't say (tests). */
+/** The database the server connected to, or null when the server has none to report. */
 export const getDatabaseInfo = () => core<DatabaseInfo | null>("get_database_info");
 
 export const DATABASE_SOURCE_TEXT: Record<DatabaseSource, string> = {
   env: "from the YARVIS_DATABASE_URL environment variable",
   configFile: "from [database] url in server.toml",
   secretStore:
-    "from the secret store, where older versions saved it. Move it to YARVIS_DATABASE_URL or [database] url in server.toml",
+    "from database_url in the secret store, which the server only falls back to. Move it to YARVIS_DATABASE_URL or [database] url in server.toml",
   default:
     "by default, since neither YARVIS_DATABASE_URL nor [database] url in server.toml names one",
 };

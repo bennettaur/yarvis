@@ -5,7 +5,9 @@
 //! nobody can sign in or unlock the vault until it is back.
 //!
 //! Every pooled connection has `search_path` set to the schema, so queries
-//! name tables bare. Tests use a schema of their own on the same database.
+//! name tables bare. [`SCHEMA`] is the default; `[database] schema` in
+//! `server.toml` picks another, so a dev instance or a test can share the
+//! database without sharing an account.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +25,7 @@ const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 const MAX_CONNECTIONS: u32 = 8;
 
-/// How long `connect_with_retry` waits between tries, at most.
+/// The cap on `migrate_with_retry`'s doubling delay between tries.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
@@ -34,7 +36,8 @@ pub enum StoreError {
     Db(#[from] sqlx::Error),
     #[error("database migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
-    #[error("database task failed: {0}")]
+    /// A blocking task (passphrase hashing, say) panicked or was cancelled.
+    #[error("a background task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
     #[error("{0}")]
     Config(String),
@@ -46,9 +49,11 @@ impl StoreError {
     pub fn is_unavailable(&self) -> bool {
         match self {
             Self::Unavailable => true,
-            Self::Db(e) | Self::Migrate(sqlx::migrate::MigrateError::Execute(e)) => {
-                is_connection_error(e)
-            }
+            Self::Db(e)
+            | Self::Migrate(
+                sqlx::migrate::MigrateError::Execute(e)
+                | sqlx::migrate::MigrateError::ExecuteMigration(e, _),
+            ) => is_connection_error(e),
             _ => false,
         }
     }
@@ -63,9 +68,14 @@ fn is_connection_error(e: &sqlx::Error) -> bool {
         | sqlx::Error::Io(_)
         | sqlx::Error::Tls(_) => true,
         // Class 08 is a connection failure, 28 a refused login, 3D000 a
-        // database that doesn't exist, and 57P03 Postgres still starting up.
+        // database that doesn't exist, 53300 too many connections, and 57P
+        // Postgres starting up or shutting down (a restart, say).
         sqlx::Error::Database(db) => db.code().is_some_and(|code| {
-            code.starts_with("08") || code.starts_with("28") || code == "3D000" || code == "57P03"
+            code.starts_with("08")
+                || code.starts_with("28")
+                || code.starts_with("57P")
+                || code == "3D000"
+                || code == "53300"
         }),
         _ => false,
     }
@@ -92,7 +102,7 @@ pub struct Store {
 impl Store {
     /// A store that connects on first use. Nothing touches the network here,
     /// so a server can start listening before Postgres is up; run
-    /// [`Store::migrate`] (or [`Store::connect_with_retry`]) before using it.
+    /// [`Store::migrate`] (or [`Store::migrate_with_retry`]) before using it.
     pub fn connect_lazy(url: &str, schema: &str) -> Result<Self, StoreError> {
         check_schema_name(schema)?;
         let options: PgConnectOptions = url.parse().map_err(|_| {
@@ -127,7 +137,7 @@ impl Store {
     /// Migrates, retrying with backoff while Postgres is unreachable, as it
     /// is for a moment when launchd starts the server at boot. Gives up after
     /// `limit`, or never without one. Any other failure returns at once.
-    pub async fn connect_with_retry(&self, limit: Option<Duration>) -> Result<(), StoreError> {
+    pub async fn migrate_with_retry(&self, limit: Option<Duration>) -> Result<(), StoreError> {
         let deadline = limit.map(|limit| tokio::time::Instant::now() + limit);
         let mut delay = Duration::from_secs(1);
         loop {
@@ -194,8 +204,12 @@ impl Store {
 }
 
 /// The schema name goes into SQL unescaped, so only plain names are allowed.
+/// `public` is Drizzle's, which a `drizzle-kit push` may rewrite, and `pg_`
+/// names belong to Postgres.
 fn check_schema_name(schema: &str) -> Result<(), StoreError> {
     let plain = !schema.is_empty()
+        && schema != "public"
+        && !schema.starts_with("pg_")
         && schema.len() <= 63
         && schema.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
         && schema
@@ -253,6 +267,8 @@ pub mod testing {
         format!("yarvis_test_{}_{suffix}", now_ms())
     }
 
+    /// Best effort: a schema left behind only costs space, so any failure
+    /// here is ignored. Reads the time `new_schema` puts after the prefix.
     async fn drop_stale_schemas() {
         let Ok(pool) = PgPool::connect(&test_database_url()).await else {
             return;
@@ -297,6 +313,26 @@ mod tests {
         assert_eq!(applied as usize, MIGRATIONS.len());
         // A second run would fail on `CREATE TABLE devices` if it re-ran.
         Store::connect(&url, &schema).await.unwrap();
+    }
+
+    /// The server and a CLI command can start together on a new schema.
+    #[tokio::test]
+    async fn two_processes_migrating_at_once_both_succeed() {
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let (one, two, three) = tokio::join!(
+            Store::connect(&url, &schema),
+            Store::connect(&url, &schema),
+            Store::connect(&url, &schema),
+        );
+        let store = one.unwrap();
+        two.unwrap();
+        three.unwrap();
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(store.db().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(applied as usize, MIGRATIONS.len());
     }
 
     #[tokio::test]
@@ -355,7 +391,7 @@ mod tests {
         // Port 1 on loopback refuses connections.
         let store = Store::connect_lazy("postgres://127.0.0.1:1/x", SCHEMA).unwrap();
         let err = store
-            .connect_with_retry(Some(Duration::from_millis(10)))
+            .migrate_with_retry(Some(Duration::from_millis(10)))
             .await
             .unwrap_err();
         assert!(err.is_unavailable(), "{err}");
@@ -373,7 +409,16 @@ mod tests {
     #[test]
     fn only_plain_schema_names_are_allowed() {
         assert!(check_schema_name("yarvis_server").is_ok());
-        for bad in ["", "Upper", "a-b", "a\"b", "1abc", "a;drop"] {
+        for bad in [
+            "",
+            "Upper",
+            "a-b",
+            "a\"b",
+            "1abc",
+            "a;drop",
+            "public",
+            "pg_catalog",
+        ] {
             assert!(check_schema_name(bad).is_err(), "{bad}");
         }
     }

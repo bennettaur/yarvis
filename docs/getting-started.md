@@ -248,7 +248,8 @@ rest of the app is built around.
 
 | What | Where |
 | --- | --- |
-| Secrets (DB URL, API keys, tokens) | One macOS Keychain item: service `com.mikebennett.yarvis`, account `secrets`. You can move it to 1Password. |
+| Secrets (API keys, tokens) | One macOS Keychain item: service `com.mikebennett.yarvis`, account `secrets`. You can move it to 1Password. |
+| The database URL | `YARVIS_DATABASE_URL`, or `[database] url` in the local server's `server.toml`; `postgres://localhost:5432/yarvis` when neither is set |
 | Other settings | `~/.yarvis/settings.json` |
 | Your own specialist agents | `~/.yarvis/agents/*.md` |
 | Your own heads-down routines | `~/.yarvis/routines/*.md` |

@@ -4,8 +4,8 @@
 //! The server prints the setup code to stdout when it starts with no account,
 //! and `yarvis-server auth reset` prints a new one. Whoever can read the
 //! server's terminal can claim the server, which is the trust anchor for
-//! everything after. The code lives in the database, as a SHA-256, so the CLI and the
-//! running server see the same one.
+//! everything after. The code lives in the database, as a SHA-256, so the CLI
+//! and the running server see the same one.
 
 use rand::Rng;
 use sha2::{Digest, Sha256};

@@ -14,8 +14,11 @@ import SignInGate from "./SignInGate";
 let setupRequired = false;
 /** How many more status checks answer as if Postgres were still down. */
 let databaseDownFor = 0;
+/** A 503 from something in front of the server, with no database error. */
+let proxyDown = false;
 const server = stubServerRoutes({
   "GET /api/auth/status": () => {
+    if (proxyDown) return new Response("Service Unavailable", { status: 503 });
     if (databaseDownFor > 0) {
       databaseDownFor -= 1;
       return Response.json({ error: "database_unavailable" }, { status: 503 });
@@ -51,6 +54,7 @@ afterEach(() => {
   unmount = undefined;
   setupRequired = false;
   databaseDownFor = 0;
+  proxyDown = false;
   server.calls.length = 0;
 });
 
@@ -91,6 +95,14 @@ describe("SignInGate", () => {
     );
     expect(mounted.host.querySelector("[role=alert]")).toBeNull();
     await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form", 4_000);
+    expect(mounted.host.textContent).not.toContain("waiting for its database");
+  });
+
+  it("doesn't wait on a 503 that isn't the server's database", async () => {
+    proxyDown = true;
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(() => mounted.host.querySelector("[role=alert]") !== null, "the error");
     expect(mounted.host.textContent).not.toContain("waiting for its database");
   });
 

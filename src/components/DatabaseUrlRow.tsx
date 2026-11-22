@@ -35,7 +35,7 @@ export default function DatabaseUrlRow() {
         </>
       ) : (
         <p className="text-xs text-zinc-500">
-          {error ?? "Set with YARVIS_DATABASE_URL or [database] url in server.toml."}
+          {error ?? "The server didn't say which database it uses."}
         </p>
       )}
     </div>

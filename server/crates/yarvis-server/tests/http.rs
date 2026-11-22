@@ -63,9 +63,23 @@ async fn before_the_database_is_ready_health_and_auth_status_answer_503() {
 async fn settings_see_where_the_database_url_came_from_but_never_its_password() {
     use yarvis_server::database_url::{DatabaseUrl, UrlSource};
     let mut state = state().await;
-    let (_, token) = create_device(&state.store, "laptop", "token", &[Scope::Read], None)
+    let (_, reader) = create_device(&state.store, "phone", "token", &[Scope::Read], None)
         .await
         .unwrap();
+    let (_, token) = create_device(&state.store, "laptop", "token", &[Scope::Admin], None)
+        .await
+        .unwrap();
+    let request = Request::post("/api/core/get_database_info")
+        .header("Host", "localhost:7878")
+        .header("Authorization", format!("Bearer {reader}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app(state.clone()).oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "it names the database host"
+    );
     let info = |state: &AppState| {
         let request = Request::post("/api/core/get_database_info")
             .header("Host", "localhost:7878")

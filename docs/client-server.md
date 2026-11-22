@@ -340,9 +340,9 @@ its tables in the `yarvis_server` schema; the sidecar's are in `public`.
 
 The server hands the URL to the sidecar as `DATABASE_URL`. Settings shows it,
 with any password masked, and where it came from; it can't be changed there,
-since the server needs it before anyone signs in. A bundled server started by
-the Tauri app finds an older install's URL in the Keychain (3) and the default
-(4) otherwise.
+since the server needs it before anyone signs in. A server on the Keychain or
+1Password backend, the bundled one the Tauri app starts included, still finds
+an older install's URL there (3), and uses the default (4) otherwise.
 
 **Two servers on one database** (a `dev:instance` beside the main app, or the
 tests) need different `[database] schema` values, or they share one account
@@ -890,11 +890,18 @@ Core commands that changed on the way from `invoke`:
 - **The sidecar's database role can read the server's tables.** The sidecar
   connects with the same URL, so a SQL injection in the sidecar, or anyone with
   that URL, can read the TOTP secret, the passphrase hash and the devices'
-  token hashes (not the tokens), and write them. On one Mac that is little
-  new, since the sidecar runs as the same user and could read `server.db`.
-  A separate Postgres role for the server isn't practical on a default local
+  token hashes (not the tokens), and write them. On one Mac that adds little,
+  since the sidecar runs as the same user as the server and can read its
+  files. A separate Postgres role for the server isn't practical on a default local
   Postgres, where the sidecar also needs to create tables and the `vector`
   extension. This holds until the sidecar's queries move into the server.
+  With the default URL and Homebrew's Postgres, which trusts every local
+  connection, "anyone with that URL" is any process on the Mac that opens a
+  socket to it, terminal and agent sessions included: one could add itself a
+  device. The server keeps `YARVIS_DATABASE_URL` out of the shells it starts,
+  but that only hides the URL, and the default one is no secret. A password
+  on the database (`docs/getting-started.md`) is what narrows it to
+  whoever holds the URL.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
 - **Some `read` routes run git.** Listing a repo's branches and a

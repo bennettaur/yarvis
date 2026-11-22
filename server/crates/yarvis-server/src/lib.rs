@@ -74,8 +74,8 @@ pub struct AppState {
     pub secrets: SecretBlob,
     pub sidecar: Sidecar,
     pub pty: PtyManager,
-    /// The database the server connected to, for Settings to show. `None` in
-    /// tests, which hand the store in directly.
+    /// The database URL and where it came from, for Settings to show. `main`
+    /// fills it in; `AppState::new` only gets the store.
     pub database: Option<database_url::DatabaseUrl>,
 }
 
@@ -158,27 +158,29 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// 503 until the database is reachable and migrated, so a client waiting for
-/// the server to start waits for that too.
-async fn health(State(state): State<AppState>) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    if state.store.is_ready() {
-        return axum::Json(serde_json::json!({
-            "status": "ok",
-            "service": "yarvis-server",
-            "database": "ok",
-        }))
-        .into_response();
-    }
+/// 503 until the database has been reached and migrated once, so a client
+/// waiting for the server to start waits for that too. A later outage shows
+/// as 503s on the routes that need the database, not here.
+async fn health(
+    State(state): State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    let (status, label, database) = if state.store.is_ready() {
+        (axum::http::StatusCode::OK, "ok", "ok")
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "starting",
+            "unavailable",
+        )
+    };
     (
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        status,
         axum::Json(serde_json::json!({
-            "status": "starting",
+            "status": label,
             "service": "yarvis-server",
-            "database": "unavailable",
+            "database": database,
         })),
     )
-        .into_response()
 }
 
 async fn me(Authed { device, .. }: Authed<Read>) -> axum::Json<DeviceContext> {

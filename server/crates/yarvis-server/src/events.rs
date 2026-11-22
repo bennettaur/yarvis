@@ -28,6 +28,14 @@ const LIVE_BUFFER: usize = 256;
 /// The auth message and pings are all a client sends on this socket.
 const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
 
+/// Taken by every append for the rest of its transaction.
+const APPEND_LOCK: &str = "SELECT pg_advisory_xact_lock(hashtext($1))";
+
+/// Per schema, so two servers on separate schemas don't wait on each other.
+fn append_lock_name(schema: &str) -> String {
+    format!("{schema}.events")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -73,8 +81,8 @@ impl EventLog {
         // `order` keeps this process's broadcasts in the same order.
         let _order = self.order.lock().await;
         let mut tx = self.store.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(format!("{}.events", self.store.schema()))
+        sqlx::query(APPEND_LOCK)
+            .bind(append_lock_name(self.store.schema()))
             .execute(&mut *tx)
             .await?;
         let at = now_ms();
@@ -253,11 +261,45 @@ mod tests {
         assert_eq!(later[0].data["x"], 1);
     }
 
+    /// Another process midway through an append (lock taken, row inserted, not
+    /// yet committed) holds up this one, so the higher `seq` can't become
+    /// visible before the lower one.
+    #[tokio::test]
+    async fn an_append_waits_for_an_earlier_one_still_in_flight() {
+        use crate::store::testing;
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let other = Store::connect(&url, &schema).await.unwrap();
+        let log = EventLog::new(Store::connect(&url, &schema).await.unwrap());
+        let mut in_flight = other.begin().await.unwrap();
+        sqlx::query(APPEND_LOCK)
+            .bind(append_lock_name(&schema))
+            .execute(&mut *in_flight)
+            .await
+            .unwrap();
+        let first: i64 = sqlx::query_scalar(
+            "INSERT INTO events (at, kind, data) VALUES (0, 'first', '{}') RETURNING seq",
+        )
+        .fetch_one(&mut *in_flight)
+        .await
+        .unwrap();
+        let second = tokio::spawn(async move {
+            log.append(None, "second", serde_json::json!({}))
+                .await
+                .unwrap()
+                .seq
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!second.is_finished(), "committed ahead of a lower seq");
+        in_flight.commit().await.unwrap();
+        assert!(second.await.unwrap() > first);
+    }
+
     /// Several processes appending at once, with a client catching up all the
     /// while: if a lower `seq` could commit after a higher one, the reader
     /// would move past it and never see it.
     #[tokio::test]
-    async fn catch_up_misses_nothing_while_two_processes_append() {
+    async fn catch_up_misses_nothing_while_several_processes_append() {
         use crate::store::testing;
         const WRITERS: usize = 6;
         const EACH: usize = 60;

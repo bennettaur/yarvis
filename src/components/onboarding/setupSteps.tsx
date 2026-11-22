@@ -114,9 +114,13 @@ export function DatabaseStep() {
   const [dbHealth, setDbHealth] = useState<DbHealthResponse | null>(null);
 
   useEffect(() => {
+    let active = true;
     getDbHealth()
-      .then(setDbHealth)
-      .catch(() => setDbHealth(null));
+      .then((health) => active && setDbHealth(health))
+      .catch(() => active && setDbHealth(null));
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (

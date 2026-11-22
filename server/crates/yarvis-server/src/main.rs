@@ -68,15 +68,34 @@ async fn main() {
             config.server.data_dir.display()
         ))
     });
-    note_unused_sqlite_database(&config.server.data_dir);
+    note_ignored_server_db(&config.server.data_dir);
     let database = find_database(&config).await;
     let store =
         Store::connect_lazy(&database.url, &config.database.schema).unwrap_or_else(|e| fail(e));
-    if let Command::Serve = command {
-        return serve(config, store, database).await;
+    // `serve` waits for the database in the background; a CLI command needs
+    // it before it can do anything.
+    match command {
+        Command::Serve => serve(config, store, database).await,
+        Command::AddDevice { name, scopes } => {
+            wait_for_database(&store, &database).await;
+            add_device(store, &name, &scopes).await
+        }
+        Command::VaultInit { passphrase_stdin } => {
+            wait_for_database(&store, &database).await;
+            vault_init(&config, store, passphrase_stdin).await
+        }
+        Command::AuthReset { sign_out_all } => {
+            wait_for_database(&store, &database).await;
+            auth_reset(&config, store, sign_out_all).await
+        }
     }
+}
+
+/// For a CLI command. Each try can itself take up to the pool's acquire
+/// timeout on a host that doesn't answer, so this can run past the limit.
+async fn wait_for_database(store: &Store, database: &DatabaseUrl) {
     store
-        .connect_with_retry(Some(CLI_DATABASE_WAIT))
+        .migrate_with_retry(Some(CLI_DATABASE_WAIT))
         .await
         .unwrap_or_else(|e| {
             fail(format!(
@@ -84,14 +103,6 @@ async fn main() {
                 database.masked()
             ))
         });
-    match command {
-        Command::Serve => unreachable!("handled above"),
-        Command::AddDevice { name, scopes } => add_device(store, &name, &scopes).await,
-        Command::VaultInit { passphrase_stdin } => {
-            vault_init(&config, store, passphrase_stdin).await
-        }
-        Command::AuthReset { sign_out_all } => auth_reset(&config, store, sign_out_all).await,
-    }
 }
 
 /// How long a CLI command waits for Postgres before giving up.
@@ -101,14 +112,15 @@ const CLI_DATABASE_WAIT: Duration = Duration::from_secs(10);
 /// install the secret store, or else the default.
 async fn find_database(config: &Config) -> DatabaseUrl {
     let legacy_config = config.clone();
+    // Blocking: the fallback reads the Keychain or runs `op`.
     let database = tokio::task::spawn_blocking(move || {
-        // Only reached when the env var and server.toml name nothing.
         database_url::resolve(&legacy_config, database_url::from_env(), || {
             database_url::from_legacy_secret_store(&legacy_config)
         })
     })
     .await
-    .unwrap_or_else(|e| fail(format!("finding the database failed: {e}")));
+    .unwrap_or_else(|e| fail(format!("finding the database failed: {e}")))
+    .unwrap_or_else(|e| fail(e));
     if database.source == UrlSource::Default {
         tracing::info!(
             "no database URL set ({} or [database] url in server.toml), so using {}",
@@ -127,9 +139,10 @@ async fn find_database(config: &Config) -> DatabaseUrl {
     database
 }
 
-/// Server state lived in `<data_dir>/server.db` before it moved to Postgres.
-/// Nothing is copied from it, so the account has to be set up again.
-fn note_unused_sqlite_database(data_dir: &Path) {
+/// A `<data_dir>/server.db` left by an older version is never read: the
+/// account, devices and events are in Postgres, and the account is set up
+/// again there.
+fn note_ignored_server_db(data_dir: &Path) {
     let old = data_dir.join("server.db");
     if old.exists() {
         tracing::info!(
@@ -207,7 +220,7 @@ async fn serve(config: Config, store: Store, database: DatabaseUrl) {
 /// the sidecar, which uses the same database. Returns the sidecar
 /// supervisor's task, if the sidecar runs.
 async fn start_when_database_ready(state: AppState) -> Option<tokio::task::JoinHandle<()>> {
-    if let Err(e) = state.store.connect_with_retry(None).await {
+    if let Err(e) = state.store.migrate_with_retry(None).await {
         fail(format!("couldn't set up the database: {e}"));
     }
     tracing::info!("connected to the database");

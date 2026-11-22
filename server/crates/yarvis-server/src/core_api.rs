@@ -36,10 +36,9 @@ const MAX_BODY_BYTES: usize = 256 * 1024;
 
 /// Every command this route serves and the scope it needs. Only `read` and
 /// `admin` appear: a command either only reads, or writes a secret or a
-/// setting.
+/// setting, or reads something only an admin should see.
 pub const COMMANDS: &[(&str, Scope)] = &[
     ("get_settings", Scope::Read),
-    ("get_database_info", Scope::Read),
     ("get_secret_status", Scope::Read),
     ("list_secret_status", Scope::Read),
     ("list_custom_provider_secret_status", Scope::Read),
@@ -71,6 +70,8 @@ pub const COMMANDS: &[(&str, Scope)] = &[
     ("set_channel_messaging", Scope::Admin),
     ("set_attention_animation", Scope::Admin),
     ("set_secret_backend", Scope::Admin),
+    // A read, but admin-only: it names the database host and role.
+    ("get_database_info", Scope::Admin),
     ("restart_sidecar", Scope::Admin),
 ];
 
@@ -470,11 +471,14 @@ mod tests {
     use super::*;
 
     /// A command that only reads is named `get_` or `list_`, and everything
-    /// else writes, so a write listed as a read stands out here.
+    /// else writes, so a write listed as a read stands out here. A read may
+    /// still need admin, which is the safe way round.
     #[test]
     fn only_get_and_list_commands_are_reads() {
+        const ADMIN_READS: &[&str] = &["get_database_info"];
         for (name, scope) in COMMANDS {
-            let reads = name.starts_with("get_") || name.starts_with("list_");
+            let reads = (name.starts_with("get_") || name.starts_with("list_"))
+                && !ADMIN_READS.contains(name);
             let expected = if reads { Scope::Read } else { Scope::Admin };
             assert_eq!(*scope, expected, "{name}");
         }

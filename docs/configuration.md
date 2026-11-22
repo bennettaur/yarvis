@@ -395,7 +395,8 @@ warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
 provider key exported in that shell reaches the sidecar unless the Keychain
-has its own value for it. `DATABASE_URL` doesn't: the server always sets it. A release build opened from
+has its own value for it. A `DATABASE_URL` there is ignored: the server sets
+the sidecar's from its own database URL. A release build opened from
 Finder has no such shell: it only takes `PATH` from your login shell, and the
 other variables above don't reach it.
 

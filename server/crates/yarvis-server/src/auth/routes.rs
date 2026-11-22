@@ -55,6 +55,8 @@ impl From<AccountError> for ApiError {
             AccountError::Locked(left) => locked(left),
             AccountError::Gone => ApiError::conflict("the account was reset")
                 .with_detail("set it up again with the new setup code"),
+            // So a database outage during sign-in is a 503, as everywhere else.
+            AccountError::Store(e) => e.into(),
             other => ApiError::internal(other),
         }
     }
