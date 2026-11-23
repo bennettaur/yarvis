@@ -7,7 +7,7 @@ import { listSecretStatus, SECRETS, type SecretKey, setSecret } from "../../lib/
 import { configuredChatProviders } from "../../lib/onboarding";
 import { clearResourceCache } from "../../lib/resourceCache";
 import { restartAndWait } from "../../lib/restart";
-import { getSettings } from "../../lib/settings";
+import { activeSecretBackend, getSettings, secretStoreName } from "../../lib/settings";
 import CustomProviderSection from "../CustomProviderSection";
 import { StatusDot } from "../Dashboard";
 import DatabaseUrlRow from "../DatabaseUrlRow";
@@ -257,7 +257,7 @@ async function runChecks(): Promise<CheckResult> {
     listProviders("chat"),
   ]);
   return {
-    secretStoreLabel: settings.secretBackend === "onepassword" ? "1Password" : "macOS Keychain",
+    secretStoreLabel: secretStoreName(activeSecretBackend(settings)),
     databaseConfigured: dbHealth.configured,
     databaseReachable: dbHealth.reachable,
     providers,

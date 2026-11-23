@@ -709,6 +709,21 @@ async fn switching_to_a_backend_server_toml_did_not_choose_is_a_409() {
 }
 
 #[tokio::test]
+async fn settings_name_the_backend_server_toml_sets() {
+    let mut config = Config::default();
+    config.secrets.backend = Some(SecretBackendKind::Vault);
+    let h = test_server(config, MemoryBackend::empty(), 1).await;
+    let (_, reader) = token(&h.state, &[Scope::Read]).await;
+    let (status, body) = send(
+        &h.state,
+        request("POST", "/api/core/get_settings", &reader, json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["configuredSecretBackend"], "vault");
+}
+
+#[tokio::test]
 async fn an_unknown_or_client_local_command_is_a_404() {
     let h = test_server(Config::default(), MemoryBackend::empty(), 1).await;
     let (_, all) = token(&h.state, &Scope::ALL).await;

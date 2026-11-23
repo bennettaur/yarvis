@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -121,7 +121,7 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretBackendKind {
     // `keychain` and `onepassword` need a logged-in macOS session.

@@ -174,7 +174,10 @@ Other processes can read command arguments with no prompt at all.
 `yarvis-server` can keep the secrets item in its own encrypted vault instead of
 the Keychain or 1Password, for a server that starts before anyone logs in. It
 is set in `server.toml`, not the Settings screen. `docs/client-server.md` has
-the full setup and the API.
+the full setup and the API. When `server.toml` sets `[secrets] backend`,
+**Settings → Credentials → Secret store** shows that store and offers no
+switch, since the server refuses one; a pinned 1Password store still lets you
+change its vault and item.
 
 ```toml
 [secrets]

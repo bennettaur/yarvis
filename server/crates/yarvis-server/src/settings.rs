@@ -220,9 +220,10 @@ impl SettingsStore {
     }
 
     /// What clients get back: the stored settings plus the defaults an unset
-    /// field falls back to.
-    pub fn view(&self) -> SettingsView {
-        self.snapshot().into()
+    /// field falls back to. `configured` is the backend `server.toml` sets,
+    /// which tells the client which store is really in use.
+    pub fn view(&self, configured: Option<SecretBackendKind>) -> SettingsView {
+        SettingsView::new(self.snapshot(), configured)
     }
 
     /// Re-reads the file, lets `edit` change it, and saves, under the
@@ -864,12 +865,16 @@ pub struct SettingsView {
     agent_command_overridden_by_env: bool,
     default_telegram_otp_window_minutes: u32,
     default_allowed_slash_commands: &'static [&'static str],
+    /// The backend `server.toml` sets, or `None` when `secretBackend` decides.
+    /// When set, it is the store in use and the only one a switch accepts.
+    configured_secret_backend: Option<SecretBackendKind>,
 }
 
-impl From<Settings> for SettingsView {
-    fn from(settings: Settings) -> Self {
+impl SettingsView {
+    fn new(settings: Settings, configured_secret_backend: Option<SecretBackendKind>) -> Self {
         Self {
             settings,
+            configured_secret_backend,
             default_max_pty_sessions: agent_policy::DEFAULT_MAX_SESSIONS,
             max_configurable_pty_sessions: agent_policy::MAX_CONFIGURABLE_SESSIONS,
             default_agent_name: agent_policy::DEFAULT_AGENT_NAME,
@@ -958,7 +963,7 @@ mod tests {
 
     #[test]
     fn the_view_carries_the_keys_the_frontend_reads() {
-        let json = serde_json::to_value(SettingsView::from(Settings::default())).unwrap();
+        let json = serde_json::to_value(SettingsView::new(Settings::default(), None)).unwrap();
         assert!(json["maxPtySessions"].is_null());
         assert_eq!(
             json["defaultMaxPtySessions"],
@@ -988,10 +993,18 @@ mod tests {
             "attentionAnimation",
             "allowedSlashCommands",
             "channelMessaging",
+            "configuredSecretBackend",
         ] {
             assert!(json[key].is_null(), "{key}");
         }
         assert_eq!(json["defaultAllowedSlashCommands"][0], "compact");
+    }
+
+    #[test]
+    fn the_view_names_the_backend_server_toml_sets() {
+        let (_dir, store) = temp_store();
+        let json = serde_json::to_value(store.view(Some(SecretBackendKind::Vault))).unwrap();
+        assert_eq!(json["configuredSecretBackend"], "vault");
     }
 
     #[test]

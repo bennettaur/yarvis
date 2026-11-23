@@ -47,8 +47,13 @@ export interface Settings {
   telegramOtpWindowMinutes: number | null;
   /** The window that applies while `telegramOtpWindowMinutes` is null. */
   defaultTelegramOtpWindowMinutes: number;
-  /** Which store holds the secrets blob; null means the macOS Keychain. */
+  /** Which store holds the secrets blob; null means the macOS Keychain.
+   *  `configuredSecretBackend` outranks it when set. */
   secretBackend: SecretBackend | null;
+  /** The store server.toml's `[secrets] backend` pins, or null when
+   *  `secretBackend` decides. While set, the server refuses a switch to any
+   *  other store. */
+  configuredSecretBackend: ActiveSecretBackend | null;
   /** 1Password vault holding the secrets item. Kept even while the Keychain is
    *  selected, so switching back doesn't mean retyping it. */
   onePasswordVault: string | null;
@@ -122,6 +127,27 @@ export const setAgentHarnessSecret = (harnessId: string, key: string, value: str
 
 /** Stores the secrets blob can live in; mirrors `secret_store.rs`. */
 export type SecretBackend = "keychain" | "onepassword";
+
+/** Every store the server can read the secrets blob from. Only server.toml
+ *  can choose the server's own vault. */
+export type ActiveSecretBackend = SecretBackend | "vault";
+
+/** The store the server is really using: server.toml's choice, else the saved
+ *  one, else the Keychain. */
+export function activeSecretBackend(settings: Settings): ActiveSecretBackend {
+  return settings.configuredSecretBackend ?? settings.secretBackend ?? "keychain";
+}
+
+export function secretStoreName(backend: ActiveSecretBackend): string {
+  switch (backend) {
+    case "onepassword":
+      return "1Password";
+    case "vault":
+      return "the server's vault";
+    case "keychain":
+      return "macOS Keychain";
+  }
+}
 
 export const getSettings = () => core<Settings>("get_settings");
 

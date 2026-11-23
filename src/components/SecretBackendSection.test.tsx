@@ -39,6 +39,7 @@ function defaultSettings(): Settings {
     telegramOtpWindowMinutes: null,
     defaultTelegramOtpWindowMinutes: 120,
     secretBackend: null,
+    configuredSecretBackend: null,
     onePasswordVault: null,
     onePasswordItem: null,
     colorTheme: null,
@@ -228,6 +229,49 @@ describe("SecretBackendSection", () => {
       args: { backend: "keychain", vault: "Private", item: "Yarvis Secrets" },
     });
     expect(host.textContent).toContain("In use: macOS Keychain");
+  });
+
+  describe("when server.toml sets the backend", () => {
+    it("names the server's vault and offers no switch", async () => {
+      stored = { ...defaultSettings(), configuredSecretBackend: "vault" };
+      const host = await mount();
+
+      expect(host.textContent).toContain("In use: the server's vault");
+      expect(host.textContent).toContain("server.toml");
+      expect(host.querySelector('input[type="radio"]')).toBeNull();
+      expect(host.querySelector("button")).toBeNull();
+    });
+
+    it("names the pinned store, not the one settings.json saved", async () => {
+      stored = {
+        ...defaultSettings(),
+        secretBackend: "onepassword",
+        configuredSecretBackend: "keychain",
+      };
+      const html = await renderToHtml(createElement(SecretBackendSection));
+      expect(html).toContain("In use: macOS Keychain");
+      expect(html).not.toContain("op-vault");
+    });
+
+    // The server still lets a pinned 1Password move to another item.
+    it("still saves a new item for a pinned 1Password", async () => {
+      stored = {
+        ...defaultSettings(),
+        configuredSecretBackend: "onepassword",
+        onePasswordVault: "Private",
+        onePasswordItem: "Yarvis Secrets",
+      };
+      const host = await mount();
+      expect(host.querySelector('input[type="radio"]')).toBeNull();
+      expect(host.textContent).toContain("In use: 1Password");
+      type(host, "op-item", "Other Item");
+      await clickSave(host);
+
+      expect(invoked).toContainEqual({
+        command: "set_secret_backend",
+        args: { backend: "onepassword", vault: "Private", item: "Other Item" },
+      });
+    });
   });
 });
 
