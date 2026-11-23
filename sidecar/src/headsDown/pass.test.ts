@@ -618,6 +618,62 @@ describe("a heads-down pass", () => {
     }
   });
 
+  it("mounts the tools a due routine names, and hands it its config", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "issue-check.md"),
+      "---\nname: issue-check\ndescription: x\nevery: 1h\ntools: [get_repo_issue, nope]\nconfig:\n  repo: me/app\n---\n\nCheck the repo in my settings.\n",
+    );
+    // A built-in outside the families a pass carries, so only the routine puts it in reach.
+    await sql`
+      INSERT INTO agent_tools (id, source, name, description, policy, content_hash)
+      VALUES ('builtin:get_repo_issue', 'builtin', 'get_repo_issue', '', 'search', '')
+      ON CONFLICT (id) DO UPDATE SET policy = 'search'
+    `;
+    try {
+      await saveHeadsDownConfig({
+        minSleepMinutes: 5,
+        maxSleepMinutes: 120,
+        idleSleepMinutes: 60,
+        workingHours: null,
+        userAwayAfterMinutes: 120,
+        passTimeoutMinutes: 20,
+        provider: null,
+        model: null,
+        guidance: null,
+        maxRoutinesPerPass: 1,
+      });
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const offeredTools = async () => {
+        const model = streamingModel([finish("stop")]);
+        await runPass(config, db, run, { model });
+        return {
+          tools: (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name),
+          prompt: JSON.stringify(model.doStreamCalls[0]?.prompt),
+        };
+      };
+
+      const first = await offeredTools();
+      expect(first.tools).toContain("get_repo_issue");
+      expect(first.prompt).toContain("- get_repo_issue: call as get_repo_issue");
+      expect(first.prompt).toContain("- nope: not available (no tool by that name is installed)");
+      expect(first.prompt).toContain('\\"repo\\": \\"me/app\\"');
+
+      // Not finished, so the next pass isn't given it, and doesn't get its tool either.
+      const second = await offeredTools();
+      expect(second.prompt).not.toContain("### issue-check");
+      expect(second.tools).not.toContain("get_repo_issue");
+    } finally {
+      await sql`DELETE FROM agent_tools WHERE id = 'builtin:get_repo_issue'`;
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
       minSleepMinutes: 5,

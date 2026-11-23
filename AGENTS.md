@@ -958,6 +958,11 @@ report there and leaves the fixes to the author.
     suggests: `delegate` with no name returns the pick and runs nothing, so a
     run always takes a call that names its specialist, which is what an
     approval prompt on `delegate` shows.
+  - A user file with `extends: <built-in>` adds tools to a shipped task
+    specialist and appends its body to the prompt (`applyExtension`), keeping
+    the rest. It may set only `extends`, `name`, `tools` and `enabled`, so an
+    `unattended` grant or a model change still takes a full replacement. Only
+    a shipped definition can be extended, which rules out chains.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to
@@ -997,6 +1002,11 @@ report there and leaves the fixes to the author.
   and reads only regular files, since a FIFO named `x.md` would hang every load.
   It refuses a symlinked folder or file, which could point into a repo, and a
   file past a size cap.
+  A routine's `tools:` are matched against the tool registry when a pass is
+  given it (`resolveRoutineTools`) and mounted for that pass, which is no more
+  than `mount_tools` allows: the calls still go through `passApprovalHooks`, so
+  naming an MCP tool never skips the heads-down allowlist. Its `config:` reaches
+  the pass fenced, as values the body refers to.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

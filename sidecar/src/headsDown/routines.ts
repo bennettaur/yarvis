@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   asBoolean,
+  asList,
   asRequiredString,
   assertKnownKeys,
   FrontmatterError,
@@ -39,8 +40,19 @@ export interface Routine {
   /** Only offered within the user's working hours. */
   workingHoursOnly: boolean;
   enabled: boolean;
+  /**
+   * Tools the routine wants ready, as written in the file: a bare tool name or
+   * a registry id. They are mounted for the pass; calling one still goes through
+   * the pass's approval rules.
+   */
+  tools: string[];
+  /** The file's `config:` map, handed to the pass as data beside the body. */
+  config: RoutineConfig;
   source: RoutineSource;
 }
+
+/** A routine's settings: each value is text or a list of text. */
+export type RoutineConfig = Record<string, string | string[]>;
 
 export interface RoutineProblem {
   path: string;
@@ -69,6 +81,22 @@ const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] as const;
 
+/** Keys that hand the pass more than the body: tools to mount and settings to read. */
+const PASS_INPUT_KEYS = ["tools", "config"] as const;
+
+/** A routine is a few steps of a pass, not a toolbox. */
+const MAX_TOOLS = 20;
+
+/** A tool is a bare name or a registry id such as `mcp:<server id>:<tool>`. */
+const TOOL_PATTERN = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+const CONFIG_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+const MAX_CONFIG_KEYS = 20;
+
+/** The config goes into the pass prompt beside the body, so it is held to a similar size. */
+const MAX_CONFIG_CHARS = 2000;
+
 /**
  * The shortest cadence a file may ask for. Passes can be as little as 5 minutes
  * apart, and a routine due on nearly every pass would take a slot from every
@@ -96,7 +124,7 @@ export function parseEvery(value: string): number | null {
 
 export function parseRoutine(path: string, content: string, source: RoutineSource): Routine {
   const { data, body } = parseDocument(path, content);
-  assertKnownKeys(path, data, KNOWN_KEYS);
+  assertKnownKeys(path, data, [...KNOWN_KEYS, ...PASS_INPUT_KEYS]);
 
   const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
@@ -139,8 +167,82 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
     everyMinutes,
     workingHoursOnly: asBoolean(path, data, "workingHours") ?? false,
     enabled: asBoolean(path, data, "enabled") ?? true,
+    tools: parseTools(path, data),
+    config: parseConfig(path, data.config),
     source,
   };
+}
+
+function parseTools(path: string, data: Record<string, unknown>): string[] {
+  const tools = [...new Set(asList(path, data, "tools") ?? [])];
+  if (tools.length > MAX_TOOLS) {
+    throw new FrontmatterError(path, `'tools' can name at most ${MAX_TOOLS} tools`, 1);
+  }
+  const bad = tools.filter((tool) => !TOOL_PATTERN.test(tool));
+  if (bad.length) {
+    throw new FrontmatterError(
+      path,
+      `'tools' must be tool names or ids, with no spaces: ${bad.join(", ")}`,
+      1,
+    );
+  }
+  return tools;
+}
+
+/** Text, numbers and true/false all become text: `channel: 123` is a name, not arithmetic. */
+function configScalar(value: unknown): string | null {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+/**
+ * `config:` is a flat map of settings the body refers to, such as the Slack
+ * channels to watch. A nested map is refused: the pass reads these as values,
+ * and a structure deep enough to need nesting belongs in the body.
+ */
+export function parseConfig(path: string, value: unknown): RoutineConfig {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new FrontmatterError(path, "'config' must be a map of names to values", 1);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_CONFIG_KEYS) {
+    throw new FrontmatterError(path, `'config' can have at most ${MAX_CONFIG_KEYS} keys`, 1);
+  }
+  const config: RoutineConfig = {};
+  for (const [key, raw] of entries) {
+    if (!CONFIG_KEY_PATTERN.test(key)) {
+      throw new FrontmatterError(
+        path,
+        `'config' key '${key}' must start with a letter and use letters, digits, '_' or '-'`,
+        1,
+      );
+    }
+    if (Array.isArray(raw)) {
+      config[key] = raw.map((item, i) => {
+        const text = configScalar(item);
+        if (text === null) {
+          throw new FrontmatterError(path, `'config.${key}' item ${i + 1} must be text`, 1);
+        }
+        return text;
+      });
+      continue;
+    }
+    const text = configScalar(raw);
+    if (text === null) {
+      throw new FrontmatterError(path, `'config.${key}' must be text or a list of text`, 1);
+    }
+    config[key] = text;
+  }
+  if (JSON.stringify(config).length > MAX_CONFIG_CHARS) {
+    throw new FrontmatterError(
+      path,
+      `'config' cannot be longer than ${MAX_CONFIG_CHARS} characters`,
+      1,
+    );
+  }
+  return config;
 }
 
 /** Loads every routine. A user file replaces a shipped one of the same name outright. */
@@ -237,4 +339,48 @@ export function dueRoutines(input: DueInput): Routine[] {
     .sort((a, b) => b.overdue - a.overdue || a.routine.name.localeCompare(b.routine.name))
     .slice(0, input.limit)
     .map(({ routine }) => routine);
+}
+
+/** A registry row, as much of it as matching a routine's tools needs. */
+export interface ToolRow {
+  id: string;
+  name: string;
+  policy: string;
+}
+
+export interface RoutineTools {
+  /** Registry ids to mount for the pass, across every routine given to it. */
+  ids: string[];
+  /** Per routine, what each tool it names matched: the ids, or why none. */
+  byRoutine: Map<string, { tool: string; ids: string[]; problem: string | null }[]>;
+}
+
+/**
+ * Matches each routine's `tools:` against the tool registry. A registry id
+ * matches itself; a bare name matches every tool of that name, since two MCP
+ * servers can offer the same one and the file can't know which server id a
+ * machine gave it. A disabled tool isn't mounted, the same rule `mount_tools`
+ * follows, so a routine gets no tool a pass couldn't mount on its own.
+ */
+export function resolveRoutineTools(
+  routines: readonly Routine[],
+  registry: readonly ToolRow[],
+): RoutineTools {
+  const ids = new Set<string>();
+  const byRoutine: RoutineTools["byRoutine"] = new Map();
+  for (const routine of routines) {
+    const matches = routine.tools.map((tool) => {
+      const found = registry.filter((row) => row.id === tool || row.name === tool);
+      const usable = found.filter((row) => row.policy !== "disabled");
+      for (const row of usable) ids.add(row.id);
+      const problem = !found.length
+        ? "no tool by that name is installed"
+        : !usable.length
+          ? "turned off in the Tool manager"
+          : null;
+      return { tool, ids: usable.map((row) => row.id), problem };
+    });
+    if (matches.length) byRoutine.set(routine.name, matches);
+  }
+  return { ids: [...ids], byRoutine };
 }

@@ -112,7 +112,9 @@ Yarvis ships with two:
   approval, so turn it on only if you're happy for tickets to come from them.
 
 The **Routines** list on the Heads down page shows each one, how often it
-runs, when a pass last did it, and which ones are your own files.
+runs, when a pass last did it, and which ones are your own files. For a
+routine with `tools` or `config`, it lists the tools and the names of the
+settings.
 
 ### Write your own
 
@@ -140,6 +142,37 @@ and leave a three-line summary in your notes for me to paste.
 - `workingHours`: `true` to run it only within your working hours. Off by
   default.
 - `enabled`: `false` to turn it off.
+- `tools`: tools the routine uses, as a list. Each is a tool's name as the
+  Tool manager shows it, or its id there, such as `builtin:list_events`. A
+  name matches that tool on every MCP server that has one. Up to 20.
+- `config`: settings the body refers to, such as channels or your handle.
+  Each value is text or a list of text. Up to 20 keys.
+
+```markdown
+---
+name: slack-asks
+description: Turns requests in my Slack channels into tickets.
+every: 1h
+workingHours: true
+tools: [slack_read_channel]
+config:
+  channels: ["#eng", "#ops"]
+  handle: "@sam"
+---
+
+Read today's messages in the channels in this routine's settings. A message
+that asks the handle for work becomes a ticket.
+```
+
+When a pass is given a routine, the tools it names are ready for that pass,
+and the pass is told which ones it couldn't find or which you turned off in
+the Tool manager. `tools` doesn't grant anything. Each call follows the same
+rules as any other call in a pass: an MCP tool you haven't allowed for
+heads-down mode still waits for your approval, and a built-in action that
+asks still asks. A pass could reach the same tools by searching for them;
+`tools` saves it the search and says which ones you meant. The settings in
+`config` reach the pass beside the body, marked as values the routine refers
+to rather than more instructions.
 
 Any other key, such as a misspelled `workinghours`, stops the file loading. A
 key you leave out takes its default above, not the shipped routine's value.

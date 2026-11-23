@@ -128,6 +128,8 @@ const ROUTINES = {
       workingHoursOnly: false,
       enabled: true,
       source: "builtin",
+      tools: [],
+      configKeys: [],
       lastDoneAt: null,
     },
     {
@@ -137,6 +139,8 @@ const ROUTINES = {
       workingHoursOnly: true,
       enabled: true,
       source: "user",
+      tools: [],
+      configKeys: [],
       lastDoneAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
     },
     {
@@ -146,6 +150,8 @@ const ROUTINES = {
       workingHoursOnly: false,
       enabled: true,
       source: "user",
+      tools: ["slack_read_channel", "post_message"],
+      configKeys: ["channels", "handle"],
       lastDoneAt: null,
     },
     {
@@ -155,6 +161,8 @@ const ROUTINES = {
       workingHoursOnly: true,
       enabled: false,
       source: "builtin",
+      tools: [],
+      configKeys: [],
       lastDoneAt: null,
     },
   ],
@@ -342,6 +350,10 @@ describe("HeadsDownPanel", () => {
     expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
     expect(routine("standup")).toContain("Last done");
     expect(routine("triage")).toContain("every 45m");
+    expect(routine("triage")).toContain("Tools: slack_read_channel, post_message");
+    expect(routine("triage")).toContain("Settings: channels, handle");
+    expect(routine("standup")).not.toContain("Tools:");
+    expect(routine("standup")).not.toContain("Settings:");
     expect(routine("meeting-notes")).toContain("off");
     expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
     expect(host.textContent).toContain("x.md: 'every' is required");

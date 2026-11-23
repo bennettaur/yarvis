@@ -28,6 +28,10 @@ export interface Specialist {
   /** "builtin" ships with the app; "user" comes from the agents directory. */
   source: "builtin" | "user";
   path: string;
+  /** The built-in this user file extends, adding tools and instructions to it. */
+  extends: string | null;
+  /** The tools an extending file added to the built-in's. */
+  addedTools: string[];
 }
 
 /** A definition file that failed to parse, reported rather than skipped. */

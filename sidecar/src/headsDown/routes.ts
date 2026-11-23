@@ -225,6 +225,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
         workingHoursOnly: r.workingHoursOnly,
         enabled: r.enabled,
         source: r.source,
+        tools: r.tools,
+        // Keys only: the values are the user's to read in their file, like the body.
+        configKeys: Object.keys(r.config),
         lastDoneAt: lastDone.get(r.name)?.toISOString() ?? null,
       })),
       problems,

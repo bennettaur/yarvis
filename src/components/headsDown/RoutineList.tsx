@@ -81,6 +81,16 @@ export default function RoutineList({
               </span>
             </div>
             <p className="text-zinc-400">{r.description}</p>
+            {r.tools.length > 0 && (
+              <p className="text-zinc-500">
+                Tools: <span className="font-mono">{r.tools.join(", ")}</span>
+              </p>
+            )}
+            {r.configKeys.length > 0 && (
+              <p className="text-zinc-500">
+                Settings: <span className="font-mono">{r.configKeys.join(", ")}</span>
+              </p>
+            )}
             {r.enabled && (
               <p className="text-zinc-500">
                 {r.lastDoneAt

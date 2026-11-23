@@ -716,6 +716,37 @@ The fields:
 A misspelled key is an error too. `tool:` instead of `tools:` would otherwise
 give a specialist with no tools and no warning.
 
+### Extending a shipped specialist
+
+To add to a shipped specialist without copying it, write a file that
+`extends` it. Its `tools` are added to the shipped ones, and its body is
+appended to the shipped prompt, so the shipped part keeps improving with the
+app:
+
+```markdown
+---
+extends: work-scout
+tools: [list_repo_issues]
+---
+
+Also list issues assigned to me in the repos I work on.
+```
+
+- The specialist keeps the shipped one's name, description, model and step
+  budget. `name:` can be left out, or must match.
+- Only `extends`, `name`, `tools` and `enabled` are allowed. To change the
+  model, the step budget or an `unattended:` grant, replace the specialist
+  with a file of the same name instead. A tool that needs an `unattended:`
+  grant does nothing when added this way.
+- The body can be empty when the file only adds tools.
+- Only a shipped task specialist can be extended. Extending one that doesn't
+  exist, one of your own, or a decision specialist is listed as a problem.
+  So is a second file extending the same one, and extending one that another
+  of your files replaces.
+
+**Settings → Assistant** marks it "extends built-in work-scout", and shows the
+tools your file adds under **Show prompt**.
+
 ### Decision specialists
 
 A file with `kind: decision` is a **decision specialist**. It doesn't run a

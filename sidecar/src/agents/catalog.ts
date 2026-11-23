@@ -32,7 +32,8 @@ import {
  * (tools, model, step budget) and the body as its system prompt. The ones this
  * repo ships are imported as text, so they are reviewable in git and travel
  * inside the compiled sidecar binary; anything in `~/.yarvis/agents/*.md` is
- * loaded beside them and, on a name collision, wins.
+ * loaded beside them and, on a name collision, wins. A user file can instead
+ * `extends:` a shipped one, adding tools and instructions to it.
  *
  * That precedence is the point. Files rather than rows mean a shipped prompt
  * improves with the app while a definition the user wrote stays theirs — no
@@ -77,6 +78,13 @@ export interface SpecialistDefinition {
   source: SpecialistSource;
   /** Absolute path for a user definition; the repo-relative name for a shipped one. */
   path: string;
+  /**
+   * For a user file that extends a built-in: the built-in's name. The definition
+   * is the built-in with this file's tools added and its body appended.
+   */
+  extends: string | null;
+  /** The tools an extending file added to the built-in's. */
+  addedTools: string[];
 }
 
 /** A file that could not be read as a definition, surfaced rather than skipped. */
@@ -134,7 +142,16 @@ const KNOWN_KEYS = [
   "complexity",
   "maxSteps",
   "enabled",
+  "extends",
 ] as const;
+
+/**
+ * What a file that extends a built-in may set. It adds to the built-in and
+ * can switch it off; anything else (the model, the step budget, an
+ * `unattended` grant) changes what the built-in is, and takes a file that
+ * replaces it whole.
+ */
+const EXTENSION_KEYS = ["extends", "name", "tools", "enabled"] as const;
 
 /**
  * Keys that configure a delegated run. A decision specialist rejects them
@@ -156,6 +173,9 @@ export function parseSpecialist(
 ): SpecialistDefinition {
   const { data, body } = parseDocument(path, content);
   assertKnownKeys(path, data, KNOWN_KEYS);
+  if (data.extends !== undefined) {
+    throw new FrontmatterError(path, "'extends' is only for a file in your agents folder", 1);
+  }
 
   const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
@@ -274,13 +294,92 @@ export function parseSpecialist(
     enabled: asBoolean(path, data, "enabled") ?? true,
     source,
     path,
+    extends: null,
+    addedTools: [],
+  };
+}
+
+/** A user file that adds to a built-in specialist rather than replacing it. */
+export interface SpecialistExtension {
+  path: string;
+  /** The built-in it adds to. */
+  base: string;
+  tools: string[];
+  /** Appended to the built-in's prompt. Empty when the file only adds tools. */
+  prompt: string;
+  enabled: boolean | undefined;
+}
+
+/** Whether a file's frontmatter extends a built-in, read before choosing how to parse it. */
+export function isExtension(path: string, content: string): boolean {
+  return parseDocument(path, content).data.extends !== undefined;
+}
+
+export function parseExtension(
+  path: string,
+  content: string,
+  knownTools: ReadonlySet<string>,
+): SpecialistExtension {
+  const { data, body } = parseDocument(path, content);
+  assertKnownKeys(path, data, EXTENSION_KEYS);
+  const base = asRequiredString(path, data, "extends");
+  // The result keeps the built-in's name, so a `name:` here can only repeat it.
+  const name = asString(path, data, "name");
+  if (name !== undefined && name !== base) {
+    throw new FrontmatterError(
+      path,
+      `a file that extends '${base}' keeps its name, so 'name' must be '${base}' or left out`,
+      1,
+    );
+  }
+  const tools = asList(path, data, "tools") ?? [];
+  const unknown = tools.filter((tool) => !knownTools.has(tool));
+  if (unknown.length) {
+    throw new FrontmatterError(path, `unknown tool(s): ${unknown.join(", ")}`, 1);
+  }
+  const enabled = asBoolean(path, data, "enabled");
+  if (!tools.length && !body.trim() && enabled === undefined) {
+    throw new FrontmatterError(path, `extends '${base}' but adds no tools or instructions`, 1);
+  }
+  return { path, base, tools, prompt: body, enabled };
+}
+
+/**
+ * The built-in with the extension's tools added and its body appended. Only a
+ * built-in can be extended, so there is never a chain to follow, and a task
+ * specialist only: a decision specialist has no tools and a prompt sized for a
+ * small decision model.
+ */
+export function applyExtension(
+  base: SpecialistDefinition,
+  extension: SpecialistExtension,
+): SpecialistDefinition {
+  if (base.kind !== "task") {
+    throw new FrontmatterError(
+      extension.path,
+      `'${base.name}' is a decision specialist, which can't be extended; replace it with a file of the same name`,
+      1,
+    );
+  }
+  const addedTools = extension.tools.filter((tool) => !base.tools.includes(tool));
+  return {
+    ...base,
+    prompt: extension.prompt ? `${base.prompt}\n\n${extension.prompt}` : base.prompt,
+    tools: [...base.tools, ...addedTools],
+    enabled: extension.enabled ?? base.enabled,
+    source: "user",
+    path: extension.path,
+    extends: base.name,
+    addedTools,
   };
 }
 
 /**
  * Loads every definition. A user file with the same name as a shipped one
  * replaces it outright rather than merging: a half-overridden prompt would be
- * neither what the app ships nor what the user wrote.
+ * neither what the app ships nor what the user wrote. A file that wants to add
+ * to a shipped one says so with `extends:`, which only adds tools and appends
+ * to the prompt, so what it changes is all in that one file.
  */
 export async function loadCatalog(): Promise<SpecialistCatalog> {
   const knownTools = new Set(Object.keys(builtinToolMetadata()));
@@ -301,10 +400,50 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
   };
 
   for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
+  const builtinNames = new Set(byName.keys());
   const dir = agentsDir();
+  const extensions: SpecialistExtension[] = [];
   for (const file of await readMarkdownDir(dir)) {
-    if ("error" in file) problems.push({ path: file.path, message: file.error });
-    else add(file.path, file.content, "user");
+    if ("error" in file) {
+      problems.push({ path: file.path, message: file.error });
+      continue;
+    }
+    try {
+      if (isExtension(file.path, file.content)) {
+        extensions.push(parseExtension(file.path, file.content, knownTools));
+        continue;
+      }
+    } catch (e) {
+      problems.push({ path: file.path, message: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+    add(file.path, file.content, "user");
+  }
+
+  // After every replacement has loaded, so an extension can tell whether its
+  // built-in is still the one in the catalogue whatever the file order.
+  for (const extension of extensions) {
+    try {
+      const base = byName.get(extension.base);
+      if (!builtinNames.has(extension.base) || !base) {
+        throw new Error(
+          `${extension.path}: extends '${extension.base}', which isn't a built-in specialist`,
+        );
+      }
+      if (base.extends) {
+        throw new Error(
+          `${extension.path}: another file already extends '${extension.base}' (${base.path})`,
+        );
+      }
+      if (base.source !== "builtin") {
+        throw new Error(
+          `${extension.path}: extends '${extension.base}', but ${base.path} replaces it. Extend the built-in or replace it, not both`,
+        );
+      }
+      byName.set(base.name, applyExtension(base, extension));
+    } catch (e) {
+      problems.push({ path: extension.path, message: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   return {
