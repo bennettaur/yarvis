@@ -23,7 +23,7 @@ function render() {
 }
 
 // The theme and terminal size are read before the first render, so a Palenight
-// user doesn't see the default palette for a frame. The core already holds the
-// settings in memory, so this costs one round trip. A device that isn't signed
-// in renders at once and gets them after sign-in.
+// user doesn't see the default palette for a frame. For a signed-in device this
+// costs one round trip, since the core holds the settings in memory. A device
+// that isn't signed in renders at once and gets them after sign-in.
 loadAppearance().finally(render);

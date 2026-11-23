@@ -143,7 +143,7 @@ export function secretStoreName(backend: ActiveSecretBackend): string {
     case "onepassword":
       return "1Password";
     case "vault":
-      return "the server's vault";
+      return "Server vault";
     case "keychain":
       return "macOS Keychain";
   }

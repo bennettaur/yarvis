@@ -14,7 +14,7 @@ interface Deps {
 
 const defaultDeps: Deps = { token: deviceToken, onAuth: onAuthChange, load: getSettings };
 
-async function apply(load: Deps["load"]): Promise<void> {
+async function applyAppearance(load: Deps["load"]): Promise<void> {
   try {
     const settings = await load();
     loadColorTheme(settings.colorTheme);
@@ -32,8 +32,10 @@ async function apply(load: Deps["load"]): Promise<void> {
  * failure the defaults stand.
  */
 export async function loadAppearance(deps: Deps = defaultDeps): Promise<void> {
+  // Subscribed before the token check, so a sign-in landing in between isn't
+  // missed. That can load twice, which is harmless.
   deps.onAuth((signedIn) => {
-    if (signedIn) void apply(deps.load);
+    if (signedIn) void applyAppearance(deps.load);
   });
-  if (await deps.token()) await apply(deps.load);
+  if (await deps.token()) await applyAppearance(deps.load);
 }

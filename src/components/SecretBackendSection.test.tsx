@@ -236,7 +236,7 @@ describe("SecretBackendSection", () => {
       stored = { ...defaultSettings(), configuredSecretBackend: "vault" };
       const host = await mount();
 
-      expect(host.textContent).toContain("In use: the server's vault");
+      expect(host.textContent).toContain("In use: Server vault");
       expect(host.textContent).toContain("server.toml");
       expect(host.querySelector('input[type="radio"]')).toBeNull();
       expect(host.querySelector("button")).toBeNull();

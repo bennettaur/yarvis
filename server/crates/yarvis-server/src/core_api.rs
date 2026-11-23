@@ -282,10 +282,11 @@ fn required(value: Option<String>) -> Result<String, ApiError> {
 fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, ApiError> {
     let secrets = &state.secrets;
     let settings = &state.settings;
+    let view = || settings.view(state.config.secrets.backend);
     let text = |field: TextField, args: Value| -> Result<Option<Value>, ApiError> {
         let Optional::<String> { value: v } = parse(args)?;
         settings.set_text_field(field, v).map_err(failed)?;
-        value(settings.view(state.config.secrets.backend))
+        value(view())
     };
     match command {
         // Read-only: the URL comes from the environment or server.toml, and
@@ -372,16 +373,16 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
             Ok(None)
         }
 
-        "get_settings" => value(settings.view(state.config.secrets.backend)),
+        "get_settings" => value(view()),
         "set_max_pty_sessions" => {
             let Optional::<usize> { value: v } = parse(args)?;
             settings.set_max_pty_sessions(v).map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_agent" => {
             let Agent { name, command } = parse(args)?;
             settings.set_agent(name, command).map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_agent_harnesses" => {
             let Harnesses {
@@ -391,7 +392,7 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
             settings
                 .set_agent_harnesses(secrets, harnesses, default_harness)
                 .map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "list_agent_harness_secret_status" => value(
             settings
@@ -414,7 +415,7 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
             settings
                 .set_allowed_slash_commands(commands)
                 .map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_azure_devops_org_url" => text(TextField::AzureDevopsOrgUrl, args),
         "set_jira_base_url" => text(TextField::JiraBaseUrl, args),
@@ -426,22 +427,22 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
             settings
                 .set_telegram_otp_window_minutes(v)
                 .map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_terminal_font_size" => {
             let Optional::<u32> { value: v } = parse(args)?;
             settings.set_terminal_font_size(v).map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_channel_messaging" => {
             let Enabled { enabled } = parse(args)?;
             settings.set_channel_messaging(enabled).map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_attention_animation" => {
             let Optional::<bool> { value: v } = parse(args)?;
             settings.set_attention_animation(v).map_err(failed)?;
-            value(settings.view(state.config.secrets.backend))
+            value(view())
         }
         "set_secret_backend" => {
             let Backend {
@@ -455,9 +456,7 @@ fn run(state: &AppState, command: &str, args: Value) -> Result<Option<Value>, Ap
                     BackendSwitchError::NotConfigured => ApiError::conflict(e.to_string()),
                     BackendSwitchError::Invalid(m) | BackendSwitchError::Failed(m) => failed(m),
                 })?;
-            value(
-                json!({ "settings": settings.view(state.config.secrets.backend), "copied": copied }),
-            )
+            value(json!({ "settings": view(), "copied": copied }))
         }
 
         "restart_sidecar" => {

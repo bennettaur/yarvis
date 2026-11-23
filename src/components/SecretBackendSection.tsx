@@ -7,8 +7,8 @@ import {
   getSettings,
   type SecretBackend,
   type Settings,
+  secretStoreName,
   setSecretBackend,
-  secretStoreName as storeName,
 } from "../lib/settings";
 
 const CHOICES: { value: SecretBackend; label: string }[] = [
@@ -22,13 +22,13 @@ const CHOICES: { value: SecretBackend; label: string }[] = [
 function copyNotice(copied: Copied, backend: SecretBackend): string {
   switch (copied) {
     case "unchanged":
-      return `Already using ${storeName(backend)}. Nothing changed.`;
+      return `Already using ${secretStoreName(backend)}. Nothing changed.`;
     case "secrets":
-      return `Secrets copied into ${storeName(backend)}. The previous store still holds its own copy.`;
+      return `Secrets copied into ${secretStoreName(backend)}. The previous store still holds its own copy.`;
     case "nothingToCopy":
-      return `Now using ${storeName(backend)}. There were no stored secrets to copy.`;
+      return `Now using ${secretStoreName(backend)}. There were no stored secrets to copy.`;
     case "targetAlreadyHadSecrets":
-      return `${storeName(backend)} already held secrets, so nothing was copied and they were left untouched. The app is now using those, not the ones it had before.`;
+      return `${secretStoreName(backend)} already held secrets, so nothing was copied and they were left untouched. The app is now using those, not the ones it had before.`;
   }
 }
 
@@ -52,6 +52,8 @@ export default function SecretBackendSection() {
 
   const applySettings = useCallback((next: Settings) => {
     setSettings(next);
+    // A pinned 1Password store still shows its vault and item fields, which
+    // follow the selection.
     setSelectedBackend(
       next.configuredSecretBackend === "onepassword"
         ? "onepassword"
@@ -185,7 +187,7 @@ export default function SecretBackendSection() {
             {busy ? "Switching…" : "Save"}
           </button>
         )}
-        <span className="text-xs text-zinc-500">In use: {storeName(inUse)}</span>
+        <span className="text-xs text-zinc-500">In use: {secretStoreName(inUse)}</span>
       </div>
 
       {notice && <p className="mt-3 text-sm text-zinc-400">{notice}</p>}
