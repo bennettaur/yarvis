@@ -30,6 +30,7 @@ export function revertedPrNumber(
     }
     return Number(n);
   }
-  const loose = /(?:^|[^\w/])#(\d+)\b/.exec(`${pr.body}\n${pr.title}`);
+  // The title first: GitHub puts the PR number there, while a body may name unrelated issues.
+  const loose = /(?:^|[^\w/])#(\d+)\b/.exec(`${pr.title}\n${pr.body}`);
   return loose ? Number(loose[1]) : null;
 }

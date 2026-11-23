@@ -712,7 +712,6 @@ export function reviewExternalId(nodeId: string): string {
   return `github:review:${nodeId}`;
 }
 
-/** One review the viewer submitted, as the contributions API reports it. */
 export interface RevertPr {
   number: number;
   title: string;
@@ -727,6 +726,7 @@ export interface BranchCommit {
   url: string;
 }
 
+/** One review the viewer submitted, as the contributions API reports it. */
 export interface ReviewContribution {
   /** The review's GraphQL node id. */
   reviewId: string;

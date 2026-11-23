@@ -22,6 +22,13 @@ export function createRevertInvestigationRoutes(config: Config): Hono {
 
   router.get("/", async (c) => c.json({ investigations: await listInvestigations(db()) }));
 
+  router.use("/:id/*", async (c, next) => {
+    if (!z.string().uuid().safeParse(c.req.param("id")).success) {
+      return c.json({ error: "invalid id" }, 400);
+    }
+    return next();
+  });
+
   router.post("/:id/start", async (c) => {
     const result = await startInvestigation(db(), config, c.req.param("id"));
     return "error" in result ? c.json(result, 409) : c.json(result);

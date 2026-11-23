@@ -27,10 +27,9 @@ export const revertInvestigationJob: JobDefinition = {
     const ready = await settleFinished(db);
     const notes = found.errors.length ? ` (${found.errors.join("; ")})` : "";
     return {
-      // A run that failed on a repo keeps its window so the next run retries it.
-      cursor: found.errors.length
-        ? cursor
-        : { nextSince: new Date(now.getTime() - OVERLAP_MS).toISOString() },
+      // Always advances: the overlap re-reads the last few hours, and a repo that keeps
+      // failing must not hold every other repo's window open.
+      cursor: { nextSince: new Date(now.getTime() - OVERLAP_MS).toISOString() },
       skipped: found.detected === 0 && ready === 0 && found.errors.length === 0,
       detail: `found ${found.detected} revert(s), ${ready} write-up(s) ready${notes}`,
     };

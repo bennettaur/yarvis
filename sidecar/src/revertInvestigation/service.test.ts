@@ -14,6 +14,7 @@ import { createRepo } from "../workspaces/service.ts";
 import {
   detectReverts,
   dismissInvestigation,
+  saveRevertInvestigationSettings,
   settleFinished,
   startInvestigation,
 } from "./service.ts";
@@ -32,7 +33,7 @@ const okRunner: GitRunner = async (args) => {
   return { stdout: "", stderr: "", exitCode: 0 };
 };
 
-function fakeGitHub(author = "octocat"): GitHubClient {
+function fakeGitHub(author = "octocat", over: Record<string, unknown> = {}): GitHubClient {
   return {
     viewer: async () => ({ login: "octocat" }),
     mergedRevertPrs: async () => [
@@ -57,6 +58,7 @@ function fakeGitHub(author = "octocat"): GitHubClient {
       repo: "widget",
       author,
     }),
+    ...over,
   } as unknown as GitHubClient;
 }
 
@@ -149,5 +151,76 @@ describe("settleFinished", () => {
     expect(await settleFinished(db)).toBe(0);
     const items = await listAttention(db, { status: "pending" });
     expect(items[0]).toMatchObject({ kind: "message", category: "build" });
+  });
+});
+
+describe("commit reverts", () => {
+  const commitGithub = () =>
+    fakeGitHub("octocat", {
+      mergedRevertPrs: async () => [],
+      recentCommits: async () => [
+        {
+          sha: "abc123abc123",
+          message: 'Revert "Add x"\n\nThis reverts commit 0123abcdef01.',
+          url: "https://github.com/acme/widget/commit/abc123abc123",
+        },
+      ],
+      prNumbersForCommit: async () => [12],
+    });
+
+  it("records a revert commit against the PR it undid", async () => {
+    const result = await detectReverts(db, config, since, deps(commitGithub()));
+    expect(result.detected).toBe(1);
+    const [row] = await db.select().from(schema.revertInvestigations);
+    expect(row).toMatchObject({
+      revertKind: "commit",
+      revertRef: "abc123abc123",
+      originalNumber: 12,
+    });
+  });
+
+  it("records one row when a revert PR and a revert commit name the same PR", async () => {
+    const both = fakeGitHub("octocat", {
+      recentCommits: async () => [
+        { sha: "abc123abc123", message: "This reverts commit 0123abcdef01.", url: "u" },
+      ],
+      prNumbersForCommit: async () => [12],
+    });
+    await detectReverts(db, config, since, deps(both));
+    expect(await db.select().from(schema.revertInvestigations)).toHaveLength(1);
+  });
+});
+
+describe("autoStart", () => {
+  it("starts straight away and raises no question", async () => {
+    await saveRevertInvestigationSettings({ autoStart: true });
+    try {
+      await detectReverts(db, config, since, deps());
+      const [row] = await db.select().from(schema.revertInvestigations);
+      expect(row?.status).toBe("started");
+      expect(started).toHaveLength(1);
+      expect(await listAttention(db, { status: "pending" })).toHaveLength(0);
+    } finally {
+      await saveRevertInvestigationSettings({ autoStart: false });
+    }
+  });
+});
+
+describe("a start that fails", () => {
+  it("goes back to detected so it can be retried", async () => {
+    await detectReverts(db, config, since, deps());
+    const [row] = await db.select().from(schema.revertInvestigations);
+    const failing = {
+      ...deps(),
+      runner: (async () => ({ stdout: "", stderr: "boom", exitCode: 1 })) as GitRunner,
+    };
+    const result = await startInvestigation(db, config, row?.id as string, failing);
+    expect(result).toHaveProperty("error");
+    const [after] = await db.select().from(schema.revertInvestigations);
+    expect(after).toMatchObject({ status: "detected", workspaceId: null });
+    expect(await listAttention(db, { status: "pending" })).toHaveLength(1);
+    expect(await startInvestigation(db, config, row?.id as string, deps())).toHaveProperty(
+      "workspaceId",
+    );
   });
 });

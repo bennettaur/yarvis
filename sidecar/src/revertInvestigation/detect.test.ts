@@ -24,6 +24,16 @@ describe("revertedPrNumber", () => {
     expect(revertedPrNumber({ title, body: "Backing out #34 for now" }, "acme", "widget")).toBe(34);
   });
 
+  it("prefers the number in the title over one the body mentions", () => {
+    expect(
+      revertedPrNumber(
+        { title: 'Revert "Add x (#12)"', body: "Also fixes #812" },
+        "acme",
+        "widget",
+      ),
+    ).toBe(12);
+  });
+
   it("ignores a reference into another repo", () => {
     expect(revertedPrNumber({ title, body: "Reverts other/repo#12" }, "acme", "widget")).toBeNull();
   });

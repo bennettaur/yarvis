@@ -18,7 +18,7 @@ import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { readSection, withSection } from "../settings/store.ts";
 import { type ClaudeSessionStarter, startClaudeSession } from "../workspaces/claudeSession.ts";
 import { defaultGitRunner, type GitRunner } from "../workspaces/git.ts";
-import { createWorkspace, provisionWorkspace } from "../workspaces/service.ts";
+import { createWorkspace, getWorkspace, provisionWorkspace } from "../workspaces/service.ts";
 import { revertedPrNumber, revertedShaOf } from "./detect.ts";
 import { buildInvestigationPrompt, ROOT_CAUSE_FILE } from "./prompt.ts";
 
@@ -44,7 +44,7 @@ export async function getRevertInvestigationSettings(): Promise<RevertInvestigat
 export async function saveRevertInvestigationSettings(
   input: RevertInvestigationSettings,
 ): Promise<RevertInvestigationSettings> {
-  const next = { autoStart: input.autoStart === true };
+  const next = { autoStart: input.autoStart };
   return withSection<RevertInvestigationSettings, RevertInvestigationSettings>(
     SETTINGS_KEY,
     () => ({
@@ -89,8 +89,8 @@ interface Candidate {
   text: string;
 }
 
-/** Whether the user wrote the PR, or a workspace of theirs opened it. */
-async function isUsersPr(
+/** The PR's summary when the user wrote it or a workspace of theirs opened it, else null. */
+async function findUsersPr(
   db: Db,
   gh: GitHubClient,
   viewer: string,
@@ -163,44 +163,79 @@ export async function detectReverts(
   const result: DetectResult = { detected: 0, errors: [] };
 
   for (const repo of await db.select().from(repos)) {
+    let candidates: Candidate[];
     try {
-      for (const candidate of await findCandidates(gh, repo, since)) {
-        const [known] = await db
-          .select({ id: revertInvestigations.id })
-          .from(revertInvestigations)
-          .where(
-            and(
-              eq(revertInvestigations.repoId, repo.id),
-              eq(revertInvestigations.originalNumber, candidate.originalNumber),
-            ),
-          );
-        if (known) continue;
-        const original = await isUsersPr(db, gh, login, repo, candidate.originalNumber);
-        if (!original) continue;
-        const [row] = await db
-          .insert(revertInvestigations)
-          .values({
-            repoId: repo.id,
-            originalNumber: candidate.originalNumber,
-            originalTitle: original.title,
-            originalUrl: original.url,
-            revertKind: candidate.kind,
-            revertRef: candidate.ref,
-            revertTitle: candidate.title,
-            revertUrl: candidate.url,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (!row) continue;
-        result.detected++;
-        if (autoStart) await startInvestigation(db, config, row.id, deps);
-        else await askToInvestigate(db, repo, row);
-      }
+      candidates = await findCandidates(gh, repo, since);
     } catch (e) {
-      result.errors.push(`${repoLabel(repo)}: ${e instanceof Error ? e.message : String(e)}`);
+      result.errors.push(`${repoLabel(repo)}: ${errorMessage(e)}`);
+      continue;
+    }
+    // Per candidate, so one PR GitHub won't return doesn't hide the rest.
+    for (const candidate of candidates) {
+      try {
+        if (await recordCandidate(db, config, gh, login, repo, candidate, autoStart, deps)) {
+          result.detected++;
+        }
+      } catch (e) {
+        result.errors.push(`${repoLabel(repo)}#${candidate.originalNumber}: ${errorMessage(e)}`);
+      }
     }
   }
   return result;
+}
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** Records one revert and asks about it (or starts it). Returns whether it was new. */
+async function recordCandidate(
+  db: Db,
+  config: Config,
+  gh: GitHubClient,
+  login: string,
+  repo: Repo,
+  candidate: Candidate,
+  autoStart: boolean,
+  deps: StartDeps,
+): Promise<boolean> {
+  const [known] = await db
+    .select({ id: revertInvestigations.id })
+    .from(revertInvestigations)
+    .where(
+      and(
+        eq(revertInvestigations.repoId, repo.id),
+        eq(revertInvestigations.originalNumber, candidate.originalNumber),
+      ),
+    );
+  if (known) return false;
+  const originalPr = await findUsersPr(db, gh, login, repo, candidate.originalNumber);
+  if (!originalPr) return false;
+  const [row] = await db
+    .insert(revertInvestigations)
+    .values({
+      repoId: repo.id,
+      originalNumber: candidate.originalNumber,
+      originalTitle: originalPr.title,
+      originalUrl: originalPr.url,
+      revertKind: candidate.kind,
+      revertRef: candidate.ref,
+      revertTitle: candidate.title,
+      revertUrl: candidate.url,
+    })
+    .onConflictDoNothing()
+    .returning();
+  if (!row) return false;
+  try {
+    const started = autoStart ? await startInvestigation(db, config, row.id, deps) : null;
+    // A start that failed falls back to asking, so the revert isn't left with no item.
+    if (!started || "error" in started) await askToInvestigate(db, repo, row);
+  } catch (e) {
+    // Dropped so the next run finds it again; a row with no item would be skipped as known.
+    await db.delete(revertInvestigations).where(eq(revertInvestigations.id, row.id));
+    throw e;
+  }
+  return true;
 }
 
 async function askToInvestigate(db: Db, repo: Repo, row: RevertInvestigation): Promise<void> {
@@ -246,6 +281,7 @@ export async function startInvestigation(
     .returning();
   if (!claimed) return { error: "not found, or already started or dismissed" };
 
+  let workspaceId: string;
   try {
     const [repo] = await db.select().from(repos).where(eq(repos.id, claimed.repoId));
     if (!repo) throw new Error("repo no longer registered");
@@ -258,7 +294,7 @@ export async function startInvestigation(
       revertRef: claimed.revertRef,
       revertTitle: claimed.revertTitle,
       revertUrl: claimed.revertUrl,
-      revertText: await revertText(githubFor(config, deps), repo, claimed),
+      revertText: await fetchRevertText(githubFor(config, deps), repo, claimed),
       deployNotes: await deployNotesFor(db, repo, claimed.originalNumber),
     });
     const ws = await createWorkspace(db, config, {
@@ -270,24 +306,31 @@ export async function startInvestigation(
       .update(revertInvestigations)
       .set({ workspaceId: ws.id })
       .where(eq(revertInvestigations.id, id));
+    // Provisioning records its failure on the workspace instead of throwing.
     await provisionWorkspace(db, ws.id, () => undefined, {
       runner: deps.runner ?? defaultGitRunner,
       startSession: deps.startSession ?? startClaudeSession,
       remoteControl: deps.remoteControl ?? false,
     });
-    await resolveRaisedAttention(db, askKey(id));
-    return { workspaceId: ws.id };
+    const detail = await getWorkspace(db, ws.id);
+    if (detail?.status !== "active") {
+      throw new Error(`workspace ${ws.name} did not provision; archive it and try again`);
+    }
+    workspaceId = ws.id;
   } catch (e) {
+    // The workspace, if one was made, stays in the list for the user to archive.
     await db
       .update(revertInvestigations)
-      .set({ status: "detected", startedAt: null })
-      .where(eq(revertInvestigations.id, id));
-    return { error: e instanceof Error ? e.message : String(e) };
+      .set({ status: "detected", startedAt: null, workspaceId: null })
+      .where(and(eq(revertInvestigations.id, id), eq(revertInvestigations.status, "started")));
+    return { error: errorMessage(e) };
   }
+  await resolveRaisedAttention(db, askKey(id));
+  return { workspaceId };
 }
 
 /** The revert's body or message, read again so the row never stores text a model will later read. */
-async function revertText(
+async function fetchRevertText(
   gh: GitHubClient | null,
   repo: Repo,
   row: RevertInvestigation,
@@ -332,10 +375,6 @@ export async function settleFinished(db: Db): Promise<number> {
   let ready = 0;
   for (const { row, rootPath, repo } of started) {
     if (!row.workspaceId || !(await exists(join(rootPath, ROOT_CAUSE_FILE)))) continue;
-    await db
-      .update(revertInvestigations)
-      .set({ status: "ready", readyAt: new Date() })
-      .where(eq(revertInvestigations.id, row.id));
     await raiseAttention(db, {
       category: "build",
       kind: "message",
@@ -344,6 +383,10 @@ export async function settleFinished(db: Db): Promise<number> {
       navTarget: { type: "workspace", workspaceId: row.workspaceId },
       dedupeKey: readyKey(row.id),
     });
+    await db
+      .update(revertInvestigations)
+      .set({ status: "ready", readyAt: new Date() })
+      .where(and(eq(revertInvestigations.id, row.id), eq(revertInvestigations.status, "started")));
     ready++;
   }
   return ready;
