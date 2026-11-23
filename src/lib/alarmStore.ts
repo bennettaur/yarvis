@@ -8,11 +8,12 @@ import {
   snoozeAlarm as invokeSnooze,
   listAlarms,
   onAlarmFired,
+  onAlarmReleased,
 } from "./alarms";
 
 /**
  * Shared live view of the alarm list, which the sidecar owns. One change
- * stream, a backstop poll and an `alarm-fired` listener feed every subscriber,
+ * stream, a backstop poll and an `alarm.fire` listener feed every subscriber,
  * so the alarms page, the attention panel, the takeover overlay, and any number
  * of calendar widgets all read the same list without multiplying requests.
  *
@@ -29,7 +30,7 @@ let ringing: Alarm[] = [];
 let takeoverQueue: Alarm[] = [];
 
 /**
- * Ids whose `alarm-fired` event arrived during this app run. An alarm left in
+ * Ids whose `alarm.fire` event arrived during this app run. An alarm left in
  * the "fired" state by a previous run is still worth listing (nobody ever
  * dismissed it) but must not throw up a full-screen takeover on launch, so only
  * this run's firings drive the overlay.
@@ -39,6 +40,7 @@ const firedThisRun = new Set<string>();
 const listeners = new Set<() => void>();
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let unlistenFired: (() => void) | undefined;
+let unlistenReleased: (() => void) | undefined;
 let stopFollowing: (() => void) | undefined;
 
 /**
@@ -87,7 +89,7 @@ function applyList(next: Alarm[]): void {
   const listChanged = fingerprint(next) !== fingerprint(alarms);
   if (listChanged) alarms = next;
   pruneFiredThisRun();
-  // An `alarm-fired` event for an alarm the poll already reported as fired
+  // An `alarm.fire` event for an alarm the poll already reported as fired
   // leaves the list identical but still moves the takeover queue, so the
   // derived lists get their own say in whether to notify.
   const derivedChanged = recomputeDerived();
@@ -114,8 +116,8 @@ export async function refreshAlarms(): Promise<void> {
 
 function handleFired(alarm: Alarm): void {
   firedThisRun.add(alarm.id);
-  // The core has already fullscreened and pinned the window by the time this
-  // arrives, so raise the overlay straight off the payload. Waiting on the
+  // The desktop app fullscreens and pins the window as this arrives, so raise
+  // the overlay straight off the payload. Waiting on the
   // refresh would strand the user in a pinned window with no alarm UI whenever
   // that one `list_alarms` call fails.
   applyList(
@@ -144,6 +146,11 @@ function subscribe(notify: () => void): () => void {
       if (generation === listenGeneration && listeners.size > 0) unlistenFired = unlisten;
       else unlisten();
     });
+    // Dealt with on another device: the list drops it from ringing on refresh.
+    onAlarmReleased(() => void refreshAlarms()).then((unlisten) => {
+      if (generation === listenGeneration && listeners.size > 0) unlistenReleased = unlisten;
+      else unlisten();
+    });
   }
   return () => {
     listeners.delete(notify);
@@ -154,6 +161,8 @@ function subscribe(notify: () => void): () => void {
       stopFollowing = undefined;
       unlistenFired?.();
       unlistenFired = undefined;
+      unlistenReleased?.();
+      unlistenReleased = undefined;
     }
   };
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type DisplayError, formatError } from "../lib/errors";
-import { formatEntry, getLogs, type LogEntry, type LogLevel, sidecarLogPath } from "../lib/logs";
+import { formatEntry, getLogs, type LogEntry, type LogLevel } from "../lib/logs";
 import CopyButton from "./CopyButton";
 import ErrorNotice from "./ErrorNotice";
 
@@ -21,7 +21,7 @@ const LEVEL_COLOR: Record<LogLevel, string> = {
  * user — and where they copy it from for a bug report.
  *
  * The tail is the sidecar's in-memory buffer, which resets when it restarts;
- * the file path shown at the bottom is the durable copy the core writes, which
+ * the file named at the bottom is the durable copy the server writes, which
  * is the one that survives the crash worth reporting.
  */
 export default function DiagnosticsSection() {
@@ -32,7 +32,6 @@ export default function DiagnosticsSection() {
   const [contains, setContains] = useState("");
   const [follow, setFollow] = useState(true);
   const [error, setError] = useState<DisplayError | null>(null);
-  const [logPath, setLogPath] = useState<string | null>(null);
   const tailRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -59,12 +58,6 @@ export default function DiagnosticsSection() {
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [follow, refresh]);
-
-  useEffect(() => {
-    sidecarLogPath()
-      .then(setLogPath)
-      .catch(() => setLogPath(null));
-  }, []);
 
   // Keep the newest line in view while following, not while reading back.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run as the tail grows
@@ -153,12 +146,12 @@ export default function DiagnosticsSection() {
         )}
       </div>
 
-      {logPath && (
-        <p className="flex items-center gap-2 text-xs text-zinc-500">
-          Kept across restarts at <code className="text-zinc-400">{logPath}</code>
-          <CopyButton value={logPath} subject="log path" />
-        </p>
-      )}
+      <p className="text-xs text-zinc-500">
+        Kept across restarts on the server's machine, in{" "}
+        <code className="text-zinc-400">logs/sidecar.log</code> under its data folder (
+        <code className="text-zinc-400">data_dir</code> in{" "}
+        <code className="text-zinc-400">server.toml</code>).
+      </p>
     </section>
   );
 }

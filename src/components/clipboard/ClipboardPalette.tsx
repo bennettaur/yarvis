@@ -11,6 +11,7 @@ import {
   writeClipboard,
 } from "../../lib/clipboard";
 import { filterHistory, useScreenedHistory } from "../../lib/clipboardHistory";
+import { localFeaturesAvailable } from "../../lib/core";
 import { formatRelativeTime } from "../../lib/time";
 import ClipboardEntryForm, { type ClipboardDraft } from "./ClipboardEntryForm";
 
@@ -76,7 +77,17 @@ export default function ClipboardPalette({
   const [editing, setEditing] = useState<{ id: string | null; draft: ClipboardDraft } | null>(null);
   const [reloads, setReloads] = useState(0);
 
-  const { history, error: historyError, refresh: refreshHistory } = useScreenedHistory(open);
+  // History is this machine's clipboard, which only the desktop app records,
+  // and only while it runs its own server. A read that fails means this window
+  // has no history to offer, so the tab goes.
+  const desktop = localFeaturesAvailable();
+  const {
+    history,
+    error: historyError,
+    refresh: refreshHistory,
+  } = useScreenedHistory(open && desktop);
+  const hasHistory = desktop && historyError === null;
+  const tabs = hasHistory ? TABS : TABS.filter(({ id }) => id !== "history");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(() => setReloads((n) => n + 1), []);
@@ -263,7 +274,7 @@ export default function ClipboardPalette({
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-300">Clipboard</span>
           <div className="flex gap-1">
-            {TABS.map(({ id, label }) => (
+            {tabs.map(({ id, label }) => (
               <button
                 key={id}
                 type="button"

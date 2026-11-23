@@ -1,10 +1,13 @@
 import { SETTINGS_TABS, type SettingsTabKey, useSettingsTab } from "../lib/settingsTabs";
+import AccountSection from "./AccountSection";
 import AgentSection from "./AgentSection";
 import AppearanceSection from "./AppearanceSection";
+import ApprovalsList from "./ApprovalsList";
 import ChatBudgetSection from "./ChatBudgetSection";
 import ComplexityModelSection from "./ComplexityModelSection";
 import CustomProviderSection from "./CustomProviderSection";
 import DecisionModelSection from "./DecisionModelSection";
+import DevicesSection from "./DevicesSection";
 import DiagnosticsSection from "./DiagnosticsSection";
 import EmbeddingsSection from "./EmbeddingsSection";
 import IntegrationSettingsSection from "./IntegrationSettingsSection";
@@ -106,6 +109,13 @@ export default function SettingsPanel({
       {active === "embeddings" && <EmbeddingsSection />}
       {active === "telegram" && <TelegramSection />}
       {active === "wip" && <WipSection />}
+      {active === "devices" && (
+        <div className="space-y-5">
+          <ApprovalsList />
+          <AccountSection />
+          <DevicesSection />
+        </div>
+      )}
       {active === "appearance" && <AppearanceSection />}
       {active === "diagnostics" && <DiagnosticsSection />}
     </div>

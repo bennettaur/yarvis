@@ -1,6 +1,5 @@
 import { failInterruptedAgentRuns, pruneAgentRunEvents } from "./agentRuns/service.ts";
 import { syncBuiltins } from "./agentTools/registry.ts";
-import { importLegacyAlarmsOnStart } from "./alarms/legacyImport.ts";
 import { startAlarmScheduler } from "./alarms/scheduler.ts";
 import { createApp } from "./app.ts";
 import { browserBridge } from "./browser/bridge.ts";
@@ -116,7 +115,6 @@ try {
 if (config.databaseUrl) {
   runMigrations(config.databaseUrl)
     .then(async () => {
-      await importLegacyAlarmsOnStart(config);
       // Yarvis's git refuses a clone with a symlink in its git data either way;
       // this raises the workspace alert when it does, on every instance.
       registerSymlinkAlerts(getDb(config.databaseUrl as string).db);

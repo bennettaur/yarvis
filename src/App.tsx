@@ -1,8 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import AlarmsPanel from "./components/AlarmsPanel";
 import AlarmTakeover from "./components/AlarmTakeover";
+import ApprovalsList from "./components/ApprovalsList";
 import AttentionAutoClear from "./components/attention/AttentionAutoClear";
 import AttentionPanel from "./components/attention/AttentionPanel";
 import PermissionRequestModal from "./components/attention/PermissionRequestModal";
@@ -44,6 +44,7 @@ import type { AttentionItem } from "./lib/attention";
 import { getViewedScope, shouldAutoOpen } from "./lib/attentionScope";
 import { markAttention, onAttentionArrived } from "./lib/attentionStore";
 import { onClipboardSummon } from "./lib/clipboard";
+import { core, localFeaturesAvailable } from "./lib/core";
 import type { IssueSummary } from "./lib/issues/types";
 import {
   type NewWorkspaceRequest,
@@ -238,9 +239,11 @@ export default function App() {
   const navigateTo = useCallback(
     (target: WipItem["navTarget"], title?: string) => {
       if (!target) return;
-      void invoke("focus_main_window").catch((e) => {
-        console.error("[app] focus_main_window failed:", e);
-      });
+      if (localFeaturesAvailable()) {
+        void core("focus_main_window").catch((e) => {
+          console.error("[app] focus_main_window failed:", e);
+        });
+      }
       setAttentionPanelOpen(false);
       switch (target.type) {
         case "workspace-claude":
@@ -509,6 +512,11 @@ export default function App() {
       />
 
       <ClipboardPalette open={clipboardOpen} onClose={() => setClipboardOpen(false)} />
+
+      {/* Shown only while the server waits on an answer, from whichever tab is open. */}
+      <div className="fixed right-4 bottom-4 z-40 w-96 max-w-[92vw]">
+        <ApprovalsList hideWhenEmpty />
+      </div>
 
       <AttentionPanel
         open={attentionPanelOpen}

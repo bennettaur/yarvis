@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { core } from "./core";
 
 /** Secrets the app manages, mirrored from the Rust `SECRET_KEYS` allowlist.
  * Non-sensitive configuration that used to ride alongside these (org URLs, an
@@ -14,7 +14,6 @@ export type SecretKey =
   | "github_token"
   | "azure_devops_token"
   | "jira_api_token"
-  | "database_url"
   | "google_client_secret"
   | "verify_agent_signing_key"
   // Telegram remote control. These are managed by the dedicated TelegramSection
@@ -32,12 +31,6 @@ export interface SecretMeta {
 }
 
 export const SECRETS: SecretMeta[] = [
-  {
-    key: "database_url",
-    label: "Database URL",
-    placeholder: "postgres://localhost:5432/yarvis",
-    help: "Local PostgreSQL connection string (with pgvector enabled).",
-  },
   {
     key: "anthropic_api_key",
     label: "Anthropic API key",
@@ -100,18 +93,18 @@ export interface SecretStatus {
 }
 
 export function setSecret(key: SecretKey, value: string): Promise<void> {
-  return invoke("set_secret", { key, value });
+  return core("set_secret", { key, value });
 }
 
 export function deleteSecret(key: SecretKey): Promise<void> {
-  return invoke("delete_secret", { key });
+  return core("delete_secret", { key });
 }
 
 export function listSecretStatus(): Promise<SecretStatus[]> {
-  return invoke<SecretStatus[]>("list_secret_status");
+  return core<SecretStatus[]>("list_secret_status");
 }
 
 /** Restarts the sidecar so newly-stored secrets are injected into it. */
 export function restartSidecar(): Promise<void> {
-  return invoke("restart_sidecar");
+  return core("restart_sidecar");
 }

@@ -169,6 +169,11 @@ export interface Config {
   mcpToken: string;
   /** Allowed values for the Origin header, or null to skip the check (dev). */
   allowedOrigins: string[] | null;
+  /**
+   * The https origin yarvis-server is reached on from other machines, when it
+   * has one. OAuth redirects go there, and the server forwards them here.
+   */
+  publicOrigin?: string;
   /** Postgres connection string. May be undefined until the user configures it. */
   databaseUrl: string | undefined;
   /** Base directory holding managed repo clones + per-workspace worktrees. */
@@ -458,6 +463,17 @@ function parseOrigins(raw: string | undefined): string[] | null {
   return origins.length > 0 ? origins : null;
 }
 
+/** An https origin with no path, or undefined for anything else. */
+export function parsePublicOrigin(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" ? url.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadConfig(): Config {
   const env = process.env;
 
@@ -471,6 +487,7 @@ export function loadConfig(): Config {
     attentionToken: env.YARVIS_ATTENTION_TOKEN ?? randomToken(),
     mcpToken: env.YARVIS_MCP_TOKEN ?? randomToken(),
     allowedOrigins: parseOrigins(env.YARVIS_ALLOWED_ORIGINS),
+    publicOrigin: parsePublicOrigin(env.YARVIS_PUBLIC_ORIGIN),
     databaseUrl: env.DATABASE_URL,
     workspacesRoot: env.YARVIS_WORKSPACES_ROOT ?? join(homedir(), "dev", "yarvis-workspaces"),
     secrets: {

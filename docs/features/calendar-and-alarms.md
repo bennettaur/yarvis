@@ -27,7 +27,10 @@ You need your own Google Cloud OAuth client. This is a one-time setup.
 The redirect Yarvis uses is
 `http://127.0.0.1:<sidecar-port>/oauth/google/callback`. The sidecar port
 changes every launch, but Desktop-app clients accept any loopback port, so
-there is nothing to update when it does.
+there is nothing to update when it does. A server you reach from other
+machines redirects to its own origin instead and needs a **Web application**
+client; see
+[Google Calendar on a server you reach remotely](../configuration.md#google-calendar-on-a-server-you-reach-remotely).
 
 Yarvis asks for the `calendar.events` scope. The tokens are stored in Postgres
 and refresh themselves. One Google account is connected at a time.
@@ -113,10 +116,9 @@ once you've handled them all.
   what's **Upcoming** (with Cancel).
 - An alarm whose time passed while Yarvis was closed fires as soon as the app
   starts.
-- Alarms are stored in Postgres, so they need the database. Alarms from older
-  versions, which kept them in `alarms.json` in the app's data folder, are
-  copied over on first start, and the file is renamed to
-  `alarms.json.imported`.
+- Alarms are stored in Postgres, so they need the database. Alarms that
+  versions before October 2026 kept in `alarms.json` in the app's data folder
+  are not copied over.
 - Alarms ring only while the sidecar is running, since it decides when one is
   due. If it can't reach the app's core to ring one, it tries again every few
   seconds.

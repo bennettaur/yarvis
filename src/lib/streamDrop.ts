@@ -27,11 +27,11 @@ export interface StreamDropContext {
 }
 
 /**
- * Where to find the log the Rust core keeps of the sidecar's output.
+ * Where to find the log the server keeps of the sidecar's output.
  * Diagnostics lists only what the running sidecar has logged, so a crash or
- * restart clears it there, but the section also shows this file's path.
+ * restart clears it there.
  */
-const SIDECAR_LOG_LOCATION = "sidecar.log (Settings → Diagnostics shows its full path)";
+const SIDECAR_LOG_LOCATION = "sidecar.log, in logs/ under the server's data folder";
 
 /** A dead sidecar refuses the connection at once; a hung one would never answer. */
 const HEALTH_TIMEOUT_MS = 3_000;

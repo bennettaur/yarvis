@@ -44,6 +44,7 @@ const SHARED: { module: string; helper: string; stub?: RegExp; reset?: string }[
     reset: "resetWorkspacesApi",
   },
   { module: "lib/pty", helper: "ptyApi.ts", stub: /stubPtyApi\(/, reset: "resetPtyApi" },
+  { module: "lib/core", helper: "coreApi.ts", stub: /stubCore\(/, reset: "resetCore" },
   { module: "lib/repos", helper: "reposApi.ts", stub: /stubReposApi\(/, reset: "resetReposApi" },
   {
     module: "lib/alarms",
