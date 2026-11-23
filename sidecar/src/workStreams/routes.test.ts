@@ -105,3 +105,51 @@ describe("/api/work-streams", () => {
     expect((await app.request("/api/work-streams/not-a-uuid", { headers: auth })).status).toBe(404);
   });
 });
+
+describe("quick task", () => {
+  const proposal = {
+    title: "Merge the billing PR",
+    kind: "ship",
+    focus: "Get it merged once CI is green.",
+    priority: "high",
+    links: [
+      {
+        ref: { kind: "pr", provider: "github", url: "https://github.com/o/r/pull/5" },
+        title: "r #5",
+      },
+    ],
+  };
+
+  it("creates nothing when proposing, and a stream with its links on confirm", async () => {
+    const quick = createApp(config);
+    const bad = await quick.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...proposal, title: "" }),
+    });
+    expect(bad.status).toBe(400);
+    expect(await sql`select 1 from work_streams`).toHaveLength(0);
+
+    const res = await quick.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(proposal),
+    });
+    expect(res.status).toBe(201);
+    const stream = (await res.json()) as { summary: string; links: { kind: string }[] };
+    expect(stream.summary).toBe("Kind: ship. Get it merged once CI is green.");
+    expect(stream.links.map((l) => l.kind)).toEqual(["pr"]);
+  });
+
+  it("rejects a PR link that is not http(s)", async () => {
+    const res = await app.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        ...proposal,
+        links: [{ ref: { kind: "pr", provider: "github", url: "javascript:alert(1)" } }],
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+});

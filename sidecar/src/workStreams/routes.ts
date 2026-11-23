@@ -2,6 +2,13 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { describeError } from "../llm/errors.ts";
+import {
+  createStreamForKind,
+  proposeInputSchema,
+  proposeQuickTask,
+  quickTaskProposalSchema,
+} from "./quickTask.ts";
 import { getStream, listStreams, updateStream } from "./service.ts";
 
 /**
@@ -25,7 +32,10 @@ const patchSchema = z.object({
  * pause or close a stream. Everything else, notes included, is written by the agent
  * through its tools, so a note is always the agent's own.
  */
-export function createWorkStreamRoutes(config: Config): Hono {
+export function createWorkStreamRoutes(
+  config: Config,
+  { propose = proposeQuickTask }: { propose?: typeof proposeQuickTask } = {},
+): Hono {
   const router = new Hono();
 
   router.use("*", async (c, next) => {
@@ -43,6 +53,24 @@ export function createWorkStreamRoutes(config: Config): Hono {
       statuses.push(parsed.data);
     }
     return c.json(await listStreams(db(), { statuses: statuses.length ? statuses : undefined }));
+  });
+
+  // Omni Chat's "send to heads down": the first call only proposes, the
+  // second writes what the user confirmed.
+  router.post("/quick-task/propose", async (c) => {
+    const parsed = proposeInputSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(await propose(config, db(), parsed.data));
+    } catch (e) {
+      return c.json({ error: "could not parse the message", detail: describeError(e) }, 502);
+    }
+  });
+
+  router.post("/quick-task", async (c) => {
+    const parsed = quickTaskProposalSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    return c.json(await createStreamForKind(db(), parsed.data), 201);
   });
 
   router.get("/:id", async (c) => {
