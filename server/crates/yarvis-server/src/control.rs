@@ -11,12 +11,13 @@
 //! Security model: the socket lives in the server's private data dir, or
 //! another 0700 folder that `socket_dir` checks, as a mode-0600 file, so only
 //! the same user can connect, and a UDS is never reachable over the network.
-//! The protocol is deliberately narrow: the sidecar can only start, stop, or talk to an agent session for a workspace,
-//! and chooses only whether to launch one and which saved harness, by id,
-//! never what runs. The command comes from settings, which only an admin
-//! device can write, and a harness is refused unless the user allowed the
-//! assistant to start it. The sidecar's `name` does reach the launch line, and
-//! that line is typed into an interactive shell rather than exec'd, so
+//! The protocol is deliberately narrow: the sidecar can only start, stop, or
+//! talk to an agent session for a workspace, and chooses only whether to
+//! launch one and which saved harness, by id, never what runs. The command
+//! comes from settings, which only an admin device can write, and a harness
+//! is refused unless the user allowed the assistant to start it. The
+//! sidecar's `name` does reach the launch line, and that line is typed into an
+//! interactive shell rather than exec'd, so
 //! `sanitize_session_name` strips it; see that function for why quoting alone
 //! is not enough. `claude.send` types free text at a prompt instead, which
 //! [`PtyManager::send_session_instruction`] sanitizes, refuses to send unless

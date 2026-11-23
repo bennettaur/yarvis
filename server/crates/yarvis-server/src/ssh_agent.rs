@@ -4,8 +4,8 @@
 //! opens a socket.
 //!
 //! When on, the agent listens on `ssh-agent.sock` in the data dir (or wherever
-//! `socket_dir` puts it) while the
-//! vault is unlocked, and stops (removing the socket) when it locks. It signs
+//! `socket_dir` puts it) while the vault is unlocked, and stops (removing the
+//! socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
 //! host, and every signature waits for an answer on the approvals route.
 

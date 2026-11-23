@@ -258,11 +258,12 @@ socket_dir = "/Users/<you>/.yarvis/sock"
 ```
 
 It must be an absolute path. The server creates it with mode 0700 if it's
-missing. An existing folder must be a real folder (not a symlink), owned by
+missing, but its parent folder must already exist. An existing folder must be a real folder (not a symlink), owned by
 the user the server runs as, with mode 0700, or the server refuses to start.
-The folders under `~/.yarvis/run` get the same checks. The server never uses a
+The folders under `~/.yarvis/run` get the same checks, and `~/.yarvis` must be
+owned by that user and not writable by anyone else. The server never uses a
 temp folder, since macOS and systemd delete old files there. When no location
-gives a short enough path, the server refuses to start and asks for a shorter
+gives a short enough path, the server refuses to start and asks you to set
 `socket_dir`.
 
 ## `~/.yarvis/settings.json`

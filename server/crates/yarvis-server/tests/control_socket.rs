@@ -160,7 +160,10 @@ async fn a_socket_dir_too_long_stops_the_hand_off() {
     let err = yarvis_server::hand_off_to_sidecar(&mut state, database)
         .await
         .unwrap_err();
-    assert!(err.contains("socket_dir"), "{err}");
+    assert!(
+        err.contains("choose a shorter [server] socket_dir"),
+        "{err}"
+    );
 }
 
 #[tokio::test]

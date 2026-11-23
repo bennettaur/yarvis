@@ -39,10 +39,12 @@ pub fn prepare(server: &ServerConfig, socket: &Path) -> Result<(), String> {
     prepare_with_home(server, home().as_deref(), socket)
 }
 
+/// `HOME`, when it is absolute. A relative one would resolve differently in
+/// the sidecar and in shells, which start in other folders.
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
         .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
 }
 
 fn socket_path_with_home(server: &ServerConfig, home: Option<&Path>, name: &str) -> PathBuf {
@@ -83,16 +85,47 @@ fn prepare_with_home(
     if let Some(home) = home
         && dir == run_dir(home, &server.data_dir)
     {
-        // `~/.yarvis` is normally made 0700 already; it only needs to exist.
         let yarvis = home.join(".yarvis");
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&yarvis)
-            .map_err(|e| format!("couldn't create {}: {e}", yarvis.display()))?;
+        owned_dir(&yarvis)?;
         private_dir(&yarvis.join("run"))?;
     }
     private_dir(dir)
+}
+
+/// Creates `~/.yarvis` mode 0700 if missing, or checks that it is a real
+/// directory this user owns that no one else can write to. The desktop app
+/// shares it, so its exact mode is left alone. Another user who could write
+/// there could swap `run` for a folder of their own after it was checked.
+fn owned_dir(dir: &Path) -> Result<(), String> {
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(format!("couldn't create {}: {e}", dir.display())),
+    }
+    let meta = owned_by_this_user(dir)?;
+    if meta.permissions().mode() & 0o022 != 0 {
+        return Err(format!(
+            "{} is writable by other users, so they could replace the socket's folder",
+            dir.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The metadata of `dir`, when it is a real directory (not a symlink) owned by
+/// this user.
+fn owned_by_this_user(dir: &Path) -> Result<std::fs::Metadata, String> {
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| format!("couldn't inspect {}: {e}", dir.display()))?;
+    if !meta.file_type().is_dir() {
+        return Err(format!("{} isn't a directory", dir.display()));
+    }
+    // SAFETY: geteuid has no preconditions and can't fail.
+    let uid = unsafe { libc::geteuid() };
+    if meta.uid() != uid {
+        return Err(format!("{} is owned by another user", dir.display()));
+    }
+    Ok(meta)
 }
 
 /// Creates `dir` mode 0700, or checks that the one already there is a real
@@ -108,16 +141,7 @@ fn private_dir(dir: &Path) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("couldn't create {}: {e}", dir.display())),
     }
-    let meta = std::fs::symlink_metadata(dir)
-        .map_err(|e| format!("couldn't inspect {}: {e}", dir.display()))?;
-    if !meta.file_type().is_dir() {
-        return Err(format!("{} isn't a directory", dir.display()));
-    }
-    // SAFETY: geteuid has no preconditions and can't fail.
-    let uid = unsafe { libc::geteuid() };
-    if meta.uid() != uid {
-        return Err(format!("{} is owned by another user", dir.display()));
-    }
+    let meta = owned_by_this_user(dir)?;
     let mode = meta.permissions().mode() & 0o777;
     if mode != 0o700 {
         return Err(format!(
@@ -223,6 +247,51 @@ mod tests {
         let socket = socket_path_with_home(&server, Some(home.path()), "s.sock");
         let err = prepare_with_home(&server, Some(home.path()), &socket).unwrap_err();
         assert!(err.contains("not 700"), "{err}");
+    }
+
+    #[test]
+    fn prepare_refuses_a_yarvis_folder_others_can_write() {
+        let home = tempfile::tempdir().unwrap();
+        let yarvis = home.path().join(".yarvis");
+        std::fs::create_dir(&yarvis).unwrap();
+        std::fs::set_permissions(&yarvis, std::fs::Permissions::from_mode(0o775)).unwrap();
+        let server = server(&long_dir(home.path()), None);
+        let socket = socket_path_with_home(&server, Some(home.path()), "s.sock");
+        let err = prepare_with_home(&server, Some(home.path()), &socket).unwrap_err();
+        assert!(err.contains("writable by other users"), "{err}");
+    }
+
+    #[test]
+    fn prepare_accepts_a_yarvis_folder_others_can_only_read() {
+        let home = tempfile::tempdir().unwrap();
+        let yarvis = home.path().join(".yarvis");
+        std::fs::create_dir(&yarvis).unwrap();
+        std::fs::set_permissions(&yarvis, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let server = server(&long_dir(home.path()), None);
+        let socket = socket_path_with_home(&server, Some(home.path()), "s.sock");
+        prepare_with_home(&server, Some(home.path()), &socket).unwrap();
+        assert_eq!(
+            mode_of(&yarvis),
+            0o755,
+            "the shared folder's mode is left alone"
+        );
+    }
+
+    #[test]
+    fn prepare_refuses_a_symlinked_hash_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let server = server(&long_dir(home.path()), None);
+        let socket = socket_path_with_home(&server, Some(home.path()), "s.sock");
+        let hash_dir = socket.parent().unwrap();
+        std::fs::create_dir_all(hash_dir.parent().unwrap()).unwrap();
+        std::fs::set_permissions(
+            hash_dir.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(home.path(), hash_dir).unwrap();
+        let err = prepare_with_home(&server, Some(home.path()), &socket).unwrap_err();
+        assert!(err.contains("isn't a directory"), "{err}");
     }
 
     #[test]
