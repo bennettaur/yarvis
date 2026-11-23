@@ -10,12 +10,13 @@ import {
 import { clearResourceCache } from "../lib/resourceCache";
 import { restartAndWait } from "../lib/restart";
 import { StatusDot } from "./Dashboard";
+import DatabaseUrlRow from "./DatabaseUrlRow";
 import { GithubSignIn } from "./GithubSignIn";
 import { MaskedInput } from "./MaskedInput";
 
 /**
- * Manages the built-in app secrets (database URL, provider API keys, GitHub
- * token, Google OAuth client secret). Values live in whichever store
+ * Manages the built-in app secrets (provider API keys, GitHub token, Google
+ * OAuth client secret), and shows the database URL, which isn't one of them. Values live in whichever store
  * `SecretBackendSection` selects; saving reloads the sidecar so changes take
  * effect immediately. Telegram's secrets have their own dedicated
  * `TelegramSection`, and the non-secret settings that ride alongside these into
@@ -96,6 +97,7 @@ export default function KeychainSection() {
         take effect right away.
       </p>
       <div className="space-y-5">
+        <DatabaseUrlRow />
         {SECRETS.map((meta) => (
           <div key={meta.key}>
             <div className="mb-1 flex items-center justify-between">

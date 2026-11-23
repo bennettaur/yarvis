@@ -1,6 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { ensureOk, sidecarFetch } from "./api";
+import { core, localFeaturesAvailable, onNativeEvent } from "./core";
 
 /**
  * The clipboard book: snippets saved for good, plus the in-memory history of
@@ -141,8 +141,21 @@ export async function scanClipboardTexts(
   return new Map(body.flagged.map((f) => [f.id, f.reason]));
 }
 
-/** Puts text on the system clipboard. */
-export const writeClipboard = (text: string): Promise<void> => invoke("clipboard_write", { text });
+/**
+ * Puts text on the system clipboard. The desktop app writes it natively when
+ * it may (not when it points at a remote server); otherwise the browser's own
+ * clipboard API does, which needs the page focused.
+ */
+export async function writeClipboard(text: string): Promise<void> {
+  if (localFeaturesAvailable()) {
+    try {
+      return await core("clipboard_write", { text });
+    } catch {
+      // Not granted to this window; the web API below still works.
+    }
+  }
+  await navigator.clipboard.writeText(text);
+}
 
 /**
  * Strips control and formatting characters from text bound for the clipboard.
@@ -184,11 +197,11 @@ export function clipboardSafeUrl(url: string | null | undefined): string | null 
 
 /** The clips the Rust core has seen this run, newest first. */
 export const readClipboardHistory = (): Promise<ClipboardHistoryItem[]> =>
-  invoke("clipboard_history");
+  core("clipboard_history");
 
 /** Forgets every recorded clip. The system clipboard itself is left alone. */
-export const clearClipboardHistory = (): Promise<void> => invoke("clipboard_clear_history");
+export const clearClipboardHistory = (): Promise<void> => core("clipboard_clear_history");
 
 /** Subscribe to the global-shortcut summon for the clipboard palette. */
 export const onClipboardSummon = (cb: () => void): Promise<UnlistenFn> =>
-  listen("clipboard-summon", () => cb());
+  onNativeEvent("clipboard-summon", cb);

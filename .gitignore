@@ -54,3 +54,6 @@ __pycache__/
 
 # Made by verify:agent-key; never commit it
 merge-reviewer.key
+
+# Playwright output from bun run e2e.
+e2e/output/

@@ -4,10 +4,11 @@
  * can run beside the primary one.
  *
  * The name selects a bundle identifier, and Tauri derives the app data
- * directory and the single-instance socket from that — so `settings.json` and
- * the core control socket separate without further work. It
- * also selects a Vite dev-server port, since the default one is taken by
- * whatever is already running.
+ * directory and the single-instance socket from that, so the instance gets its
+ * own `connection.json`, local yarvis-server data and Keychain device token
+ * without further work. It also selects a Vite dev-server port, and with it the
+ * local server's port, since the default ones are taken by whatever is already
+ * running.
  *
  * The instance's own behaviour (which database it uses, whether it runs the
  * background workers or claims the global hotkeys) is decided by the env vars
@@ -78,6 +79,13 @@ export function devPortFor(slug: string): number {
   return PORT_RANGE_START + (hash % INSTANCE_SLOTS) * PORTS_PER_INSTANCE;
 }
 
+/**
+ * In a dev build the local yarvis-server listens this far above the Vite port,
+ * so Vite's `/api` proxy knows where it is before the app starts it. Matches
+ * `vite.config.ts` and `DEV_SERVER_PORT_OFFSET` in `src-tauri/src/instance.rs`.
+ */
+export const DEV_SERVER_PORT_OFFSET = 6000;
+
 function isPortFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
@@ -92,7 +100,7 @@ function isPortFree(port: number): Promise<boolean> {
  * otherwise the next free pair in the range. Vite runs with `strictPort`, so
  * without this an unrelated service sitting on the derived port would stop the
  * launch rather than move it. Both ports of the pair have to be free — the
- * second is the HMR socket.
+ * second is the HMR socket — and so does the local server's port above them.
  */
 export async function resolveDevPort(
   preferred: number,
@@ -102,7 +110,13 @@ export async function resolveDevPort(
   for (let offset = 0; offset < INSTANCE_SLOTS; offset++) {
     const slot = (preferredSlot + offset) % INSTANCE_SLOTS;
     const port = PORT_RANGE_START + slot * PORTS_PER_INSTANCE;
-    if ((await isFree(port)) && (await isFree(port + 1))) return port;
+    if (
+      (await isFree(port)) &&
+      (await isFree(port + 1)) &&
+      (await isFree(port + DEV_SERVER_PORT_OFFSET))
+    ) {
+      return port;
+    }
   }
   throw new Error(
     `no free port pair between ${PORT_RANGE_START} and ${PORT_RANGE_START + PORT_RANGE_SIZE - 1}`,
@@ -114,26 +128,20 @@ export function identifierFor(slug: string): string {
 }
 
 /**
- * The config Tauri merges over `tauri.conf.json` for this instance. Kept to the
- * two keys that must differ: merging replaces an array wholesale, so writing
- * `app.windows` here to retitle the window would discard the size configured
- * alongside the title. The Rust core retitles it at runtime instead.
+ * The config Tauri merges over `tauri.conf.json` for this instance. Only the
+ * identifier: merging replaces an array wholesale, so writing `app.windows`
+ * here to retitle the window would discard the size configured alongside the
+ * title. The Rust core retitles it at runtime instead.
  */
-export function overrideConfig(
-  slug: string,
-  port: number,
-): { identifier: string; build: { devUrl: string } } {
-  return {
-    identifier: identifierFor(slug),
-    build: { devUrl: `http://localhost:${port}` },
-  };
+export function overrideConfig(slug: string): { identifier: string } {
+  return { identifier: identifierFor(slug) };
 }
 
 /**
- * What the child process is told about itself. `YARVIS_DEV_PORT` and the
- * `devUrl` in [`overrideConfig`] are two expressions of one number — the webview
- * loads from the one and the sidecar allows the origin built from the other, so
- * if they ever disagree every API call is refused by the origin check.
+ * What the child process is told about itself. Vite (started by `tauri dev`)
+ * and the app both read `YARVIS_DEV_PORT`: Vite serves on it and proxies `/api`
+ * to the server port above it, and the app starts the server there and loads
+ * the window from Vite.
  */
 export function childEnv(name: string, port: number): Record<string, string> {
   return { YARVIS_INSTANCE: name, YARVIS_DEV_PORT: String(port) };
@@ -156,13 +164,16 @@ async function main() {
   // An explicit port is taken as given — if it's occupied, saying so beats
   // quietly serving somewhere the user didn't ask for.
   const port = Number(process.env.YARVIS_DEV_PORT) || (await resolveDevPort(devPortFor(slug)));
-  const config = overrideConfig(slug, port);
+  const config = overrideConfig(slug);
 
-  console.log(`[dev-instance] "${name}" — identifier ${config.identifier}, dev server on ${port}`);
+  console.log(
+    `[dev-instance] "${name}" — identifier ${config.identifier}, dev server on ${port}, ` +
+      `local yarvis-server on ${port + DEV_SERVER_PORT_OFFSET}`,
+  );
   console.log(
     process.env.YARVIS_DATABASE_URL
       ? "[dev-instance] using YARVIS_DATABASE_URL (isolated from the primary database)"
-      : "[dev-instance] sharing the primary database — set YARVIS_DATABASE_URL to isolate it",
+      : "[dev-instance] sharing the primary database (the server's own tables get a schema of their own) — set YARVIS_DATABASE_URL to isolate it",
   );
 
   const child = spawn("bun", ["run", "tauri", "dev", "--config", JSON.stringify(config)], {

@@ -117,8 +117,11 @@ Work out their database URL and tell them it. With Homebrew defaults it is
 every local connection, so anything running on the Mac can read the database.
 It isn't reachable from the network. `docs/getting-started.md` says how to add
 a password if they want one. With a password, it is
-`postgres://USER:PASSWORD@localhost:5432/yarvis`, and they type the password
-into the app, not into this chat.
+`postgres://USER:PASSWORD@localhost:5432/yarvis`, and they put it in the app's
+server config themselves (`[database] url` in
+`~/Library/Application Support/com.mikebennett.yarvis/server.toml`, see
+`docs/getting-started.md`), not into this chat. With the default URL there is
+nothing to set.
 
 Re-run the check script. `postgres-server`, `pgvector`, `database` and
 `vector-extension` should all be `OK`.
@@ -154,8 +157,9 @@ Tell them to expect a Keychain prompt, and to choose **Always Allow**.
 Walk them through "5. First configuration" in `docs/getting-started.md`, one
 item at a time, and wait for them to say they've done each:
 
-1. **Settings → Credentials → Database URL**: paste the URL from step 4, and
-   press **Save**.
+1. **Settings → Credentials → Database URL**: check it shows the URL from
+   step 4. It is read-only there; a different one goes in `server.toml` as in
+   step 4, then a restart of the app.
    - Then run the check script again. `migrations` should now show tables. That
      confirms the app reached the database.
    - If it shows "Couldn't start the local service", ask them for the error on

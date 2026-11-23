@@ -1,20 +1,22 @@
+//! The thin desktop client: the window, tray, global hotkeys, clipboard
+//! history and alarm takeovers. Everything else (settings, secrets, PTYs, the
+//! sidecar) is yarvis-server's job, which this app either starts locally or
+//! reaches at a remote URL (`server_link.rs`).
+
 mod alarms;
+// Read by `build.rs`; the crate only needs it for the ACL tests.
+#[cfg(test)]
+mod app_commands;
 mod clipboard;
-mod control;
-mod custom_providers;
-mod embeddings_secrets;
-mod harness;
+mod connection;
+mod device_token;
 mod instance;
-mod keychain;
+mod legacy_settings;
+mod local_server;
 // Only a release build reads it; `tauri dev` already has the terminal's `PATH`.
 #[cfg_attr(debug_assertions, allow(dead_code))]
 mod login_path;
-mod mcp;
-mod onepassword;
-mod pty;
-mod secret_store;
-mod settings;
-mod sidecar;
+mod server_link;
 
 /// Global hotkey that summons the Omni Chat overlay from anywhere.
 #[cfg(desktop)]
@@ -23,6 +25,14 @@ const OMNI_CHAT_SHORTCUT: &str = "Control+Shift+Space";
 /// Global hotkey that summons the clipboard palette from anywhere.
 #[cfg(desktop)]
 const CLIPBOARD_SHORTCUT: &str = "Control+Shift+V";
+
+/// Tray menu item ids.
+#[cfg(desktop)]
+const TRAY_OPEN: &str = "open";
+#[cfg(desktop)]
+const TRAY_CONNECTION: &str = "connection";
+#[cfg(desktop)]
+const TRAY_QUIT: &str = "quit";
 
 /// Brings the main window forward and tells the frontend to open the named
 /// overlay. Unlike an alarm it does not fullscreen or pin the window — it's a
@@ -53,6 +63,34 @@ fn focus_main_window(app: tauri::AppHandle) {
         }
         None => eprintln!("[app] focus_main_window: main window not found"),
     }
+}
+
+/// The tray menu: reopen the window, change which server it talks to, quit.
+#[cfg(desktop)]
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::TrayIconBuilder;
+
+    let menu = MenuBuilder::new(app)
+        .item(&MenuItemBuilder::with_id(TRAY_OPEN, "Open Yarvis").build(app)?)
+        .item(&MenuItemBuilder::with_id(TRAY_CONNECTION, "Server connection…").build(app)?)
+        .separator()
+        .item(&MenuItemBuilder::with_id(TRAY_QUIT, "Quit Yarvis").build(app)?)
+        .build()?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Yarvis")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_OPEN => focus_main_window(app.clone()),
+            TRAY_CONNECTION => server_link::show_connect_page(app),
+            TRAY_QUIT => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -110,30 +148,15 @@ pub fn run() {
 
     builder
         .setup(|app| {
-            use tauri::Manager;
             instance::label_window(app.handle());
-            app.manage(pty::PtyState::default());
-            if let Err(e) = settings::init(app.handle()) {
-                eprintln!("[settings] init failed: {e}");
-            }
-            embeddings_secrets::migrate_legacy_item();
-            #[cfg(unix)]
-            if let Err(e) = pty::raise_fd_limit() {
-                eprintln!("[pty] raising the file descriptor limit failed: {e}");
-            }
-            // Before the control channel, which the sidecar rings alarms through.
             alarms::init(app.handle());
-            // Bind the control channel before spawning the sidecar so its socket
-            // path is available to inject into the sidecar's environment.
-            if let Err(e) = control::init(app.handle()) {
-                eprintln!("[control] init failed: {e}");
-            }
-            if let Err(e) = sidecar::init(app.handle()) {
-                eprintln!("[sidecar] init failed: {e}");
-            }
             clipboard::init(app.handle());
+            server_link::init(app.handle());
             #[cfg(desktop)]
             {
+                if let Err(e) = build_tray(app) {
+                    eprintln!("[tray] couldn't create the tray icon: {e}");
+                }
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 if instance::global_shortcuts_enabled() {
                     if let Err(e) = app.global_shortcut().register(OMNI_CHAT_SHORTCUT) {
@@ -152,57 +175,29 @@ pub fn run() {
             }
             Ok(())
         })
+        // Every command here must also be listed in `app_commands.rs`, which is
+        // what lets the capabilities decide which origin may call it.
         .invoke_handler(tauri::generate_handler![
-            keychain::set_secret,
-            keychain::get_secret_status,
-            keychain::delete_secret,
-            keychain::list_secret_status,
-            custom_providers::list_custom_provider_secret_status,
-            custom_providers::set_custom_provider_secret,
-            custom_providers::delete_custom_provider_secret,
-            custom_providers::delete_custom_provider_all_secrets,
-            mcp::list_mcp_secret_status,
-            mcp::set_mcp_secret,
-            mcp::delete_mcp_secret,
-            mcp::delete_mcp_all_secrets,
-            embeddings_secrets::get_embeddings_secret_status,
-            embeddings_secrets::set_embeddings_secret,
-            embeddings_secrets::delete_embeddings_secret,
-            sidecar::get_sidecar_info,
-            sidecar::restart_sidecar,
-            sidecar::get_sidecar_log_path,
+            server_link::get_server_connection,
+            server_link::get_connection_settings,
+            server_link::save_connection_settings,
+            server_link::open_server,
+            alarms::fire_alarm,
             alarms::release_alarm,
             clipboard::clipboard_history,
             clipboard::clipboard_clear_history,
             clipboard::clipboard_write,
-            pty::pty_attach,
-            pty::pty_write,
-            pty::pty_resize,
-            pty::pty_kill,
-            pty::pty_exists,
-            pty::pty_start_claude,
-            pty::pty_is_busy,
-            pty::get_agent_config,
-            pty::pty_session_harness,
             focus_main_window,
-            settings::get_settings,
-            settings::set_max_pty_sessions,
-            settings::set_agent,
-            settings::set_agent_harnesses,
-            settings::list_agent_harness_secret_status,
-            settings::set_agent_harness_secret,
-            settings::set_allowed_slash_commands,
-            settings::set_azure_devops_org_url,
-            settings::set_jira_base_url,
-            settings::set_jira_email,
-            settings::set_google_client_id,
-            settings::set_telegram_otp_window_minutes,
-            settings::set_color_theme,
-            settings::set_terminal_font_size,
-            settings::set_attention_animation,
-            settings::set_channel_messaging,
-            settings::set_secret_backend,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            use tauri::Manager;
+            // The local server would otherwise outlive the app and keep its port.
+            if let tauri::RunEvent::Exit = event {
+                tauri::async_runtime::block_on(
+                    app.state::<server_link::ServerLink>().stop_local_server(),
+                );
+            }
+        });
 }

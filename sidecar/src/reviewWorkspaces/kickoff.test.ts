@@ -16,7 +16,7 @@ import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { printAgentAnswer, writeAgentAnswers } from "./fakeAgents.ts";
 import { reviewGit } from "./git.ts";
-import { type KickoffDeps, kickOffVerification } from "./kickoff.ts";
+import { backgroundSettled, type KickoffDeps, kickOffVerification } from "./kickoff.ts";
 import { cancelVerificationQueue, getVerificationQueue, startVerificationQueue } from "./queue.ts";
 import type { PrMeta, ReviewDeps } from "./service.ts";
 import { createTestRemote, type TestRemote } from "./testRepo.ts";
@@ -86,6 +86,12 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
 const release = () => writeFileSync(join(fakeDir, "release"), "");
 
 const attention = () => db.select().from(attentionItems);
+
+/**
+ * The test PR is large, so the go-ahead bell is the first sign its checkout
+ * finished. Any bell would also match one left over from another test.
+ */
+const goAheadBellRung = async () => (await attention()).some((a) => a.title.includes("go-ahead"));
 
 beforeEach(async () => {
   await sql`TRUNCATE review_workspaces, review_workspace_prs, agent_runs, attention_items RESTART IDENTITY CASCADE`;
@@ -158,8 +164,10 @@ exit 1`,
   };
 });
 
-afterEach(() => {
+// A bell or poll from a test that has ended would land in the next one's tables.
+afterEach(async () => {
   release();
+  await backgroundSettled();
   rmSync(fakeDir, { recursive: true, force: true });
   rmSync(config.workspacesRoot, { recursive: true, force: true });
   rmSync(remote.root, { recursive: true, force: true });
@@ -177,10 +185,7 @@ describe("kickOffVerification", () => {
 
     // The test remote's PR is past the large-PR line, so the background start
     // asks for a go-ahead rather than spending on it.
-    await until(
-      async () => (await attention()).some((a) => a.title.includes("go-ahead")),
-      "the go-ahead notice",
-    );
+    await until(goAheadBellRung, "the go-ahead notice");
     const [notice] = await attention();
     expect(notice?.navTarget).toEqual({
       type: "review-workspace",
@@ -213,10 +218,7 @@ describe("kickOffVerification", () => {
       throw new Error("settings unreadable");
     };
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(
-      async () => (await attention()).some((a) => a.title.includes("go-ahead")),
-      "the go-ahead notice",
-    );
+    await until(goAheadBellRung, "the go-ahead notice");
     const [notice] = await attention();
     expect(notice?.body).toContain("Its size couldn't be worked out");
     expect(await kickOffVerification(db, config, ref, {}, kickoff)).toMatchObject({
@@ -228,7 +230,7 @@ describe("kickOffVerification", () => {
 
   it("starts once confirmed, joins the running checks, and rings the bell when they all end", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     await sql`TRUNCATE attention_items`;
 
     const started = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
@@ -332,16 +334,13 @@ describe("kickOffVerification", () => {
     expect(confirmed).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: true });
     // The yes was to the repo. Nobody has seen this large PR's cost, so the
     // clone finishing asks again rather than starting.
-    await until(
-      async () => (await attention()).some((a) => a.title.includes("go-ahead")),
-      "the go-ahead notice",
-    );
+    await until(goAheadBellRung, "the go-ahead notice");
     expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 
   it("runs every check on the model and effort the assistant named", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     const tools = buildPrReviewStartTools(db, config, { kickoff: () => kickoff });
     const started = await (
       tools.start_pr_verification_report as unknown as {
@@ -370,7 +369,7 @@ describe("kickOffVerification", () => {
   it("rings an error bell, without the run's own error, when the report fails", async () => {
     if (kickoff.verification.run) kickoff.verification.run.program = failingProgram;
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     await sql`TRUNCATE attention_items`;
 
     expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toMatchObject({
@@ -399,7 +398,7 @@ ${printAgentAnswer(fakeDir)}`,
     );
     if (kickoff.verification.run) kickoff.verification.run.program = program;
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     await sql`TRUNCATE attention_items`;
 
     expect(await kickOffVerification(db, config, ref, { confirmed: true }, kickoff)).toMatchObject({
@@ -419,7 +418,7 @@ ${printAgentAnswer(fakeDir)}`,
 
   it("prices the go-ahead for the sections about to run, leaving out current ones", async () => {
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     const cost = async (sections: ReportSection[], override?: RunChoice) => {
       const asked = await kickOffVerification(db, config, ref, { sections, override }, kickoff);
       if (asked.status !== "needs-confirmation" || !asked.size)
@@ -475,7 +474,7 @@ ${printAgentAnswer(fakeDir)}`,
     expect(a).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: true });
     expect(b).toMatchObject({ status: "waiting-for-checkout", createdWorkspace: false });
     expect(await sql`SELECT id FROM review_workspaces`).toHaveLength(1);
-    await until(async () => (await attention()).length > 0, "the go-ahead notice");
+    await until(goAheadBellRung, "the go-ahead notice");
     // One waiter, so one notice.
     expect(await attention()).toHaveLength(1);
   });
@@ -508,7 +507,7 @@ describe("startVerificationQueue", () => {
   /** PR 1 checked out, with its summary check started and held open by the fake. */
   async function heldRun() {
     await kickOffVerification(db, config, ref, {}, kickoff);
-    await until(async () => (await attention()).length > 0, "the checkout");
+    await until(goAheadBellRung, "the checkout");
     await sql`TRUNCATE attention_items`;
     const started = await kickOffVerification(
       db,

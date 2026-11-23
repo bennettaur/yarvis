@@ -144,6 +144,22 @@ const withKickoffLock = createKeyedLock();
  */
 const checkoutWaits = new Map<string, KickoffOptions>();
 
+/** Checkout waits and completion bells still going, so tests can wait them out. */
+const backgroundWork = new Set<Promise<void>>();
+
+function inBackground(work: Promise<void>): void {
+  backgroundWork.add(work);
+  void work.finally(() => backgroundWork.delete(work));
+}
+
+/**
+ * Resolves once every checkout wait and completion bell this module started
+ * has ended. For tests: one left running writes into the next test's tables.
+ */
+export async function backgroundSettled(): Promise<void> {
+  while (backgroundWork.size > 0) await Promise.allSettled([...backgroundWork]);
+}
+
 /** The active review workspace already holding `ref`, most recently opened first. */
 async function findReviewWorkspacePr(
   db: Db,
@@ -223,7 +239,9 @@ export function kickOffVerification(
     // (to an unregistered repo) can't also be a yes to its cost.
     checkoutWaits.set(pr.refKey, { ...options, confirmed: undefined });
     if (!isAlreadyWaiting) {
-      void startWhenCheckedOut(db, config, pr, deps).finally(() => checkoutWaits.delete(pr.refKey));
+      inBackground(
+        startWhenCheckedOut(db, config, pr, deps).finally(() => checkoutWaits.delete(pr.refKey)),
+      );
     }
     return { status: "waiting-for-checkout", workspaceId, prId, createdWorkspace };
   });
@@ -291,12 +309,14 @@ async function startReport(
   // earlier ask, which follows it, or from the tab, where the user is watching.
   const fresh = started.runs.filter((r) => !r.existing);
   if ((fresh.length > 0 || started.failed.length > 0) && !options.quiet)
-    void notifyWhenDone(
-      db,
-      pr,
-      fresh.map((r) => r.runId),
-      started.failed.length,
-      deps,
+    inBackground(
+      notifyWhenDone(
+        db,
+        pr,
+        fresh.map((r) => r.runId),
+        started.failed.length,
+        deps,
+      ),
     );
   outcomes.started = fresh.map((r) => r.section);
   outcomes.running.push(...started.runs.filter((r) => r.existing).map((r) => r.section));
