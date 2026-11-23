@@ -42,6 +42,10 @@ pub struct ServerConfig {
     /// misses Homebrew and mise, so `claude`, `git`, `gh` and `bun` aren't
     /// found without this.
     pub path: Option<String>,
+    /// Where the control and ssh-agent sockets go. Unset means the data dir,
+    /// or `~/.yarvis/run/<hash>` when a socket path there would be too long
+    /// for a Unix socket (`socket_dir.rs`). Must be absolute.
+    pub socket_dir: Option<PathBuf>,
 }
 
 impl ServerConfig {
@@ -62,6 +66,7 @@ impl Default for ServerConfig {
             web_dir: None,
             allow_plain_http: false,
             path: None,
+            socket_dir: None,
         }
     }
 }
@@ -285,6 +290,14 @@ impl Config {
         if let Some(path) = self.server.spawn_path() {
             check_spawn_path(path)?;
         }
+        if self
+            .server
+            .socket_dir
+            .as_ref()
+            .is_some_and(|d| d.is_relative())
+        {
+            return invalid("server.socket_dir must be an absolute path");
+        }
         if self.server.data_dir.is_relative() {
             return invalid(
                 "server.data_dir must be an absolute path (HOME isn't set, so set it explicitly)",
@@ -436,6 +449,19 @@ mod tests {
         }
         // Blank is unset, not an empty entry.
         with_path("   ").unwrap();
+    }
+
+    #[test]
+    fn socket_dir_must_be_absolute() {
+        let config: Config = toml::from_str("[server]\nsocket_dir = \"/run/yarvis\"\n").unwrap();
+        assert_eq!(
+            config.server.socket_dir.as_deref(),
+            Some(Path::new("/run/yarvis"))
+        );
+        config.validate().unwrap();
+        let relative: Config = toml::from_str("[server]\nsocket_dir = \"run\"\n").unwrap();
+        let err = relative.validate().unwrap_err().to_string();
+        assert!(err.contains("socket_dir must be an absolute path"), "{err}");
     }
 
     #[test]

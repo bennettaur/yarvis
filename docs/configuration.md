@@ -243,6 +243,28 @@ The server refuses to start when an entry is empty (a leading, trailing or
 doubled `:`) or not an absolute path, since either is looked up from the
 folder a process runs in, which for a session is a repo checkout.
 
+### Where the server's sockets go
+
+The server listens on two Unix sockets: `core-control.sock`, which the
+sidecar uses, and, with `[ssh_agent] enabled`, `ssh-agent.sock`. A Unix socket
+path must fit in about 104 bytes on macOS (108 on Linux). By default the
+sockets go in the data dir, or in `~/.yarvis/run/<hash of the data dir>/` when
+a path there would be too long. Set `socket_dir` under `[server]` to put them
+somewhere else:
+
+```toml
+[server]
+socket_dir = "/Users/<you>/.yarvis/sock"
+```
+
+It must be an absolute path. The server creates it with mode 0700 if it's
+missing. An existing folder must be a real folder (not a symlink), owned by
+the user the server runs as, with mode 0700, or the server refuses to start.
+The folders under `~/.yarvis/run` get the same checks. The server never uses a
+temp folder, since macOS and systemd delete old files there. When no location
+gives a short enough path, the server refuses to start and asks for a shorter
+`socket_dir`.
+
 ## `~/.yarvis/settings.json`
 
 This file holds everything you set from the Settings screen that isn't a

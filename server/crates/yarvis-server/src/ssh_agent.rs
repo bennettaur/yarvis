@@ -3,8 +3,8 @@
 //! its signing key in 1Password, and then nothing here runs, makes a key or
 //! opens a socket.
 //!
-//! When on, the agent listens on `ssh-agent.sock` in the data dir (or a short
-//! private directory when that path is too long; see `socket_dir`) while the
+//! When on, the agent listens on `ssh-agent.sock` in the data dir (or wherever
+//! `socket_dir` puts it) while the
 //! vault is unlocked, and stops (removing the socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
 //! host, and every signature waits for an answer on the approvals route.
@@ -59,7 +59,7 @@ pub(crate) fn configured_socket(config: &Config) -> Option<PathBuf> {
     config
         .ssh_agent
         .enabled
-        .then(|| socket_dir::socket_path(&config.server.data_dir, SOCKET_NAME))
+        .then(|| socket_dir::socket_path(&config.server, SOCKET_NAME))
 }
 
 /// The OpenSSH public key for a seed, as `ssh-ed25519 AAAA… yarvis-server`.
@@ -107,7 +107,7 @@ pub fn start(state: &AppState) -> Result<(), String> {
         .signing_seed()
         .map_err(|e| format!("couldn't read the signing key: {e}"))?;
     let agent = VaultAgent::new(&seed, state.approvals.clone(), APPROVAL_TIMEOUT);
-    socket_dir::prepare(&state.config.server.data_dir, &socket)?;
+    socket_dir::prepare(&state.config.server, &socket)?;
     *running = Some(spawn(agent, socket).map_err(|e| format!("couldn't open the socket: {e}"))?);
     tracing::info!("ssh-agent listening");
     Ok(())

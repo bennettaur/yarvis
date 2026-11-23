@@ -746,11 +746,10 @@ The sidecar's control socket is `core-control.sock` in the server's data dir
 (mode 0600, in a 0700 folder). The sidecar gets its path as
 `YARVIS_CORE_SOCK`. A Unix socket path must fit in about 104 bytes on macOS
 (108 on Linux), so when the data dir is too deep for that, the server's
-sockets go in a 0700 folder named `yarvis-<hash of the data dir>` under
-`$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp`, whichever is short enough
-(`socket_dir.rs`). The server refuses that folder if it is a symlink, another
-user owns it, or its mode isn't 0700, and refuses to start if the control
-socket can't be bound.
+sockets go in `~/.yarvis/run/<hash of the data dir>/` instead, and
+`[server] socket_dir` puts them anywhere else (`socket_dir.rs`). Either
+folder must be a real folder owned by the server's user with mode 0700. The
+server refuses to start if the control socket can't be bound.
 
 The control socket keeps `control.rs`'s method list and checks. Two things
 differ from the desktop app: the alarm methods append `alarm.fire` and
@@ -761,7 +760,7 @@ uses.
 Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
 `enabled = false`, `upstream_socket` when set, else the server's own value;
 with `enabled = true`, always the server's own `ssh-agent.sock` (in the data
-dir, or the short folder above), never another
+dir, or the folder above), never another
 agent. That socket exists only while the vault is unlocked, so a shell signs
 while it's open and fails to sign while it's locked, including a shell started
 while it was locked.
@@ -803,7 +802,7 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   `ssh_agent.enabled = false`.
 
 The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir (or the
-short folder, for a long data dir) while the
+folder above, for a long data dir or a `socket_dir`) while the
 vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
 only SSHSIG blobs in the `git` namespace with a `sha256` or `sha512` hash,
 refusing anything else before asking anyone. Each signature is an approval of kind `git.sign`, with the key's

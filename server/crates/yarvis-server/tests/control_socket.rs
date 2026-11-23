@@ -99,26 +99,30 @@ async fn the_socket_is_private_to_the_user() {
     assert_eq!(dir_mode & 0o777, 0o700);
 }
 
-/// A data dir nested deep enough that a socket in it passes `sun_path`'s
-/// limit (104 bytes on macOS).
-fn long_data_dir(under: &std::path::Path) -> PathBuf {
+/// A folder nested deep enough that a socket in it passes `sun_path`'s limit
+/// (104 bytes on macOS).
+fn long_dir(under: &std::path::Path) -> PathBuf {
     under.join("a-data-dir-whose-name-goes-on-".repeat(5))
 }
 
-#[tokio::test]
-async fn a_long_data_dir_still_gets_a_working_private_socket() {
-    use std::os::unix::fs::PermissionsExt;
-    let server = serve_with(Setup::default()).await;
-    let data_dir = long_data_dir(server.dir.path());
-    assert!(data_dir.join("core-control.sock").as_os_str().len() > 104);
+/// The server's state with `[server] socket_dir` set.
+fn with_socket_dir(server: &Server, socket_dir: PathBuf) -> yarvis_server::AppState {
     let mut state = server.state.clone();
     let mut config = (*state.config).clone();
-    config.server.data_dir = data_dir.clone();
+    config.server.socket_dir = Some(socket_dir);
     state.config = std::sync::Arc::new(config);
+    state
+}
 
-    let path = yarvis_server::control::start(state).await.unwrap();
-    let dir = path.parent().unwrap().to_path_buf();
-    assert!(!path.starts_with(&data_dir), "{}", path.display());
+#[tokio::test]
+async fn socket_dir_gets_a_working_private_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = serve_with(Setup::default()).await;
+    let dir = server.dir.path().join("sockets");
+    let path = yarvis_server::control::start(with_socket_dir(&server, dir.clone()))
+        .await
+        .unwrap();
+    assert_eq!(path, dir.join("core-control.sock"));
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
     let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
@@ -127,32 +131,36 @@ async fn a_long_data_dir_still_gets_a_working_private_socket() {
     let mut control = Control::connect(&path).await;
     let reply = control.call("nope", json!({})).await;
     assert!(reply["error"].is_string(), "{reply}");
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
-// The short dir's name is predictable, so another user could plant it.
 #[tokio::test]
-async fn a_planted_short_socket_dir_stops_the_hand_off() {
+async fn a_planted_socket_dir_stops_the_hand_off() {
     let server = serve_with(Setup::default()).await;
-    let data_dir = long_data_dir(server.dir.path());
-    let short = yarvis_server::socket_dir::socket_path(&data_dir, "core-control.sock")
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    std::os::unix::fs::symlink(server.dir.path(), &short).unwrap();
-    let mut state = server.state.clone();
-    let mut config = (*state.config).clone();
-    config.server.data_dir = data_dir;
-    state.config = std::sync::Arc::new(config);
-
+    let link = server.dir.path().join("sockets");
+    std::os::unix::fs::symlink(server.dir.path(), &link).unwrap();
+    let mut state = with_socket_dir(&server, link);
     let database = yarvis_server::database_url::DatabaseUrl {
         url: "postgres://localhost:5432/unused".into(),
         source: yarvis_server::database_url::UrlSource::ConfigFile,
     };
-    let result = yarvis_server::hand_off_to_sidecar(&mut state, database).await;
-    std::fs::remove_file(&short).unwrap();
-    let err = result.unwrap_err();
+    let err = yarvis_server::hand_off_to_sidecar(&mut state, database)
+        .await
+        .unwrap_err();
     assert!(err.contains("isn't a directory"), "{err}");
+}
+
+#[tokio::test]
+async fn a_socket_dir_too_long_stops_the_hand_off() {
+    let server = serve_with(Setup::default()).await;
+    let mut state = with_socket_dir(&server, long_dir(server.dir.path()));
+    let database = yarvis_server::database_url::DatabaseUrl {
+        url: "postgres://localhost:5432/unused".into(),
+        source: yarvis_server::database_url::UrlSource::ConfigFile,
+    };
+    let err = yarvis_server::hand_off_to_sidecar(&mut state, database)
+        .await
+        .unwrap_err();
+    assert!(err.contains("socket_dir"), "{err}");
 }
 
 #[tokio::test]

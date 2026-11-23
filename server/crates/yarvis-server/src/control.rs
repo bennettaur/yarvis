@@ -8,11 +8,10 @@
 //! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code
 //! harness's program and environment to a verification run (`harness.runEnv`).
 //!
-//! Security model: the socket lives in the server's private data dir (mode
-//! 0700), or in a private short directory when that path is too long to bind
-//! (`socket_dir`), as a mode-0600 file, so only the same user can connect, and
-//! a UDS is never reachable over the network. The protocol is deliberately narrow: the
-//! sidecar can only start, stop, or talk to an agent session for a workspace,
+//! Security model: the socket lives in the server's private data dir, or
+//! another 0700 folder that `socket_dir` checks, as a mode-0600 file, so only
+//! the same user can connect, and a UDS is never reachable over the network.
+//! The protocol is deliberately narrow: the sidecar can only start, stop, or talk to an agent session for a workspace,
 //! and chooses only whether to launch one and which saved harness, by id,
 //! never what runs. The command comes from settings, which only an admin
 //! device can write, and a harness is refused unless the user allowed the
@@ -285,8 +284,8 @@ mod unix_impl {
         // Who can connect is decided by the directory's permissions alone, so
         // the socket isn't served when they can't be set.
         set_private(data_dir, 0o700)?;
-        let path = socket_dir::socket_path(data_dir, SOCKET_FILE);
-        socket_dir::prepare(data_dir, &path)?;
+        let path = socket_dir::socket_path(&state.config.server, SOCKET_FILE);
+        socket_dir::prepare(&state.config.server, &path)?;
         // Clear a stale socket from a previous run, but only if it really is a
         // socket, so a symlink is never followed or a planted file clobbered.
         remove_stale_socket(&path)?;
