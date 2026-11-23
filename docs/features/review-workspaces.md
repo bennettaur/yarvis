@@ -131,7 +131,8 @@ head make drafts. A draft has a dashed violet border, so it can't be taken
 for a posted thread, and is labelled with where it came from: the check's
 name, **Risk** or **Looks off**. Its text is written the way **Post to PR**
 writes a finding: the title, then what the report said, quoted, with `@`
-mentions broken. It renders as markdown, the same way comments do.
+mentions turned into plain text so nobody is notified. It renders as
+markdown, the same way comments do.
 
 For each draft:
 
@@ -140,26 +141,28 @@ For each draft:
 - **Drop** removes it from the diff.
 - **Undo** on an accepted draft puts it back to undecided.
 
-Nothing posts until you do. The **Draft comments** bar above the diff counts
+Nothing posts until you post it. The **Draft comments** bar above the diff counts
 the drafts left to answer and the accepted ones, and **Post *N* as one
 review** sends every accepted draft on the PR, in any file. On GitHub they go
-up as one review, with an optional summary, and nothing else is decided: it
-neither approves nor requests changes. GitHub only takes a line comment on a
-line inside the diff, so a draft on an unchanged line goes into the review's
-summary under the file and line it is about. On Azure DevOps each draft posts
-as a thread of its own. If one fails, the ones before it stay posted and a
-retry sends the rest.
+up as one review, with an optional summary. The review doesn't approve or
+request changes. GitHub only takes a line comment on a line inside the diff,
+so a draft on an unchanged line goes into the review's summary under the file
+and line it is about. On Azure DevOps, which has no review summary, each draft
+posts as a thread of its own. If one fails there, the ones before it stay
+posted and a retry sends the rest.
 
-When verification runs again on a new head, the drafts follow it. A finding
-it still reports moves to its new line and text. One it no longer reports is
-removed if you hadn't touched it. If you had edited or accepted it, it stays
-in the bar as **Stale**, with your text, and can only be dropped, since its
-line may point at different code now. Before the new head has been verified,
-every draft from the old one is treated that way. A draft you dropped or
-posted isn't offered again when its finding comes back.
+When verification runs again, the drafts follow it. A finding it still
+reports moves to its new line and text. If you had accepted it and its line
+or text changed, it goes back to undecided, so you never post words you
+didn't see. A finding it no longer reports is removed if you hadn't touched
+it. If you had edited or accepted it, it stays in the bar as **Stale**, with
+your text, and can only be dropped, since its line may point at different
+code now. After a push, every draft is stale or removed until its check has
+run on the new head, and comes back when the check reports it again. A draft
+you dropped or posted isn't offered again.
 
-Yarvis keeps what you did with each draft (accepted, edited with your text,
-or dropped), so it can learn which drafts are worth writing.
+Yarvis records what you did with each draft: accepted, edited (with your
+text) or dropped.
 
 ### Code navigation
 

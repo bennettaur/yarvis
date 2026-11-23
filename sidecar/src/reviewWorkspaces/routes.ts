@@ -600,7 +600,7 @@ export function createReviewWorkspaceRoutes(
   router.get("/:id/prs/:prId/drafts", async (c) => {
     try {
       const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
-      await syncVerificationDrafts(db(), pr.workspaceId, pr.id);
+      await syncVerificationDrafts(db(), pr);
       return c.json({ headSha: pr.headSha, drafts: await listReviewDrafts(db(), pr.refKey) });
     } catch (e) {
       return fail(c, e);

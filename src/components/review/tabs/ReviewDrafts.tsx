@@ -18,7 +18,8 @@ const BUTTON =
 
 export interface DraftActions {
   answer: (draft: ReviewDraft, answer: DraftAnswer) => Promise<boolean>;
-  post: (summary: string) => Promise<void>;
+  /** Resolves true when everything accepted went up. */
+  post: (summary: string) => Promise<boolean>;
   busy: boolean;
   error: string | null;
   notice: string | null;
@@ -62,10 +63,15 @@ export function useDraftActions(
     setNotice(null);
     try {
       const result = await postReviewDrafts(ctx.workspaceId, ctx.pr.id, summary, seenAt(ctx.pr));
-      if (result.error) setError(`${result.posted} posted, then: ${result.error}`);
-      else setNotice(`Posted ${result.posted} comment${result.posted === 1 ? "" : "s"}.`);
+      if (result.error) {
+        setError(`${result.posted} posted, then: ${result.error}`);
+        return false;
+      }
+      setNotice(`Posted ${result.posted} comment${result.posted === 1 ? "" : "s"}.`);
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      return false;
     } finally {
       // Whatever went up shows on the PR, even when the rest didn't.
       invalidate(prDetailKey(ctx.prRef));
@@ -86,7 +92,6 @@ export function useDraftActions(
 export function DraftBlock({ draft, actions }: { draft: ReviewDraft; actions: DraftActions }) {
   const [editing, setEditing] = useState<string | null>(null);
   const accepted = draft.status === "accepted";
-  const sourceName = draft.source === "verification" ? "verification" : draft.source;
 
   return (
     <div className="my-1 rounded border border-dashed border-violet-700 bg-violet-950/20 p-2 text-xs">
@@ -95,7 +100,7 @@ export function DraftBlock({ draft, actions }: { draft: ReviewDraft; actions: Dr
           Draft
         </span>
         <span className="text-zinc-400">
-          {draft.label} · {sourceName}
+          {draft.label} · {draft.source}
         </span>
         {accepted && (
           <span className="text-emerald-400">
@@ -223,8 +228,7 @@ export function DraftsBar({
               type="button"
               disabled={actions.busy}
               onClick={async () => {
-                await actions.post(summary);
-                setSummary("");
+                if (await actions.post(summary)) setSummary("");
               }}
               className="rounded bg-violet-700 px-2 py-0.5 text-xs text-white hover:bg-violet-600 disabled:opacity-50"
             >

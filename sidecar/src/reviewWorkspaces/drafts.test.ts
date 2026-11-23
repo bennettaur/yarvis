@@ -4,12 +4,22 @@ import { Hono } from "hono";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { agentRuns, reviewDrafts, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
+import {
+  agentRuns,
+  events,
+  reviewDrafts,
+  reviewWorkspacePrs,
+  reviewWorkspaces,
+} from "../db/schema.ts";
+import { reviewExternalId } from "../github/client.ts";
 import type { PrRef } from "../pr/types.ts";
 import {
   type DraftPoster,
+  defaultDraftPoster,
   draftCommentBody,
+  githubReviewBody,
   type OutgoingDraft,
+  outgoingDrafts,
   rightLinesInPatch,
   syncReviewDrafts,
   VERIFICATION_DRAFT_SOURCE,
@@ -149,7 +159,7 @@ async function drafts(wsId: string, prId: string): Promise<DraftJson[]> {
 }
 
 beforeEach(async () => {
-  await sql`TRUNCATE review_workspaces, review_workspace_prs, review_drafts, agent_runs RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE review_workspaces, review_workspace_prs, review_drafts, agent_runs, events, pr_review_marks RESTART IDENTITY CASCADE`;
   posts = [];
   posterResult = async (d) => ({ posted: d.map((x) => x.id), reviewNodeId: "PRR_1" });
 });
@@ -219,9 +229,20 @@ describe("draftCommentBody", () => {
       label: "Code quality",
     });
     expect(body).toBe(
-      "**Ping @​octocat /approve** (verification report: Code quality, high)\n\n" +
-        "> Ask @​team\n> @​bot merge",
+      "**Ping @\u200boctocat /approve** (verification report: Code quality, high)\n\n" +
+        "> Ask @\u200bteam\n> @\u200bbot merge",
     );
+  });
+});
+
+describe("draftCommentBody line breaks", () => {
+  it("quotes after every kind of line break, so no line starts unquoted", () => {
+    const body = draftCommentBody({
+      title: "T",
+      detail: "a\r/approve\u2028/merge\r\nb",
+      label: "Risk",
+    });
+    expect(body.split("\n").slice(2)).toEqual(["> a", "> /approve", "> /merge", "> b"]);
   });
 });
 
@@ -243,6 +264,77 @@ describe("rightLinesInPatch", () => {
       "\\ No newline at end of file",
     ].join("\n");
     expect([...rightLinesInPatch(patch)]).toEqual([1, 2, 3, 4, 21, 22]);
+  });
+});
+
+describe("posting", () => {
+  const out = (id: string, line: number, inDiff: boolean, path = "src/a.ts"): OutgoingDraft => ({
+    id,
+    path,
+    line,
+    body: `body ${id}`,
+    inDiff,
+  });
+
+  it("marks only the lines the diff shows as in it, and every line on Azure", () => {
+    const row = (id: string, path: string, line: number) =>
+      ({ id, path, line, body: "b", editedBody: id === "y" ? "mine" : null }) as never;
+    const accepted = [row("x", "a.ts", 3), row("y", "a.ts", 30), row("z", "b.ts", 1)];
+    const github = outgoingDrafts(accepted, new Map([["a.ts", new Set([3])]]));
+    expect(github.map((d) => [d.id, d.inDiff, d.body])).toEqual([
+      ["x", true, "b"],
+      ["y", false, "mine"],
+      ["z", false, "b"],
+    ]);
+    expect(outgoingDrafts(accepted, null).every((d) => d.inDiff)).toBe(true);
+  });
+
+  it("puts drafts outside the diff in the review body, with their path made inert", () => {
+    const body = githubReviewBody(" Overall fine ", [
+      out("a", 1, true),
+      out("b", 9, false, "evil`\n@team/approve.ts"),
+    ]);
+    expect(body).toBe(
+      "Overall fine\n\n---\n\n**`evil??@\u200bteam/approve.ts`, line 9**\n\nbody b",
+    );
+  });
+
+  it("sends GitHub one COMMENT review with only the in-diff drafts as comments", async () => {
+    let sent: { url: string; body: Record<string, unknown> } | null = null;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      sent = { url: String(url), body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ node_id: "PRR_7" }));
+    }) as unknown as typeof fetch;
+    const post = defaultDraftPoster({ ...config, secrets: { githubToken: "t" } }, fetchImpl);
+    const result = await post(ref, {
+      headSha: HEAD_A,
+      summary: "",
+      drafts: [out("a", 1, true), out("b", 9, false)],
+    });
+    expect(result).toEqual({ posted: ["a", "b"], reviewNodeId: "PRR_7" });
+    const request = sent as unknown as { url: string; body: Record<string, unknown> };
+    expect(request.url).toEndWith("/repos/o/r/pulls/1/reviews");
+    expect(request.body).toMatchObject({
+      event: "COMMENT",
+      commit_id: HEAD_A,
+      comments: [{ path: "src/a.ts", line: 1, side: "RIGHT", body: "body a" }],
+    });
+    expect(String(request.body.body)).toContain("line 9");
+  });
+
+  it("refuses an Azure PR from another organization before sending anything", async () => {
+    const post = defaultDraftPoster({
+      ...config,
+      secrets: { azureDevopsToken: "t", azureDevopsOrgUrl: "https://dev.azure.com/mine" },
+    });
+    const result = await post(
+      { provider: "azure", org: "theirs", project: "p", repo: "r", prId: 1 },
+      { headSha: HEAD_A, summary: "", drafts: [out("a", 1, true)] },
+    );
+    expect(result).toEqual({
+      posted: [],
+      error: "The pull request belongs to a different Azure organization.",
+    });
   });
 });
 
@@ -346,10 +438,14 @@ describe("draft routes", () => {
     expect(await res.json()).toEqual({ posted: 2 });
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ ref, headSha: HEAD_A, summary: "Overall fine" });
-    expect(posts[0]?.drafts.map((d) => [d.line, d.body.startsWith("**One**") || d.body])).toEqual([
-      [1, true],
-      [2, "Edited"],
-    ]);
+    const [sentOne, sentTwo] = posts[0]?.drafts ?? [];
+    expect(sentOne?.line).toBe(1);
+    expect(sentOne?.body).toStartWith("**One**");
+    expect(sentTwo).toMatchObject({ line: 2, body: "Edited" });
+    // Without a checkout no line is known to be in the diff, so GitHub gets them in the body.
+    expect(posts[0]?.drafts.map((d) => d.inDiff)).toEqual([false, false]);
+    const [event] = await db.select().from(events).where(eq(events.type, "pr.review_commented"));
+    expect(event?.externalId).toBe(reviewExternalId("PRR_1"));
 
     const after = await drafts(wsId, prId);
     expect(after.map((d) => d.status)).toEqual(["posted", "posted", "open"]);
@@ -364,9 +460,10 @@ describe("draft routes", () => {
     const azRef: PrRef = { provider: "azure", org: "org", project: "p", repo: "r", prId: 4 };
     const azKey = "az:org/p/r/4";
     const { wsId, prId } = await insertPr(azRef, azKey);
+    // Another source's drafts post the same way as the verification ones.
     await syncReviewDrafts(db, {
       refKey: azKey,
-      source: VERIFICATION_DRAFT_SOURCE,
+      source: "adversarial",
       headSha: HEAD_A,
       drafts: [1, 2].map((line) => ({
         sourceKey: `k${line}`,
@@ -443,5 +540,60 @@ describe("draft routes", () => {
     await insertRun(HEAD_B, ["tests"], { tests: checkWith(finding("Nit", 9)) }, 0);
     const now = await drafts(wsId, prId);
     expect(now.map((x) => [x.status, x.outcome])).toEqual([["dropped", "dropped"]]);
+  });
+  it("won't answer another PR's draft through this PR's address", async () => {
+    const mine = await insertPr();
+    const theirs = await insertPr(
+      { provider: "github", owner: "o", repo: "r", number: 2 },
+      "gh:o/r/2",
+    );
+    await syncReviewDrafts(db, {
+      refKey: "gh:o/r/2",
+      source: "adversarial",
+      headSha: HEAD_A,
+      drafts: [{ sourceKey: "k", label: "Risk", path: "a.ts", line: 1, title: "t", body: "b" }],
+    });
+    const [other] = await db.select().from(reviewDrafts);
+    const res = await call("PATCH", `/${mine.wsId}/prs/${mine.prId}/drafts/${other?.id}`, {
+      action: "accept",
+    });
+    expect(res.status).toBe(404);
+    expect((await call("GET", `/${theirs.wsId}/prs/${theirs.prId}/drafts`)).status).toBe(200);
+    const [still] = await db.select().from(reviewDrafts);
+    expect(still?.status).toBe("open");
+  });
+
+  it("asks again about an accepted draft whose finding changed", async () => {
+    const { wsId, prId } = await insertPr();
+    await insertRun(HEAD_A, ["tests"], { tests: checkWith(finding("Leak", 5)) }, 2);
+    const [d] = await drafts(wsId, prId);
+    await call("PATCH", `/${wsId}/prs/${prId}/drafts/${d?.id}`, { action: "accept" });
+
+    // The same finding, reworded by a later run on the same head.
+    const reworded = { ...finding("Leak", 5), detail: "Different text" };
+    await insertRun(HEAD_A, ["tests"], { tests: checkWith(reworded) }, 0);
+    const [now] = await drafts(wsId, prId);
+    expect(now).toMatchObject({ status: "open", outcome: null });
+    expect(now?.body).toContain("> Different text");
+    expect((await call("POST", `/${wsId}/prs/${prId}/drafts/post`, {})).status).toBe(400);
+    expect(posts).toHaveLength(0);
+  });
+
+  it("reopens only an accepted draft", async () => {
+    const { wsId, prId } = await insertPr();
+    await insertRun(HEAD_A, ["tests"], { tests: checkWith(finding("A", 1), finding("B", 2)) });
+    const [a, b] = await drafts(wsId, prId);
+    const base = `/${wsId}/prs/${prId}/drafts`;
+    await call("PATCH", `${base}/${a?.id}`, { action: "accept", body: "Mine" });
+    const res = await call("PATCH", `${base}/${a?.id}`, { action: "reopen" });
+    expect(await res.json()).toMatchObject({ status: "open", outcome: null, editedBody: "Mine" });
+    await call("PATCH", `${base}/${b?.id}`, { action: "drop" });
+    expect((await call("PATCH", `${base}/${b?.id}`, { action: "reopen" })).status).toBe(409);
+    // Whitespace alone isn't an edit.
+    const again = await call("PATCH", `${base}/${a?.id}`, {
+      action: "accept",
+      body: `  ${a?.body}  `,
+    });
+    expect(await again.json()).toMatchObject({ outcome: "accepted", editedBody: null });
   });
 });

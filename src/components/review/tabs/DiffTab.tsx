@@ -156,7 +156,8 @@ function ChangedFileDiff({
     () => inlineDrafts(drafts.data?.drafts ?? [], path, ctx.pr.headSha),
     [drafts.data, path, ctx.pr.headSha],
   );
-  // Read when a zone renders, so a draft's buttons follow the current request.
+  // The zones are rebuilt only when the drafts change, so their render reads
+  // the latest actions (busy, error) through a ref.
   const liveDraftActions = useRef(draftActions);
   liveDraftActions.current = draftActions;
   const zones = useMemo<EditorZone[]>(

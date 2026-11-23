@@ -1,13 +1,14 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { AzureDevOpsClient, isAllowedAzureOrgUrl, orgFromOrgUrl } from "../azure/client.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { type ReviewDraftRow, reviewDrafts } from "../db/schema.ts";
+import { type ReviewDraftRow, type ReviewWorkspacePr, reviewDrafts } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { createGitHubClient, reviewExternalId } from "../github/client.ts";
+import { createKeyedLock } from "../lib/keyedLock.ts";
 import { type SeenCommits, seenMarkInput } from "../pr/reviewMarks.ts";
 import { type PrRef, refKey } from "../pr/types.ts";
-import { reportAtHead } from "./checklist.ts";
+import { CHECKLIST_ENTRIES, reportAtHead } from "./checklist.ts";
 import { markReviewed } from "./reviewMarks.ts";
 import { getReviewPr, type ReviewDeps, ReviewWorkspaceError, reviewDiff } from "./service.ts";
 import { CHECK_SECTIONS, type VerificationReport } from "./verification.ts";
@@ -15,13 +16,22 @@ import { CHECK_SECTIONS, type VerificationReport } from "./verification.ts";
 /** The source of drafts made from the verification report's findings. */
 export const VERIFICATION_DRAFT_SOURCE = "verification";
 
-/** GitHub's own cap on a comment body. */
+/** GitHub's own cap on a comment body, and on a review's. */
 export const MAX_DRAFT_BODY_CHARS = 65_536;
+
+/**
+ * One PR's drafts change one writer at a time in this sidecar, so a sync
+ * can't delete or rewrite a draft the reviewer is answering, and two clicks
+ * can't post the same drafts twice. Each write also re-checks the row's
+ * status, which covers a second app instance on the same database except for
+ * two posts at once.
+ */
+const draftLock = createKeyedLock();
 
 /** One comment a source proposes. */
 export interface DraftInput {
   /**
-   * The same problem's key on every run of the source, so a re-run on a new
+   * The same problem's key on every run of the source, so a run on another
    * head updates its draft instead of adding a second. Leave the line out of
    * it: lines move when commits are pushed.
    */
@@ -35,15 +45,25 @@ export interface DraftInput {
   body: string;
 }
 
+const LIVE = ["open", "accepted"] as const;
+
 /**
  * Replaces one source's drafts on a PR with what it reports at `headSha`, and
  * is how any source adds drafts. A draft still reported moves to its new line
- * and text; one the reviewer already dropped or posted is left as it was, so
- * it isn't offered again. A draft no longer reported is deleted while it is
- * untouched, and marked stale once the reviewer edited or accepted it, so
- * their work isn't lost.
+ * and text, and an accepted one whose text or line changed goes back to
+ * undecided, since the reviewer never saw it that way. One the reviewer
+ * dropped or posted is left alone, so it isn't offered again. A draft no
+ * longer reported is deleted while untouched, and marked stale once the
+ * reviewer edited or accepted it, so their work isn't lost.
  */
-export async function syncReviewDrafts(
+export function syncReviewDrafts(
+  db: Db,
+  input: { refKey: string; source: string; headSha: string; drafts: DraftInput[] },
+): Promise<void> {
+  return draftLock(input.refKey, () => syncLocked(db, input));
+}
+
+async function syncLocked(
   db: Db,
   input: { refKey: string; source: string; headSha: string; drafts: DraftInput[] },
 ): Promise<void> {
@@ -55,11 +75,19 @@ export async function syncReviewDrafts(
       .where(and(eq(reviewDrafts.refKey, input.refKey), eq(reviewDrafts.source, input.source)));
     const now = new Date();
     for (const row of existing) {
-      const live = row.status === "open" || row.status === "accepted";
       const draft = wanted.get(row.sourceKey);
       wanted.delete(row.sourceKey);
-      if (!live) continue;
+      if (row.status !== "open" && row.status !== "accepted") continue;
+      const stillLive = and(eq(reviewDrafts.id, row.id), inArray(reviewDrafts.status, LIVE));
       if (draft) {
+        const moved =
+          row.path !== draft.path ||
+          row.line !== draft.line ||
+          row.headSha !== input.headSha ||
+          row.body !== draft.body;
+        if (!moved && !row.stale && row.label === draft.label && row.title === draft.title) {
+          continue;
+        }
         await tx
           .update(reviewDrafts)
           .set({
@@ -70,16 +98,16 @@ export async function syncReviewDrafts(
             body: draft.body,
             headSha: input.headSha,
             stale: false,
+            ...(moved && row.status === "accepted" && { status: "open", outcome: null }),
             updatedAt: now,
           })
-          .where(eq(reviewDrafts.id, row.id));
+          .where(stillLive);
       } else if (row.status === "open" && row.editedBody === null) {
-        await tx.delete(reviewDrafts).where(eq(reviewDrafts.id, row.id));
-      } else if (!row.stale) {
         await tx
-          .update(reviewDrafts)
-          .set({ stale: true, updatedAt: now })
-          .where(eq(reviewDrafts.id, row.id));
+          .delete(reviewDrafts)
+          .where(and(stillLive, eq(reviewDrafts.status, "open"), isNull(reviewDrafts.editedBody)));
+      } else if (!row.stale) {
+        await tx.update(reviewDrafts).set({ stale: true, updatedAt: now }).where(stillLive);
       }
     }
     if (wanted.size > 0) {
@@ -93,7 +121,7 @@ export async function syncReviewDrafts(
             headSha: input.headSha,
           })),
         )
-        // A concurrent sync of the same source inserted it first.
+        // A second app instance's sync inserted it first.
         .onConflictDoNothing();
     }
   });
@@ -103,11 +131,14 @@ export async function syncReviewDrafts(
  * Mentions as plain text: a zero-width space after the `@` keeps GitHub from
  * notifying anyone, or a bot from reading a command addressed to it.
  */
-const unmention = (text: string) => text.replace(/@(?=[\w-])/g, "@​");
+const unmention = (text: string) => text.replace(/@(?=[\w-])/g, "@\u200b");
+
+/** Every line break as `\n`, so quoting each line leaves none that starts unquoted. */
+const oneKindOfBreak = (text: string) => text.replace(/\r\n?|[\u2028\u2029\u0085]/g, "\n");
 
 /**
  * A finding as a comment: its title, then what the report said, quoted, and
- * marked as coming from the report. Kept in step with the frontend's
+ * marked as coming from the report. The same format as the frontend's
  * `findingCommentBody`. The text is model-written from the PR's code, so
  * mentions are broken and the title is kept to one line: posted under the
  * reviewer's account, a `/approve` line or an `@bot` would carry their
@@ -123,7 +154,7 @@ export function draftCommentBody(finding: {
   const title = unmention(finding.title).replace(/\s+/g, " ").trim();
   const head = `**${title}** (verification report: ${tag})`;
   if (!finding.detail?.trim()) return head;
-  const quoted = unmention(finding.detail)
+  const quoted = oneKindOfBreak(unmention(finding.detail))
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
@@ -132,19 +163,10 @@ export function draftCommentBody(finding: {
 
 const FLAG_LABEL = "Looks off";
 const CLAIM_LABEL = {
-  partial: "Partial",
-  missing: "Missing",
-  contradicted: "Contradicted",
+  partial: "partial",
+  missing: "missing",
+  contradicted: "contradicted",
 } as const;
-const CHECK_LABEL: Record<(typeof CHECK_SECTIONS)[number], string> = {
-  malice: "Malicious intent",
-  tests: "Test quality",
-  complexity: "Complexity",
-  performance: "Performance",
-  comments: "Comment quality",
-  observability: "Observability",
-  quality: "Code quality",
-};
 
 const titleKey = (title: string) => title.toLowerCase().replace(/\s+/g, " ").trim();
 
@@ -175,32 +197,35 @@ export function verificationDrafts(report: VerificationReport): DraftInput[] {
       add("flag", { path: m.path, line: flag.line, title: flag.note }, FLAG_LABEL);
     }
   }
-  for (const c of report.risk?.concerns ?? []) add("risk", c, "Risk");
+  for (const c of report.risk?.concerns ?? []) add("risk", c, CHECKLIST_ENTRIES.risk.label);
   for (const c of report.claims?.items ?? []) {
     if (c.status === "partial" || c.status === "missing" || c.status === "contradicted") {
       add(
         "claim",
         { path: c.path, line: c.line, title: c.claim, detail: c.evidence },
-        `Claim ${CLAIM_LABEL[c.status].toLowerCase()}`,
+        `Claim ${CLAIM_LABEL[c.status]}`,
       );
     }
   }
   for (const g of report.claims?.gaps ?? []) add("gap", g, "Unfinished work");
   for (const key of CHECK_SECTIONS) {
-    for (const f of report[key]?.findings ?? []) add(key, f, CHECK_LABEL[key]);
+    for (const f of report[key]?.findings ?? []) add(key, f, CHECKLIST_ENTRIES[key].label);
   }
   // Two items can share a title on one file; the first keeps the key.
   const seen = new Set<string>();
-  return drafts.filter((d) => !seen.has(d.sourceKey) && seen.add(d.sourceKey));
+  return drafts.filter((d) => {
+    if (seen.has(d.sourceKey)) return false;
+    seen.add(d.sourceKey);
+    return true;
+  });
 }
 
-/** Brings the verification drafts in line with the report at the PR's head. */
-export async function syncVerificationDrafts(
-  db: Db,
-  workspaceId: string,
-  prId: string,
-): Promise<void> {
-  const pr = await getReviewPr(db, workspaceId, prId);
+/**
+ * Brings the verification drafts in line with the report at the PR's head.
+ * Until a section answers at a new head, its drafts count as no longer
+ * reported: their lines were for other code.
+ */
+export async function syncVerificationDrafts(db: Db, pr: ReviewWorkspacePr): Promise<void> {
   if (!pr.headSha) return;
   const report = await reportAtHead(db, pr);
   await syncReviewDrafts(db, {
@@ -227,44 +252,51 @@ export type DraftAction =
 
 /**
  * Records the reviewer's answer to a draft. Accepting with text that differs
- * from the proposal counts as an edit. A posted draft can't change, and a
- * stale one can only be dropped, since its line may point at other code now.
+ * from the proposal counts as an edit. A posted draft can't change, a stale
+ * one can only be dropped (its line may point at other code now), and only an
+ * accepted one can be reopened.
  */
-export async function answerReviewDraft(
+export function answerReviewDraft(
   db: Db,
   prRefKey: string,
   draftId: string,
   answer: DraftAction,
 ): Promise<ReviewDraftRow> {
-  const [row] = await db
-    .select()
-    .from(reviewDrafts)
-    .where(and(eq(reviewDrafts.id, draftId), eq(reviewDrafts.refKey, prRefKey)));
-  if (!row) throw new ReviewWorkspaceError("draft not found", 404);
-  if (row.status === "posted") throw new ReviewWorkspaceError("draft already posted", 409);
-  if (row.stale && answer.action !== "drop") {
-    throw new ReviewWorkspaceError("the finding is gone from the latest verification", 409);
-  }
-  let set: Partial<ReviewDraftRow>;
-  if (answer.action === "accept") {
-    const text = answer.body?.trim() ? answer.body : (row.editedBody ?? row.body);
-    const edited = text !== row.body;
-    set = {
-      status: "accepted",
-      outcome: edited ? "edited" : "accepted",
-      editedBody: edited ? text : null,
-    };
-  } else if (answer.action === "drop") {
-    set = { status: "dropped", outcome: "dropped" };
-  } else {
-    set = { status: "open", outcome: null };
-  }
-  const [updated] = await db
-    .update(reviewDrafts)
-    .set({ ...set, updatedAt: new Date() })
-    .where(eq(reviewDrafts.id, row.id))
-    .returning();
-  return updated as ReviewDraftRow;
+  return draftLock(prRefKey, async () => {
+    const [row] = await db
+      .select()
+      .from(reviewDrafts)
+      .where(and(eq(reviewDrafts.id, draftId), eq(reviewDrafts.refKey, prRefKey)));
+    if (!row) throw new ReviewWorkspaceError("draft not found", 404);
+    if (row.status === "posted") throw new ReviewWorkspaceError("draft already posted", 409);
+    if (row.stale && answer.action !== "drop") {
+      throw new ReviewWorkspaceError("the finding is gone from the latest verification", 409);
+    }
+    let set: Partial<ReviewDraftRow>;
+    if (answer.action === "accept") {
+      const text = answer.body?.trim() ? answer.body : (row.editedBody ?? row.body);
+      const edited = text.trim() !== row.body.trim();
+      set = {
+        status: "accepted",
+        outcome: edited ? "edited" : "accepted",
+        editedBody: edited ? text : null,
+      };
+    } else if (answer.action === "drop") {
+      set = { status: "dropped", outcome: "dropped" };
+    } else {
+      if (row.status !== "accepted") {
+        throw new ReviewWorkspaceError("only an accepted draft can be reopened", 409);
+      }
+      set = { status: "open", outcome: null };
+    }
+    const [updated] = await db
+      .update(reviewDrafts)
+      .set({ ...set, updatedAt: new Date() })
+      .where(and(eq(reviewDrafts.id, row.id), inArray(reviewDrafts.status, LIVE)))
+      .returning();
+    if (!updated) throw new ReviewWorkspaceError("draft not found", 404);
+    return updated;
+  });
 }
 
 /** One accepted draft, as it goes to the provider. */
@@ -314,31 +346,64 @@ export function rightLinesInPatch(patch: string): Set<number> {
 }
 
 /**
- * GitHub: one review, with the drafts outside the diff written into its
- * body under the line they are about. Azure: one thread per draft, stopping
+ * Accepted drafts as they go out. `linesByPath` is each file's diff lines on
+ * GitHub, or null on a provider that takes a comment on any line.
+ */
+export function outgoingDrafts(
+  accepted: ReviewDraftRow[],
+  linesByPath: Map<string, Set<number>> | null,
+): OutgoingDraft[] {
+  return accepted.map((d) => ({
+    id: d.id,
+    path: d.path,
+    line: d.line,
+    body: d.editedBody ?? d.body,
+    inDiff: linesByPath === null || (linesByPath.get(d.path)?.has(d.line) ?? false),
+  }));
+}
+
+/**
+ * A path as text in markdown: on one line, without the backticks that would
+ * end its code span, and with mentions broken. A PR's author names its files.
+ */
+const pathText = (path: string) => unmention(path.replace(/[`\p{Cc}]/gu, "?"));
+
+/**
+ * The review's body on GitHub: the reviewer's summary, then each draft whose
+ * line is outside the diff, under the file and line it is about.
+ */
+export function githubReviewBody(summary: string, drafts: OutgoingDraft[]): string {
+  return [
+    summary.trim(),
+    ...drafts
+      .filter((d) => !d.inDiff)
+      .map((d) => `**\`${pathText(d.path)}\`, line ${d.line}**\n\n${d.body}`),
+  ]
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+}
+
+/**
+ * GitHub: one review, all or nothing. Azure: one thread per draft, stopping
  * at the first failure, since Azure has no review that groups comments.
  */
-export function defaultDraftPoster(config: Config): DraftPoster {
+export function defaultDraftPoster(config: Config, fetchImpl?: typeof fetch): DraftPoster {
   return async (ref, { headSha, summary, drafts }) => {
     if (ref.provider === "github") {
       const token = config.secrets.githubToken;
       if (!token) return { posted: [], error: "GitHub isn't signed in." };
-      const outside = drafts.filter((d) => !d.inDiff);
-      const body = [
-        summary.trim(),
-        ...outside.map((d) => `**\`${d.path}\`, line ${d.line}**\n\n${d.body}`),
-      ]
-        .filter(Boolean)
-        .join("\n\n---\n\n");
-      const { nodeId } = await createGitHubClient(config, token).submitCommentReview(
+      const body = githubReviewBody(summary, drafts);
+      if (body.length > MAX_DRAFT_BODY_CHARS) {
+        return {
+          posted: [],
+          error: "The summary and the comments outside the diff are too long for one review.",
+        };
+      }
+      const { nodeId } = await createGitHubClient(config, token, fetchImpl).submitCommentReview(
         ref.owner,
         ref.repo,
         ref.number,
-        {
-          commitId: headSha,
-          body,
-          comments: drafts.filter((d) => d.inDiff),
-        },
+        { commitId: headSha, body, comments: drafts.filter((d) => d.inDiff) },
       );
       return { posted: drafts.map((d) => d.id), reviewNodeId: nodeId };
     }
@@ -366,7 +431,8 @@ export function defaultDraftPoster(config: Config): DraftPoster {
 /**
  * Posts every accepted draft at the PR's current head as one review, then
  * marks them posted. Only the reviewer's click gets here: nothing a source
- * writes is ever posted on its own.
+ * writes is ever posted on its own. The drafts are synced first, so a draft
+ * whose finding moved since the reviewer accepted it isn't sent.
  */
 export async function postAcceptedDrafts(
   db: Db,
@@ -383,47 +449,50 @@ export async function postAcceptedDrafts(
   if (pr.ref.provider === "azure" && summary.trim()) {
     throw new ReviewWorkspaceError("Azure DevOps has no review summary to post it in", 400);
   }
-  const accepted = (await listReviewDrafts(db, pr.refKey)).filter(
-    (d) => d.status === "accepted" && !d.stale && d.headSha === headSha,
-  );
-  if (accepted.length === 0) throw new ReviewWorkspaceError("no accepted drafts to post", 400);
+  await syncVerificationDrafts(db, pr);
+  return draftLock(pr.refKey, async () => {
+    const accepted = (await listReviewDrafts(db, pr.refKey)).filter(
+      (d) => d.status === "accepted" && !d.stale && d.headSha === headSha,
+    );
+    if (accepted.length === 0) throw new ReviewWorkspaceError("no accepted drafts to post", 400);
 
-  const inDiff = new Map<string, Set<number>>();
-  if (pr.ref.provider === "github") {
-    for (const path of new Set(accepted.map((d) => d.path))) {
-      const diff = await reviewDiff(db, config, workspaceId, prId, path, reviewDeps).catch(
-        () => null,
-      );
-      inDiff.set(path, diff && !diff.tooLarge ? rightLinesInPatch(diff.patch) : new Set());
+    let linesByPath: Map<string, Set<number>> | null = null;
+    if (pr.ref.provider === "github") {
+      linesByPath = new Map();
+      for (const path of new Set(accepted.map((d) => d.path))) {
+        // Without the diff no line is known to be in it, so the draft goes in
+        // the review's body rather than failing the whole review.
+        const diff = await reviewDiff(db, config, workspaceId, prId, path, reviewDeps).catch(
+          () => null,
+        );
+        linesByPath.set(path, diff && !diff.tooLarge ? rightLinesInPatch(diff.patch) : new Set());
+      }
     }
-  }
-  const outgoing = accepted.map((d) => ({
-    id: d.id,
-    path: d.path,
-    line: d.line,
-    body: d.editedBody ?? d.body,
-    inDiff: pr.ref.provider !== "github" || (inDiff.get(d.path)?.has(d.line) ?? false),
-  }));
 
-  let result: DraftPostResult;
-  try {
-    result = await poster(pr.ref, { headSha, summary, drafts: outgoing });
-  } catch (e) {
-    result = { posted: [], error: e instanceof Error ? e.message : String(e) };
-  }
-  if (result.posted.length > 0) {
-    await db
-      .update(reviewDrafts)
-      .set({ status: "posted", postedAt: new Date(), updatedAt: new Date() })
-      .where(inArray(reviewDrafts.id, result.posted));
-    const mark = seenMarkInput(pr.ref, seen, headSha, "review");
-    if (mark) await markReviewed(db, config, mark, reviewDeps);
-    void emitEvent(db, {
-      type: pr.ref.provider === "github" ? "pr.review_commented" : "pr.commented",
-      source: pr.ref.provider,
-      payload: { ref: refKey(pr.ref), drafts: result.posted.length },
-      externalId: result.reviewNodeId ? reviewExternalId(result.reviewNodeId) : undefined,
-    });
-  }
-  return { posted: result.posted.length, ...(result.error && { error: result.error }) };
+    let result: DraftPostResult;
+    try {
+      result = await poster(pr.ref, {
+        headSha,
+        summary,
+        drafts: outgoingDrafts(accepted, linesByPath),
+      });
+    } catch (e) {
+      result = { posted: [], error: e instanceof Error ? e.message : String(e) };
+    }
+    if (result.posted.length > 0) {
+      await db
+        .update(reviewDrafts)
+        .set({ status: "posted", postedAt: new Date(), updatedAt: new Date() })
+        .where(inArray(reviewDrafts.id, result.posted));
+      const mark = seenMarkInput(pr.ref, seen, headSha, "review");
+      if (mark) await markReviewed(db, config, mark, reviewDeps);
+      await emitEvent(db, {
+        type: pr.ref.provider === "github" ? "pr.review_commented" : "pr.commented",
+        source: pr.ref.provider,
+        payload: { ref: refKey(pr.ref), drafts: result.posted.length },
+        externalId: result.reviewNodeId ? reviewExternalId(result.reviewNodeId) : undefined,
+      });
+    }
+    return { posted: result.posted.length, ...(result.error && { error: result.error }) };
+  });
 }
