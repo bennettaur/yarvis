@@ -213,6 +213,24 @@ describe("what a pass may do", () => {
     expect(await decideCall(db, run, "jira_start_work_on_issue", args)).toBe("run");
   });
 
+  it("treats a ticket or workspace on a watch as something to report on, not work to start or steer", async () => {
+    const run = await startRun(db, null);
+    await seedWorkspace(new Date(Date.now() - 60 * 60_000));
+    const watch = await createStream(db, {
+      title: "tell me when BILL-12 ships",
+      watch: { condition: "BILL-12 done", everyMinutes: 60, expiresAt: new Date(Date.now() + 1e8) },
+    });
+    await linkToStream(db, watch.id, { ref: ticket });
+    await linkToStream(db, watch.id, { ref: { kind: "workspace", workspaceId } });
+
+    expect(
+      await decideCall(db, run, "jira_start_work_on_issue", { key: "BILL-12", repoIds: [] }),
+    ).toBe("ask");
+    expect(
+      await decideCall(db, run, "send_workspace_instruction", { workspaceId, instruction: "go" }),
+    ).toBe("ask");
+  });
+
   it("asks before starting any new session, whatever task or brief it names", async () => {
     const run = await startRun(db, null);
     const base = { name: "billing", repoIds: [] };

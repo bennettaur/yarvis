@@ -730,7 +730,7 @@ describe("a heads-down pass", () => {
     process.env.YARVIS_ROUTINES_DIR = routinesDir;
     writeFileSync(
       join(routinesDir, "slack-watcher.md"),
-      "---\nname: slack-watcher\ndescription: x\nevery: 1h\n---\n\nWatch Slack.\n",
+      "---\nname: slack-watcher\ndescription: x\nevery: 1h\nconfig:\n  handle: '@sam'\n---\n\nWatch Slack.\n",
     );
     try {
       const run = await startRun(db, null);

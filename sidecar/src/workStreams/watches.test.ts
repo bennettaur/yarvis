@@ -9,6 +9,8 @@ import { buildWorkStreamTools, WATCH_REPORTED_ONLY } from "./tools.ts";
 import {
   dueWatches,
   expireWatches,
+  markWatchesOffered,
+  recordWatchCheck,
   WATCH_EXPIRED_TITLE,
   WATCH_MET_TITLE,
   watchFields,
@@ -162,6 +164,29 @@ describe("report_watch", () => {
     expect(await listAttention(db, { status: "pending" })).toEqual([]);
   });
 
+  it("leaves a watch paused, dropped or expired since the pass read it alone, and tells nobody", async () => {
+    const paused = await watch("paused");
+    const dropped = await watch("dropped");
+    const { tools } = await passTools([paused.id, dropped.id]);
+    await updateStream(db, paused.id, { paused: true });
+    await updateStream(db, dropped.id, { status: "dropped" });
+
+    for (const id of [paused.id, dropped.id]) {
+      for (const met of [true, false]) {
+        expect(
+          await tools.report_watch.execute!({ id, met, finding: "seen" }, opts),
+        ).toHaveProperty("error");
+      }
+    }
+    expect((await getStream(db, paused.id))?.status).toBe("waiting-on-others");
+    expect((await getStream(db, paused.id))?.waitingOn).toBeNull();
+    expect((await getStream(db, dropped.id))?.status).toBe("dropped");
+
+    const expired = await watch("expired", {}, new Date(Date.now() - 3 * 24 * HOUR));
+    expect(await recordWatchCheck(db, expired, { met: true, finding: "late" })).toBeNull();
+    expect(await listAttention(db, { status: "pending" })).toEqual([]);
+  });
+
   it("met: tells the user under app text, then closes it", async () => {
     const w = await watch("Alex's PRs", { category: "review" });
     const { tools, changed } = await passTools([w.id]);
@@ -187,24 +212,39 @@ describe("report_watch", () => {
 
     expect(
       await tools.report_watch.execute!({ id: w.id, met: true, finding: "again" }, opts),
-    ).toEqual({ error: "that watch is closed" });
+    ).toHaveProperty("error");
+  });
+});
+
+describe("markWatchesOffered", () => {
+  it("pushes an offered watch's next check back by its cadence", async () => {
+    const now = new Date();
+    const w = await watch("deploy");
+    await markWatchesOffered(db, [w.id], now);
+    expect((await getStream(db, w.id))?.wakeAt?.getTime()).toBe(now.getTime() + HOUR);
+    expect(await dueWatches(db, now)).toEqual([]);
   });
 });
 
 describe("expireWatches", () => {
-  it("closes a watch past its expiry once, and says so", async () => {
+  it("closes a watch past its expiry once, paused or not, and says so", async () => {
     const created = new Date(Date.now() - 3 * 24 * HOUR);
     const old = await watch("old deploy", {}, created);
+    const oldPaused = await watch("old paused", {}, created);
+    await updateStream(db, oldPaused.id, { paused: true });
     const live = await watch("live deploy");
     await updateStream(db, live.id, { paused: true });
+    expect(await dueWatches(db, new Date())).toEqual([]);
 
     const expired = await expireWatches(db, new Date());
-    expect(expired.map((w) => w.id)).toEqual([old.id]);
+    expect(expired.map((w) => w.id).sort()).toEqual([old.id, oldPaused.id].sort());
     expect((await getStream(db, old.id))?.status).toBe("dropped");
     expect(await expireWatches(db, new Date())).toEqual([]);
 
-    const items = await listAttention(db, { status: "pending" });
-    expect(items).toHaveLength(1);
+    const items = (await listAttention(db, { status: "pending" })).filter((i) =>
+      i.body?.startsWith("old deploy"),
+    );
+    expect(await listAttention(db, { status: "pending" })).toHaveLength(2);
     expect(items[0]).toMatchObject({
       kind: "message",
       category: "general",

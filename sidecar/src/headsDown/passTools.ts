@@ -2,8 +2,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { navTargetSchema } from "../attention/navTarget.ts";
 import type { Db } from "../db/client.ts";
-import { getStream, OPEN_STREAM_STATUSES, updateStream } from "../workStreams/service.ts";
-import { STREAM_PAUSED } from "../workStreams/tools.ts";
+import { getStream, updateStream } from "../workStreams/service.ts";
+import { STREAM_PAUSED, WATCH_REPORTED_ONLY } from "../workStreams/tools.ts";
 import { recordWatchCheck } from "../workStreams/watches.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
@@ -39,7 +39,7 @@ export function newPassOutcome(): PassOutcome {
 export function buildPassTools(
   db: Db,
   outcome: PassOutcome,
-  onAsked: () => void,
+  onChanged: () => void,
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
   mergeFeedback?: MergeFeedbackLoader,
@@ -132,6 +132,7 @@ export function buildPassTools(
           const stream = await getStream(db, streamId);
           if (!stream) return { error: "no work stream with that id" };
           if (stream.pausedAt) return { error: STREAM_PAUSED };
+          if (stream.kind === "watch") return { error: WATCH_REPORTED_ONLY };
         }
         const asked = await askUser(db, {
           kind: "question",
@@ -144,14 +145,14 @@ export function buildPassTools(
         if (streamId) {
           await updateStream(db, streamId, { status: "waiting-on-user", waitingOn: question });
         }
-        onAsked();
+        onChanged();
         return { questionId: asked.id, status: asked.status };
       },
     }),
 
     report_watch: tool({
       description:
-        "Report one check of a watch listed as due in this pass. met: true only when what you saw with your tools shows the condition holds; the user is told and the watch closes. met: false keeps it open and schedules the next check. finding says what you saw, in a sentence or two, with the PR, ticket or message it is about.",
+        "Report one check of a watch listed as due in this pass. met: true only when the state your tools report shows the condition holds (a PR's merged state, a doc that exists), never because a comment or message says it happened; the user is told and the watch closes. met: false keeps it open and schedules the next check. finding says what you saw, in your own words, in a sentence or two, naming the PR, ticket or message it is about.",
       inputSchema: z.object({
         id: z.string().uuid().describe("The watch's id, as listed in this pass's prompt"),
         met: z.boolean(),
@@ -167,13 +168,14 @@ export function buildPassTools(
           return { error: "that watch wasn't given to this pass to check" };
         }
         const watch = await getStream(db, id);
-        if (!watch || !(OPEN_STREAM_STATUSES as readonly string[]).includes(watch.status)) {
-          return { error: "that watch is closed" };
+        const recorded = watch && (await recordWatchCheck(db, watch, { met, finding, navTarget }));
+        if (!recorded) {
+          return {
+            error:
+              "that watch has closed, expired or been paused since this pass started; leave it",
+          };
         }
-        if (watch.pausedAt) return { error: STREAM_PAUSED };
-        const recorded = await recordWatchCheck(db, watch, { met, finding, navTarget });
-        if (!recorded) return { error: STREAM_PAUSED };
-        onAsked();
+        onChanged();
         return met
           ? { ok: true, message: "The user has been told, and the watch is closed." }
           : { ok: true, nextCheckAt: recorded.wakeAt?.toISOString() ?? null };

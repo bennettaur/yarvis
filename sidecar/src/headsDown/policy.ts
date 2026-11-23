@@ -125,7 +125,8 @@ function numberArg(args: unknown, key: string): number | null {
 /**
  * Whether something is linked, by a chat turn, to a stream that is still open
  * and not paused. A paused stream's work waits for the user's approval, like
- * work on no stream at all.
+ * work on no stream at all. A watch only reports, so a ticket or workspace
+ * linked to one isn't work the user put in the loop's hands.
  */
 async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean> {
   const rows = await db
@@ -136,6 +137,7 @@ async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean
       and(
         eq(workStreamLinks.refKey, refKey),
         eq(workStreamLinks.createdBy, "chat"),
+        eq(workStreams.kind, "work"),
         inArray(workStreams.status, [...OPEN_STREAM_STATUSES]),
         isNull(workStreams.pausedAt),
       ),

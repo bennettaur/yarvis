@@ -170,7 +170,7 @@ describe("buildPassPrompt", () => {
 
   it("tells every pass that a routine not being due never holds back what the user asks for", () => {
     expect(PASS_INSTRUCTIONS).toContain(
-      "act on them first; then do the routines listed below, if any; then go through the open streams",
+      "act on them first; then do the routines listed below, if any; then check the watches listed below, if any; then go through the open streams",
     );
     expect(PASS_INSTRUCTIONS).toContain(
       "don't start one on your own initiative when it isn't listed",
@@ -227,9 +227,25 @@ describe("buildPassPrompt", () => {
     expect(buildPassPrompt(base)).not.toContain("Watches due");
   });
 
+  it("shows the situation a question gave beside its answer, fenced, so a send matches what was agreed", () => {
+    const prompt = buildPassPrompt({
+      ...base,
+      answers: [
+        question({
+          question: "Send Alex the PR link?",
+          situation: "To @alex in #billing: 'PR is up: https://github.com/acme/billing/pull/41'",
+          choice: "Send it",
+        }),
+      ],
+    });
+    expect(prompt).toMatch(
+      /<recalled-content-\w+>\nSend Alex the PR link\?\n\nSituation: To @alex in #billing: 'PR is up: https:\/\/github.com\/acme\/billing\/pull\/41'\n<\/recalled-content-\w+>\n {2}Answer: Send it/,
+    );
+  });
+
   it("leaves Slack to the slack-watcher routine only when it is on", () => {
     expect(buildPassPrompt({ ...base, slackWatcherOn: true })).toContain(
-      "read Slack only when that routine is listed below",
+      "read Slack only when that routine is among this pass's routines",
     );
     expect(buildPassPrompt(base)).not.toContain("slack-watcher");
   });

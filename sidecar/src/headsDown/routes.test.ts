@@ -141,6 +141,14 @@ describe("/api/heads-down", () => {
     await createStream(db, { title: "Ship billing" });
     await createStream(db, { title: "Chase review", status: "waiting-on-others" });
     await createStream(db, { title: "Old fix", status: "done" });
+    await createStream(db, {
+      title: "Tell me when billing ships",
+      watch: {
+        condition: "billing shipped",
+        everyMinutes: 60,
+        expiresAt: new Date(Date.now() + 1e8),
+      },
+    });
     await post("/messages", { body: "watch #billing-intake" });
     await askUser(db, { kind: "question", question: "Which repo?" });
 
@@ -149,8 +157,16 @@ describe("/api/heads-down", () => {
     expect(await res.json()).toEqual({ droppedStreams: 2, deletedMessages: 1 });
 
     const streams = await sql`SELECT status, closed_at FROM work_streams ORDER BY title`;
-    expect(streams.map((r) => r.status)).toEqual(["dropped", "done", "dropped"]);
-    expect(streams.every((r) => r.closed_at !== null)).toBe(true);
+    // A watch is the user's request to hear about something, so it stays.
+    expect(streams.map((r) => r.status)).toEqual([
+      "dropped",
+      "done",
+      "dropped",
+      "waiting-on-others",
+    ]);
+    expect(
+      streams.filter((r) => r.status !== "waiting-on-others").every((r) => r.closed_at !== null),
+    ).toBe(true);
     expect(await get("/messages")).toEqual([]);
     expect(await get("/questions")).toEqual([]);
     const items = await sql`SELECT status FROM attention_items`;

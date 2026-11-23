@@ -41,7 +41,7 @@ both keep it running.
 
 Work streams carry over from one run to the next, so over days the page can
 fill up with work you no longer care about. **Clear old work** drops every open
-work stream, deletes the messages you left it, and dismisses its open
+work stream except [watches](#watches), deletes the messages you left it, and dismisses its open
 questions, so the next pass starts with nothing. Streams you paused yourself
 are dropped too. It asks you to confirm first. Dropped streams leave the page,
 and the messages are gone for good.
@@ -94,13 +94,18 @@ work stream marked **Watch**, with:
 
 - the condition, in your words,
 - how often to check, every hour unless you say otherwise (15 minutes to 7
-  days),
-- when to give up, a week from now unless you say otherwise (at most 30 days).
+  days). A check waits for the next pass, so with nothing else to do it can
+  come later than that,
+- when to give up, a week from now unless you say otherwise (at most 30 days,
+  and no sooner than one check).
 
 Heads-down passes check the watches that are due, up to 5 a pass, oldest check
 first, with the tools they already have: PRs, tickets, your calendar, chat. A
-check that finds nothing yet keeps what it saw, which shows on the stream, and
-the next check waits the watch's cadence. When the condition is met, you get a
+check that finds nothing yet keeps what it saw, shown under **Waiting on** on
+the stream, and the next check waits the watch's cadence. So does a watch a
+pass couldn't check, say because no tool can read what it is about. A watch
+counts as met only on what the tools report, such as a PR's merged state, not
+because a comment says it happened. When the condition is met, you get a
 note in the attention bell, filed under the watch's category, and the watch
 closes as done. Clicking it opens what the watch was about, such as the PR, or
 the Heads down page. A watch that reaches its end without being met closes and
@@ -112,8 +117,10 @@ does, and puts the action items assigned to you in the note.
 
 Watches are checked only while heads-down mode is on. The assistant says so
 when you set one up with it off. To cancel one, press **Drop** on it, or ask
-the assistant. A pass can't set up, change or close a watch except by
-reporting a check.
+the assistant. **Pause** stops the checks, but a paused watch still expires on
+time. **Clear old work** leaves watches alone. A pass can't set up, change or
+close a watch except by reporting a check, and a ticket or workspace linked to
+a watch isn't one it may start or steer without asking.
 
 For one check at a set time in a chat you're in, rather than a condition over
 days, a [scheduled task](assistant.md#scheduled-tasks) fits better.
@@ -144,9 +151,9 @@ another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
   to your recent meetings, such as Gemini notes, and turns the action items
   they assign to you by name into tickets (engineering work), tasks on your
   list (anything else) or stream updates. It leaves you one note per meeting
-  in the attention bell listing each item and where it went. It finds them through the
-  calendar, which lists each meeting's attached files, and needs a tool that
-  can open a Google Doc, such as a Google Drive MCP server. A pass asks before
+  in the attention bell listing each item and where it went. It finds them
+  through the calendar, which lists each meeting's attached files, and needs a
+  tool that can open a Google Doc, such as a Google Drive MCP server. A pass asks before
   using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
   record what every attendee said, and filing a ticket doesn't wait for your
   approval, so turn it on only if you're happy for tickets to come from them.
@@ -159,7 +166,8 @@ another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
   calendars, and can't move or cancel an event once it is booked.
 - **email-drafts**, every 2 hours in working hours: drafts replies to emails
   waiting on you and saves them in your drafts, never sending them, then leaves
-  you a note in the bell. If it doesn't know what to say, it asks you. It needs
+  you a note in the bell. A draft uses only what the thread already says, plus
+  what you told it to share; anything else, it asks first. If it doesn't know what to say, it asks you. It needs
   `tools:` naming your email tools, including one that creates a draft; if the
   only tool it has sends mail, it asks you instead of using it.
 - **message-people**, every 4 hours in working hours: looks for follow-ups your
@@ -191,7 +199,8 @@ tracks a stream in the **Slack** category and asks you a question with two
 answers:
 
 - **Reply with…**: type your reply in the box. A later pass posts your words,
-  as you wrote them, in that thread. The post waits for your approval unless
+  as you wrote them, in that thread, and only after your answer to that
+  question: an earlier answer doesn't count for a new message. The post waits for your approval unless
   you allowed that tool for heads-down mode.
 - **I'll reply myself**: it closes the stream and leaves the thread to you.
 
@@ -219,9 +228,15 @@ config:
 (the shipped body, copied as it is)
 ```
 
-While it is on, and **Routines per pass** is above 0, the Messages step leaves
-Slack to it, so the two don't both read the same channels. Turn it off, or set
-routines per pass to 0, and the Messages step reads Slack again.
+While it is on, with a `handle` set, **Routines per pass** above 0, and within
+your working hours, the Messages step leaves Slack to it, so the two don't both
+read the same channels. Otherwise the Messages step reads Slack as before.
+
+When it asks you, the pass that acts on your answer is shown the question and
+the situation it gave, and is told to post exactly that. That is an
+instruction to the pass, not a check in code: if you allowed the posting tool
+for heads-down mode, nothing compares the post with what you were shown.
+Leave the posting tool on asking if you want to see each post first.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a

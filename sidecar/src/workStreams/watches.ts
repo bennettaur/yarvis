@@ -4,7 +4,7 @@ import type { Db } from "../db/client.ts";
 import { type AttentionNavTarget, type WorkStream, workStreams } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { parseEvery } from "../headsDown/routines.ts";
-import { OPEN_STREAM_STATUSES, updateStream, type WatchFields } from "./service.ts";
+import { OPEN_STREAM_STATUSES, type WatchFields } from "./service.ts";
 
 /**
  * Watches: work streams that wait for something to happen ("tell me when Alex
@@ -47,13 +47,17 @@ export function watchFields(
   ) {
     return { error: "every must be a duration from 15m to 7d, such as 30m, 3h or 1d" };
   }
-  const lifetime = parseEvery(request.expiresIn ?? DEFAULT_WATCH_EXPIRES_IN);
-  if (lifetime === null || lifetime < everyMinutes || lifetime > MAX_WATCH_MINUTES) {
+  const lifetimeMinutes = parseEvery(request.expiresIn ?? DEFAULT_WATCH_EXPIRES_IN);
+  if (
+    lifetimeMinutes === null ||
+    lifetimeMinutes < everyMinutes ||
+    lifetimeMinutes > MAX_WATCH_MINUTES
+  ) {
     return {
       error: "expiresIn must be a duration such as 1d or 7d, no shorter than every and at most 30d",
     };
   }
-  return { condition, everyMinutes, expiresAt: new Date(now.getTime() + lifetime * 60_000) };
+  return { condition, everyMinutes, expiresAt: minutesAfter(now, lifetimeMinutes) };
 }
 
 const openWatch = () =>
@@ -83,12 +87,19 @@ export async function dueWatches(
     .limit(limit);
 }
 
-/** The bell item's heading. App text: the watch's own title, model-written, goes in the body. */
+/**
+ * Fixed headings for the bell items. The watch's title, written by a chat
+ * turn, goes in the body so it can't pose as app text.
+ */
 export const WATCH_MET_TITLE = "A watch went off";
 export const WATCH_EXPIRED_TITLE = "A watch expired";
 
-function dedupeKey(watch: WorkStream): string {
+function watchDedupeKey(watch: WorkStream): string {
   return `watch:${watch.id}`;
+}
+
+function minutesAfter(at: Date, minutes: number): Date {
+  return new Date(at.getTime() + minutes * 60_000);
 }
 
 /**
@@ -111,12 +122,27 @@ export async function expireWatches(db: Db, now: Date): Promise<WorkStream[]> {
       category: watch.category ?? "general",
       kind: "message",
       title: WATCH_EXPIRED_TITLE,
-      body: `${watch.title}\nNothing seen by ${watch.expiresAt?.toLocaleString() ?? "its expiry"}, so it stopped watching for: ${watch.watchCondition}`,
+      body: `${watch.title}\nNothing seen before it expired, so it stopped watching for: ${watch.watchCondition}`,
       navTarget: { type: "heads-down" },
-      dedupeKey: dedupeKey(watch),
+      dedupeKey: watchDedupeKey(watch),
     });
   }
   return expired;
+}
+
+/**
+ * Pushes the next check of the watches a pass was given back by their cadence
+ * when the pass starts. A report overwrites it; a watch the pass couldn't
+ * check waits its cadence instead of taking a slot on every pass.
+ */
+export async function markWatchesOffered(db: Db, ids: readonly string[], now: Date): Promise<void> {
+  if (ids.length === 0) return;
+  await db
+    .update(workStreams)
+    .set({
+      wakeAt: sql`${now.toISOString()}::timestamptz + ${workStreams.watchEveryMinutes} * interval '1 minute'`,
+    })
+    .where(and(inArray(workStreams.id, [...ids]), openWatch()));
 }
 
 export interface WatchCheck {
@@ -129,8 +155,11 @@ export interface WatchCheck {
 
 /**
  * Records one check of a watch. Met: tells the user and closes it as done. Not
- * met: keeps what was found and moves the next check on by its cadence. Null
- * when the watch is gone or the user paused it since it was read.
+ * met: keeps what was found and moves the next check on by its cadence. The
+ * finding goes in `waitingOn`, which the stream's card already shows, rather
+ * than the notes, which would grow by one on every check. Null, with nothing
+ * written or raised, when the watch is gone, closed, expired, or paused by
+ * the user since it was read.
  */
 export async function recordWatchCheck(
   db: Db,
@@ -139,31 +168,49 @@ export async function recordWatchCheck(
   now: Date = new Date(),
 ): Promise<WorkStream | null> {
   const finding = check.finding.trim();
-  if (!check.met) {
-    return updateStream(
-      db,
-      watch.id,
-      {
-        waitingOn: finding || null,
-        wakeAt: new Date(now.getTime() + (watch.watchEveryMinutes ?? 60) * 60_000),
-      },
-      { unlessPaused: true },
-    );
-  }
-  const closed = await updateStream(
-    db,
-    watch.id,
-    { status: "done", waitingOn: null, note: `Condition met: ${finding}` },
-    { unlessPaused: true },
+  // Checked in the update itself, so a watch the user drops mid-pass can't come back as "went off".
+  const stillLive = and(
+    eq(workStreams.id, watch.id),
+    openWatch(),
+    isNull(workStreams.pausedAt),
+    gt(workStreams.expiresAt, now),
   );
+  if (!check.met) {
+    const [row] = await db
+      .update(workStreams)
+      .set({
+        waitingOn: finding || null,
+        wakeAt: minutesAfter(now, watch.watchEveryMinutes ?? MIN_WATCH_EVERY_MINUTES),
+        updatedAt: now,
+      })
+      .where(stillLive)
+      .returning();
+    return row ?? null;
+  }
+  const [closed] = await db
+    .update(workStreams)
+    .set({
+      status: "done",
+      waitingOn: null,
+      notes: [...watch.notes, { at: now.toISOString(), text: `Condition met: ${finding}` }],
+      closedAt: now,
+      updatedAt: now,
+    })
+    .where(stillLive)
+    .returning();
   if (!closed) return null;
+  await emitEvent(db, {
+    type: "work_stream.closed",
+    source: "work_streams",
+    payload: { streamId: closed.id, title: closed.title, status: closed.status, kind: closed.kind },
+  });
   await raiseAttention(db, {
     category: watch.category ?? "general",
     kind: "message",
     title: WATCH_MET_TITLE,
     body: `${watch.title}\n${finding}`,
     navTarget: check.navTarget ?? { type: "heads-down" },
-    dedupeKey: dedupeKey(watch),
+    dedupeKey: watchDedupeKey(watch),
   });
   return closed;
 }

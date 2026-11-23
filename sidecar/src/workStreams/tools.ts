@@ -52,7 +52,9 @@ const watchInput = z
       ),
     every: duration
       .optional()
-      .describe(`How often to check, from 15m to 7d. Defaults to ${DEFAULT_WATCH_EVERY}`),
+      .describe(
+        `How often to check at most, from 15m to 7d; a check waits for the next heads-down pass, so it can be later. Defaults to ${DEFAULT_WATCH_EVERY}`,
+      ),
     expiresIn: duration
       .optional()
       .describe(
@@ -344,6 +346,7 @@ export function buildWorkStreamTools(
         const stream = await getStream(db, streamId);
         if (!stream) return { error: "no work stream with that id" };
         if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
+        if (unattended && stream.kind === "watch") return { error: WATCH_REPORTED_ONLY };
         const link = await linkToStream(db, streamId, {
           ref,
           title,
@@ -358,7 +361,9 @@ export function buildWorkStreamTools(
       description: "Remove a link that turned out not to belong to the stream.",
       inputSchema: z.object({ linkId: uuid }),
       execute: async ({ linkId }) => {
-        if (isPausedForPass(await streamOfLink(db, linkId))) return { error: STREAM_PAUSED };
+        const stream = await streamOfLink(db, linkId);
+        if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
+        if (unattended && stream?.kind === "watch") return { error: WATCH_REPORTED_ONLY };
         return (await unlinkFromStream(db, linkId))
           ? { linkId, removed: true }
           : { error: "no link with that id" };

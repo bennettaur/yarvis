@@ -12,7 +12,7 @@ import { clientError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
 import { listStreams } from "../workStreams/service.ts";
-import { dueWatches, expireWatches } from "../workStreams/watches.ts";
+import { dueWatches, expireWatches, markWatchesOffered } from "../workStreams/watches.ts";
 import {
   chooseSleep,
   getHeadsDownConfig,
@@ -236,13 +236,28 @@ export async function runPass(
   await expireWatches(db, now).catch((e) =>
     console.error("[heads-down] expiring watches failed:", e),
   );
-  const watches = await dueWatches(db, now).catch((e) => {
-    console.error("[heads-down] reading due watches failed:", e);
-    return [];
-  });
+  const watches = await dueWatches(db, now)
+    .then(async (due) => {
+      await markWatchesOffered(
+        db,
+        due.map((w) => w.id),
+        now,
+      );
+      return due;
+    })
+    .catch((e) => {
+      console.error("[heads-down] reading due watches failed:", e);
+      return [];
+    });
+  // Only while the routine can actually run and knows whose messages to look
+  // for; otherwise the Messages step keeps reading Slack.
+  const slackWatcher = catalog.routines.find((r) => r.name === SLACK_WATCHER);
   const slackWatcherOn =
     headsDownConfig.maxRoutinesPerPass > 0 &&
-    catalog.routines.some((r) => r.name === SLACK_WATCHER && r.enabled);
+    slackWatcher !== undefined &&
+    slackWatcher.enabled &&
+    (withinWorkingHours || !slackWatcher.workingHoursOnly) &&
+    Boolean(slackWatcher.config.handle);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
