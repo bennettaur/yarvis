@@ -71,6 +71,12 @@ at each app launch, so the registration is redone after a restart. There is
 nothing to configure, but the first Connect after a relaunch may ask you to
 sign in again.
 
+On a server you reach from other machines (its `server.toml` lists an
+`https` origin that isn't `localhost`, such as a `tailscale serve` name), the
+redirect is `https://<that origin>/api/oauth/mcp/callback` instead, so you
+can connect from a browser anywhere. The server forwards it to the same
+callback, which accepts only a sign-in Yarvis itself started.
+
 **Sign out** forgets both the tokens and the registration.
 
 The two methods combine. An OAuth server can still carry extra headers, a

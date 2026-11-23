@@ -77,9 +77,9 @@ it, and type `/yarvis-setup`.
    shell, `bun run tauri dev` is enough.
 
 4. In the app, follow the setup guide that opens on first launch. To do it by
-   hand, open **Settings → Credentials**, save the database URL
-   `postgres://localhost:5432/yarvis`, and save one LLM provider key
-   (Anthropic, Gemini or Cerebras). Then open **Chat** (Cmd+1), pick the
+   hand, open **Settings → Credentials** and save one LLM provider key
+   (Anthropic, Gemini or Cerebras). The app uses the database at
+   `postgres://localhost:5432/yarvis` unless you set another. Then open **Chat** (Cmd+1), pick the
    provider and a model at the top, and say hello.
 
 That database URL has no password because Homebrew's Postgres trusts every

@@ -4,12 +4,23 @@ Yarvis keeps its configuration in three places, split by what the value is:
 
 | Kind | Where | Set from |
 | --- | --- | --- |
-| Secrets: the database URL, API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
+| Secrets: API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
 | Everything else you change from the UI | `~/.yarvis/settings.json` | The Settings screen, or by hand |
 | Machine-level overrides | Environment variables | Your shell, before `bun run tauri dev` |
 
 Your data (chat history, memory, tasks, workspaces, PR notes) isn't
 configuration. It lives in Postgres.
+
+## The database URL
+
+The server needs Postgres before anyone can sign in, so its URL is set where
+the server starts, not in Settings. It comes from `YARVIS_DATABASE_URL`, then
+`url` under `[database]` in the server's `server.toml`, then (on an install
+from before this) the `database_url` the Keychain or 1Password item still
+holds, and otherwise `postgres://localhost:5432/yarvis`. The server passes it
+to the sidecar as `DATABASE_URL`. **Settings → Credentials** shows it with any
+password masked, and where it came from. See "Postgres" in
+`docs/client-server.md`.
 
 Secrets never go in env files or in the repo.
 
@@ -25,7 +36,6 @@ reads one back.
 
 | Setting | Used for | Passed to the sidecar as |
 | --- | --- | --- |
-| Database URL | Everything stored in Postgres | `DATABASE_URL` |
 | Anthropic API key | Claude chat | `ANTHROPIC_API_KEY` |
 | Gemini API key | Gemini chat, embeddings, cloud voice | `GEMINI_API_KEY` |
 | Cerebras API key | Cerebras chat | `CEREBRAS_API_KEY` |
@@ -121,6 +131,9 @@ if you like. The non-secret values that used to be in the Keychain (org URLs,
 the JIRA email, the Google client id, the OTP window) move to
 `~/.yarvis/settings.json` by themselves on the first launch. So does the old
 `embeddings_provider_secrets` item, which is folded into the single item.
+A `settings.json` that a build from before September 2026 left in the app's
+data folder moves to `~/.yarvis/settings.json` when the app next starts its
+local server, unless one is already there.
 
 ### Touch ID
 
@@ -155,6 +168,103 @@ How switching works:
 
 Writes pass the secrets to `op` on standard input, never as command arguments.
 Other processes can read command arguments with no prompt at all.
+
+### Secrets on `yarvis-server`
+
+`yarvis-server` can keep the secrets item in its own encrypted vault instead of
+the Keychain or 1Password, for a server that starts before anyone logs in. It
+is set in `server.toml`, not the Settings screen. `docs/client-server.md` has
+the full setup and the API. When `server.toml` sets `[secrets] backend`,
+**Settings → Credentials → Secret store** shows that store and offers no
+switch, since the server refuses one; a pinned 1Password store still lets you
+change its vault and item.
+
+```toml
+[secrets]
+backend = "vault"
+
+[ssh_agent]
+enabled = true   # the server signs git commits with a key in the vault
+```
+
+- `yarvis-server vault init` asks for the vault passphrase (twice, with no
+  echo; `--passphrase-stdin` reads it from stdin instead), creates
+  `vault.json` in the server's data dir, and prints a recovery key once. Keep
+  the key somewhere safe: it is the way in if you forget the passphrase.
+- The vault passphrase is separate from the passphrase you sign in with, and
+  has to be different: the vault refuses the sign-in one. Signing in proves who is asking the server; the vault
+  passphrase decrypts `vault.json`, which anyone with a copy of the file can
+  attack offline, so it is stretched harder and never stored.
+- The vault starts locked every time the server starts. Unlock it with its
+  passphrase or the recovery key. Until then the sidecar can't read its
+  secrets. A wrong passphrase makes the next try wait, doubling up to 5
+  minutes. Settings can't change the vault passphrase yet; the API can
+  (`POST /api/vault/passphrase`, see `docs/client-server.md`).
+- With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
+  vault is unlocked, and asks for an approval on every commit it signs.
+
+**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+key where it is:
+
+```toml
+[secrets]
+backend = "onepassword"   # or "keychain"
+
+[ssh_agent]
+enabled = false           # the default
+# Needed when launchd starts the server; written out in full, since ~ isn't expanded.
+upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+```
+
+With `ssh_agent.enabled = false` the server never makes a signing key or opens
+an agent socket. Workspace shells sign through 1Password's agent, which asks
+for approval on the laptop itself.
+
+### `PATH` for a server launchd starts
+
+A server the desktop app starts gets your login shell's `PATH`. One that
+launchd starts gets launchd's short one (`/usr/bin:/bin:/usr/sbin:/sbin`), so
+the sidecar, terminals and agent sessions can't find `claude`, `git`, `gh` or
+`bun` from Homebrew or mise. Set `path` under `[server]` in `server.toml` to
+the `PATH` they should have:
+
+```toml
+[server]
+# Written out in full, since ~ isn't expanded. `echo $PATH` in a terminal
+# prints yours.
+path = "/Users/<you>/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+```
+
+The server gives it to the sidecar, which passes it on to the Claude Code runs
+it starts, and to every terminal and agent session. It is also where a bare
+`[sidecar] command` such as `bun` is looked up. Unset, they all inherit the
+server's own `PATH`. A shell's rc files can still change it after it starts.
+The server refuses to start when an entry is empty (a leading, trailing or
+doubled `:`) or not an absolute path, since either is looked up from the
+folder a process runs in, which for a session is a repo checkout.
+
+### Where the server's sockets go
+
+The server listens on two Unix sockets: `core-control.sock`, which the
+sidecar uses, and, with `[ssh_agent] enabled`, `ssh-agent.sock`. A Unix socket
+path must fit in about 104 bytes on macOS (108 on Linux). By default the
+sockets go in the data dir, or in `~/.yarvis/run/<hash of the data dir>/` when
+a path there would be too long. Set `socket_dir` under `[server]` to put them
+somewhere else:
+
+```toml
+[server]
+socket_dir = "/Users/<you>/.yarvis/sock"
+```
+
+It must be an absolute path. The server creates it with mode 0700 if it's
+missing, but its parent folder must already exist. An existing folder must be a real folder (not a symlink), owned by
+the user the server runs as, with mode 0700, or the server refuses to start.
+The folders under `~/.yarvis/run` get the same checks, and `~/.yarvis` must be
+owned by that user and not writable by anyone else. The server never uses a
+temp folder, since macOS and systemd delete old files there. When no location
+gives a short enough path, the server refuses to start and asks you to set
+`socket_dir`.
 
 ## `~/.yarvis/settings.json`
 
@@ -268,6 +378,38 @@ providers, Settings → Embeddings warns that some memories were made by a
 different embedder. **Re-embed all** there (or `POST /api/memory/reembed`)
 regenerates every vector.
 
+## Google Calendar on a server you reach remotely
+
+When yarvis-server's `auth.origins` lists an `https` origin that isn't
+`localhost` (a server behind `tailscale serve`, say), Google's sign-in
+redirects to `https://<that origin>/api/oauth/google/callback` instead of the
+sidecar's loopback port. The server forwards it to the sidecar, which accepts
+only a sign-in it started. A "Desktop app" client can't use that redirect, so
+such a server needs a "Web application" client:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com), open
+   **APIs & Services → Credentials** in the project with the Google Calendar
+   API enabled, and choose **Create credentials → OAuth client ID**.
+2. Pick **Web application** as the application type.
+3. Under **Authorized redirect URIs**, add
+   `https://<your server's origin>/api/oauth/google/callback`, with the host
+   in lowercase and no `:443` (Google matches it character for character).
+   The origin is the first `https` one in `auth.origins` that isn't loopback.
+4. Create it, then enter its client ID and secret in **Settings →
+   Credentials** as for a Desktop client (`googleClientId` and
+   `google_client_secret`). Connect again from the Calendar tab.
+
+Which kind of client the server expects follows from its config: an `https`
+origin off loopback means Web application, none means Desktop app. Changing
+`auth.origins` either way means switching the client too.
+
+Google only accepts an `https` redirect whose host ends in a domain on the
+[Public Suffix List](https://publicsuffix.org/), and refuses raw IP
+addresses. `ts.net` is on that list (in its private section, added by
+Tailscale), so a `<machine>.<tailnet>.ts.net` name from `tailscale serve`
+meets the rule. Nobody has tried one against Google yet, so if the console
+refuses it, use a domain you own.
+
 ## Environment variables
 
 You don't need any of these for normal use. They are for running more than one
@@ -276,7 +418,7 @@ copy of the app, or for debugging.
 | Variable | Effect |
 | --- | --- |
 | `YARVIS_WORKSPACES_ROOT` | Where workspace clones and worktrees go. Default `~/dev/yarvis-workspaces`. |
-| `YARVIS_DATABASE_URL` | Overrides the database URL from the Keychain, for this process only |
+| `YARVIS_DATABASE_URL` | The Postgres database the server and the sidecar use. Wins over `[database] url` in `server.toml`. |
 | `YARVIS_CLAUDE_COMMAND` | Overrides `agentCommand` |
 | `YARVIS_OP_BIN` | Path to the 1Password `op` binary |
 | `YARVIS_INSTANCE` | Names this process as a secondary instance. Use `bun run dev:instance` instead of setting this by hand. |
@@ -304,10 +446,13 @@ URL on `localhost`, `127.0.0.1` or `[::1]`, and ignores half a pair, logging a
 warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
-`DATABASE_URL` or provider key exported in that shell reaches the sidecar
-unless the Keychain has its own value for it. A release build opened from
+provider key exported in that shell reaches the sidecar unless the Keychain
+has its own value for it. A `DATABASE_URL` there is ignored: the server sets
+the sidecar's from its own database URL. A release build opened from
 Finder has no such shell: it only takes `PATH` from your login shell, and the
-other variables above don't reach it.
+other variables above don't reach it. A server launchd starts gets neither, so
+set `[server] path` for it (see
+[`PATH` for a server launchd starts](#path-for-a-server-launchd-starts)).
 
 ## Settings screen map
 
@@ -333,9 +478,14 @@ The tabs in **Settings**, in order:
    attention panel.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
-11. **Appearance.** The color theme: **Default** or **Palenight**. It applies
+11. **Devices.** The devices signed in to the server, revoking one, creating a
+    token to pair a client that can't sign in itself, the account (passphrase,
+    authenticator app, backup codes, signing out other devices), and the
+    approvals waiting
+    on an answer. See [Signing in and devices](features/devices.md).
+12. **Appearance.** The color theme: **Default** or **Palenight**. It applies
     straight away, to terminals and code too, and is saved as `colorTheme` in
     `settings.json`. Below it, a toggle turns off the amber band that sweeps
     across the top bar and the bell's shake while the bell has something
     pending, saved as `attentionAnimation`.
-12. **Diagnostics.** The sidecar log.
+13. **Diagnostics.** The sidecar log.

@@ -7,14 +7,12 @@ import { listSecretStatus, SECRETS, type SecretKey, setSecret } from "../../lib/
 import { configuredChatProviders } from "../../lib/onboarding";
 import { clearResourceCache } from "../../lib/resourceCache";
 import { restartAndWait } from "../../lib/restart";
-import { getSettings } from "../../lib/settings";
+import { activeSecretBackend, getSettings, secretStoreName } from "../../lib/settings";
 import CustomProviderSection from "../CustomProviderSection";
 import { StatusDot } from "../Dashboard";
+import DatabaseUrlRow from "../DatabaseUrlRow";
 import { MaskedInput } from "../MaskedInput";
 import SecretBackendSection from "../SecretBackendSection";
-
-const DEFAULT_DATABASE_URL =
-  SECRETS.find((s) => s.key === "database_url")?.placeholder ?? "postgres://localhost:5432/yarvis";
 
 const errorMessage = (e: unknown): string => formatError(e).message;
 
@@ -102,9 +100,9 @@ export function SecretStoreStep() {
     <>
       <StepHeading title="Choose where secrets are kept">
         <p>
-          API keys, tokens and the database URL are stored together in one item. Pick the macOS
-          Keychain (the default, nothing to install) or 1Password (needs the <code>op</code> CLI).
-          Press Save to confirm the choice.
+          API keys and tokens are stored together in one item. Pick the macOS Keychain (the default,
+          nothing to install) or 1Password (needs the <code>op</code> CLI). Press Save to confirm
+          the choice.
         </p>
       </StepHeading>
       <SecretBackendSection />
@@ -113,79 +111,40 @@ export function SecretStoreStep() {
 }
 
 export function DatabaseStep() {
-  const [present, refreshPresent] = useSecretPresent("database_url");
   const [dbHealth, setDbHealth] = useState<DbHealthResponse | null>(null);
-  const [databaseUrl, setDatabaseUrl] = useState("");
 
-  const refreshDb = useCallback(async () => {
-    try {
-      setDbHealth(await getDbHealth());
-    } catch {
-      setDbHealth(null);
-    }
+  useEffect(() => {
+    let active = true;
+    getDbHealth()
+      .then((health) => active && setDbHealth(health))
+      .catch(() => active && setDbHealth(null));
+    return () => {
+      active = false;
+    };
   }, []);
-
-  useEffect(() => {
-    void refreshDb();
-  }, [refreshDb]);
-
-  // Offer the default only when nothing is saved, so one click on Save can't
-  // replace a working URL (which may carry a password) with the default.
-  useEffect(() => {
-    if (present === false) setDatabaseUrl((v) => v || DEFAULT_DATABASE_URL);
-  }, [present]);
-
-  const { save, busy, error } = useSaveSecret("database_url", () =>
-    Promise.all([refreshPresent(), refreshDb()]),
-  );
-  const onSave = async () => {
-    const url = databaseUrl.trim();
-    if (url && (await save(url))) setDatabaseUrl("");
-  };
 
   return (
     <>
-      <StepHeading title="Connect the database">
+      <StepHeading title="The database">
         <p>
           Yarvis keeps chat history, memory, tasks and workspaces in a local PostgreSQL database
-          with the pgvector extension. If you followed the getting-started guide, the default URL
-          below is the one to use.
+          with the pgvector extension. The server needs it before anyone can sign in, so its URL is
+          set where the server starts rather than here.
         </p>
       </StepHeading>
-      <div className="flex gap-2">
-        <MaskedInput
-          value={databaseUrl}
-          onChange={setDatabaseUrl}
-          placeholder={present ? "Saved. Enter a new URL to replace it." : DEFAULT_DATABASE_URL}
-        />
-        <button
-          type="button"
-          onClick={() => void onSave()}
-          disabled={busy || !databaseUrl.trim()}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500 disabled:opacity-40"
-        >
-          {busy ? "Connecting…" : "Save and connect"}
-        </button>
-      </div>
-      <div className="mt-3 flex flex-col gap-1 text-xs text-zinc-400">
-        <span className="flex items-center gap-2">
-          <StatusDot state={present} />
-          {present ? "A database URL is saved" : "No database URL saved yet"}
-        </span>
-        {dbHealth?.configured && (
-          <span className="flex items-center gap-2">
-            <StatusDot state={dbHealth.reachable} />
-            {dbHealth.reachable ? "Database is reachable" : "Database is not reachable"}
-          </span>
-        )}
-      </div>
-      {dbHealth?.configured && !dbHealth.reachable && (
+      <DatabaseUrlRow />
+      {dbHealth && (
+        <div className="mt-3 flex items-center gap-2 text-xs text-zinc-400">
+          <StatusDot state={dbHealth.reachable} />
+          {dbHealth.reachable ? "Database is reachable" : "Database is not reachable"}
+        </div>
+      )}
+      {dbHealth && !dbHealth.reachable && (
         <p className="mt-3 text-xs text-zinc-500">
           Check that PostgreSQL is running (<code>brew services start postgresql@17</code>) and that
           the database exists (<code>createdb yarvis</code>).
         </p>
       )}
-      {error && <p className="mt-3 break-words text-sm text-red-400">{error}</p>}
     </>
   );
 }
@@ -298,7 +257,7 @@ async function runChecks(): Promise<CheckResult> {
     listProviders("chat"),
   ]);
   return {
-    secretStoreLabel: settings.secretBackend === "onepassword" ? "1Password" : "macOS Keychain",
+    secretStoreLabel: secretStoreName(activeSecretBackend(settings)),
     databaseConfigured: dbHealth.configured,
     databaseReachable: dbHealth.reachable,
     providers,

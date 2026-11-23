@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { saveDeviceToken, signOut } from "./server";
 import {
   createResampler,
   createTurnMessageHandler,
@@ -159,12 +160,19 @@ describe("createTurnMessageHandler", () => {
 });
 
 describe("openTurnStream", () => {
+  const startUrl = window.location.href;
+  afterAll(() => {
+    signOut();
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(startUrl);
+  });
   class FakeSocket {
     static OPEN = 1;
     static last: FakeSocket | null = null;
     readyState = 0;
     binaryType = "blob";
     sent: Int16Array[] = [];
+    /** Text messages: the auth message the socket opens with. */
+    texts: string[] = [];
     closeCalls = 0;
     onopen: (() => void) | null = null;
     onerror: (() => void) | null = null;
@@ -173,8 +181,9 @@ describe("openTurnStream", () => {
     constructor(readonly url: string) {
       FakeSocket.last = this;
     }
-    send(data: Int16Array) {
-      this.sent.push(data);
+    send(data: Int16Array | string) {
+      if (typeof data === "string") this.texts.push(data);
+      else this.sent.push(data);
     }
     close() {
       this.closeCalls++;
@@ -203,6 +212,11 @@ describe("openTurnStream", () => {
   const g = globalThis as Record<string, unknown>;
 
   beforeEach(() => {
+    saveDeviceToken("tok-me");
+    // The page's own origin is where the server is; the default has none.
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL(
+      "http://yarvis.test/",
+    );
     trackStops = 0;
     track = new EventTarget();
     contextsClosed = 0;
@@ -272,7 +286,8 @@ describe("openTurnStream", () => {
 
   /** Runs the whole setup: connection, permission, and the capture worklet. */
   async function opened(h: TurnStreamHandlers) {
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     permission.resolve(micStream());
@@ -280,6 +295,13 @@ describe("openTurnStream", () => {
     const stream = await opening;
     return { stream, socket: FakeSocket.last! };
   }
+
+  it("connects through the server and authenticates with the device token first", async () => {
+    const { h } = handlers();
+    const { socket } = await opened(h);
+    expect(socket.url).toBe("ws://yarvis.test/api/voice/turn-detector/socket");
+    expect(socket.texts.map((t) => JSON.parse(t))).toEqual([{ type: "auth", token: "tok-me" }]);
+  });
 
   it("streams the microphone to the detector as 16 kHz 16-bit audio", async () => {
     const { h, levels } = handlers();
@@ -328,7 +350,7 @@ describe("openTurnStream", () => {
   it("rejects without a microphone API, before connecting", async () => {
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
     const { h } = handlers();
-    await expect(openTurnStream("ws://127.0.0.1:1/?token=t", h)).rejects.toThrow(
+    await expect(openTurnStream("/api/voice/turn-detector/socket", h)).rejects.toThrow(
       /no microphone support/,
     );
     expect(FakeSocket.last).toBeNull();
@@ -338,9 +360,9 @@ describe("openTurnStream", () => {
     const { h } = handlers();
     const abort = new AbortController();
     abort.abort();
-    await expect(openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal)).rejects.toThrow(
-      /stopped before the microphone opened/,
-    );
+    await expect(
+      openTurnStream("/api/voice/turn-detector/socket", h, abort.signal),
+    ).rejects.toThrow(/stopped before the microphone opened/);
     expect(FakeSocket.last).toBeNull();
   });
 
@@ -358,14 +380,16 @@ describe("openTurnStream", () => {
 
   it("rejects when the detector can't be reached", async () => {
     const { h } = handlers();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.onerror?.();
     await expect(opening).rejects.toThrow(/could not reach the turn detector/);
   });
 
   it("closes the connection when the microphone is refused", async () => {
     const { h } = handlers();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     permission.reject(new Error("Permission denied"));
@@ -376,7 +400,8 @@ describe("openTurnStream", () => {
 
   it("releases a microphone granted after the connection dropped", async () => {
     const { h } = handlers();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     FakeSocket.last?.drop();
@@ -399,7 +424,8 @@ describe("openTurnStream", () => {
     });
     const { h } = handlers();
     const abort = new AbortController();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h, abort.signal);
+    await settle();
     abort.abort();
     FakeSocket.last?.accept();
 
@@ -421,7 +447,8 @@ describe("openTurnStream", () => {
     });
     const { h } = handlers();
     const abort = new AbortController();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h, abort.signal);
+    await settle();
     FakeSocket.last?.accept();
     abort.abort();
 
@@ -432,7 +459,8 @@ describe("openTurnStream", () => {
 
   it("says why audio capture couldn't start, and releases everything", async () => {
     const { h, errors } = handlers();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     permission.resolve(micStream());
@@ -450,7 +478,8 @@ describe("openTurnStream", () => {
   it("reports a stop, not a capture failure, when stopped while capture starts", async () => {
     const { h, errors } = handlers();
     const abort = new AbortController();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h, abort.signal);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     permission.resolve(micStream());
@@ -465,7 +494,8 @@ describe("openTurnStream", () => {
   it("gives up on a detector that never answers once stopped", async () => {
     const { h } = handlers();
     const abort = new AbortController();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h, abort.signal);
+    await settle();
     abort.abort();
 
     await expect(settlesSoon(opening)).rejects.toThrow(/stopped before the microphone opened/);
@@ -475,7 +505,8 @@ describe("openTurnStream", () => {
   it("releases a microphone granted after a stop", async () => {
     const { h, errors } = handlers();
     const abort = new AbortController();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h, abort.signal);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h, abort.signal);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     abort.abort();
@@ -489,7 +520,8 @@ describe("openTurnStream", () => {
 
   it("gives up when the connection drops while audio capture is starting", async () => {
     const { h } = handlers();
-    const opening = openTurnStream("ws://127.0.0.1:1/?token=t", h);
+    const opening = openTurnStream("/api/voice/turn-detector/socket", h);
+    await settle();
     FakeSocket.last?.accept();
     await settle();
     permission.resolve(micStream());

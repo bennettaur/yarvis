@@ -12,15 +12,28 @@ feature docs — this file is about working in the codebase.
 
 ## Architecture
 
-Three processes, each with a clean ownership boundary:
+Four pieces, each with a clean ownership boundary (`docs/client-server.md` has
+the design):
 
-- **Rust core** (`src-tauri/`) — native OS integration (window, tray,
-  notifications), secret storage (macOS Keychain or 1Password), sidecar
-  supervision
+- **Thin Tauri app** (`src-tauri/`) — what has to run on the Mac in front of
+  you: the window, tray, notifications, global hotkeys, clipboard history and
+  alarm takeovers. It starts a bundled `yarvis-server` on loopback (the
+  default) or connects to a remote one (`server_link.rs`), keeps its device
+  token in the Keychain, and loads the server's origin in its window. That
+  origin gets a runtime capability naming only the bridge commands
+  (`server_link::BRIDGE_PERMISSIONS`); every app command is listed in
+  `build.rs` so nothing else is callable from it. A command added for the page
+  goes in both, and never one that changes which server the app talks to.
+- **yarvis-server** (`server/crates/yarvis-server/`) — the account, devices,
+  events and approvals (in the `yarvis_server` schema of the shared Postgres;
+  the URL comes from `YARVIS_DATABASE_URL` or `server.toml`, never Settings),
+  secret storage (macOS Keychain, 1Password or its own vault), settings,
+  sidecar supervision
   (port selection, bearer token, secrets injected as env vars), and every PTY
   session: both the Terminal tab's shells and each workspace's agent session
-  live in `pty.rs`, independent of the webview that renders them. The sidecar
-  reaches them only through `control.rs`, a Unix-domain-socket RPC with a fixed
+  live in `src/pty/`, independent of the clients that render them, which attach
+  over the `/api/pty/{id}` WebSocket (`docs/client-server.md`). The sidecar
+  reaches them only through `src/control.rs`, a Unix-domain-socket RPC with a fixed
   method list (`claude.spawn`, `claude.spawnReview`, `claude.kill`,
   `claude.killReview`, `claude.send`, `claude.slash`, `mcp.saveOAuth`,
   `github.saveToken`, `alarm.fire`, `alarm.release`, `harness.runEnv`)
@@ -47,9 +60,14 @@ Three processes, each with a clean ownership boundary:
   Claude Code harness, so the sidecar's restart sweep can bring back a session
   the user started. That makes `resume` something only the sweep may set, from
   a hook-verified session row. Never expose it to an agent tool.
-- **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Talks to the
-  Rust core via `invoke` (native + secrets) and to the sidecar over
-  authenticated loopback HTTP (data + AI).
+- **React frontend** (`src/`) — Vite + TypeScript + Tailwind. Served by
+  yarvis-server and talks only to it, on its own origin, with a device token
+  (`lib/server.ts`): `core()` (`lib/core.ts`) for what the Rust core did
+  (settings, secrets, PTY control), `sidecarFetch` for the sidecar behind
+  the server's proxy, and WebSockets for events and terminals. Inside the
+  Tauri window, the machine-local commands (clipboard history, window focus,
+  ringing an alarm) go to the Tauri bridge instead. See
+  `docs/client-server.md`.
 - **Bun sidecar** (`sidecar/`) — a Hono HTTP service owning Postgres access
   (Drizzle ORM), LLM calls, and memory. Also hosts an optional Telegram
   remote-control bot.
@@ -73,13 +91,18 @@ Run from the repo root unless noted.
 ```bash
 bun install                      # install deps (root + sidecar workspace)
 
-bun run tauri dev                # full app: frontend + Rust core + sidecar
-bun run tauri:preview            # same, but on the production frontend build
-                                  #   (no Vite dev server, React prod mode)
-bun run tauri:build              # release bundle, with the compiled sidecar
+bun run tauri dev                # full app: builds server/, starts Vite
+                                  #   (hot reload; it proxies /api to the
+                                  #   server), then the app starts the server
+bun run tauri:build              # release bundle, with the server and the
+                                  #   compiled sidecar
 bun run dev:instance <name>       # a second app beside the primary one; add
                                   #   YARVIS_DATABASE_URL to give it its own DB
 bun run sidecar:dev               # sidecar only (prints a dev bearer token)
+bun run e2e                       # yarvis-server + the built UI in Chromium,
+                                  #   signing in with computed TOTP codes;
+                                  #   needs `bun run build` and the server
+                                  #   built first, TEST_DATABASE_URL and psql
 bun run demo                      # screenshots + video of the real UI in
                                   #   Chromium, Rust core mocked; see
                                   #   demo/README.md
@@ -104,13 +127,18 @@ bun run check:write                # same, auto-fixing what it can
 cargo fmt --manifest-path src-tauri/Cargo.toml            # Rust format
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --no-deps -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets   # Rust tests
+cargo test --manifest-path server/Cargo.toml --all-targets      # yarvis-server
+                                #   (fmt and clippy the same way); needs
+                                #   TEST_DATABASE_URL, see
+                                #   docs/client-server.md
 (cd src-tauri && cargo audit)   # Rust advisories — run from src-tauri/ so the
                                 #   accepted-advisory list in
                                 #   src-tauri/.cargo/audit.toml applies
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
-tests against a `pgvector/pgvector:pg16` service container, the frontend,
+tests, the server tests and the e2e against a `pgvector/pgvector:pg16`
+service container, the frontend,
 sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
 `cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
@@ -239,7 +267,7 @@ report there and leaves the fixes to the author.
 - A fake process writes any file a test polls for under a temp name, then
   `mv`s it into place. The shell creates the file before writing to it, so a
   test that waits only for the file to exist can read it empty.
-- Secrets (provider API keys, tokens, DB URL) are entered in the app's
+- Secrets (provider API keys, tokens) are entered in the app's
   Settings screen and stored in a single item — never in env files or
   committed anywhere. Which store holds that item, the macOS Keychain or a
   1Password Secure Note reached through the `op` CLI, is `secret_store.rs`'s
@@ -337,8 +365,9 @@ report there and leaves the fixes to the author.
   in a Python script embedded in the sidecar and run with `uv run --script`.
   Each sidecar starts its own on a port the OS picks, so there is nothing to
   share or adopt. It exits when its stdin closes, which covers a sidecar killed
-  without warning. The webview streams 16 kHz PCM straight to it over a
-  loopback websocket, gated by a per-start token the sidecar hands out. A
+  without warning. The page streams 16 kHz PCM to it over yarvis-server's
+  `/api/voice/turn-detector/socket`, which relays to the detector's loopback
+  websocket with a per-start token the sidecar hands only to the server. A
   saved voice's clip is sent as a file path only to a provider on loopback;
   anywhere else gets the audio, since the path names the user's home folder.
 - Outbound calls to a URL the sidecar doesn't fully trust — speech providers,
@@ -473,20 +502,21 @@ report there and leaves the fixes to the author.
   sharpest form of that, since the receiving agent acts on it with its own
   permissions. `claude.send` and `claude.slash` are the typed paths, and the
   channel below is the only other.
-  `claude.send` is guarded on both sides: `pty.rs`'s `prepare_instruction`
+  `claude.send` is guarded on both sides: the server's `prepare_instruction`
+  (`src/pty/guards.rs`)
   turns the control characters that would submit early into spaces and rejects
   an instruction opening with a character the agent reads as a command (`!` is
   bash mode, `/` a slash command, `#` a memory write, `@` a file mention),
   `foreground_is_agent` refuses to type at all unless the agent the session was
-  launched with (its harness, `harness.rs`) is what's reading the prompt, and
+  launched with (its harness, `server/crates/yarvis-server/src/harness.rs`) is what's reading the prompt, and
   the chat agent's system prompt forbids relaying third-party text as an
   instruction. Text the core would refuse that way is never sent over the
   channel (`opensWithCommandPrefix` in `workspaces/claudeSession.ts`), so the
   same refusal applies. `claude.slash` is the one way a line opening with `/`
   gets in: the core types it only when the command is on an allowlist no sidecar
-  route or tool can change (`pty::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
+  route or tool can change (`agent_policy::DEFAULT_ALLOWED_SLASH_COMMANDS` plus
   `allowedSlashCommands` in `settings.json`, saved from the webview like the
-  agent command) and not on `pty::REFUSED_SLASH_COMMANDS`, holds it to the same
+  agent command) and not on `agent_policy::REFUSED_SLASH_COMMANDS`, holds it to the same
   foreground check, and cleans its arguments like an instruction. A command
   that changes what the session may do never belongs in the defaults. The list
   bounds what Yarvis types as a slash command, not which skills a session can be
@@ -524,7 +554,7 @@ report there and leaves the fixes to the author.
     configured agent command, word for word, and that command has to carry
     the flag. Otherwise it stays idle. `ps` joins argv with spaces, so a flag found anywhere else could
     be text the core adds after the command, such as a workspace name taken
-    from an issue title (`agent_launch_command` in `pty.rs`).
+    from an issue title (`agent_launch_command` in the server's `src/pty/guards.rs`).
     A send goes over the channel only when a relay is polling and its pid is
     one the workspace's SessionStart hook registered. Otherwise it is typed,
     since a session without the flag drops channel events. The first
@@ -694,8 +724,9 @@ report there and leaves the fixes to the author.
   know — a gateway that rejects an unknown field fails the whole turn.
 - Everything the sidecar logs is captured. `lib/log.ts` wraps `console` at boot
   into a bounded in-memory tail that `/api/logs` serves and Settings →
-  Diagnostics reads, and the core pipes the process's stdout/stderr to
-  `app_log_dir/sidecar.log` so a packaged build leaves something behind to read.
+  Diagnostics reads, and the server pipes the process's stdout/stderr to
+  `logs/sidecar.log` under its data folder so a packaged build leaves
+  something behind to read.
   The wrapper writes the *redacted* line to the real console, so both copies are
   redacted — the file is the one a user attaches to a bug report. A new log line therefore just uses
   `console.*` with the usual `[scope]` prefix — that prefix is what the
@@ -874,7 +905,7 @@ report there and leaves the fixes to the author.
   The review workspace's **Ask Claude** tab is the interactive counterpart:
   one PTY session per review workspace that the user drives, started through
   `claude.spawnReview` (`reviewWorkspaces/claudeSession.ts`, then
-  `spawn_review_claude_session` in `pty.rs`).
+  `spawn_review_claude_session` in the server's `src/pty/mod.rs`).
   - **Settings.** The user drives the session, so their own config loads
     (`--setting-sources user`, no `--strict-mcp-config`): skills, plugins,
     hooks, allow rules, MCP servers. The repos' project config (skills from

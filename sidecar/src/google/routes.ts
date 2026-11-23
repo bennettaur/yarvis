@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { emitEvent } from "../events/service.ts";
+import { oauthErrorCode } from "../mcp/callbackRoutes.ts";
 import { buildAuthUrl, createGoogleCalendarClient, scopeSatisfied } from "./client.ts";
 import {
   clearToken,
@@ -13,8 +14,15 @@ import {
   saveToken,
 } from "./service.ts";
 
-/** Loopback redirect the Google "Desktop app" client returns to after consent. */
-function redirectUri(config: Config): string {
+/**
+ * Where Google sends the user back after consent. On a server reached from
+ * other machines it is the server's origin, which forwards to the callback
+ * below; that needs a Google "Web application" client, which only accepts
+ * redirect URIs registered with it. Otherwise it is this sidecar's loopback
+ * port, which a "Desktop app" client accepts on any port.
+ */
+export function googleRedirectUri(config: Config): string {
+  if (config.publicOrigin) return `${config.publicOrigin}/api/oauth/google/callback`;
   return `http://127.0.0.1:${config.port}/oauth/google/callback`;
 }
 
@@ -70,7 +78,7 @@ export function createCalendarRoutes(config: Config): Hono {
     if (!googleClientId) {
       return c.json({ error: "google oauth not configured" }, 400);
     }
-    const url = buildAuthUrl(googleClientId, redirectUri(config), issueState());
+    const url = buildAuthUrl(googleClientId, googleRedirectUri(config), issueState());
     return c.json({ url });
   });
 
@@ -152,7 +160,7 @@ export function createGoogleCallbackRoutes(config: Config): Hono {
     const code = c.req.query("code");
     const state = c.req.query("state");
     const err = c.req.query("error");
-    if (err) return c.html(donePage(`Authorization failed: ${err}`), 400);
+    if (err) return c.html(donePage(`Authorization failed${oauthErrorCode(err)}.`), 400);
     if (!code || !state || !consumeState(state)) {
       return c.html(donePage("Invalid or expired authorization."), 400);
     }
@@ -161,7 +169,7 @@ export function createGoogleCallbackRoutes(config: Config): Hono {
       return c.html(donePage("Calendar integration is not configured."), 400);
     }
     try {
-      const token = await client.exchangeCode(code, redirectUri(config));
+      const token = await client.exchangeCode(code, googleRedirectUri(config));
       await saveToken(getDb(config.databaseUrl).db, token);
       return c.html(donePage("Calendar connected. You can close this tab."));
     } catch (e) {

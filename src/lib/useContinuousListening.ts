@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { TurnStream, TurnStreamHandlers } from "./turnStream";
-import type { TurnDetectorStatus } from "./voice";
+import { TURN_DETECTOR_SOCKET, type TurnDetectorStatus } from "./voice";
 
 /** How often to ask whether a starting detector is ready yet. */
 const POLL_MS = 1000;
@@ -100,14 +100,14 @@ export function useContinuousListening({
           status = await ioRef.current.detectorStatus();
         }
         if (cancelled) return;
-        if (status.state !== "running" || !status.url) {
+        if (status.state !== "running") {
           const detail =
             status.error ?? status.log[status.log.length - 1] ?? `detector is ${status.state}`;
           fail(`turn detector didn't start: ${detail}`);
           return;
         }
         const opened = await ioRef.current.openStream(
-          status.url,
+          TURN_DETECTOR_SOCKET,
           {
             onSpeechStart: () => {
               setHearing(true);
