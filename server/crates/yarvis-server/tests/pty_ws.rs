@@ -931,3 +931,157 @@ async fn the_session_list_shows_what_a_terminal_device_can_attach_to() {
     assert_eq!(row["exitCode"], 3);
     assert_eq!(row["attached"], 0);
 }
+
+/// Prints `$var` in the shell `client` is attached to and returns its value.
+async fn printed_var(client: &mut Client, var: &str) -> String {
+    let label = format!("{}=[", var.to_lowercase());
+    client
+        .input(&format!("printf '{label}%s]\\n' \"${var}\"\n"))
+        .await;
+    // The echoed command line holds `%s`, so only the output follows the
+    // label with anything else.
+    loop {
+        let out = String::from_utf8_lossy(&client.output).into_owned();
+        let printed = out
+            .split(label.as_str())
+            .skip(1)
+            .find(|rest| !rest.starts_with('%'));
+        if let Some(rest) = printed
+            && let Some(end) = rest.find(']')
+        {
+            return rest[..end].to_string();
+        }
+        assert!(client.read_one().await);
+    }
+}
+
+/// A workspace shell gets the same scoped tokens the sidecar checks, so its
+/// hooks can raise attention items and its MCP clients reach the sidecar.
+#[tokio::test]
+async fn workspace_shells_get_the_sidecars_scoped_tokens() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
+    let mut client = Client::connect(&server, "ws:w1/t1/p1", hello(&token, &server)).await;
+    client.wait_for_text("attached").await;
+    assert_eq!(
+        printed_var(&mut client, "YARVIS_ATTENTION_TOKEN").await,
+        server.state.sidecar.attention_token()
+    );
+    assert_eq!(
+        printed_var(&mut client, "YARVIS_MCP_TOKEN").await,
+        server.state.sidecar.mcp_token()
+    );
+    assert_eq!(
+        printed_var(&mut client, "YARVIS_SIDECAR_PORT").await,
+        server.state.sidecar.endpoint().port.to_string()
+    );
+    // The bearer only signs; no shell sees it.
+    assert_eq!(printed_var(&mut client, "YARVIS_SIDECAR_TOKEN").await, "");
+}
+
+/// `[server] path` is what a shell starts with, for a server under launchd
+/// whose own `PATH` misses Homebrew and mise.
+#[tokio::test]
+async fn shells_start_with_the_configured_path() {
+    let mut config = yarvis_server::config::Config::default();
+    config.server.path = Some(" /opt/custom/bin:/usr/bin:/bin ".into());
+    let state = yarvis_server::AppState::new(config, yarvis_server::store::testing::store().await);
+    assert_eq!(
+        state.pty.options().path.as_deref(),
+        Some("/opt/custom/bin:/usr/bin:/bin")
+    );
+
+    let server = serve(PtyOptions {
+        path: Some("/opt/custom/bin:/usr/bin:/bin".into()),
+        ..PtyOptions::default()
+    })
+    .await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
+    let mut client = Client::connect(&server, "tab:terminal/t1/p1", hello(&token, &server)).await;
+    client.wait_for_text("attached").await;
+    assert_eq!(
+        printed_var(&mut client, "PATH").await,
+        "/opt/custom/bin:/usr/bin:/bin"
+    );
+}
+
+/// A shell that only reads its terminal, from a script whose path shows in
+/// `ps`, so a test can count the shells it started.
+fn counted_shell(dir: &std::path::Path) -> String {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("counted-shell");
+    std::fs::write(&script, "#!/bin/sh\nwhile read -r line; do :; done\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script.to_string_lossy().into_owned()
+}
+
+/// How many processes this test binary started are running `script`.
+fn running(script: &str) -> usize {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-A", "-o", "ppid=,command="])
+        .output()
+        .unwrap();
+    let me = std::process::id().to_string();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next() == Some(me.as_str()) && line.contains(script)
+        })
+        .count()
+}
+
+/// Two attaches racing for one id get the same session, and the shell the
+/// losing spawn started is killed. The race can't be forced, so it runs for
+/// several ids.
+#[tokio::test]
+async fn racing_spawns_for_one_id_leave_one_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let shell = counted_shell(dir.path());
+    let server = serve(PtyOptions {
+        shell: Some(shell.clone()),
+        ..PtyOptions::default()
+    })
+    .await;
+    const IDS: usize = 10;
+    for n in 0..IDS {
+        let id = format!("tab:terminal/race/{n}");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let attaches: Vec<_> = (0..2)
+            .map(|_| {
+                let (pty, barrier, id) = (server.state.pty.clone(), barrier.clone(), id.clone());
+                tokio::task::spawn_blocking(move || {
+                    barrier.wait();
+                    pty.attach_or_spawn(
+                        &id,
+                        yarvis_server::pty::session::Size { cols: 80, rows: 24 },
+                        None,
+                    )
+                })
+            })
+            .collect();
+        let mut sessions = Vec::new();
+        for attach in attaches {
+            sessions.push(attach.await.unwrap().unwrap());
+        }
+        assert!(
+            std::sync::Arc::ptr_eq(&sessions[0], &sessions[1]),
+            "two sessions for {id}"
+        );
+    }
+    assert_eq!(server.state.pty.list().len(), IDS);
+    until("only the winning shells to be left", || {
+        let left = running(&shell);
+        async move { (left == IDS).then_some(()) }
+    })
+    .await;
+
+    // Shutdown ends every shell, so none outlives the server.
+    server.state.pty.kill_all();
+    assert!(server.state.pty.list().is_empty());
+    until("every shell to exit", || {
+        let left = running(&shell);
+        async move { (left == 0).then_some(()) }
+    })
+    .await;
+}

@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use rand::RngCore;
-use rusqlite::OptionalExtension;
+use sqlx::PgConnection;
 use zeroize::Zeroizing;
 
 use super::new_id;
@@ -66,9 +66,9 @@ pub enum AccountError {
     Gone,
 }
 
-impl From<rusqlite::Error> for AccountError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Store(StoreError::Sqlite(e))
+impl From<sqlx::Error> for AccountError {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Store(StoreError::Db(e))
     }
 }
 
@@ -217,10 +217,8 @@ impl Account {
     }
 
     pub async fn setup_required(&self) -> Result<bool, StoreError> {
-        self.0
-            .store
-            .call(|conn| has_account(conn).map(|has| !has))
-            .await
+        let mut conn = self.0.store.db()?.acquire().await?;
+        Ok(!has_account(&mut conn).await?)
     }
 
     /// Issues the setup code when there is no account yet. The caller prints
@@ -236,17 +234,14 @@ impl Account {
             remove_if_present(file)?;
             *lock(&self.0.setup_code_file) = Some(file.to_path_buf());
         }
-        let code = self
-            .0
-            .store
-            .call(|conn| {
-                if !has_account(conn)? {
-                    setup_code::issue(conn).map(Some)
-                } else {
-                    setup_code::clear(conn).map(|()| None)
-                }
-            })
-            .await?;
+        let mut tx = self.0.store.begin().await?;
+        let code = if !has_account(&mut tx).await? {
+            Some(setup_code::issue(&mut tx).await?)
+        } else {
+            setup_code::clear(&mut tx).await?;
+            None
+        };
+        tx.commit().await?;
         if let (Some(code), Some(file)) = (&code, file) {
             write_private(file, &format!("{code}\n"))?;
         }
@@ -261,12 +256,9 @@ impl Account {
         passphrase: Zeroizing<String>,
         device_name: String,
     ) -> Result<Result<Enrollment, CodeError>, AccountError> {
-        let given = code.to_string();
-        let checked = self
-            .0
-            .store
-            .call(move |conn| setup_code::check(conn, &given))
-            .await?;
+        let mut conn = self.0.store.db()?.acquire().await?;
+        let checked = setup_code::check(&mut conn, code).await?;
+        drop(conn);
         let code = match checked {
             Ok(code) => code,
             Err(e) => return Ok(Err(e)),
@@ -309,30 +301,28 @@ impl Account {
         };
         let secret = pending.secret;
         let (codes, hashes) = new_backup_codes();
-        let outcome = self
-            .0
-            .store
-            .call(move |conn| {
-                let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                if has_account(&tx)? {
-                    return Ok(Err(SetupError::Done));
-                }
-                if !setup_code::consume(&tx, &setup_code)? {
-                    return Ok(Err(SetupError::CodeGone));
-                }
-                tx.execute(
-                    "INSERT INTO account (id, passphrase_hash, totp_secret, totp_last_step, created_at)
-                     VALUES (1, ?1, ?2, ?3, ?4)",
-                    rusqlite::params![passphrase_hash, secret.as_slice(), step, now_ms()],
-                )?;
-                replace_backup_codes(&tx, &hashes)?;
-                tx.commit()?;
-                Ok(Ok(()))
-            })
-            .await?;
-        if let Err(e) = outcome {
-            return Ok(Err(e));
+        // Deleting the setup code locks its row, so of two setups racing with
+        // one code the second finds it gone. The account's fixed id is a
+        // backstop.
+        let mut tx = self.0.store.begin().await?;
+        if has_account(&mut tx).await? {
+            return Ok(Err(SetupError::Done));
         }
+        if !setup_code::consume(&mut tx, &setup_code).await? {
+            return Ok(Err(SetupError::CodeGone));
+        }
+        sqlx::query(
+            "INSERT INTO account (id, passphrase_hash, totp_secret, totp_last_step, created_at)
+             VALUES (1, $1, $2, $3, $4)",
+        )
+        .bind(passphrase_hash)
+        .bind(secret.as_slice())
+        .bind(step)
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        replace_backup_codes(&mut tx, &hashes).await?;
+        tx.commit().await?;
         self.remove_setup_code_file();
         Ok(Ok(SetUp {
             device_name,
@@ -462,16 +452,11 @@ impl Account {
         let hash = tokio::task::spawn_blocking(move || hash_passphrase(&passphrase))
             .await
             .map_err(StoreError::from)??;
-        let changed = self
-            .0
-            .store
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE account SET passphrase_hash = ?1 WHERE id = 1",
-                    [hash],
-                )
-            })
-            .await?;
+        let changed = sqlx::query("UPDATE account SET passphrase_hash = $1 WHERE id = 1")
+            .bind(hash)
+            .execute(self.0.store.db()?)
+            .await?
+            .rows_affected();
         // `auth reset` can remove the account under a signed-in device.
         if changed == 0 {
             return Err(AccountError::Gone);
@@ -506,16 +491,13 @@ impl Account {
             return Ok(Err(SetupError::WrongCode));
         };
         let secret = pending.secret;
-        let changed = self
-            .0
-            .store
-            .call(move |conn| {
-                conn.execute(
-                    "UPDATE account SET totp_secret = ?1, totp_last_step = ?2 WHERE id = 1",
-                    rusqlite::params![secret.as_slice(), step],
-                )
-            })
-            .await?;
+        let changed =
+            sqlx::query("UPDATE account SET totp_secret = $1, totp_last_step = $2 WHERE id = 1")
+                .bind(secret.as_slice())
+                .bind(step)
+                .execute(self.0.store.db()?)
+                .await?
+                .rows_affected();
         if changed == 0 {
             return Err(AccountError::Gone);
         }
@@ -525,110 +507,91 @@ impl Account {
     /// New backup codes, replacing every old one. Returned in clear once.
     pub async fn regenerate_backup_codes(&self) -> Result<Vec<String>, AccountError> {
         let (codes, hashes) = new_backup_codes();
-        self.0
-            .store
-            .call(move |conn| {
-                let tx = conn.transaction()?;
-                if !has_account(&tx)? {
-                    return Ok(false);
-                }
-                replace_backup_codes(&tx, &hashes)?;
-                tx.commit()?;
-                Ok(true)
-            })
+        let mut tx = self.0.store.begin().await?;
+        // Locks the account row, so a reset can't remove it halfway through.
+        let exists = sqlx::query("SELECT 1 FROM account WHERE id = 1 FOR UPDATE")
+            .fetch_optional(&mut *tx)
             .await?
-            .then_some(codes)
-            .ok_or(AccountError::Gone)
+            .is_some();
+        if !exists {
+            return Err(AccountError::Gone);
+        }
+        replace_backup_codes(&mut tx, &hashes).await?;
+        tx.commit().await?;
+        Ok(codes)
     }
 
     pub async fn backup_codes_left(&self) -> Result<i64, StoreError> {
-        self.0
-            .store
-            .call(|conn| {
-                conn.query_row(
-                    "SELECT COUNT(*) FROM backup_codes WHERE used_at IS NULL",
-                    [],
-                    |row| row.get(0),
-                )
-            })
-            .await
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM backup_codes WHERE used_at IS NULL")
+                .fetch_one(self.0.store.db()?)
+                .await?,
+        )
     }
 
     async fn passphrase_hash(&self) -> Result<Option<String>, StoreError> {
-        self.0
-            .store
-            .call(|conn| {
-                conn.query_row(
-                    "SELECT passphrase_hash FROM account WHERE id = 1",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()
-            })
-            .await
+        Ok(
+            sqlx::query_scalar("SELECT passphrase_hash FROM account WHERE id = 1")
+                .fetch_optional(self.0.store.db()?)
+                .await?,
+        )
     }
 
     /// Accepts a current code once: with `consume`, the step it matched
-    /// becomes the last one accepted, in the transaction that checks it, so
-    /// two requests racing with one code can't both pass.
+    /// becomes the last one accepted, in the transaction that checks it. The
+    /// account row stays locked from the read to the write, so two requests
+    /// racing with one code, even from two processes, can't both pass.
     async fn use_totp(&self, code: &str, consume: bool) -> Result<bool, StoreError> {
-        let code = code.to_string();
-        self.0
-            .store
-            .call(move |conn| {
-                let tx =
-                    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-                let row: Option<(Vec<u8>, Option<i64>)> = tx
-                    .query_row(
-                        "SELECT totp_secret, totp_last_step FROM account WHERE id = 1",
-                        [],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                let Some((secret, last_step)) = row else {
-                    return Ok(false);
-                };
-                let secret = Zeroizing::new(secret);
-                let Some(step) =
-                    totp::matching_step(&secret, &code, totp::step_at(now_ms()), last_step)
-                else {
-                    return Ok(false);
-                };
-                if !consume {
-                    return Ok(true);
-                }
-                tx.execute(
-                    "UPDATE account SET totp_last_step = ?1 WHERE id = 1",
-                    [step],
-                )?;
-                tx.commit()?;
-                Ok(true)
-            })
-            .await
+        let mut tx = self.0.store.begin().await?;
+        // A check that uses nothing up needn't make others wait for it.
+        let sql = if consume {
+            "SELECT totp_secret, totp_last_step FROM account WHERE id = 1 FOR UPDATE"
+        } else {
+            "SELECT totp_secret, totp_last_step FROM account WHERE id = 1"
+        };
+        let row: Option<(Vec<u8>, Option<i64>)> =
+            sqlx::query_as(sql).fetch_optional(&mut *tx).await?;
+        let Some((secret, last_step)) = row else {
+            return Ok(false);
+        };
+        let secret = Zeroizing::new(secret);
+        let Some(step) = totp::matching_step(&secret, code, totp::step_at(now_ms()), last_step)
+        else {
+            return Ok(false);
+        };
+        if !consume {
+            return Ok(true);
+        }
+        sqlx::query("UPDATE account SET totp_last_step = $1 WHERE id = 1")
+            .bind(step)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Whether `code` is an unused backup code; with `consume`, also uses it up.
     async fn use_backup_code(&self, code: &str, consume: bool) -> Result<bool, StoreError> {
         let hash = setup_code::hash(code).to_vec();
-        self.0
-            .store
-            .call(move |conn| {
-                if !consume {
-                    return conn
-                        .query_row(
-                            "SELECT 1 FROM backup_codes WHERE hash = ?1 AND used_at IS NULL",
-                            [&hash],
-                            |_| Ok(()),
-                        )
-                        .optional()
-                        .map(|row| row.is_some());
-                }
-                Ok(conn.execute(
-                    "UPDATE backup_codes SET used_at = ?1 WHERE hash = ?2 AND used_at IS NULL",
-                    rusqlite::params![now_ms(), hash],
-                )? == 1)
-            })
-            .await
+        let db = self.0.store.db()?;
+        if !consume {
+            return Ok(sqlx::query(
+                "SELECT 1 FROM backup_codes WHERE hash = $1 AND used_at IS NULL",
+            )
+            .bind(hash)
+            .fetch_optional(db)
+            .await?
+            .is_some());
+        }
+        // Of two updates racing on one code, the second waits on the row lock,
+        // then re-checks `used_at` and updates nothing.
+        let used =
+            sqlx::query("UPDATE backup_codes SET used_at = $1 WHERE hash = $2 AND used_at IS NULL")
+                .bind(now_ms())
+                .bind(hash)
+                .execute(db)
+                .await?;
+        Ok(used.rows_affected() == 1)
     }
 
     fn add_pending(&self, kind: Pending) -> Enrollment {
@@ -705,24 +668,24 @@ pub struct Reset {
 /// the same trust the first setup code needs. Signed-in devices stay signed in
 /// unless `sign_out_all`, which revokes every live device, tokens included:
 /// after a compromise, the attacker's device is one of them.
-pub fn reset(conn: &mut rusqlite::Connection, sign_out_all: bool) -> rusqlite::Result<Reset> {
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute("DELETE FROM backup_codes", [])?;
-    tx.execute("DELETE FROM account", [])?;
+pub async fn reset(store: &Store, sign_out_all: bool) -> Result<Reset, StoreError> {
+    let mut tx = store.begin().await?;
+    sqlx::query("DELETE FROM backup_codes")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM account").execute(&mut *tx).await?;
     let mut revoked_devices = Vec::new();
     if sign_out_all {
-        let mut stmt = tx.prepare("SELECT id FROM devices WHERE revoked_at IS NULL ORDER BY id")?;
-        revoked_devices = stmt
-            .query_map([], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
-        drop(stmt);
-        tx.execute(
-            "UPDATE devices SET revoked_at = ?1 WHERE revoked_at IS NULL",
-            [now_ms()],
-        )?;
+        revoked_devices = sqlx::query_scalar(
+            "UPDATE devices SET revoked_at = $1 WHERE revoked_at IS NULL RETURNING id",
+        )
+        .bind(now_ms())
+        .fetch_all(&mut *tx)
+        .await?;
+        revoked_devices.sort();
     }
-    let setup_code = setup_code::issue(&tx)?;
-    tx.commit()?;
+    let setup_code = setup_code::issue(&mut tx).await?;
+    tx.commit().await?;
     Ok(Reset {
         setup_code,
         revoked_devices,
@@ -739,16 +702,16 @@ fn new_backup_codes() -> (Vec<String>, Vec<CodeHash>) {
         .unzip()
 }
 
-fn replace_backup_codes(
-    tx: &rusqlite::Transaction<'_>,
-    hashes: &[CodeHash],
-) -> rusqlite::Result<()> {
-    tx.execute("DELETE FROM backup_codes", [])?;
+async fn replace_backup_codes(conn: &mut PgConnection, hashes: &[CodeHash]) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM backup_codes")
+        .execute(&mut *conn)
+        .await?;
     for hash in hashes {
-        tx.execute(
-            "INSERT INTO backup_codes (hash, created_at) VALUES (?1, ?2)",
-            rusqlite::params![hash.to_vec(), now_ms()],
-        )?;
+        sqlx::query("INSERT INTO backup_codes (hash, created_at) VALUES ($1, $2)")
+            .bind(hash.to_vec())
+            .bind(now_ms())
+            .execute(&mut *conn)
+            .await?;
     }
     Ok(())
 }
@@ -773,10 +736,10 @@ pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 
 /// The guarded state holds no invariant a panic could break halfway, so a
 /// poisoned lock is still usable.
-fn has_account(conn: &rusqlite::Connection) -> rusqlite::Result<bool> {
-    conn.query_row("SELECT EXISTS (SELECT 1 FROM account)", [], |row| {
-        row.get(0)
-    })
+async fn has_account(conn: &mut PgConnection) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM account)")
+        .fetch_one(conn)
+        .await
 }
 
 /// Drops failures older than the window.
@@ -815,9 +778,12 @@ mod tests {
         assert!(check_passphrase_shape(&"x".repeat(MAX_PASSPHRASE_BYTES + 1)).is_err());
     }
 
-    #[test]
-    fn ten_failures_lock_the_account_and_a_success_resets_the_count() {
-        let account = Account::new(Store::open_in_memory().unwrap());
+    #[tokio::test]
+    async fn ten_failures_lock_the_account_and_a_success_resets_the_count() {
+        // Lockout is kept in memory. The pool is lazy and this test never
+        // queries it, so the address and schema are never used.
+        let account =
+            Account::new(Store::connect_lazy("postgres://127.0.0.1:1/x", "unused").unwrap());
         for _ in 0..MAX_FAILURES - 1 {
             account.record_failure();
         }

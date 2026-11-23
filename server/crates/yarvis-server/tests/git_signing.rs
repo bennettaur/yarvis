@@ -177,13 +177,19 @@ async fn locking_while_a_signature_waits_refuses_it() {
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let answered: Vec<_> = s
-        .harness
-        .events("approval.answered")
-        .await
-        .into_iter()
-        .filter(|e| e.data["id"] == id.as_str())
-        .collect();
+    // The row is settled first and the event appended after, so the list
+    // above can empty before the event lands.
+    let answered: Vec<_> = until("the abandoned approval's event", || async {
+        let answered: Vec<_> = s
+            .harness
+            .events("approval.answered")
+            .await
+            .into_iter()
+            .filter(|e| e.data["id"] == id.as_str())
+            .collect();
+        (!answered.is_empty()).then_some(answered)
+    })
+    .await;
     assert_eq!(answered.len(), 1);
     assert_eq!(answered[0].data["approve"], false);
     assert_eq!(answered[0].data["reason"], "abandoned");

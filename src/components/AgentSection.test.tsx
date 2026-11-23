@@ -39,6 +39,7 @@ function defaultSettings(): Settings {
     telegramOtpWindowMinutes: null,
     defaultTelegramOtpWindowMinutes: 120,
     secretBackend: null,
+    configuredSecretBackend: null,
     onePasswordVault: null,
     onePasswordItem: null,
     colorTheme: null,

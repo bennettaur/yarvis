@@ -3,8 +3,9 @@
 //! its signing key in 1Password, and then nothing here runs, makes a key or
 //! opens a socket.
 //!
-//! When on, the agent listens on `ssh-agent.sock` in the data dir while the
-//! vault is unlocked, and stops (removing the socket) when it locks. It signs
+//! When on, the agent listens on `ssh-agent.sock` in the data dir (or wherever
+//! `socket_dir` puts it) while the vault is unlocked, and stops (removing the
+//! socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
 //! host, and every signature waits for an answer on the approvals route.
 
@@ -35,6 +36,7 @@ use crate::approvals::Approvals;
 use crate::auth::{Authed, Read};
 use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
+use crate::socket_dir;
 
 /// The approval kind a signature request is filed under.
 pub const APPROVAL_KIND: &str = "git.sign";
@@ -57,7 +59,7 @@ pub(crate) fn configured_socket(config: &Config) -> Option<PathBuf> {
     config
         .ssh_agent
         .enabled
-        .then(|| config.server.data_dir.join(SOCKET_NAME))
+        .then(|| socket_dir::socket_path(&config.server, SOCKET_NAME))
 }
 
 /// The OpenSSH public key for a seed, as `ssh-ed25519 AAAA… yarvis-server`.
@@ -105,6 +107,7 @@ pub fn start(state: &AppState) -> Result<(), String> {
         .signing_seed()
         .map_err(|e| format!("couldn't read the signing key: {e}"))?;
     let agent = VaultAgent::new(&seed, state.approvals.clone(), APPROVAL_TIMEOUT);
+    socket_dir::prepare(&state.config.server, &socket)?;
     *running = Some(spawn(agent, socket).map_err(|e| format!("couldn't open the socket: {e}"))?);
     tracing::info!("ssh-agent listening");
     Ok(())
@@ -360,7 +363,6 @@ mod tests {
     use super::*;
     use crate::approvals::Approvals;
     use crate::events::EventLog;
-    use crate::store::Store;
 
     fn sshsig_blob(namespace: &str) -> Vec<u8> {
         let mut blob = b"SSHSIG".to_vec();
@@ -371,8 +373,8 @@ mod tests {
         blob
     }
 
-    fn approvals() -> Approvals {
-        let store = Store::open_in_memory().unwrap();
+    async fn approvals() -> Approvals {
+        let store = crate::store::testing::store().await;
         Approvals::new(store.clone(), EventLog::new(store))
     }
 
@@ -424,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_approved_request_signs() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let answer = tokio::spawn({
             let approvals = approvals.clone();
@@ -445,7 +447,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_denied_request_is_refused() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let answer = tokio::spawn({
             let approvals = approvals.clone();
@@ -458,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unanswered_request_times_out_as_denied() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_millis(50));
         let req = request(&agent, sshsig_blob("git"));
         assert!(agent.sign(req).await.is_err());
@@ -467,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_git_data_is_refused_before_anyone_is_asked() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let login = request(&agent, b"session-id-and-userauth".to_vec());
         assert!(agent.sign(login).await.is_err());
@@ -484,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_key_is_refused() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
         let other = Ed25519Keypair::from_seed(&[4u8; 32]);
         let req = SignRequest {
@@ -497,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_refuses_a_waiting_signature_and_drops_the_key() {
-        let approvals = approvals();
+        let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(30));
         let shared = agent.shared.clone();
         let sign = tokio::spawn({

@@ -4,12 +4,23 @@ Yarvis keeps its configuration in three places, split by what the value is:
 
 | Kind | Where | Set from |
 | --- | --- | --- |
-| Secrets: the database URL, API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
+| Secrets: API keys, tokens | One item in the macOS Keychain, or in 1Password | **Settings → Credentials** |
 | Everything else you change from the UI | `~/.yarvis/settings.json` | The Settings screen, or by hand |
 | Machine-level overrides | Environment variables | Your shell, before `bun run tauri dev` |
 
 Your data (chat history, memory, tasks, workspaces, PR notes) isn't
 configuration. It lives in Postgres.
+
+## The database URL
+
+The server needs Postgres before anyone can sign in, so its URL is set where
+the server starts, not in Settings. It comes from `YARVIS_DATABASE_URL`, then
+`url` under `[database]` in the server's `server.toml`, then (on an install
+from before this) the `database_url` the Keychain or 1Password item still
+holds, and otherwise `postgres://localhost:5432/yarvis`. The server passes it
+to the sidecar as `DATABASE_URL`. **Settings → Credentials** shows it with any
+password masked, and where it came from. See "Postgres" in
+`docs/client-server.md`.
 
 Secrets never go in env files or in the repo.
 
@@ -25,7 +36,6 @@ reads one back.
 
 | Setting | Used for | Passed to the sidecar as |
 | --- | --- | --- |
-| Database URL | Everything stored in Postgres | `DATABASE_URL` |
 | Anthropic API key | Claude chat | `ANTHROPIC_API_KEY` |
 | Gemini API key | Gemini chat, embeddings, cloud voice | `GEMINI_API_KEY` |
 | Cerebras API key | Cerebras chat | `CEREBRAS_API_KEY` |
@@ -121,6 +131,9 @@ if you like. The non-secret values that used to be in the Keychain (org URLs,
 the JIRA email, the Google client id, the OTP window) move to
 `~/.yarvis/settings.json` by themselves on the first launch. So does the old
 `embeddings_provider_secrets` item, which is folded into the single item.
+A `settings.json` that a build from before September 2026 left in the app's
+data folder moves to `~/.yarvis/settings.json` when the app next starts its
+local server, unless one is already there.
 
 ### Touch ID
 
@@ -161,7 +174,10 @@ Other processes can read command arguments with no prompt at all.
 `yarvis-server` can keep the secrets item in its own encrypted vault instead of
 the Keychain or 1Password, for a server that starts before anyone logs in. It
 is set in `server.toml`, not the Settings screen. `docs/client-server.md` has
-the full setup and the API.
+the full setup and the API. When `server.toml` sets `[secrets] backend`,
+**Settings → Credentials → Secret store** shows that store and offers no
+switch, since the server refuses one; a pinned 1Password store still lets you
+change its vault and item.
 
 ```toml
 [secrets]
@@ -203,6 +219,52 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
 for approval on the laptop itself.
+
+### `PATH` for a server launchd starts
+
+A server the desktop app starts gets your login shell's `PATH`. One that
+launchd starts gets launchd's short one (`/usr/bin:/bin:/usr/sbin:/sbin`), so
+the sidecar, terminals and agent sessions can't find `claude`, `git`, `gh` or
+`bun` from Homebrew or mise. Set `path` under `[server]` in `server.toml` to
+the `PATH` they should have:
+
+```toml
+[server]
+# Written out in full, since ~ isn't expanded. `echo $PATH` in a terminal
+# prints yours.
+path = "/Users/<you>/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+```
+
+The server gives it to the sidecar, which passes it on to the Claude Code runs
+it starts, and to every terminal and agent session. It is also where a bare
+`[sidecar] command` such as `bun` is looked up. Unset, they all inherit the
+server's own `PATH`. A shell's rc files can still change it after it starts.
+The server refuses to start when an entry is empty (a leading, trailing or
+doubled `:`) or not an absolute path, since either is looked up from the
+folder a process runs in, which for a session is a repo checkout.
+
+### Where the server's sockets go
+
+The server listens on two Unix sockets: `core-control.sock`, which the
+sidecar uses, and, with `[ssh_agent] enabled`, `ssh-agent.sock`. A Unix socket
+path must fit in about 104 bytes on macOS (108 on Linux). By default the
+sockets go in the data dir, or in `~/.yarvis/run/<hash of the data dir>/` when
+a path there would be too long. Set `socket_dir` under `[server]` to put them
+somewhere else:
+
+```toml
+[server]
+socket_dir = "/Users/<you>/.yarvis/sock"
+```
+
+It must be an absolute path. The server creates it with mode 0700 if it's
+missing, but its parent folder must already exist. An existing folder must be a real folder (not a symlink), owned by
+the user the server runs as, with mode 0700, or the server refuses to start.
+The folders under `~/.yarvis/run` get the same checks, and `~/.yarvis` must be
+owned by that user and not writable by anyone else. The server never uses a
+temp folder, since macOS and systemd delete old files there. When no location
+gives a short enough path, the server refuses to start and asks you to set
+`socket_dir`.
 
 ## `~/.yarvis/settings.json`
 
@@ -356,7 +418,7 @@ copy of the app, or for debugging.
 | Variable | Effect |
 | --- | --- |
 | `YARVIS_WORKSPACES_ROOT` | Where workspace clones and worktrees go. Default `~/dev/yarvis-workspaces`. |
-| `YARVIS_DATABASE_URL` | Overrides the database URL from the Keychain, for this process only |
+| `YARVIS_DATABASE_URL` | The Postgres database the server and the sidecar use. Wins over `[database] url` in `server.toml`. |
 | `YARVIS_CLAUDE_COMMAND` | Overrides `agentCommand` |
 | `YARVIS_OP_BIN` | Path to the 1Password `op` binary |
 | `YARVIS_INSTANCE` | Names this process as a secondary instance. Use `bun run dev:instance` instead of setting this by hand. |
@@ -384,10 +446,13 @@ URL on `localhost`, `127.0.0.1` or `[::1]`, and ignores half a pair, logging a
 warning either way.
 
 The sidecar inherits the environment of the shell that started the app. A
-`DATABASE_URL` or provider key exported in that shell reaches the sidecar
-unless the Keychain has its own value for it. A release build opened from
+provider key exported in that shell reaches the sidecar unless the Keychain
+has its own value for it. A `DATABASE_URL` there is ignored: the server sets
+the sidecar's from its own database URL. A release build opened from
 Finder has no such shell: it only takes `PATH` from your login shell, and the
-other variables above don't reach it.
+other variables above don't reach it. A server launchd starts gets neither, so
+set `[server] path` for it (see
+[`PATH` for a server launchd starts](#path-for-a-server-launchd-starts)).
 
 ## Settings screen map
 

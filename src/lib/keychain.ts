@@ -14,7 +14,6 @@ export type SecretKey =
   | "github_token"
   | "azure_devops_token"
   | "jira_api_token"
-  | "database_url"
   | "google_client_secret"
   | "verify_agent_signing_key"
   // Telegram remote control. These are managed by the dedicated TelegramSection
@@ -32,12 +31,6 @@ export interface SecretMeta {
 }
 
 export const SECRETS: SecretMeta[] = [
-  {
-    key: "database_url",
-    label: "Database URL",
-    placeholder: "postgres://localhost:5432/yarvis",
-    help: "Local PostgreSQL connection string (with pgvector enabled).",
-  },
   {
     key: "anthropic_api_key",
     label: "Anthropic API key",

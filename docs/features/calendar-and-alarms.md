@@ -116,10 +116,9 @@ once you've handled them all.
   what's **Upcoming** (with Cancel).
 - An alarm whose time passed while Yarvis was closed fires as soon as the app
   starts.
-- Alarms are stored in Postgres, so they need the database. Alarms from older
-  versions, which kept them in `alarms.json` in the app's data folder, are
-  copied over on first start, and the file is renamed to
-  `alarms.json.imported`.
+- Alarms are stored in Postgres, so they need the database. Alarms that
+  versions before October 2026 kept in `alarms.json` in the app's data folder
+  are not copied over.
 - Alarms ring only while the sidecar is running, since it decides when one is
   due. If it can't reach the app's core to ring one, it tries again every few
   seconds.

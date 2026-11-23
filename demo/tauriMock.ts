@@ -79,6 +79,7 @@ let settings: Settings = {
   telegramOtpWindowMinutes: null,
   defaultTelegramOtpWindowMinutes: 120,
   secretBackend: null,
+  configuredSecretBackend: null,
   onePasswordVault: null,
   onePasswordItem: null,
   colorTheme: null,
@@ -114,12 +115,12 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
   switch (cmd) {
     case "get_server_connection":
       return { token: "demo-device-token" };
-    case "get_sidecar_log_path":
-      return "~/Library/Logs/Yarvis/sidecar.log";
     case "restart_sidecar":
     case "focus_main_window":
       return null;
 
+    case "get_database_info":
+      return { url: "postgres://localhost:5432/yarvis", source: "default" };
     case "get_settings":
       return settings;
     case "set_max_pty_sessions":

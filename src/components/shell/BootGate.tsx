@@ -10,8 +10,7 @@ const STATUS_MESSAGE: Record<"connecting" | "migrating", string> = {
 };
 
 // How long to wait before offering an escape hatch, so a stuck or very slow
-// boot never traps the user (e.g. a bad database URL they need to fix in
-// Settings).
+// boot never traps the user (a sidecar migration that keeps failing, say).
 const SLOW_AFTER_MS = 6000;
 
 function BootSpinner() {

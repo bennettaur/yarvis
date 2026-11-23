@@ -6,8 +6,9 @@ import { join, resolve } from "node:path";
 
 /**
  * A real `yarvis-server` for the end-to-end tests: its own temp data dir and
- * HOME, the vault backend so nothing touches the Keychain, the ssh-agent on,
- * no sidecar, and the built web UI from `dist/`.
+ * HOME, its own schema in the `TEST_DATABASE_URL` Postgres, the vault backend
+ * so nothing touches the Keychain, the ssh-agent on, no sidecar, and the built
+ * web UI from `dist/`.
  */
 
 const ROOT = resolve(import.meta.dirname, "..");
@@ -17,6 +18,9 @@ const BINARY = process.env.YARVIS_SERVER_BIN ?? join(ROOT, "server/target/debug/
 export interface TestServer {
   origin: string;
   dataDir: string;
+  /** The Postgres URL and the schema the server's tables are in. */
+  databaseUrl: string;
+  schema: string;
   /** The HOME the server and its shells see. */
   home: string;
   recoveryKey: string;
@@ -49,6 +53,13 @@ export async function startServer(): Promise<TestServer> {
       `build the server first: cargo build --manifest-path server/Cargo.toml (${BINARY})`,
     );
   }
+  const databaseUrl = process.env.TEST_DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "set TEST_DATABASE_URL to a Postgres database the test may create a schema in, such as postgres://localhost:5432/yarvis_test",
+    );
+  }
+  const schema = `yarvis_e2e_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
   const root = mkdtempSync(join(tmpdir(), "yarvis-e2e-"));
   const home = join(root, "home");
   const dataDir = join(root, "data");
@@ -72,6 +83,9 @@ export async function startServer(): Promise<TestServer> {
       "enabled = true",
       "[sidecar]",
       "enabled = false",
+      "[database]",
+      `url = ${JSON.stringify(databaseUrl)}`,
+      `schema = ${JSON.stringify(schema)}`,
       "",
     ].join("\n"),
   );
@@ -121,6 +135,7 @@ export async function startServer(): Promise<TestServer> {
     if (child.exitCode !== null || Date.now() > deadline) {
       child.kill("SIGKILL");
       rmSync(root, { recursive: true, force: true });
+      psql(databaseUrl, `DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       throw new Error(`yarvis-server didn't start:\n${log}`);
     }
     await new Promise((r) => setTimeout(r, 100));
@@ -129,6 +144,8 @@ export async function startServer(): Promise<TestServer> {
   return {
     origin,
     dataDir,
+    databaseUrl,
+    schema,
     home,
     recoveryKey,
     vaultPassphrase,
@@ -141,8 +158,17 @@ export async function startServer(): Promise<TestServer> {
         await exited;
       }
       rmSync(root, { recursive: true, force: true });
+      psql(databaseUrl, `DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
     },
   };
+}
+
+/** Runs one statement through the psql CLI, the test's only way into the database. */
+function psql(databaseUrl: string, sql: string) {
+  execFileSync("psql", [databaseUrl, "-v", "ON_ERROR_STOP=1", "-q", "-c", sql], {
+    // Quiet the notice a cascading drop prints.
+    env: { ...process.env, PGOPTIONS: "-c client_min_messages=warning" },
+  });
 }
 
 function spawnSyncText(command: string, args: string[], env: NodeJS.ProcessEnv, input?: string) {
@@ -151,17 +177,9 @@ function spawnSyncText(command: string, args: string[], env: NodeJS.ProcessEnv, 
   return out;
 }
 
-/**
- * Makes every device's last code too old to count, as ten minutes would.
- * Through the sqlite3 CLI, since the test has no other way into the database.
- */
+/** Makes every device's last code too old to count, as ten minutes would. */
 export function ageDevices(server: TestServer) {
-  execFileSync("sqlite3", [
-    "-cmd",
-    ".timeout 5000",
-    join(server.dataDir, "server.db"),
-    "UPDATE devices SET verified_at = 0",
-  ]);
+  psql(server.databaseUrl, `UPDATE "${server.schema}".devices SET verified_at = 0`);
 }
 
 /** The one-time code the server wrote when it found no account. */

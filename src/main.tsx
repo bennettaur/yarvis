@@ -6,10 +6,7 @@ import BootGate from "./components/shell/BootGate";
 import SignInGate from "./components/shell/SignInGate";
 import VaultGate from "./components/shell/VaultGate";
 import "./index.css";
-import { loadAttentionAnimation } from "./lib/attentionAnimation";
-import { getSettings } from "./lib/settings";
-import { loadTerminalFontSize } from "./lib/terminalFont";
-import { loadColorTheme } from "./lib/theme";
+import { loadAppearance } from "./lib/appearance";
 
 function render() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
@@ -26,14 +23,7 @@ function render() {
 }
 
 // The theme and terminal size are read before the first render, so a Palenight
-// user doesn't see the default palette for a frame. The core already holds the
-// settings in memory, so this costs one round trip. On failure the defaults
-// stand.
-getSettings()
-  .then((settings) => {
-    loadColorTheme(settings.colorTheme);
-    loadTerminalFontSize(settings.terminalFontSize);
-    loadAttentionAnimation(settings.attentionAnimation);
-  })
-  .catch((e) => console.error("[settings] loading appearance failed:", e))
-  .finally(render);
+// user doesn't see the default palette for a frame. For a signed-in device this
+// costs one round trip, since the core holds the settings in memory. A device
+// that isn't signed in renders at once and gets them after sign-in.
+loadAppearance().finally(render);

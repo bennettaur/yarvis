@@ -1,6 +1,6 @@
 //! For the PTY and control-socket tests: a server on a real socket with PTY
-//! sessions running `/bin/sh`, its own settings file and secrets store, and a
-//! data dir in a temp folder.
+//! sessions running `/bin/sh` (or the shell a test names), its own settings
+//! file and secrets store, and a data dir in a temp folder.
 
 use std::sync::Arc;
 
@@ -10,7 +10,6 @@ use yarvis_server::pty::{PtyManager, PtyOptions};
 use yarvis_server::secret_blob::{SecretBlob, Store as SecretStore};
 use yarvis_server::secret_store::memory::MemoryBackend;
 use yarvis_server::settings::SettingsStore;
-use yarvis_server::store::Store;
 use yarvis_server::{AppState, app};
 
 pub struct Server {
@@ -43,7 +42,7 @@ pub async fn serve_with(setup: Setup) -> Server {
     let mut config = Config::default();
     config.server.data_dir = dir.path().to_path_buf();
     config.ssh_agent = setup.ssh_agent;
-    let mut state = AppState::new(config, Store::open_in_memory().unwrap());
+    let mut state = AppState::new(config, yarvis_server::store::testing::store().await);
     let settings = SettingsStore::new(dir.path().join("settings.json"));
     let secrets = setup.secrets.unwrap_or_else(MemoryBackend::empty);
     let blob = SecretBlob::with_store(
@@ -53,16 +52,20 @@ pub async fn serve_with(setup: Setup) -> Server {
         },
         settings.clone(),
     );
+    // Carried over from the manager `AppState::new` built, so a test of what
+    // shells get also checks that it hands them the sidecar's details.
+    let sidecar_env = state.pty.sidecar_env();
     state.pty = PtyManager::new(
         settings,
         blob,
         state.events.clone(),
         state.config.ssh_agent.clone(),
         PtyOptions {
-            shell: Some("/bin/sh".into()),
+            shell: options.shell.clone().or_else(|| Some("/bin/sh".into())),
             ..options
         },
     );
+    state.pty.set_sidecar_env(sidecar_env);
     state
         .pty
         .set_server_ssh_agent(yarvis_server::ssh_agent::socket_path(&state));
@@ -95,4 +98,11 @@ pub async fn device(state: &AppState, scopes: &[Scope]) -> (String, String) {
     create_device(&state.store, "test", "token", scopes, None)
         .await
         .unwrap()
+}
+
+/// Everything the session has printed so far.
+pub fn output_of(session: &yarvis_server::pty::session::Session) -> String {
+    let attach = session.subscribe(u64::MAX, Some(0));
+    session.detach(u64::MAX);
+    String::from_utf8_lossy(&attach.catchup).into_owned()
 }

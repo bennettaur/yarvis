@@ -12,8 +12,19 @@ import { stubServerRoutes } from "../../test/serverRoutes";
 import SignInGate from "./SignInGate";
 
 let setupRequired = false;
+/** How many more status checks answer as if Postgres were still down. */
+let databaseDownFor = 0;
+/** A 503 from something in front of the server, with no database error. */
+let proxyDown = false;
 const server = stubServerRoutes({
-  "GET /api/auth/status": () => Response.json({ setupRequired, vault: "absent" }),
+  "GET /api/auth/status": () => {
+    if (proxyDown) return new Response("Service Unavailable", { status: 503 });
+    if (databaseDownFor > 0) {
+      databaseDownFor -= 1;
+      return Response.json({ error: "database_unavailable" }, { status: 503 });
+    }
+    return Response.json({ setupRequired, vault: "absent" });
+  },
   "GET /api/devices/me": () => Response.json({ error: "sign in first" }, { status: 401 }),
   "DELETE /api/devices/me": () => Response.json({ error: "boom" }, { status: 500 }),
   "POST /api/auth/login": () =>
@@ -42,6 +53,8 @@ afterEach(() => {
   unmount?.();
   unmount = undefined;
   setupRequired = false;
+  databaseDownFor = 0;
+  proxyDown = false;
   server.calls.length = 0;
 });
 
@@ -72,6 +85,27 @@ async function press(host: HTMLElement, text: string) {
 }
 
 describe("SignInGate", () => {
+  it("waits for the server's database, then offers sign-in", async () => {
+    databaseDownFor = 1;
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("waiting for its database") === true,
+      "the waiting notice",
+    );
+    expect(mounted.host.querySelector("[role=alert]")).toBeNull();
+    await waitFor(() => field(mounted.host, "Passphrase") !== undefined, "the sign-in form", 4_000);
+    expect(mounted.host.textContent).not.toContain("waiting for its database");
+  });
+
+  it("doesn't wait on a 503 that isn't the server's database", async () => {
+    proxyDown = true;
+    const mounted = await mountForInteraction(gate());
+    unmount = mounted.unmount;
+    await waitFor(() => mounted.host.querySelector("[role=alert]") !== null, "the error");
+    expect(mounted.host.textContent).not.toContain("waiting for its database");
+  });
+
   it("shows the app to a signed-in device, and sign-in once the server rejects it", async () => {
     saveDeviceToken("tok-me");
     const mounted = await mountForInteraction(gate());

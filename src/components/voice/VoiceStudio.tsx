@@ -179,6 +179,7 @@ function TakeRow({ take }: { take: StudioTake }) {
   const [url, setUrl] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
 
   // The audio route needs the bearer token, so the take is fetched and played
   // from an object URL rather than pointed at directly.
@@ -210,6 +211,19 @@ function TakeRow({ take }: { take: StudioTake }) {
     }
   }
 
+  const savedPath = take.savedPath;
+
+  // The app grants this only for the server it started, since the path is on
+  // the server's machine; with a remote server the bridge refuses it.
+  async function reveal(path: string): Promise<void> {
+    setRevealError(null);
+    try {
+      await revealItemInDir(path);
+    } catch (e) {
+      setRevealError(`Couldn't show it in Finder: ${errorText(e)}`);
+    }
+  }
+
   return (
     <li className="flex flex-wrap items-center gap-3 rounded-md border border-zinc-800 px-3 py-2">
       <span className="w-40 truncate text-sm text-zinc-200">{take.voiceName}</span>
@@ -220,20 +234,21 @@ function TakeRow({ take }: { take: StudioTake }) {
         <span className="text-xs text-zinc-500">{loadError ?? "Loading…"}</span>
       )}
       {saveError && <span className="text-xs text-red-400">{saveError}</span>}
+      {revealError && <span className="text-xs text-red-400">{revealError}</span>}
       <span className="ml-auto flex items-center gap-2">
-        {take.savedPath ? (
+        {savedPath ? (
           // The clip is saved on the server's machine, which only the desktop app can open.
           localFeaturesAvailable() ? (
             <button
               type="button"
-              onClick={() => void revealItemInDir(take.savedPath ?? "")}
-              title={take.savedPath}
+              onClick={() => void reveal(savedPath)}
+              title={savedPath}
               className={BUTTON}
             >
               Show in Finder
             </button>
           ) : (
-            <span className="text-xs text-zinc-500" title={take.savedPath}>
+            <span className="text-xs text-zinc-500" title={savedPath}>
               Saved
             </span>
           )

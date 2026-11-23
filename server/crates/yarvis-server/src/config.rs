@@ -8,7 +8,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
@@ -18,6 +18,7 @@ pub struct Config {
     pub secrets: SecretsConfig,
     pub ssh_agent: SshAgentConfig,
     pub sidecar: SidecarConfig,
+    pub database: DatabaseConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -26,8 +27,8 @@ pub struct ServerConfig {
     /// Loopback by default. Binding a LAN or tailnet address is a deliberate
     /// choice, since it is what makes the server reachable from other machines.
     pub bind: SocketAddr,
-    /// Where the server keeps its SQLite database and, with the vault backend,
-    /// the vault file.
+    /// Where the server keeps the setup code, its sockets and, with the vault
+    /// backend, the vault file.
     pub data_dir: PathBuf,
     /// The built web UI (`dist/`). Unset means the server serves only `/api`.
     pub web_dir: Option<PathBuf>,
@@ -35,6 +36,26 @@ pub struct ServerConfig {
     /// tokens in the clear, so it is refused unless this is set, which is
     /// for a server behind something that adds TLS, such as `tailscale serve`.
     pub allow_plain_http: bool,
+    /// The `PATH` the server gives the processes it starts: the sidecar, and
+    /// the terminal and agent sessions. Unset means they inherit the server's
+    /// own. A server started by launchd gets launchd's short `PATH`, which
+    /// misses Homebrew and mise, so `claude`, `git`, `gh` and `bun` aren't
+    /// found without this.
+    pub path: Option<String>,
+    /// Where the control and ssh-agent sockets go. Unset means the data dir,
+    /// or `~/.yarvis/run/<hash>` when a socket path there would be too long
+    /// for a Unix socket (`socket_dir.rs`). Must be absolute.
+    pub socket_dir: Option<PathBuf>,
+}
+
+impl ServerConfig {
+    /// [`Self::path`], with a blank value read as unset.
+    pub fn spawn_path(&self) -> Option<&str> {
+        self.path
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+    }
 }
 
 impl Default for ServerConfig {
@@ -44,6 +65,8 @@ impl Default for ServerConfig {
             data_dir: default_data_dir(),
             web_dir: None,
             allow_plain_http: false,
+            path: None,
+            socket_dir: None,
         }
     }
 }
@@ -103,7 +126,7 @@ impl Default for AuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SecretBackendKind {
     // `keychain` and `onepassword` need a logged-in macOS session.
@@ -165,6 +188,37 @@ impl Default for SidecarConfig {
     }
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// The Postgres database the server and the sidecar share, such as
+    /// `postgres://localhost:5432/yarvis`. `YARVIS_DATABASE_URL` wins over it.
+    pub url: Option<String>,
+    /// The schema the server's tables live in. Two servers on one database
+    /// (a dev instance beside the main one, or tests) each need their own,
+    /// or they share one account and devices.
+    pub schema: String,
+}
+
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            schema: crate::store::SCHEMA.to_string(),
+        }
+    }
+}
+
+// By hand, so a password in the URL never reaches a log through `{:?}`.
+impl std::fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DatabaseConfig")
+            .field("url", &self.url.as_deref().map(crate::database_url::mask))
+            .field("schema", &self.schema)
+            .finish()
+    }
+}
+
 fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".yarvis").join("server"))
@@ -210,6 +264,9 @@ impl Config {
             source,
         })?;
         config.validate()?;
+        if config.database.url.is_some() {
+            warn_if_others_can_read(path);
+        }
         Ok(config)
     }
 
@@ -230,6 +287,17 @@ impl Config {
         if self.ssh_agent.enabled && self.ssh_agent.upstream_socket.is_some() {
             return invalid("ssh_agent.upstream_socket is only used when ssh_agent.enabled is off");
         }
+        if let Some(path) = self.server.spawn_path() {
+            check_spawn_path(path)?;
+        }
+        if self
+            .server
+            .socket_dir
+            .as_ref()
+            .is_some_and(|d| d.is_relative())
+        {
+            return invalid("server.socket_dir must be an absolute path");
+        }
         if self.server.data_dir.is_relative() {
             return invalid(
                 "server.data_dir must be an absolute path (HOME isn't set, so set it explicitly)",
@@ -238,6 +306,45 @@ impl Config {
         Ok(())
     }
 }
+
+/// Every entry of `[server] path` must be an absolute folder. An empty or
+/// relative entry is looked up from the folder a process runs in, which for a
+/// session is a repo checkout, so a `git` or `bun` planted there would run.
+fn check_spawn_path(path: &str) -> Result<(), ConfigError> {
+    for entry in path.split(':') {
+        if entry.is_empty() {
+            return Err(ConfigError::Invalid(format!(
+                "server.path has an empty entry (a leading, trailing or doubled ':') in \"{path}\"; \
+                 an empty entry means the current folder"
+            )));
+        }
+        if !Path::new(entry).is_absolute() {
+            return Err(ConfigError::Invalid(format!(
+                "server.path entry \"{entry}\" isn't an absolute path; write it out in full \
+                 (~ isn't expanded)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The database URL can carry a password, so a `server.toml` holding one
+/// should be readable by its owner alone.
+#[cfg(unix)]
+fn warn_if_others_can_read(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.permissions().mode() & 0o077 != 0
+    {
+        tracing::warn!(
+            "{} holds the database URL and others can read it; run chmod 600 on it",
+            path.display()
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_others_can_read(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
@@ -293,6 +400,68 @@ mod tests {
         .unwrap();
         assert_eq!(config.secrets.backend, Some(SecretBackendKind::OnePassword));
         assert!(!config.ssh_agent.enabled);
+    }
+
+    #[test]
+    fn reads_the_database_url_and_hides_its_password_from_debug() {
+        let config: Config =
+            toml::from_str("[database]\nurl = \"postgres://me:s3cret@localhost/yarvis\"\n")
+                .unwrap();
+        assert_eq!(
+            config.database.url.as_deref(),
+            Some("postgres://me:s3cret@localhost/yarvis")
+        );
+        assert!(!format!("{config:?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn reads_the_path_for_spawned_processes_and_a_blank_one_is_unset() {
+        let config: Config =
+            toml::from_str("[server]\npath = \"/opt/homebrew/bin:/usr/bin:/bin\"\n").unwrap();
+        assert_eq!(
+            config.server.spawn_path(),
+            Some("/opt/homebrew/bin:/usr/bin:/bin")
+        );
+        let blank: Config = toml::from_str("[server]\npath = \"  \"\n").unwrap();
+        assert_eq!(blank.server.spawn_path(), None);
+        assert_eq!(Config::default().server.spawn_path(), None);
+    }
+
+    #[test]
+    fn refuses_a_path_with_an_empty_or_relative_entry() {
+        let with_path = |path: &str| {
+            let mut config = Config::default();
+            config.server.path = Some(path.into());
+            config.validate().map_err(|e| e.to_string())
+        };
+        with_path("/opt/homebrew/bin:/usr/bin:/bin").unwrap();
+        for bad in ["/usr/bin::/bin", ":/usr/bin", "/usr/bin:"] {
+            let err = with_path(bad).unwrap_err();
+            assert!(err.contains("empty entry"), "{bad}: {err}");
+        }
+        for (bad, entry) in [
+            ("/usr/bin:.", "\".\""),
+            ("node_modules/.bin:/usr/bin", "\"node_modules/.bin\""),
+            ("~/.local/bin:/usr/bin", "\"~/.local/bin\""),
+        ] {
+            let err = with_path(bad).unwrap_err();
+            assert!(err.contains(entry), "{bad}: {err}");
+        }
+        // Blank is unset, not an empty entry.
+        with_path("   ").unwrap();
+    }
+
+    #[test]
+    fn socket_dir_must_be_absolute() {
+        let config: Config = toml::from_str("[server]\nsocket_dir = \"/run/yarvis\"\n").unwrap();
+        assert_eq!(
+            config.server.socket_dir.as_deref(),
+            Some(Path::new("/run/yarvis"))
+        );
+        config.validate().unwrap();
+        let relative: Config = toml::from_str("[server]\nsocket_dir = \"run\"\n").unwrap();
+        let err = relative.validate().unwrap_err().to_string();
+        assert!(err.contains("socket_dir must be an absolute path"), "{err}");
     }
 
     #[test]

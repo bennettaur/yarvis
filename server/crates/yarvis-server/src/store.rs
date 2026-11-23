@@ -1,189 +1,227 @@
-//! The server's own SQLite database: devices, events, and whatever else the
-//! server owns. Postgres stays the sidecar's. Auth must work while Postgres is
-//! down, so nothing here depends on it.
+//! The server's own tables: the account, devices, events and approvals. They
+//! live in the `yarvis_server` schema of the Postgres database the sidecar
+//! uses, so there is one datastore to run and back up. Drizzle owns `public`
+//! and never sees this schema. With Postgres down, nothing here works, and so
+//! nobody can sign in or unlock the vault until it is back.
 //!
-//! One connection behind a mutex. The server's write rate is a person's
-//! clicks plus PTY-free bookkeeping, so a pool would only add lock contention
-//! inside SQLite. Calls run on the blocking pool so a slow disk never stalls
-//! the async workers.
+//! Every pooled connection has `search_path` set to the schema, so queries
+//! name tables bare. [`SCHEMA`] is the default; `[database] schema` in
+//! `server.toml` picks another, so a dev instance or a test can share the
+//! database without sharing an account.
 
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use rusqlite::Connection;
+use sqlx::migrate::{Migration, MigrationType, Migrator};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::{Executor, Postgres, SqlSafeStr, Transaction};
+
+pub const SCHEMA: &str = "yarvis_server";
+
+/// Long enough for a slow query to get a connection, short enough that a
+/// request fails with 503 soon after Postgres goes away.
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+
+const MAX_CONNECTIONS: u32 = 8;
+
+/// The cap on `migrate_with_retry`'s doubling delay between tries.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    #[error(
-        "the database has {found} migrations applied but this build knows {known}; run a newer yarvis-server"
-    )]
-    TooNew { found: i64, known: usize },
+    #[error("the database isn't reachable")]
+    Unavailable,
     #[error("database error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
-    #[error("database task failed: {0}")]
+    Db(#[from] sqlx::Error),
+    #[error("database migration failed: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
+    /// A blocking task (passphrase hashing, say) panicked or was cancelled.
+    #[error("a background task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
-    #[error("couldn't create the data dir: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Config(String),
 }
 
-/// Migrations run in order, once each. Append to the end; never edit one that
-/// has shipped, since `user_version` records how many have already run.
-/// A module that owns tables adds its own entry here. None has shipped yet.
-const MIGRATIONS: &[&str] = &[
-    // 1: devices and the event log.
-    r#"
-    CREATE TABLE devices (
-        id            TEXT PRIMARY KEY,
-        name          TEXT NOT NULL,
-        kind          TEXT NOT NULL CHECK (kind IN ('login', 'token')),
-        scopes        TEXT NOT NULL,
-        token_hash    BLOB NOT NULL UNIQUE,
-        created_by    TEXT,
-        user_agent    TEXT,
-        created_at    INTEGER NOT NULL,
-        last_seen_at  INTEGER,
-        verified_at   INTEGER,
-        revoked_at    INTEGER
-    );
-    CREATE TABLE events (
-        seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-        at         INTEGER NOT NULL,
-        device_id  TEXT,
-        kind       TEXT NOT NULL,
-        data       TEXT NOT NULL
-    );
-    "#,
-    // 2: the account, its backup codes, the setup code, and approvals.
-    r#"
-    CREATE TABLE account (
-        id               INTEGER PRIMARY KEY CHECK (id = 1),
-        passphrase_hash  TEXT NOT NULL,
-        totp_secret      BLOB NOT NULL,
-        totp_last_step   INTEGER,
-        created_at       INTEGER NOT NULL
-    );
-    CREATE TABLE backup_codes (
-        hash        BLOB PRIMARY KEY,
-        created_at  INTEGER NOT NULL,
-        used_at     INTEGER
-    );
-    CREATE TABLE setup_code (
-        id             INTEGER PRIMARY KEY CHECK (id = 1),
-        hash           BLOB NOT NULL,
-        attempts_left  INTEGER NOT NULL
-    );
-    CREATE TABLE approvals (
-        id           TEXT PRIMARY KEY,
-        kind         TEXT NOT NULL,
-        summary      TEXT NOT NULL,
-        data         TEXT NOT NULL,
-        created_at   INTEGER NOT NULL,
-        expires_at   INTEGER NOT NULL,
-        status       TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied')),
-        outcome      TEXT CHECK (outcome IN ('answered', 'timeout', 'abandoned', 'restart')),
-        answered_by  TEXT,
-        answered_at  INTEGER
-    );
-    CREATE INDEX approvals_pending ON approvals (status, created_at);
-    "#,
-];
+impl StoreError {
+    /// Postgres is down or unreachable, rather than a query being wrong. The
+    /// API answers these with 503 so a client retries instead of giving up.
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            Self::Unavailable => true,
+            Self::Db(e)
+            | Self::Migrate(
+                sqlx::migrate::MigrateError::Execute(e)
+                | sqlx::migrate::MigrateError::ExecuteMigration(e, _),
+            ) => is_connection_error(e),
+            _ => false,
+        }
+    }
+}
+
+/// Errors the user fixes outside the server (start Postgres, create the
+/// database, correct the password), after which a retry succeeds.
+fn is_connection_error(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_) => true,
+        // Class 08 is a connection failure, 28 a refused login, 3D000 a
+        // database that doesn't exist, 53300 too many connections, and 57P
+        // Postgres starting up or shutting down (a restart, say).
+        sqlx::Error::Database(db) => db.code().is_some_and(|code| {
+            code.starts_with("08")
+                || code.starts_with("28")
+                || code.starts_with("57P")
+                || code == "3D000"
+                || code == "53300"
+        }),
+        _ => false,
+    }
+}
+
+/// Migrations run in order, once each, recorded in the schema's own
+/// `_sqlx_migrations` table. Append to the end; never edit one that has
+/// shipped, since its checksum is stored.
+const MIGRATIONS: &[(i64, &str, &str)] = &[(
+    1,
+    "devices, events, the account, setup code and approvals",
+    include_str!("../migrations/0001_init.sql"),
+)];
 
 #[derive(Clone)]
 pub struct Store {
-    conn: Arc<Mutex<Connection>>,
+    pool: PgPool,
+    schema: Arc<str>,
+    /// Set once the migrations have run. Until then every query is refused
+    /// with [`StoreError::Unavailable`], so nothing reads a half-made schema.
+    ready: Arc<AtomicBool>,
 }
 
 impl Store {
-    /// Opens or creates the database. The data dir is made private (0700),
-    /// since it holds the event log and, with the vault backend, the vault.
-    pub fn open(path: &Path) -> Result<Self, StoreError> {
-        if let Some(dir) = path.parent() {
-            create_private_dir(dir)?;
-        }
-        let store = Self::init(Connection::open(path)?)?;
-        restrict_to_owner(path)?;
+    /// A store that connects on first use. Nothing touches the network here,
+    /// so a server can start listening before Postgres is up; run
+    /// [`Store::migrate`] (or [`Store::migrate_with_retry`]) before using it.
+    pub fn connect_lazy(url: &str, schema: &str) -> Result<Self, StoreError> {
+        check_schema_name(schema)?;
+        let options: PgConnectOptions = url.parse().map_err(|_| {
+            StoreError::Config("the database URL isn't a valid postgres:// URL".into())
+        })?;
+        let set_path = format!("SET search_path TO \"{schema}\"");
+        let pool = PgPoolOptions::new()
+            .max_connections(MAX_CONNECTIONS)
+            .acquire_timeout(ACQUIRE_TIMEOUT)
+            .after_connect(move |conn, _| {
+                let set_path = set_path.clone();
+                Box::pin(async move {
+                    conn.execute(sqlx::AssertSqlSafe(set_path)).await?;
+                    Ok(())
+                })
+            })
+            .connect_lazy_with(options);
+        Ok(Self {
+            pool,
+            schema: schema.into(),
+            ready: Arc::default(),
+        })
+    }
+
+    /// Connects and migrates, failing at once if Postgres isn't there.
+    pub async fn connect(url: &str, schema: &str) -> Result<Self, StoreError> {
+        let store = Self::connect_lazy(url, schema)?;
+        store.migrate().await?;
         Ok(store)
     }
 
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+    /// Migrates, retrying with backoff while Postgres is unreachable, as it
+    /// is for a moment when launchd starts the server at boot. Gives up after
+    /// `limit`, or never without one. Any other failure returns at once.
+    pub async fn migrate_with_retry(&self, limit: Option<Duration>) -> Result<(), StoreError> {
+        let deadline = limit.map(|limit| tokio::time::Instant::now() + limit);
+        let mut delay = Duration::from_secs(1);
+        loop {
+            match self.migrate().await {
+                Ok(()) => return Ok(()),
+                Err(e) if e.is_unavailable() => {
+                    if deadline.is_some_and(|d| tokio::time::Instant::now() + delay > d) {
+                        return Err(e);
+                    }
+                    tracing::warn!("waiting for the database: {e}; retrying in {delay:?}");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(MAX_RETRY_DELAY);
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
-    fn init(mut conn: Connection) -> Result<Self, StoreError> {
-        // A CLI run (`yarvis-server device add`) can open the file while the
-        // server has it open, so wait for the lock rather than fail.
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "foreign_keys", "ON")?;
-        migrate(&mut conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
+    /// Creates the schema and runs any migration not yet applied. Safe to run
+    /// from two processes at once: sqlx holds an advisory lock while it runs.
+    pub async fn migrate(&self) -> Result<(), StoreError> {
+        let mut migrator = Migrator::with_migrations(
+            MIGRATIONS
+                .iter()
+                .map(|(version, description, sql)| {
+                    Migration::new(
+                        *version,
+                        (*description).into(),
+                        MigrationType::Simple,
+                        sqlx::AssertSqlSafe(*sql).into_sql_str(),
+                        false,
+                    )
+                })
+                .collect(),
+        );
+        migrator.create_schema(self.schema.to_string());
+        // Schema-qualified, so the table never lands in `public` beside Drizzle's.
+        migrator.dangerous_set_table_name(format!("\"{}\"._sqlx_migrations", self.schema));
+        migrator.run(&self.pool).await?;
+        self.ready.store(true, Ordering::Release);
+        Ok(())
     }
 
-    /// Runs `f` with the connection on the blocking pool.
-    pub async fn call<T, F>(&self, f: F) -> Result<T, StoreError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut Connection) -> rusqlite::Result<T> + Send + 'static,
-    {
-        let conn = self.conn.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            // A panic while holding the lock can't leave a half-applied write,
-            // since SQLite rolls back the open transaction, so carry on.
-            let mut conn = conn.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            f(&mut conn)
-        })
-        .await?;
-        Ok(result?)
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    /// The pool, once migrated.
+    pub fn db(&self) -> Result<&PgPool, StoreError> {
+        if self.is_ready() {
+            Ok(&self.pool)
+        } else {
+            Err(StoreError::Unavailable)
+        }
+    }
+
+    pub async fn begin(&self) -> Result<Transaction<'static, Postgres>, StoreError> {
+        Ok(self.db()?.begin().await?)
+    }
+
+    pub fn schema(&self) -> &str {
+        &self.schema
     }
 }
 
-fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
-    // One immediate transaction, with the version read inside it, so a
-    // second process opening the file at the same time can't run a
-    // migration twice.
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let applied: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if applied as usize > MIGRATIONS.len() {
-        return Err(StoreError::TooNew {
-            found: applied,
-            known: MIGRATIONS.len(),
-        });
+/// The schema name goes into SQL unescaped, so only plain names are allowed.
+/// `public` is Drizzle's, which a `drizzle-kit push` may rewrite, and `pg_`
+/// names belong to Postgres.
+fn check_schema_name(schema: &str) -> Result<(), StoreError> {
+    let plain = !schema.is_empty()
+        && schema != "public"
+        && !schema.starts_with("pg_")
+        && schema.len() <= 63
+        && schema.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+        && schema
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain {
+        Ok(())
+    } else {
+        Err(StoreError::Config(format!(
+            "{schema:?} isn't a plain schema name"
+        )))
     }
-    for sql in &MIGRATIONS[applied as usize..] {
-        tx.execute_batch(sql)?;
-    }
-    tx.pragma_update(None, "user_version", MIGRATIONS.len() as i64)?;
-    tx.commit()?;
-    Ok(())
-}
-
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    restrict_dir_to_owner(dir)
-}
-
-#[cfg(unix)]
-fn restrict_dir_to_owner(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-}
-
-#[cfg(unix)]
-fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-#[cfg(not(unix))]
-fn restrict_dir_to_owner(_dir: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn restrict_to_owner(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 pub fn now_ms() -> i64 {
@@ -193,50 +231,195 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Stores on a schema of their own in `TEST_DATABASE_URL`, for tests.
+#[doc(hidden)]
+pub mod testing {
+    use super::*;
+
+    /// Schemas older than this are dropped when a test starts, so the ones a
+    /// finished run left behind don't pile up.
+    const STALE_AFTER_MS: i64 = 60 * 60 * 1000;
+
+    pub fn test_database_url() -> String {
+        std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+            panic!(
+                "set TEST_DATABASE_URL to a Postgres database the tests may create schemas in, \
+                 such as postgres://localhost:5432/yarvis_test"
+            )
+        })
+    }
+
+    /// A migrated store on a new, empty schema.
+    pub async fn store() -> Store {
+        let schema = new_schema().await;
+        Store::connect(&test_database_url(), &schema)
+            .await
+            .expect("couldn't open the test database")
+    }
+
+    /// A fresh schema's name, for tests that open several stores on one
+    /// schema, as two processes would.
+    pub async fn new_schema() -> String {
+        drop_stale_schemas().await;
+        let mut suffix = [0u8; 6];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut suffix);
+        let suffix: String = suffix.iter().map(|b| format!("{b:02x}")).collect();
+        format!("yarvis_test_{}_{suffix}", now_ms())
+    }
+
+    /// Best effort: a schema left behind only costs space, so any failure
+    /// here is ignored. Reads the time `new_schema` puts after the prefix.
+    async fn drop_stale_schemas() {
+        let Ok(pool) = PgPool::connect(&test_database_url()).await else {
+            return;
+        };
+        let schemas: Vec<String> = sqlx::query_scalar(
+            "SELECT nspname::text FROM pg_namespace WHERE nspname LIKE 'yarvis\\_test\\_%'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+        let cutoff = now_ms() - STALE_AFTER_MS;
+        for schema in schemas {
+            let created = schema
+                .strip_prefix("yarvis_test_")
+                .and_then(|rest| rest.split('_').next())
+                .and_then(|ms| ms.parse::<i64>().ok());
+            if created.is_some_and(|ms| ms < cutoff) && check_schema_name(&schema).is_ok() {
+                let _ = pool
+                    .execute(sqlx::AssertSqlSafe(format!(
+                        "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+                    )))
+                    .await;
+            }
+        }
+        pool.close().await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn reopening_a_database_runs_no_migration_twice() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("server.db");
-        drop(Store::open(&path).unwrap());
-        let conn = Connection::open(&path).unwrap();
-        let version: i64 = conn
-            .pragma_query_value(None, "user_version", |row| row.get(0))
+    #[tokio::test]
+    async fn migrating_twice_runs_no_migration_twice() {
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let store = Store::connect(&url, &schema).await.unwrap();
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(store.db().unwrap())
+            .await
             .unwrap();
-        assert_eq!(version as usize, MIGRATIONS.len());
-        drop(conn);
-        // A second open would fail on `CREATE TABLE devices` if it re-ran.
-        Store::open(&path).unwrap();
+        assert_eq!(applied as usize, MIGRATIONS.len());
+        // A second run would fail on `CREATE TABLE devices` if it re-ran.
+        Store::connect(&url, &schema).await.unwrap();
     }
 
-    #[test]
-    fn a_database_from_a_newer_build_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("server.db");
-        drop(Store::open(&path).unwrap());
-        Connection::open(&path)
-            .unwrap()
-            .pragma_update(None, "user_version", 999)
+    /// The server and a CLI command can start together on a new schema.
+    #[tokio::test]
+    async fn two_processes_migrating_at_once_both_succeed() {
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let (one, two, three) = tokio::join!(
+            Store::connect(&url, &schema),
+            Store::connect(&url, &schema),
+            Store::connect(&url, &schema),
+        );
+        let store = one.unwrap();
+        two.unwrap();
+        three.unwrap();
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(store.db().unwrap())
+            .await
             .unwrap();
+        assert_eq!(applied as usize, MIGRATIONS.len());
+    }
+
+    #[tokio::test]
+    async fn the_migrations_table_and_tables_stay_in_the_schema() {
+        let store = testing::store().await;
+        let inside: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_name IN ('_sqlx_migrations', 'devices', 'events', 'account')
+               AND table_schema = $1",
+        )
+        .bind(store.schema())
+        .fetch_one(store.db().unwrap())
+        .await
+        .unwrap();
+        assert_eq!(inside, 4);
+        // Another test's schema may hold these names, but `public` never does.
+        let in_public: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_name = '_sqlx_migrations' AND table_schema = 'public'",
+        )
+        .fetch_one(store.db().unwrap())
+        .await
+        .unwrap();
+        assert_eq!(in_public, 0);
+    }
+
+    #[tokio::test]
+    async fn a_database_from_a_newer_build_is_refused() {
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let store = Store::connect(&url, &schema).await.unwrap();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+             VALUES (999, 'from the future', true, '\\x00', 0)",
+        )
+        .execute(store.db().unwrap())
+        .await
+        .unwrap();
         assert!(matches!(
-            Store::open(&path),
-            Err(StoreError::TooNew { found: 999, .. })
+            Store::connect(&url, &schema).await,
+            Err(StoreError::Migrate(
+                sqlx::migrate::MigrateError::VersionMissing(999)
+            ))
         ));
     }
 
-    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_store_refuses_queries_until_migrated() {
+        let store = Store::connect_lazy(&testing::test_database_url(), "yarvis_unused").unwrap();
+        assert!(matches!(store.db(), Err(StoreError::Unavailable)));
+        assert!(StoreError::Unavailable.is_unavailable());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_database_is_unavailable_not_a_crash() {
+        // Port 1 on loopback refuses connections.
+        let store = Store::connect_lazy("postgres://127.0.0.1:1/x", SCHEMA).unwrap();
+        let err = store
+            .migrate_with_retry(Some(Duration::from_millis(10)))
+            .await
+            .unwrap_err();
+        assert!(err.is_unavailable(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_missing_database_is_waited_for_like_a_stopped_server() {
+        let mut url = url::Url::parse(&testing::test_database_url()).unwrap();
+        url.set_path("/yarvis_no_such_database");
+        let store = Store::connect_lazy(url.as_str(), SCHEMA).unwrap();
+        let err = store.migrate().await.unwrap_err();
+        assert!(err.is_unavailable(), "{err}");
+    }
+
     #[test]
-    fn the_data_dir_and_database_are_private() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let data = dir.path().join("nested").join("data");
-        let path = data.join("server.db");
-        drop(Store::open(&path).unwrap());
-        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&data), 0o700);
-        assert_eq!(mode(&path), 0o600);
+    fn only_plain_schema_names_are_allowed() {
+        assert!(check_schema_name("yarvis_server").is_ok());
+        for bad in [
+            "",
+            "Upper",
+            "a-b",
+            "a\"b",
+            "1abc",
+            "a;drop",
+            "public",
+            "pg_catalog",
+        ] {
+            assert!(check_schema_name(bad).is_err(), "{bad}");
+        }
     }
 }

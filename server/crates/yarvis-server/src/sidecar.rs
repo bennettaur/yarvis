@@ -33,6 +33,7 @@ use tokio::time::sleep;
 
 use crate::config::Config;
 use crate::events::EventLog;
+use crate::pty::SidecarSessionEnv;
 use crate::secret_blob::{SecretBlob, secret_from_root};
 use crate::settings::{Settings, SettingsStore};
 
@@ -142,6 +143,18 @@ impl Sidecar {
 
     pub fn mcp_token(&self) -> &str {
         &self.inner.mcp_token
+    }
+
+    /// What a terminal or agent session needs to reach the sidecar: its port,
+    /// the two scoped tokens, and the bearer its session tokens are signed
+    /// with (never handed to the session itself).
+    pub fn session_env(&self) -> SidecarSessionEnv {
+        SidecarSessionEnv {
+            port: self.endpoint().port,
+            attention_token: self.attention_token().to_string(),
+            signing_key: self.endpoint().token.clone(),
+            mcp_token: Some(self.mcp_token().to_string()),
+        }
     }
 
     /// Where the sidecar's output is kept. A server run as a LaunchAgent has
@@ -266,10 +279,14 @@ impl Sidecar {
     }
 
     fn build_command(&self, deps: &SupervisorDeps, secrets: &Value) -> Result<Command, String> {
-        // The sidecar inherits the server's environment, so the PATH and debug
-        // flags (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was
-        // started with reach it.
+        // The sidecar inherits the server's environment, so the debug flags
+        // (`YARVIS_DEBUG_MEMORY`, `YARVIS_DEBUG_MCP`) the server was started
+        // with reach it, and its PATH unless `[server] path` replaces it. That
+        // PATH is also where a bare program name like `bun` is looked up.
         let mut cmd = command_base(&deps.config)?;
+        if let Some(path) = deps.config.server.spawn_path() {
+            cmd.env("PATH", path);
+        }
         let endpoint = self.endpoint();
         cmd.env("YARVIS_SIDECAR_PORT", endpoint.port.to_string());
         cmd.env("YARVIS_SIDECAR_TOKEN", &endpoint.token);
@@ -459,12 +476,6 @@ pub fn sidecar_env(secrets: &Value, settings: &Settings) -> Vec<(&'static str, S
         ("telegram_otp_secret", "TELEGRAM_OTP_SECRET"),
     ];
     let mut env = Vec::new();
-    if let Some(url) = database_url(
-        database_url_override(),
-        secret_from_root(secrets, "database_url"),
-    ) {
-        env.push(("DATABASE_URL", url));
-    }
     for (key, var) in SECRET_VARS {
         if let Some(value) = secret_from_root(secrets, key) {
             env.push((*var, value));
@@ -538,17 +549,6 @@ fn allowed_origins(origins: &[String]) -> String {
         .map(|o| o.trim())
         .collect::<Vec<_>>()
         .join(",")
-}
-
-/// Picks the database the sidecar connects to. The `YARVIS_DATABASE_URL`
-/// override wins, so a server run for testing a migration uses its own
-/// database rather than the one stored for everyday use.
-fn database_url(override_url: Option<String>, stored_url: Option<String>) -> Option<String> {
-    override_url.or(stored_url)
-}
-
-fn database_url_override() -> Option<String> {
-    env_value("YARVIS_DATABASE_URL")
 }
 
 /// Reads an env var, treating an empty value as unset.
@@ -681,22 +681,6 @@ mod tests {
     }
 
     #[test]
-    fn an_override_beats_the_stored_database_url() {
-        assert_eq!(
-            database_url(
-                Some("postgres://dev".into()),
-                Some("postgres://main".into())
-            ),
-            Some("postgres://dev".into())
-        );
-        assert_eq!(
-            database_url(None, Some("postgres://main".into())),
-            Some("postgres://main".into())
-        );
-        assert_eq!(database_url(None, None), None);
-    }
-
-    #[test]
     fn the_sidecar_is_told_which_instance_it_serves_and_whether_it_owns_the_workers() {
         // The names and the "1"/"0" encoding are a contract with
         // `sidecar/src/config.ts`; drifting either side fails open.
@@ -748,11 +732,9 @@ mod tests {
         assert_eq!(get("JIRA_EMAIL"), Some("dev@acme.com"));
         assert_eq!(get("TELEGRAM_OTP_WINDOW_MINUTES"), Some("30"));
         assert_eq!(get("JIRA_BASE_URL"), None);
-        // The override, when the test runs with one, wins; see the test above.
-        assert_eq!(
-            get("DATABASE_URL"),
-            database_url(database_url_override(), Some("postgres://main".into())).as_deref()
-        );
+        // The server hands over the URL it connected with (`set_env`), not
+        // one left in the secrets.
+        assert_eq!(get("DATABASE_URL"), None);
         assert_eq!(
             get("YARVIS_CUSTOM_PROVIDER_SECRETS"),
             Some(r#"{"litellm":{"apiKey":"k"}}"#)

@@ -44,7 +44,10 @@ const BRIDGE_PERMISSIONS: &[&str] = &[
 /// Granted only to the server this app started. Clipboard history holds
 /// whatever was copied, passwords included, and the UI hands it to the
 /// server for credential screening, so it must not cross the network.
-const LOCAL_SERVER_PERMISSIONS: &[&str] = &["allow-clipboard-history"];
+/// Revealing a file in Finder takes a path on the server's machine, which is
+/// only this one when the server is local.
+const LOCAL_SERVER_PERMISSIONS: &[&str] =
+    &["allow-clipboard-history", "opener:allow-reveal-item-in-dir"];
 
 /// How long quitting or switching servers waits for the local server to stop
 /// its sidecar and exit.
@@ -202,6 +205,11 @@ async fn start_local(
         ));
     }
 
+    // Before the server starts: once it has saved a settings.json of its own,
+    // the old one is never moved.
+    if let Some(target) = crate::legacy_settings::server_settings_path() {
+        crate::legacy_settings::migrate(data_dir, &target);
+    }
     let (port, previous_port) = local_port(data_dir, &mut config).await?;
     let server_toml = write_server_config(data_dir, port, previous_port, &paths)?;
 
@@ -322,6 +330,7 @@ fn write_server_config(
     #[cfg(not(debug_assertions))]
     let dev_ui_origin: Option<String> = None;
     let agent_socket = local_server::onepassword_agent_socket();
+    let database_schema = crate::instance::server_schema();
     let rendered = local_server::render_server_config(
         &existing,
         &local_server::ServerConfigInputs {
@@ -331,6 +340,7 @@ fn write_server_config(
             paths,
             agent_socket: agent_socket.as_deref(),
             dev_ui_origin: dev_ui_origin.as_deref(),
+            database_schema: database_schema.as_deref(),
         },
     )?;
     std::fs::write(&server_toml, rendered)
@@ -581,6 +591,7 @@ mod tests {
             "plugin:event|listen",
             "plugin:notification|notify",
             "plugin:opener|open_url",
+            "plugin:opener|reveal_item_in_dir",
         ] {
             assert!(allowed(&mut context, command, &page), "{command}");
         }
@@ -650,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn a_remote_server_never_gets_the_clipboard_history() {
+    fn a_remote_server_never_gets_the_clipboard_history_or_finder() {
         let remote_server = "https://yarvis.example.com";
         let mut context = tauri::generate_context!(test = true);
         context
@@ -659,6 +670,11 @@ mod tests {
             .unwrap();
         let page = remote(&format!("{remote_server}/"));
         assert!(!allowed(&mut context, "clipboard_history", &page));
+        assert!(!allowed(
+            &mut context,
+            "plugin:opener|reveal_item_in_dir",
+            &page
+        ));
         assert!(allowed(&mut context, "get_server_connection", &page));
         assert!(allowed(&mut context, "clipboard_write", &page));
     }

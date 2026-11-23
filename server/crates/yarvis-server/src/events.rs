@@ -5,6 +5,8 @@
 //! sends the last `seq` it saw and gets everything after it, so a phone that
 //! slept through an approval request still sees it.
 
+use std::sync::Arc;
+
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -26,6 +28,14 @@ const LIVE_BUFFER: usize = 256;
 /// The auth message and pings are all a client sends on this socket.
 const MAX_CLIENT_MESSAGE: usize = 16 * 1024;
 
+/// Taken by every append for the rest of its transaction.
+const APPEND_LOCK: &str = "SELECT pg_advisory_xact_lock(hashtext($1))";
+
+/// Per schema, so two servers on separate schemas don't wait on each other.
+fn append_lock_name(schema: &str) -> String {
+    format!("{schema}.events")
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -40,12 +50,19 @@ pub struct Event {
 pub struct EventLog {
     store: Store,
     tx: broadcast::Sender<Event>,
+    /// Held from the insert to the broadcast, so this process sends events
+    /// in `seq` order.
+    order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl EventLog {
     pub fn new(store: Store) -> Self {
         let (tx, _) = broadcast::channel(LIVE_BUFFER);
-        Self { store, tx }
+        Self {
+            store,
+            tx,
+            order: Arc::default(),
+        }
     }
 
     /// Stores an event and sends it to every connected client. Any device
@@ -57,29 +74,37 @@ impl EventLog {
         kind: &str,
         data: serde_json::Value,
     ) -> Result<Event, StoreError> {
-        let tx = self.tx.clone();
-        let (device_id, kind) = (device_id.map(str::to_string), kind.to_string());
-        // The broadcast happens inside the store call, under its lock, so
-        // clients receive events in `seq` order. A client that reconnects with
-        // the highest `seq` it saw would otherwise skip one that arrived late.
-        self.store
-            .call(move |conn| {
-                let at = now_ms();
-                conn.execute(
-                    "INSERT INTO events (at, device_id, kind, data) VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![at, device_id, kind, data.to_string()],
-                )?;
-                let event = Event {
-                    seq: conn.last_insert_rowid(),
-                    at,
-                    device_id,
-                    kind,
-                    data,
-                };
-                let _ = tx.send(event.clone());
-                Ok(event)
-            })
-            .await
+        // A client that reconnects with the highest `seq` it saw would skip
+        // one that became visible late, so events must commit and be sent in
+        // `seq` order. Postgres hands out identity values before commit, so
+        // the advisory lock makes appends from every process take turns, and
+        // `order` keeps this process's broadcasts in the same order.
+        let _order = self.order.lock().await;
+        let mut tx = self.store.begin().await?;
+        sqlx::query(APPEND_LOCK)
+            .bind(append_lock_name(self.store.schema()))
+            .execute(&mut *tx)
+            .await?;
+        let at = now_ms();
+        let seq: i64 = sqlx::query_scalar(
+            "INSERT INTO events (at, device_id, kind, data) VALUES ($1, $2, $3, $4) RETURNING seq",
+        )
+        .bind(at)
+        .bind(device_id)
+        .bind(kind)
+        .bind(data.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let event = Event {
+            seq,
+            at,
+            device_id: device_id.map(str::to_string),
+            kind: kind.to_string(),
+            data,
+        };
+        let _ = self.tx.send(event.clone());
+        Ok(event)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
@@ -88,33 +113,33 @@ impl EventLog {
 
     /// Events after `seq`, oldest first.
     pub async fn since(&self, seq: i64) -> Result<Vec<Event>, StoreError> {
-        self.store
-            .call(move |conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT seq, at, device_id, kind, data FROM events
-                     WHERE seq > ?1 ORDER BY seq LIMIT ?2",
-                )?;
-                let rows = stmt.query_map(rusqlite::params![seq, MAX_CATCH_UP], |row| {
-                    let seq = row.get(0)?;
-                    let data: String = row.get(4)?;
-                    // Only `append` writes this column, from a `Value`, so a
-                    // parse failure means a corrupt row. Send null rather than
-                    // stop every client's catch-up on it.
-                    let data = serde_json::from_str(&data).unwrap_or_else(|e| {
-                        tracing::error!("event {seq} has unreadable data: {e}");
-                        serde_json::Value::Null
-                    });
-                    Ok(Event {
-                        seq,
-                        at: row.get(1)?,
-                        device_id: row.get(2)?,
-                        kind: row.get(3)?,
-                        data,
-                    })
-                })?;
-                rows.collect()
+        let rows: Vec<(i64, i64, Option<String>, String, String)> = sqlx::query_as(
+            "SELECT seq, at, device_id, kind, data FROM events
+             WHERE seq > $1 ORDER BY seq LIMIT $2",
+        )
+        .bind(seq)
+        .bind(MAX_CATCH_UP)
+        .fetch_all(self.store.db()?)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(seq, at, device_id, kind, data)| {
+                // Only `append` writes this column, from a `Value`, so a
+                // parse failure means a corrupt row. Send null rather than
+                // stop every client's catch-up on it.
+                let data = serde_json::from_str(&data).unwrap_or_else(|e| {
+                    tracing::error!("event {seq} has unreadable data: {e}");
+                    serde_json::Value::Null
+                });
+                Event {
+                    seq,
+                    at,
+                    device_id,
+                    kind,
+                    data,
+                }
             })
-            .await
+            .collect())
     }
 }
 
@@ -218,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn catch_up_returns_only_later_events_in_order() {
-        let log = EventLog::new(Store::open_in_memory().unwrap());
+        let log = EventLog::new(crate::store::testing::store().await);
         let first = log
             .append(Some("d1"), "a", serde_json::json!({}))
             .await
@@ -234,5 +259,89 @@ mod tests {
         assert_eq!(kinds, ["b", "c"]);
         assert_eq!(later[0].device_id, None);
         assert_eq!(later[0].data["x"], 1);
+    }
+
+    /// Another process midway through an append (lock taken, row inserted, not
+    /// yet committed) holds up this one, so the higher `seq` can't become
+    /// visible before the lower one.
+    #[tokio::test]
+    async fn an_append_waits_for_an_earlier_one_still_in_flight() {
+        use crate::store::testing;
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let other = Store::connect(&url, &schema).await.unwrap();
+        let log = EventLog::new(Store::connect(&url, &schema).await.unwrap());
+        let mut in_flight = other.begin().await.unwrap();
+        sqlx::query(APPEND_LOCK)
+            .bind(append_lock_name(&schema))
+            .execute(&mut *in_flight)
+            .await
+            .unwrap();
+        let first: i64 = sqlx::query_scalar(
+            "INSERT INTO events (at, kind, data) VALUES (0, 'first', '{}') RETURNING seq",
+        )
+        .fetch_one(&mut *in_flight)
+        .await
+        .unwrap();
+        let second = tokio::spawn(async move {
+            log.append(None, "second", serde_json::json!({}))
+                .await
+                .unwrap()
+                .seq
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!second.is_finished(), "committed ahead of a lower seq");
+        in_flight.commit().await.unwrap();
+        assert!(second.await.unwrap() > first);
+    }
+
+    /// Several processes appending at once, with a client catching up all the
+    /// while: if a lower `seq` could commit after a higher one, the reader
+    /// would move past it and never see it.
+    #[tokio::test]
+    async fn catch_up_misses_nothing_while_several_processes_append() {
+        use crate::store::testing;
+        const WRITERS: usize = 6;
+        const EACH: usize = 60;
+        let schema = testing::new_schema().await;
+        let url = testing::test_database_url();
+        let reader = EventLog::new(Store::connect(&url, &schema).await.unwrap());
+        let mut writers = Vec::new();
+        for _ in 0..WRITERS {
+            let log = EventLog::new(Store::connect(&url, &schema).await.unwrap());
+            writers.push(tokio::spawn(async move {
+                for _ in 0..EACH {
+                    log.append(None, "x", serde_json::json!({})).await.unwrap();
+                }
+            }));
+        }
+        let mut seen = Vec::new();
+        let mut last = 0;
+        loop {
+            // Checked before the read, so the read after the last append
+            // still happens.
+            let done = writers.iter().all(|w| w.is_finished());
+            let batch = reader.since(last).await.unwrap();
+            if done && batch.is_empty() {
+                break;
+            }
+            for event in batch {
+                last = event.seq;
+                seen.push(event.seq);
+            }
+            tokio::task::yield_now().await;
+        }
+        for writer in writers {
+            writer.await.unwrap();
+        }
+        let all: Vec<i64> = reader
+            .since(0)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.seq)
+            .collect();
+        assert_eq!(all.len(), WRITERS * EACH);
+        assert_eq!(seen, all, "the reader skipped an event that committed late");
     }
 }

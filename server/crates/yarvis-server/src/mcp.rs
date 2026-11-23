@@ -370,6 +370,34 @@ mod tests {
         );
     }
 
+    /// Removing an MCP server drops its whole entry, OAuth included, so none
+    /// of its credentials reach the next sidecar.
+    #[test]
+    fn deleting_all_of_a_servers_secrets_leaves_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = MemoryBackend::empty();
+        let blob = blob_over(dir.path(), fake.clone());
+        set_mcp_secret(&blob, "gone".into(), "header:X-A".into(), "v".into()).unwrap();
+        set_mcp_secret(&blob, "gone".into(), "env:TOKEN".into(), "w".into()).unwrap();
+        store_oauth(&blob, "gone", Some(json!({ "access_token": "at" }))).unwrap();
+        set_mcp_secret(&blob, "kept".into(), "env:TOKEN".into(), "k".into()).unwrap();
+
+        delete_mcp_all_secrets(&blob, "gone".into()).unwrap();
+
+        let root = blob.read_root().unwrap();
+        assert_eq!(
+            root["mcpServers"],
+            json!({ "kept": { "env": { "TOKEN": "k" } } })
+        );
+        assert_eq!(
+            build_sidecar_env(&root).as_deref(),
+            Some(r#"{"kept":{"env":{"TOKEN":"k"}}}"#)
+        );
+        let writes = fake.writes().len();
+        delete_mcp_all_secrets(&blob, "never-there".into()).unwrap();
+        assert_eq!(fake.writes().len(), writes, "a no-op delete writes nothing");
+    }
+
     #[test]
     fn reserved_and_malformed_slots_are_refused_without_writing() {
         let dir = tempfile::tempdir().unwrap();

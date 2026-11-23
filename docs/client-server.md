@@ -19,7 +19,7 @@ references below to `spikes/...` point there.
 
 Built:
 
-- `yarvis-server`: config, the SQLite store, sign-in with a passphrase and a
+- `yarvis-server`: config, its tables in Postgres, sign-in with a passphrase and a
   TOTP code (or a backup code), set up with a one-time setup code, devices and
   scoped tokens (`read`, `chat`, `terminal`, `approve`, `admin`), `Fresh<S>`
   checks (a TOTP code in the last 10 minutes), the event log and `/api/events`,
@@ -111,9 +111,13 @@ origin.
   `~/.yarvis/server.toml`, or the file given with `--config`.
 - Modules inside it, each owned by one area:
   - `config`: the server config file and command-line flags.
-  - `store`: SQLite (`rusqlite`, bundled) for server state: the account, devices,
-    events, approvals. Postgres stays the sidecar's database. Auth and the vault
-    must work even when Postgres is down, so server state does not live there.
+  - `store`: server state (the account, devices, events, approvals) in the
+    `yarvis_server` schema of the Postgres database the sidecar also uses, through
+    `sqlx` with runtime queries. The server runs its own migrations
+    (`migrations/`, tracked in `yarvis_server._sqlx_migrations`), and Drizzle's
+    config filters to `public`, so neither sees the other's tables. With Postgres
+    down nobody can sign in or unlock the vault; see "Postgres" below.
+  - `database_url`: where the database URL comes from (see "Postgres").
   - `auth`: the account (passphrase, TOTP, backup codes), devices, tokens,
     scopes, the setup code.
   - `events`: the append-only event log and the `/api/events` WebSocket.
@@ -150,8 +154,10 @@ authenticator app (TOTP), or one of its backup codes.
   compared in constant time.
 - **TOTP** is RFC 6238 with the parameters every app defaults to: SHA-1,
   6 digits, 30-second steps, and one step either side of now. A code at or
-  before the last accepted step is refused, so a code works once. The secret is
-  stored in SQLite as it is, since the server computes codes from it: whoever
+  before the last accepted step is refused, so a code works once. The check and
+  the write of the accepted step hold the account row (`SELECT ... FOR UPDATE`),
+  so two servers on one database can't both accept one code. The secret is
+  stored in Postgres as it is, since the server computes codes from it: whoever
   can read the database can make codes. The passphrase hash still stands
   between them and a sign-in.
 - **Backup codes** are 10 codes of 10 characters, stored as SHA-256 (they
@@ -238,6 +244,8 @@ bind = "127.0.0.1:7878"
 data_dir = "~/.yarvis/server"   # written out in full; ~ isn't expanded
 # web_dir = "/path/to/dist"     # the built web UI; unset serves only /api
 allow_plain_http = false        # needed for any bind that isn't loopback
+# path = "/opt/homebrew/bin:/usr/bin:/bin"  # PATH for the sidecar and sessions;
+                                # unset, they get the server's own
 
 [auth]
 origins = ["http://localhost:7878"]
@@ -253,6 +261,10 @@ enabled = false                 # the server's own ssh-agent; needs "vault"
 enabled = true
 # command = ["bun", "run", "..."]
 # migrations_dir = "..."       # for a compiled sidecar: YARVIS_MIGRATIONS_DIR
+
+[database]
+# url = "postgres://localhost:5432/yarvis"   # YARVIS_DATABASE_URL wins over it
+schema = "yarvis_server"        # where the server's own tables live
 ```
 
 With `secrets.backend` unset, the server follows `secretBackend` in
@@ -261,7 +273,9 @@ With `secrets.backend` unset, the server follows `secretBackend` in
 laptop already on 1Password, keeps its store when the Tauri app starts a local
 server, and Settings can still switch between the two. Once `server.toml`
 names a backend, it wins, and Settings can only change which 1Password item a
-1Password server reads.
+1Password server reads. Every settings response carries that choice as
+`configuredSecretBackend` (`null` when `secretBackend` decides), so Settings
+shows the store really in use and offers no switch the server would refuse.
 
 The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
 since the vault is where the signing key lives.
@@ -310,10 +324,62 @@ macOS session (a LaunchAgent, or the Tauri app starting it). A server started
 at boot, before anyone logs in, has no keychain. That setup needs `vault`. See
 `spikes/headless/FINDINGS.md`.
 
+## Postgres
+
+The server and the sidecar share one Postgres database (with pgvector, for the
+sidecar), as the desktop app does (`docs/getting-started.md`). The server keeps
+its tables in the `yarvis_server` schema; the sidecar's are in `public`.
+
+**The URL** comes from, in order:
+
+1. `YARVIS_DATABASE_URL` in the server's environment.
+2. `url` under `[database]` in `server.toml`. The URL can carry a password, so
+   the server warns when others can read the file.
+3. `database_url` in the Keychain or 1Password item, where older versions
+   saved it from Settings. Read only with those backends, never the vault,
+   which is locked at boot. The server logs a warning asking for the URL to be
+   moved.
+4. `postgres://localhost:5432/yarvis`, the database the getting-started guide
+   creates.
+
+The server hands the URL to the sidecar as `DATABASE_URL`. Settings shows it,
+with any password masked, and where it came from; it can't be changed there,
+since the server needs it before anyone signs in. A server on the Keychain or
+1Password backend, the bundled one the Tauri app starts included, still finds
+an older install's URL there (3), and uses the default (4) otherwise.
+
+**Two servers on one database** (a `dev:instance` beside the main app, or the
+tests) need different `[database] schema` values, or they share one account
+and devices, and each start denies the other's pending approvals. The Tauri app
+writes `yarvis_server_<instance>` for a named instance.
+
+**When Postgres isn't up**, as for a moment when launchd starts the server at
+boot, the server listens anyway and retries the connection with backoff (1s,
+doubling, at most 30s apart) until it gets one. Until then `/api/health` and
+every route that reads the database answer `503` with
+`database_unavailable`, and the sign-in screen says it is waiting and retries.
+The sidecar starts once the database is ready. A Postgres that goes away later
+gives `503`s per request, not `401`s, so no client is signed out. CLI commands
+wait 10 seconds and then fail.
+
+**Older installs** kept the server's state in `<data_dir>/server.db`. Nothing
+is copied from it: set the account up again with the new setup code. The
+server logs a line while the file is there, and it can be deleted.
+
+**Ordering guarantees** that SQLite's single writer gave come from Postgres
+locks: a TOTP code, the setup code and an approval answer are each checked and
+written under a row lock or one conditional `UPDATE`, so the first of two racing
+requests wins. Events take a transaction-scoped advisory lock per schema while
+they insert, so `seq` values commit in order across processes, and a client
+catching up with `since` never skips one that committed late.
+
+**Revocations by another process** (`auth reset --sign-out-all`) still reach
+open sockets through a two-second poll of the devices table. `LISTEN`/`NOTIFY`
+would make that immediate; it is a possible follow-up.
+
 ## Running it
 
-Every setup needs Postgres with pgvector for the sidecar, as the desktop app
-does (`docs/getting-started.md`).
+Every setup needs Postgres with pgvector (see "Postgres").
 
 **A single Mac (the Tauri app).** Nothing to configure.
 
@@ -341,6 +407,8 @@ server runs on an always-on Mac and you reach it from anywhere on the tailnet.
    bind = "127.0.0.1:7878"              # tailscale serve connects here
    data_dir = "/Users/me/.yarvis/server"
    web_dir = "/Users/me/yarvis/dist"
+   # launchd's PATH misses Homebrew and mise, where claude, git, gh and bun are
+   path = "/Users/me/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
    [auth]
    origins = ["https://mac-mini.example-tailnet.ts.net"]
@@ -357,7 +425,10 @@ server runs on an always-on Mac and you reach it from anywhere on the tailnet.
 3. Run `yarvis-server vault init`, choose the vault passphrase, and write
    down the recovery key it prints. Add the signing key it prints to GitHub
    as a signing key.
-4. Start the server (a LaunchAgent keeps it running), then
+4. Set the database, with `[database] url` in `server.toml` or
+   `YARVIS_DATABASE_URL` in the LaunchAgent's environment, unless the default
+   `postgres://localhost:5432/yarvis` is right. Start the server (a LaunchAgent
+   keeps it running), then
    `tailscale serve --bg 7878` to publish it as
    `https://mac-mini.example-tailnet.ts.net`.
 5. Open that URL, enter the setup code from `<data_dir>/setup-code`, choose
@@ -673,7 +744,14 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
 
 The sidecar's control socket is `core-control.sock` in the server's data dir
 (mode 0600, in a 0700 folder). The sidecar gets its path as
-`YARVIS_CORE_SOCK`. It keeps `control.rs`'s method list and checks. Two things
+`YARVIS_CORE_SOCK`. A Unix socket path must fit in about 104 bytes on macOS
+(108 on Linux), so when the data dir is too deep for that, the server's
+sockets go in `~/.yarvis/run/<hash of the data dir>/` instead, and
+`[server] socket_dir` puts them anywhere else (`socket_dir.rs`). Either
+folder must be a real folder owned by the server's user with mode 0700. The
+server refuses to start if the control socket can't be bound.
+
+The control socket keeps `control.rs`'s method list and checks. Two things
 differ from the desktop app: the alarm methods append `alarm.fire` and
 `alarm.release` events instead of taking over a window, and `mcp.saveOAuth`
 and `github.saveToken` write the secrets blob in whichever backend the server
@@ -681,7 +759,8 @@ uses.
 
 Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
 `enabled = false`, `upstream_socket` when set, else the server's own value;
-with `enabled = true`, always `<data_dir>/ssh-agent.sock`, never another
+with `enabled = true`, always the server's own `ssh-agent.sock` (in the data
+dir, or the folder above), never another
 agent. That socket exists only while the vault is unlocked, so a shell signs
 while it's open and fails to sign while it's locked, including a shell started
 while it was locked.
@@ -722,7 +801,8 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   with the key and socket only while the agent runs; 404 when
   `ssh_agent.enabled = false`.
 
-The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir while the
+The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir (or the
+folder above, for a long data dir or a `socket_dir`) while the
 vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
 only SSHSIG blobs in the `git` namespace with a `sha256` or `sha512` hash,
 refusing anything else before asking anyone. Each signature is an approval of kind `git.sign`, with the key's
@@ -802,6 +882,9 @@ Core commands that changed on the way from `invoke`:
 
 ## Known gaps
 
+[client-server-parity.md](client-server-parity.md) maps what the old Tauri
+core did to where it lives now, with the test that covers each piece.
+
 - **Google OAuth on a `*.ts.net` name is untried.** Google requires a Web
   application client's redirect host to end in a domain on the Public Suffix
   List, and `ts.net` is on it, but nobody has registered a `ts.net` redirect
@@ -819,8 +902,24 @@ Core commands that changed on the way from `invoke`:
   its token with `device add` on the server instead.
 - **Anyone who can reach the server can lock sign-in.** Ten wrong sign-ins
   in 15 minutes lock it for 15 minutes, whoever sends them.
-- **The database holds the TOTP secret.** Whoever reads `server.db` can make
-  codes; the passphrase's Argon2id hash is what still protects sign-in.
+- **The database holds the TOTP secret.** Whoever reads the `yarvis_server`
+  schema can make codes; the passphrase's Argon2id hash is what still protects
+  sign-in.
+- **The sidecar's database role can read the server's tables.** The sidecar
+  connects with the same URL, so a SQL injection in the sidecar, or anyone with
+  that URL, can read the TOTP secret, the passphrase hash and the devices'
+  token hashes (not the tokens), and write them. On one Mac that adds little,
+  since the sidecar runs as the same user as the server and can read its
+  files. A separate Postgres role for the server isn't practical on a default local
+  Postgres, where the sidecar also needs to create tables and the `vector`
+  extension. This holds until the sidecar's queries move into the server.
+  With the default URL and Homebrew's Postgres, which trusts every local
+  connection, "anyone with that URL" is any process on the Mac that opens a
+  socket to it, terminal and agent sessions included: one could add itself a
+  device. The server keeps `YARVIS_DATABASE_URL` out of the shells it starts,
+  but that only hides the URL, and the default one is no secret. A password
+  on the database (`docs/getting-started.md`) is what narrows it to
+  whoever holds the URL.
 - **Per-IP rate limits behind `tailscale serve`.** Every request arrives from
   127.0.0.1, so all clients share one budget on the setup and sign-in routes.
 - **Some `read` routes run git.** Listing a repo's branches and a

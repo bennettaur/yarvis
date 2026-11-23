@@ -55,6 +55,8 @@ impl From<AccountError> for ApiError {
             AccountError::Locked(left) => locked(left),
             AccountError::Gone => ApiError::conflict("the account was reset")
                 .with_detail("set it up again with the new setup code"),
+            // So a database outage during sign-in is a 503, as everywhere else.
+            AccountError::Store(e) => e.into(),
             other => ApiError::internal(other),
         }
     }
@@ -278,15 +280,11 @@ async fn sign_in(state: &AppState, name: &str, headers: &HeaderMap) -> ApiResult
         .and_then(|v| v.to_str().ok())
         .map(|s| s.chars().take(200).collect());
     let verified_at = now_ms();
-    let row_id = device_id.clone();
-    state
-        .store
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE devices SET user_agent = ?1, verified_at = ?2 WHERE id = ?3",
-                rusqlite::params![user_agent, verified_at, row_id],
-            )
-        })
+    sqlx::query("UPDATE devices SET user_agent = $1, verified_at = $2 WHERE id = $3")
+        .bind(user_agent)
+        .bind(verified_at)
+        .bind(&device_id)
+        .execute(state.store.db()?)
         .await?;
     state
         .events
@@ -326,14 +324,9 @@ struct Verified {
 }
 
 async fn device_kind(state: &AppState, device_id: &str) -> ApiResult<String> {
-    let id = device_id.to_string();
-    Ok(state
-        .store
-        .call(move |conn| {
-            conn.query_row("SELECT kind FROM devices WHERE id = ?1", [id], |row| {
-                row.get(0)
-            })
-        })
+    Ok(sqlx::query_scalar("SELECT kind FROM devices WHERE id = $1")
+        .bind(device_id)
+        .fetch_one(state.store.db()?)
         .await?)
 }
 
@@ -354,15 +347,10 @@ async fn reverify(
         return Err(wrong_code());
     }
     let verified_at = now_ms();
-    let device_id = device.device_id;
-    state
-        .store
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE devices SET verified_at = ?1 WHERE id = ?2",
-                rusqlite::params![verified_at, device_id],
-            )
-        })
+    sqlx::query("UPDATE devices SET verified_at = $1 WHERE id = $2")
+        .bind(verified_at)
+        .bind(&device.device_id)
+        .execute(state.store.db()?)
         .await?;
     Ok(Json(Verified { verified_at }))
 }
@@ -513,25 +501,13 @@ async fn sign_out_others(
 /// Revokes every live device but `keep`, tokens included, and closes their
 /// connections.
 async fn revoke_others(state: &AppState, keep: &str) -> ApiResult<Vec<String>> {
-    let keep_id = keep.to_string();
-    let revoked: Vec<String> = state
-        .store
-        .call(move |conn| {
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            let ids = {
-                let mut stmt =
-                    tx.prepare("SELECT id FROM devices WHERE id != ?1 AND revoked_at IS NULL")?;
-                stmt.query_map([&keep_id], |row| row.get(0))?
-                    .collect::<rusqlite::Result<Vec<String>>>()?
-            };
-            tx.execute(
-                "UPDATE devices SET revoked_at = ?1 WHERE id != ?2 AND revoked_at IS NULL",
-                rusqlite::params![now_ms(), keep_id],
-            )?;
-            tx.commit()?;
-            Ok(ids)
-        })
-        .await?;
+    let revoked: Vec<String> = sqlx::query_scalar(
+        "UPDATE devices SET revoked_at = $1 WHERE id != $2 AND revoked_at IS NULL RETURNING id",
+    )
+    .bind(now_ms())
+    .bind(keep)
+    .fetch_all(state.store.db()?)
+    .await?;
     for id in &revoked {
         state.auth.announce_revocation(id);
         state

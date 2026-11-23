@@ -7,7 +7,7 @@ mod common;
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
 use axum::http::StatusCode;
-use common::{Harness, until};
+use common::{Harness, cli_config, new_schema, server_command, until};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use yarvis_server::config::{Config, SecretBackendKind};
@@ -254,6 +254,48 @@ async fn with_the_agent_on_it_runs_only_while_unlocked() {
 }
 
 #[tokio::test]
+async fn socket_dir_gets_the_agent_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    let socket_dir = dir.path().join("sockets");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = data_dir.clone();
+    config.server.socket_dir = Some(socket_dir.clone());
+    config.secrets.backend = Some(SecretBackendKind::Vault);
+    config.ssh_agent.enabled = true;
+    config.validate().unwrap();
+    let created = Vault::init(&data_dir, true, VAULT_PASSPHRASE).unwrap();
+    let v = VaultHarness {
+        harness: Harness::with_config(config).await,
+        dir,
+        recovery_key: created.recovery_key.expose().to_string(),
+    };
+    let token = v.harness.setup().await;
+    let socket = ssh_agent::socket_path(&v.harness.state).unwrap();
+    assert_eq!(socket, socket_dir.join("ssh-agent.sock"));
+
+    v.unlock_with_recovery(&token).await;
+    assert!(v.harness.state.ssh_agent.is_running());
+    assert!(
+        std::fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket()
+    );
+    let mode = std::fs::metadata(socket.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+
+    v.harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    assert!(!socket.exists(), "the socket outlived the lock");
+}
+
+#[tokio::test]
 async fn a_live_server_sees_vault_init() {
     let mut v = vault_harness_without_a_vault(false).await;
     let token = v.harness.setup().await;
@@ -308,20 +350,21 @@ async fn an_agent_that_cannot_start_leaves_the_vault_unlocked() {
 
 #[tokio::test]
 async fn the_vault_init_command() {
+    let schema = new_schema().await;
     let run = |agent_enabled: bool| {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("server.toml");
         std::fs::write(
             &config,
             format!(
-                "[server]\ndata_dir = {:?}\n[secrets]\nbackend = \"vault\"\n[ssh_agent]\nenabled = {agent_enabled}\n",
-                dir.path()
+                "{}[secrets]\nbackend = \"vault\"\n[ssh_agent]\nenabled = {agent_enabled}\n",
+                cli_config(dir.path(), &schema)
             ),
         )
         .unwrap();
         let init = move || {
             use std::io::Write;
-            let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+            let mut child = server_command()
                 .args([
                     "--config",
                     config.to_str().unwrap(),

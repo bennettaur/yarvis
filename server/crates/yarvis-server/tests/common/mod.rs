@@ -1,4 +1,5 @@
-//! Shared by the integration tests: an app on an in-memory store, requests
+//! Shared by the integration tests: an app on a store of its own (a fresh
+//! schema in `TEST_DATABASE_URL`), requests
 //! through `oneshot`, and the account's setup and sign-in, with TOTP codes
 //! computed from the secret setup returns.
 
@@ -9,6 +10,7 @@ pub mod pty;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -20,7 +22,7 @@ use tower::ServiceExt;
 use yarvis_server::auth::totp;
 use yarvis_server::config::Config;
 use yarvis_server::rate_limit::RateLimiter;
-use yarvis_server::store::Store;
+use yarvis_server::store::{Store, testing};
 use yarvis_server::{AppState, app};
 
 /// The default config's origin.
@@ -28,6 +30,44 @@ pub const ORIGIN: &str = "http://localhost:7878";
 
 /// The passphrase [`Harness::setup`] signs up with.
 pub const PASSPHRASE: &str = "correct horse battery staple";
+
+/// A migrated store on a fresh schema.
+pub async fn test_store() -> Store {
+    testing::store().await
+}
+
+/// A fresh schema's name, for tests that open several stores (or run the
+/// CLI) on one schema, as separate processes would.
+pub async fn new_schema() -> String {
+    testing::new_schema().await
+}
+
+/// Another store on `schema`, with a pool of its own, as another process
+/// would have.
+pub async fn store_on(schema: &str) -> Store {
+    Store::connect(&testing::test_database_url(), schema)
+        .await
+        .unwrap()
+}
+
+/// A `server.toml` for running the binary against `schema`.
+pub fn cli_config(data_dir: &Path, schema: &str) -> String {
+    let string = |s: &str| toml::Value::String(s.to_string()).to_string();
+    format!(
+        "[server]\ndata_dir = {}\n[database]\nurl = {}\nschema = {}\n",
+        string(&data_dir.to_string_lossy()),
+        string(&testing::test_database_url()),
+        string(schema)
+    )
+}
+
+/// The binary, with the database coming from its config file alone, so a
+/// `YARVIS_DATABASE_URL` in the developer's shell can't point it elsewhere.
+pub fn server_command() -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"));
+    command.env_remove("YARVIS_DATABASE_URL");
+    command
+}
 
 pub struct Harness {
     pub state: AppState,
@@ -40,7 +80,7 @@ pub struct Harness {
 
 impl Harness {
     pub async fn new() -> Self {
-        Self::on(Store::open_in_memory().unwrap()).await
+        Self::on(test_store().await).await
     }
 
     /// Every request a test builds shares one rate-limit budget (no peer
@@ -57,7 +97,7 @@ impl Harness {
 
     /// An app on `config`, with the rate limit lifted as in [`Harness::on`].
     pub async fn with_config(config: Config) -> Self {
-        let mut harness = Self::build(config, Store::open_in_memory().unwrap()).await;
+        let mut harness = Self::build(config, test_store().await).await;
         harness.state.auth_limiter = RateLimiter::new(100_000, Duration::from_secs(60));
         harness
     }
@@ -153,9 +193,8 @@ impl Harness {
     /// use several within one 30-second step, so the last accepted step is
     /// forgotten first.
     pub async fn code(&self) -> String {
-        self.state
-            .store
-            .call(|conn| conn.execute("UPDATE account SET totp_last_step = NULL", []))
+        sqlx::query("UPDATE account SET totp_last_step = NULL")
+            .execute(self.state.store.db().unwrap())
             .await
             .unwrap();
         code_now(

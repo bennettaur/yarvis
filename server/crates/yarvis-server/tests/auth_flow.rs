@@ -6,7 +6,10 @@ mod common;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use common::{Harness, PASSPHRASE, base32_decode, code_now};
+use common::{
+    Harness, PASSPHRASE, base32_decode, cli_config, code_now, new_schema, server_command, store_on,
+    test_store,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::Message;
@@ -15,7 +18,6 @@ use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::devices::add_token_device;
 use yarvis_server::secret_blob::SecretBlob;
 use yarvis_server::settings::SettingsStore;
-use yarvis_server::store::Store;
 use yarvis_server::vault::Vault;
 
 fn login_body(passphrase: &str, code: &str, name: &str) -> serde_json::Value {
@@ -320,13 +322,12 @@ async fn a_second_factor_sent_with_the_wrong_passphrase_is_not_used_up() {
 
 #[tokio::test]
 async fn one_code_signs_in_once_even_when_two_servers_race() {
-    // Two stores on one file, as two processes would be: within one store
-    // calls already take turns, so only this reaches the transaction.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("server.db");
-    let one = Harness::on(Store::open(&path).unwrap()).await;
+    // Two stores on one schema, each with its own pool, as two processes
+    // would be.
+    let schema = new_schema().await;
+    let one = Harness::on(store_on(&schema).await).await;
     one.setup().await;
-    let two = Harness::on(Store::open(&path).unwrap()).await;
+    let two = Harness::on(store_on(&schema).await).await;
     let code = one.code().await;
     let body = login_body(PASSPHRASE, &code, "x");
     let (a, b) = tokio::join!(
@@ -365,16 +366,11 @@ async fn a_token_with_a_recent_check_still_is_not_fresh() {
     )
     .await
     .unwrap();
-    let id = cli.device.device_id.clone();
     // Only a stray write could set this; the device's kind is what decides.
-    h.state
-        .store
-        .call(move |conn| {
-            conn.execute(
-                "UPDATE devices SET verified_at = ?1 WHERE id = ?2",
-                rusqlite::params![yarvis_server::store::now_ms(), id],
-            )
-        })
+    sqlx::query("UPDATE devices SET verified_at = $1 WHERE id = $2")
+        .bind(yarvis_server::store::now_ms())
+        .bind(&cli.device.device_id)
+        .execute(h.state.store.db().unwrap())
         .await
         .unwrap();
     let (st, body) = h
@@ -407,10 +403,9 @@ async fn admin_actions_need_a_recent_code() {
     assert_eq!(st, StatusCode::OK, "fresh right after setup");
 
     // Age the last check past the window rather than waiting ten minutes.
-    let id = laptop_id.clone();
-    h.state
-        .store
-        .call(move |conn| conn.execute("UPDATE devices SET verified_at = 0 WHERE id = ?1", [id]))
+    sqlx::query("UPDATE devices SET verified_at = 0 WHERE id = $1")
+        .bind(&laptop_id)
+        .execute(h.state.store.db().unwrap())
         .await
         .unwrap();
     let (st, r) = h
@@ -624,12 +619,12 @@ async fn auth_reset_reopens_setup_with_a_new_code() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("server.toml");
     let data_dir = dir.path().join("data");
-    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
-    let db = data_dir.join("server.db");
-    let mut h = Harness::on(Store::open(&db).unwrap()).await;
+    let schema = new_schema().await;
+    std::fs::write(&config, cli_config(&data_dir, &schema)).unwrap();
+    let mut h = Harness::on(store_on(&schema).await).await;
     let laptop = h.setup().await;
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+    let output = server_command()
         .args(["--config", config.to_str().unwrap(), "auth", "reset"])
         .output()
         .unwrap();
@@ -673,8 +668,9 @@ async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("server.toml");
     let data_dir = dir.path().join("data");
-    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
-    let h = Harness::on(Store::open(&data_dir.join("server.db")).unwrap()).await;
+    let schema = new_schema().await;
+    std::fs::write(&config, cli_config(&data_dir, &schema)).unwrap();
+    let h = Harness::on(store_on(&schema).await).await;
     let laptop = h.setup().await;
     let (bot_id, bot) = h.mint(&laptop, "bot", json!(["read"])).await;
     let (old_id, _) = h.mint(&laptop, "old", json!(["read"])).await;
@@ -710,7 +706,7 @@ async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
         .unwrap();
     ws.next().await.unwrap().unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+    let output = server_command()
         .args([
             "--config",
             config.to_str().unwrap(),
@@ -759,17 +755,9 @@ async fn auth_reset_can_sign_out_every_device_and_close_its_sockets() {
         "the old one's, then one per live device"
     );
     // Read through the store: no token can list devices now.
-    let old = old_id.clone();
-    let after: Option<i64> = h
-        .state
-        .store
-        .call(move |conn| {
-            conn.query_row(
-                "SELECT revoked_at FROM devices WHERE id = ?1",
-                [old],
-                |row| row.get(0),
-            )
-        })
+    let after: Option<i64> = sqlx::query_scalar("SELECT revoked_at FROM devices WHERE id = $1")
+        .bind(&old_id)
+        .fetch_one(h.state.store.db().unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -1058,15 +1046,14 @@ async fn revocation_closes_an_open_event_stream() {
 
 #[tokio::test]
 async fn the_account_and_devices_survive_a_restart() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("server.db");
+    let schema = new_schema().await;
     let (laptop, secret) = {
-        let h = Harness::on(Store::open(&path).unwrap()).await;
+        let h = Harness::on(store_on(&schema).await).await;
         let laptop = h.setup().await;
         (laptop, h.totp_secret.lock().unwrap().clone())
     };
 
-    let h = Harness::on(Store::open(&path).unwrap()).await;
+    let h = Harness::on(store_on(&schema).await).await;
     *h.totp_secret.lock().unwrap() = secret;
     assert_eq!(h.setup_code, "", "no setup code once the account exists");
     let (st, _) = h.call("GET", "/api/devices/me", Some(&laptop), None).await;
@@ -1097,7 +1084,7 @@ async fn events_name_the_device_that_caused_them() {
 
 #[tokio::test]
 async fn the_sign_in_routes_are_rate_limited() {
-    let h = Harness::with_default_limit(Store::open_in_memory().unwrap()).await;
+    let h = Harness::with_default_limit(test_store().await).await;
     let mut last = StatusCode::OK;
     let guess = json!({ "passphrase": "nobody knows this", "code": "000000", "deviceName": "x" });
     for _ in 0..40 {
@@ -1125,10 +1112,8 @@ async fn the_sign_in_routes_are_rate_limited() {
 async fn the_setup_code_file_is_private_and_goes_once_the_code_is_used() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("setup-code");
-    let state = yarvis_server::AppState::new(
-        yarvis_server::config::Config::default(),
-        Store::open_in_memory().unwrap(),
-    );
+    let state =
+        yarvis_server::AppState::new(yarvis_server::config::Config::default(), test_store().await);
     let code = state
         .account
         .issue_setup_code_if_needed(Some(&file))
@@ -1163,9 +1148,10 @@ async fn the_device_add_command_prints_a_working_token() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("server.toml");
     let data_dir = dir.path().join("data");
-    std::fs::write(&config, format!("[server]\ndata_dir = {:?}\n", data_dir)).unwrap();
+    let schema = new_schema().await;
+    std::fs::write(&config, cli_config(&data_dir, &schema)).unwrap();
     let run = |scopes: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_yarvis-server"))
+        server_command()
             .args(["--config", config.to_str().unwrap(), "device", "add"])
             .args(["--name", "Tauri on test", "--scopes", scopes])
             .output()
@@ -1182,7 +1168,7 @@ async fn the_device_add_command_prints_a_working_token() {
     assert_eq!(stdout.lines().count(), 1, "only the token goes to stdout");
     let token = stdout.trim();
 
-    let h = Harness::on(Store::open(&data_dir.join("server.db")).unwrap()).await;
+    let h = Harness::on(store_on(&schema).await).await;
     let (st, me) = h.call("GET", "/api/devices/me", Some(token), None).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(me["scopes"], json!(["read", "chat"]));

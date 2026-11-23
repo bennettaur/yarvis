@@ -1,5 +1,4 @@
 import { ensureOk, sidecarFetch } from "./api";
-import { core } from "./core";
 
 /** Mirrors the sidecar's `LogLevel`. */
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -36,14 +35,6 @@ export async function getLogs(filter: LogFilter = {}): Promise<LogPage> {
   const res = await sidecarFetch(`/api/logs?${params.toString()}`);
   await ensureOk(res, "logs");
   return res.json();
-}
-
-/**
- * Where the core writes the sidecar's output. Unlike the buffer above this
- * survives a restart and a crash, which is what a bug report wants attached.
- */
-export function sidecarLogPath(): Promise<string> {
-  return core<string>("get_sidecar_log_path");
 }
 
 /** One log line as it reads in a copied report. */

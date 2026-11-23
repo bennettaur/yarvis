@@ -15,7 +15,7 @@ use yarvis_server::pty::PtyOptions;
 use yarvis_server::pty::session::Size;
 use yarvis_server::secret_store::SecretBackend;
 
-use common::pty::{Server, Setup, serve_with};
+use common::pty::{Server, Setup, output_of, serve_with};
 use common::{WAIT, until};
 use yarvis_server::secret_store::memory::MemoryBackend;
 
@@ -97,6 +97,73 @@ async fn the_socket_is_private_to_the_user() {
         .permissions()
         .mode();
     assert_eq!(dir_mode & 0o777, 0o700);
+}
+
+/// A folder nested deep enough that a socket in it passes `sun_path`'s limit
+/// (104 bytes on macOS).
+fn long_dir(under: &std::path::Path) -> PathBuf {
+    under.join("a-data-dir-whose-name-goes-on-".repeat(5))
+}
+
+/// The server's state with `[server] socket_dir` set.
+fn with_socket_dir(server: &Server, socket_dir: PathBuf) -> yarvis_server::AppState {
+    let mut state = server.state.clone();
+    let mut config = (*state.config).clone();
+    config.server.socket_dir = Some(socket_dir);
+    state.config = std::sync::Arc::new(config);
+    state
+}
+
+#[tokio::test]
+async fn socket_dir_gets_a_working_private_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = serve_with(Setup::default()).await;
+    let dir = server.dir.path().join("sockets");
+    let path = yarvis_server::control::start(with_socket_dir(&server, dir.clone()))
+        .await
+        .unwrap();
+    assert_eq!(path, dir.join("core-control.sock"));
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+    assert_eq!(dir_mode & 0o777, 0o700);
+
+    let mut control = Control::connect(&path).await;
+    let reply = control.call("nope", json!({})).await;
+    assert!(reply["error"].is_string(), "{reply}");
+}
+
+#[tokio::test]
+async fn a_planted_socket_dir_stops_the_hand_off() {
+    let server = serve_with(Setup::default()).await;
+    let link = server.dir.path().join("sockets");
+    std::os::unix::fs::symlink(server.dir.path(), &link).unwrap();
+    let mut state = with_socket_dir(&server, link);
+    let database = yarvis_server::database_url::DatabaseUrl {
+        url: "postgres://localhost:5432/unused".into(),
+        source: yarvis_server::database_url::UrlSource::ConfigFile,
+    };
+    let err = yarvis_server::hand_off_to_sidecar(&mut state, database)
+        .await
+        .unwrap_err();
+    assert!(err.contains("isn't a directory"), "{err}");
+}
+
+#[tokio::test]
+async fn a_socket_dir_too_long_stops_the_hand_off() {
+    let server = serve_with(Setup::default()).await;
+    let mut state = with_socket_dir(&server, long_dir(server.dir.path()));
+    let database = yarvis_server::database_url::DatabaseUrl {
+        url: "postgres://localhost:5432/unused".into(),
+        source: yarvis_server::database_url::UrlSource::ConfigFile,
+    };
+    let err = yarvis_server::hand_off_to_sidecar(&mut state, database)
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("choose a shorter [server] socket_dir"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -294,12 +361,6 @@ async fn agent_shell(server: &Server) -> std::sync::Arc<yarvis_server::pty::sess
     .await
     .unwrap()
     .unwrap()
-}
-
-fn output_of(session: &yarvis_server::pty::session::Session) -> String {
-    let attach = session.subscribe(u64::MAX, Some(0));
-    session.detach(u64::MAX);
-    String::from_utf8_lossy(&attach.catchup).into_owned()
 }
 
 /// Starts `cat` in the session under a pid it prints first, and returns that
@@ -508,4 +569,131 @@ async fn a_send_whose_agent_exits_during_the_pause_is_not_submitted() {
             .contains("typed but not submitted"),
         "{reply}"
     );
+}
+
+/// The session `id` holds now. Assumes it isn't ending: one that exits
+/// between the two calls is replaced by a plain shell.
+async fn live_session(
+    server: &Server,
+    id: &str,
+) -> Option<std::sync::Arc<yarvis_server::pty::session::Session>> {
+    if !server.state.pty.exists(id) {
+        return None;
+    }
+    let (pty, id) = (server.state.pty.clone(), id.to_string());
+    tokio::task::spawn_blocking(move || {
+        pty.attach_or_spawn(
+            &id,
+            Size {
+                cols: 120,
+                rows: 32,
+            },
+            None,
+        )
+    })
+    .await
+    .unwrap()
+    .ok()
+}
+
+/// A review workspace's Ask Claude session: started over the socket in its
+/// own folder with the files it reads, left alone while it runs, replaced
+/// once it has exited, and ended by `claude.killReview`. A fake `claude`
+/// prints its arguments and exits on the first line it reads.
+#[tokio::test]
+async fn claude_spawn_review_starts_one_session_and_kill_review_ends_it() {
+    let (server, path) = start().await;
+    let mut control = Control::connect(&path).await;
+    // Real paths, since the core compares the folders as real paths.
+    let root = std::fs::canonicalize(server.dir.path()).unwrap();
+    let cwd = root.join(".review-sessions").join(WORKSPACE);
+    let checkout = root.join(".review").join(WORKSPACE).join("pr1");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&checkout).unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let claude = bin.join("claude");
+    std::fs::write(
+        &claude,
+        "#!/bin/sh\necho \"fake-claude $*\"\nread -r line\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let id = format!("review-claude:{WORKSPACE}");
+    let spawn = json!({
+        "workspaceId": WORKSPACE,
+        "cwd": cwd,
+        "addDirs": [checkout],
+        "settings": "{\"disableAllHooks\":true}",
+        "context": "github/o/r/1 in pr1.",
+        "loadRepoConfig": false,
+    });
+
+    // The lockdown is made of Claude Code flags, so another agent is refused.
+    server.write_settings(json!({ "agentCommand": "cat" }));
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert!(
+        reply["error"].as_str().unwrap().contains("not Claude Code"),
+        "{reply}"
+    );
+    assert!(!server.state.pty.exists(&id));
+
+    server.write_settings(json!({ "agentCommand": claude.to_string_lossy() }));
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert_eq!(reply["ok"], true, "{reply}");
+    let first = live_session(&server, &id).await.expect("a running session");
+    until("the fake claude to start", || {
+        let first = first.clone();
+        async move {
+            output_of(&first)
+                .contains("fake-claude --setting-sources user")
+                .then_some(())
+        }
+    })
+    .await;
+    let files = root.join(".review").join(WORKSPACE).join(".ask-claude");
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(files.join("settings.json")).unwrap())
+            .unwrap();
+    assert_eq!(settings["disableAllHooks"], true);
+    assert_eq!(
+        settings["permissions"]["additionalDirectories"],
+        json!([checkout])
+    );
+    let prompt = std::fs::read_to_string(files.join("system-prompt.md")).unwrap();
+    assert!(prompt.ends_with("github/o/r/1 in pr1."), "{prompt}");
+
+    // A start while it runs leaves it alone.
+    let reply = control.call("claude.spawnReview", spawn.clone()).await;
+    assert_eq!(reply["ok"], true);
+    let again = live_session(&server, &id).await.unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+
+    // Once it has exited, a start replaces it.
+    first.write(None, b"\n".to_vec()).await.unwrap();
+    until("the fake claude to exit", || {
+        let running = first.is_running();
+        async move { (!running).then_some(()) }
+    })
+    .await;
+    let reply = control.call("claude.spawnReview", spawn).await;
+    assert_eq!(reply["ok"], true);
+    let replaced = live_session(&server, &id).await.expect("a new session");
+    assert!(!std::sync::Arc::ptr_eq(&first, &replaced));
+
+    let reply = control
+        .call("claude.killReview", json!({ "workspaceId": WORKSPACE }))
+        .await;
+    assert_eq!(reply["ok"], true);
+    assert!(!server.state.pty.exists(&id));
+    until("the session to end", || {
+        let running = replaced.is_running();
+        async move { (!running).then_some(()) }
+    })
+    .await;
+    let reply = control
+        .call("claude.killReview", json!({ "workspaceId": "a/b" }))
+        .await;
+    assert_eq!(reply["error"], "invalid workspaceId");
 }

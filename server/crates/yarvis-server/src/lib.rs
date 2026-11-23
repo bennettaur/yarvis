@@ -7,6 +7,7 @@ pub mod config;
 pub mod control;
 pub mod core_api;
 pub mod custom_providers;
+pub mod database_url;
 pub mod devices;
 pub mod embeddings_secrets;
 pub mod error;
@@ -21,6 +22,7 @@ pub mod secret_store;
 pub mod settings;
 pub mod sidecar;
 pub mod sidecar_proxy;
+pub mod socket_dir;
 pub mod ssh_agent;
 pub mod store;
 pub mod vault;
@@ -30,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::FromRef;
+use axum::extract::{FromRef, State};
 use axum::routing::{any, get, post};
 
 use crate::approvals::Approvals;
@@ -38,7 +40,7 @@ use crate::auth::account::Account;
 use crate::auth::{Auth, Authed, DeviceContext, Read};
 use crate::config::Config;
 use crate::events::EventLog;
-use crate::pty::{PtyManager, PtyOptions, SidecarSessionEnv};
+use crate::pty::{PtyManager, PtyOptions};
 use crate::rate_limit::RateLimiter;
 use crate::secret_blob::SecretBlob;
 use crate::settings::SettingsStore;
@@ -73,6 +75,9 @@ pub struct AppState {
     pub secrets: SecretBlob,
     pub sidecar: Sidecar,
     pub pty: PtyManager,
+    /// The database URL and where it came from, for Settings to show. `main`
+    /// fills it in; `AppState::new` only gets the store.
+    pub database: Option<database_url::DatabaseUrl>,
 }
 
 impl AppState {
@@ -90,17 +95,15 @@ impl AppState {
             secrets.clone(),
             events.clone(),
             config.ssh_agent.clone(),
-            PtyOptions::default(),
+            PtyOptions {
+                path: config.server.spawn_path().map(str::to_string),
+                ..PtyOptions::default()
+            },
         );
         pty.set_server_ssh_agent(ssh_agent::configured_socket(&config));
         // The sidecar's port and tokens are fixed for the server's life, so
         // every session can be given them from the start.
-        pty.set_sidecar_env(Some(SidecarSessionEnv {
-            port: sidecar.endpoint().port,
-            attention_token: sidecar.attention_token().to_string(),
-            signing_key: sidecar.endpoint().token.clone(),
-            mcp_token: Some(sidecar.mcp_token().to_string()),
-        }));
+        pty.set_sidecar_env(Some(sidecar.session_env()));
         Self {
             account: Account::new(store.clone()),
             approvals: Approvals::new(store.clone(), events.clone()),
@@ -115,8 +118,33 @@ impl AppState {
             auth: Auth::new(store.clone()),
             events,
             store,
+            database: None,
         }
     }
+}
+
+/// Gives the sidecar what only a running server has: the database URL it
+/// connected with (`DATABASE_URL`) and the control socket's path
+/// (`YARVIS_CORE_SOCK`). Both are read at spawn, so this runs before the
+/// sidecar's supervisor starts. Without the socket the sidecar can't start or
+/// message agent sessions, fire alarms or save MCP and GitHub tokens, so an
+/// error here should stop the server rather than run without it.
+pub async fn hand_off_to_sidecar(
+    state: &mut AppState,
+    database: database_url::DatabaseUrl,
+) -> Result<(), String> {
+    state.sidecar.set_env("DATABASE_URL", &database.url);
+    state.database = Some(database);
+    #[cfg(unix)]
+    {
+        let path = control::start(state.clone())
+            .await
+            .map_err(|e| format!("the control socket isn't available: {e}"))?;
+        state
+            .sidecar
+            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy());
+    }
+    Ok(())
 }
 
 impl FromRef<AppState> for Auth {
@@ -153,8 +181,29 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "status": "ok", "service": "yarvis-server" }))
+/// 503 until the database has been reached and migrated once, so a client
+/// waiting for the server to start waits for that too. A later outage shows
+/// as 503s on the routes that need the database, not here.
+async fn health(
+    State(state): State<AppState>,
+) -> (axum::http::StatusCode, axum::Json<serde_json::Value>) {
+    let (status, label, database) = if state.store.is_ready() {
+        (axum::http::StatusCode::OK, "ok", "ok")
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "starting",
+            "unavailable",
+        )
+    };
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "status": label,
+            "service": "yarvis-server",
+            "database": database,
+        })),
+    )
 }
 
 async fn me(Authed { device, .. }: Authed<Read>) -> axum::Json<DeviceContext> {

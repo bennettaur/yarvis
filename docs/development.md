@@ -88,6 +88,12 @@ TEST_DATABASE_URL=postgres://localhost:5432/yarvis_test \
 Tests truncate tables between cases. Never point them at your real `yarvis`
 database.
 
+The server's tests (`cargo test --manifest-path server/Cargo.toml`) also need
+`TEST_DATABASE_URL`, and fail at once without it. Each test makes a schema of
+its own (`yarvis_test_<time>_<random>`) in that database, and a run drops the
+ones older than an hour that earlier runs left. The end-to-end test
+(`bun run e2e`) needs it too, and the `psql` CLI.
+
 Settings kept in `settings.json` (custom providers, voice config and so on)
 aren't in Postgres, so truncating doesn't reset them. The sidecar preload in
 `sidecar/src/test/setup.ts` points `YARVIS_SETTINGS_PATH` at a temp file and
@@ -327,8 +333,10 @@ If something else holds one of the three ports, the launcher moves to the next
 free pair. The second Vite port is the HMR socket, used when `TAURI_DEV_HOST`
 is set. `YARVIS_DEV_PORT` pins a port instead, and fails if it is taken.
 Because macOS derives the app data directory from the identifier, each instance
-gets its own `connection.json`, its own `server.db` and its own Keychain device
-token. The window title shows the name.
+gets its own `connection.json`, its own `server.toml` and its own Keychain
+device token. Its server keeps its tables in a schema named after the instance
+(`yarvis_server_migration_test`), so it has its own account and devices even on
+the shared database. The window title shows the name.
 
 Use `dev:instance` rather than setting `YARVIS_INSTANCE` on a plain
 `bun run tauri dev`. The variable alone makes the process skip the hotkeys and
@@ -354,13 +362,10 @@ YARVIS_DATABASE_URL="postgres://localhost:5432/yarvis_dev" \
   bun run dev:instance migration-test
 ```
 
-`YARVIS_DATABASE_URL` replaces only the database URL. Every other secret still
-comes from the shared item. Two cautions:
-
-- The Settings screen reads and writes the **shared** database URL, not the
-  override. Changing it from the isolated instance repoints your main one.
-- A connection string on the command line ends up in your shell history and in
-  `ps` output. Export it or use `.pgpass` if it has a password.
+`YARVIS_DATABASE_URL` is the database for that instance's server and sidecar.
+Every secret still comes from the shared item. A connection string on the
+command line ends up in your shell history and in `ps` output. Export it or use
+`.pgpass` if it has a password.
 
 ### Work only one instance does
 
