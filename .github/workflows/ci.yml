@@ -286,6 +286,24 @@ jobs:
         working-directory: server
         run: cargo test --all-targets
 
+  macos-app:
+    name: macOS app (swift build, swift test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # SwiftTerm's manifest needs Swift 6.2, which the runner's default Xcode
+      # may predate, so the newest installed Xcode is picked.
+      - name: Select the newest Xcode
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          swift --version
+      - name: swift build
+        working-directory: apps/macos
+        run: swift build
+      - name: swift test
+        working-directory: apps/macos
+        run: swift test
   android:
     name: Android app (unit tests, build, lint)
     runs-on: ubuntu-latest
