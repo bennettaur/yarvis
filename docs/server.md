@@ -32,17 +32,20 @@ The app keeps this server's files in
 | Data, including the setup code | `server/` |
 | Log | `~/Library/Logs/com.mikebennett.yarvis/server.log` |
 
-The app rewrites `bind`, `data_dir`, `web_dir` and its own loopback origins
-in `server.toml` on every start. Anything else you add there, such as another
+On every start the app rewrites `bind`, `web_dir`, the `[sidecar]` paths of
+a release build and its own loopback origins in `server.toml`, and fills in
+`data_dir` if it's missing. Anything else you add there, such as another
 entry in `auth.origins`, is kept. Restart the app after editing it.
 
-**Its port.** A dev build (`bun run tauri dev`) always uses port 7420. A
+**Its port.** A dev build (`bun run tauri dev`) uses port 7420, which is
+Vite's port plus 6000; a `bun run dev:instance` build moves both. A
 release build picks a free port the first time and keeps it while it stays
 free. The port in use is the one in `bind` in `server.toml`.
 
 **Its account.** The app pairs itself with a device token, so it never needs
-to sign in, and the server's account isn't set up yet. You need the account
-before any other device can sign in, the Android app included. Set it up once:
+to sign in, and no sign-in account exists on the server yet. You need the
+account before any other device can sign in, the Android app included. Set
+it up once:
 
 1. Find the setup code in
    `~/Library/Application Support/com.mikebennett.yarvis/server/setup-code`.
@@ -104,7 +107,10 @@ the desktop app at this server instead (step 7).
    secrets backends, and [Commit signing](#commit-signing-and-the-ssh-agent)
    below explains the `[ssh_agent]` section.
 
-3. **With the vault backend only, create the vault:**
+3. **With the vault backend only, create the vault.** If you want the
+   server to sign commits too, add the `[ssh_agent]` section from
+   [Home server](#home-server-sign-with-the-servers-own-agent) to
+   `server.toml` first, so this step also makes the signing key.
 
    ```bash
    server/target/release/yarvis-server vault init
@@ -120,7 +126,8 @@ the desktop app at this server instead (step 7).
    ```
 
    On its first run it prints a setup code, and also writes it to
-   `<data_dir>/setup-code`. Leave it running.
+   `<data_dir>/setup-code`. Leave it running. A server first started under
+   launchd (step 6) writes the code to its log file instead of a terminal.
 
 5. **Set up the account.** Open `http://localhost:7878`, enter the setup
    code, choose a passphrase, scan the QR code into an authenticator app,
@@ -156,9 +163,11 @@ the desktop app at this server instead (step 7).
    </plist>
    ```
 
-   Then load it:
+   If you put a database URL with a password in it, make the file readable
+   only by you. Then load it:
 
    ```bash
+   chmod 600 ~/Library/LaunchAgents/dev.yarvis.server.plist
    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.yarvis.server.plist
    ```
 
@@ -197,9 +206,11 @@ this:
 2. Otherwise, `[ssh_agent] upstream_socket`, when it is set.
 3. Otherwise, the `SSH_AUTH_SOCK` the server itself started with.
 
-When you start the server from a terminal, or the desktop app starts it, (3)
-passes on your login shell's agent. launchd doesn't give a LaunchAgent your
-shell's `SSH_AUTH_SOCK`, so a server under launchd needs (1) or (2).
+Started from a terminal, rule 3 passes on your login shell's agent. Anything
+launchd starts gets macOS's own agent instead: a LaunchAgent, and the desktop
+app when you open it from the Dock or Finder. So a server under launchd needs
+rule 1 or 2, and the desktop app fills in rule 2 for you when 1Password's
+agent is running.
 
 ### Work laptop: sign with 1Password
 
@@ -220,7 +231,8 @@ to approve each use on the laptop itself.
 3. Tell the server to use that socket:
 
    - **The desktop app's server:** nothing to do. When the socket exists, the
-     app writes it into `server.toml` as `upstream_socket`.
+     app writes it into `server.toml` as `upstream_socket`, unless you set
+     one yourself.
    - **A server you run yourself:** add it to `~/.yarvis/server.toml`,
      written out in full, then restart the server:
 
@@ -255,7 +267,8 @@ approve each signature from any device, your phone included.
    enabled = true
    ```
 
-2. Run `yarvis-server vault init` (step 3 above). With the agent on, it also
+2. Run `yarvis-server vault init` (step 3 of
+   [Run the server on its own](#run-the-server-on-its-own)). With the agent on, it also
    makes a signing key and prints its public key. Add that key to GitHub as a
    **signing key**.
 3. Point git at it in `~/.gitconfig`:
@@ -283,9 +296,23 @@ to it. Clients send their device token with every request, so the server
 expects HTTPS from anything that isn't on the same machine. The Android app
 and the desktop app both refuse plain `http` to another host.
 
+Set up the server's account before you publish it. Until the account exists,
+whoever enters the setup code first owns the server.
+
+Everyone who can reach the address shares one sign-in budget: ten wrong tries
+in 15 minutes lock sign-in for everyone, you included. Behind Tailscale or
+Caddy every request reaches the server from the same Mac, so the server can't
+tell guessers apart. Publish it only to networks whose devices you trust.
+
 Whichever you use, the server's `Host` check only lets in names it knows. Add
 the new `https://` address to `auth.origins` in `server.toml` and restart the
 server. Otherwise every request gets `403 unknown host`.
+
+The first `https` address in `auth.origins` also becomes where OAuth sign-ins
+come back to, for Google Calendar and MCP servers. A Google "Desktop app"
+client stops working once it's there, so switch to a "Web application"
+client as in
+[Google Calendar on a server you reach remotely](configuration.md#google-calendar-on-a-server-you-reach-remotely).
 
 Tailscale is the easier of the two. It works away from home, needs no domain,
 and its certificates work with the Android app as they are.
@@ -316,8 +343,10 @@ and its certificates work with the Android app as they are.
 5. Install Tailscale on the phone or other computer and sign in to the same
    tailnet.
 
-`tailscale serve` only publishes inside your tailnet. Nobody outside it can
-reach the server. A release build of the desktop app can move to another port
+`tailscale serve` only publishes inside your tailnet. Every device and user
+your tailnet's access rules allow can reach the sign-in screen, which matters
+on a shared or company tailnet. Don't use `tailscale funnel`, which publishes
+to the whole internet. A release build of the desktop app can move to another port
 if its old one is taken, which breaks this. If that happens, publish the new
 port the same way.
 
@@ -341,7 +370,9 @@ Caddy modules of their own.
    router, say `192.168.1.20`.
 2. **Point a name at it.** In your DNS provider, add an `A` record such as
    `yarvis.home.example.com` → `192.168.1.20`. A public record for a private
-   address is harmless, since nothing outside your network can reach it. Use
+   address only reveals that address and the name, which also show up in
+   public certificate logs once Let's Encrypt issues the certificate. Nothing
+   outside your network can reach it. Use
    a public record rather than one only your router knows: an Android phone
    with **Private DNS** turned on skips the router's DNS.
 3. **Get Caddy with the DNS module.** The standard Homebrew build doesn't
@@ -423,20 +454,23 @@ Caddy modules of their own.
    `https://yarvis.home.example.com/api/health` is the check there.
 
 Anyone on your Wi-Fi can now reach the sign-in screen. Signing in still takes
-your passphrase and an authenticator code, and repeated failures lock sign-in
-for 15 minutes. Don't forward the port on your router to the internet.
+your passphrase and an authenticator code, but a guest device can lock you out
+for 15 minutes at a time by guessing (see above). Put guests on a separate
+network if your router supports it. Don't forward the port on your router to
+the internet.
 
 If Caddy runs on another machine, such as a NAS, the server has to listen on
 the LAN (`bind = "192.168.1.20:7878"` with `allow_plain_http = true`). The
 hop from Caddy to the server is then plain HTTP across your network, device
-tokens included. Keep Caddy on the server's Mac when you can.
+tokens included, and any device on your network can skip Caddy and talk to
+the server directly. Keep Caddy on the server's Mac.
 
 ## Connect the Android app
 
 The app needs an HTTPS address from [Tailscale](#reach-it-over-tailscale) or
 [Caddy](#reach-it-on-your-home-network-with-caddy), and a server whose
 account is set up. For the desktop app's server, set up the account as in
-[Its account](#the-server-the-desktop-app-runs).
+[The server the desktop app runs](#the-server-the-desktop-app-runs).
 
 1. Build and install the app. [apps/android/README.md](../apps/android/README.md)
    has the steps.

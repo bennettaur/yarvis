@@ -37,9 +37,13 @@ signing, and `docs/voice-server.md` if they want voice. This skill adds how to r
 - **Never overwrite `~/.yarvis/settings.json`.** Copy
   `docs/settings.example.json` there only if no file exists, and only if they
   want a file to edit.
-- **Don't read the app's logs yourself.** A startup error can include the
-  database URL. Ask the person for the error text on screen instead, and never
-  repeat a connection string back.
+- **Don't read the app's or the server's logs yourself.** A startup error can
+  include the database URL, and the server writes its one-time setup code to
+  stdout, which ends up in `~/Library/Logs/com.mikebennett.yarvis/server.log`,
+  in a LaunchAgent's log (`~/Library/Logs/yarvis-server.log` in
+  `docs/server.md`), and in the output of any `yarvis-server` you start.
+  Don't read `caddy.log` either. Ask the person for the error text on screen
+  instead, and never repeat a connection string back.
 - **Run commands from the repo root**, the directory that contains `.claude/`.
   If there is no `package.json` there, you are in a Yarvis workspace rather
   than a clone of the repo. Stop and tell the person.
@@ -219,9 +223,18 @@ things to know:
   app at it instead ("Run the server on its own", step 7).
 - **The account.** The desktop app pairs itself and never creates the
   server's account, and nothing else can sign in until it exists. Before
-  remote access, have them set it up in a browser ("Its account" in the
+  remote access, and before `tailscale serve` or Caddy publishes the server,
+  have them set it up in a browser (the "Its account" paragraph of the
   doc). The setup code is a secret like a password: tell them which file
   holds it and let them open it. Don't read it or print it yourself.
+- **Commands that print secrets.** The person runs these in a terminal of
+  their own, not through you and not with `!` (which puts the output in this
+  conversation): the server's first start in a terminal (it prints the setup
+  code), `yarvis-server vault init` (it asks for the vault passphrase and
+  prints the recovery key), `yarvis-server device add` (it prints a device
+  token, which with `terminal` is a shell on the machine), and
+  `yarvis-server auth reset`. Show them the command and wait for them to say
+  it's done.
 - **Builds and launchd.** `bun run build` and the `cargo build --release` of
   the server are fine to run. Writing a LaunchAgent plist and running
   `launchctl bootstrap` start a background service, so show the file and the
