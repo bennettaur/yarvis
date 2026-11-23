@@ -117,6 +117,8 @@ const CONFIG = {
   model: null,
   guidance: null,
   maxRoutinesPerPass: 2,
+  shipMonitorWindowMinutes: 60,
+  shipCheckEveryMinutes: 15,
 };
 
 const ROUTINES = {
@@ -283,7 +285,7 @@ stubSidecarApi({
 const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
-const { linkLabel } = await import("./StreamList");
+const { linkLabel, ShipStages } = await import("./StreamList");
 const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -893,6 +895,40 @@ describe("linkLabel", () => {
     );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
+  });
+});
+
+describe("ShipStages", () => {
+  it("shows each stage, where the stream is, and the last thing it saw", async () => {
+    const html = await renderToHtml(
+      createElement(ShipStages, {
+        ship: {
+          repo: "acme/api",
+          number: 12,
+          url: "https://github.com/acme/api/pull/12",
+          stage: "monitor_production",
+          stages: {
+            ci: { status: "done", at: "2026-11-23T10:00:00.000Z" },
+            staging_test: { status: "skipped", at: "2026-11-23T11:00:00.000Z" },
+            deploy: { status: "failed", at: "2026-11-23T12:00:00.000Z" },
+          },
+          monitorUntil: "2026-11-23T16:00:00.000Z",
+          log: [
+            {
+              at: "2026-11-23T15:00:00.000Z",
+              stage: "monitor_production",
+              text: "error rate flat",
+            },
+          ],
+        },
+      }),
+    );
+    const text = textOf(html);
+    expect(text).toContain("Staging test (skipped)");
+    expect(text).toContain("Deploy (failed)");
+    expect(text).toContain("Watching production until");
+    expect(text).toContain("Last seen (Watch production): error rate flat");
+    expect(html).toMatch(/aria-current="step"[^>]*>Watch production</);
   });
 });
 

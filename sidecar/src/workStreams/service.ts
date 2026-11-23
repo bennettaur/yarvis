@@ -5,6 +5,7 @@ import {
   type WorkStreamLink,
   type WorkStreamLinkRef,
   type WorkStreamNote,
+  type WorkStreamShip,
   workStreamLinks,
   workStreams,
 } from "../db/schema.ts";
@@ -45,6 +46,8 @@ export interface CreateStreamInput {
   waitingOn?: string | null;
   wakeAt?: Date | null;
   note?: string;
+  /** Makes it a ship stream for one PR. */
+  ship?: WorkStreamShip | null;
 }
 
 export interface UpdateStreamInput {
@@ -62,6 +65,8 @@ export interface UpdateStreamInput {
   paused?: boolean;
   /** Appended to the notes rather than replacing them. */
   note?: string;
+  /** Written only by `ship.ts`, which decides the stages. */
+  ship?: WorkStreamShip | null;
 }
 
 export interface ListStreamsOptions {
@@ -130,6 +135,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
       nextAction: input.nextAction ?? null,
       waitingOn: input.waitingOn ?? null,
       wakeAt: input.wakeAt ?? null,
+      ship: input.ship ?? null,
       notes: input.note ? appendNote([], input.note, now) : [],
       closedAt: CLOSED_STREAM_STATUSES.includes(status) ? now : null,
     })
@@ -230,6 +236,7 @@ export async function updateStream(
       ...(patch.paused !== undefined
         ? { pausedAt: patch.paused ? (existing.pausedAt ?? now) : null }
         : {}),
+      ...(patch.ship !== undefined ? { ship: patch.ship } : {}),
       ...(patch.note ? { notes: appendNote(existing.notes, patch.note, now) } : {}),
       ...(closing && !existing.closedAt ? { closedAt: now } : {}),
       ...(reopening ? { closedAt: null } : {}),

@@ -11,6 +11,9 @@ import {
   getHeadsDownConfig,
   MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
+  MAX_SHIP_CHECK_MINUTES,
+  MAX_SHIP_MONITOR_WINDOW_MINUTES,
+  MIN_SHIP_CHECK_MINUTES,
   saveHeadsDownConfig,
 } from "./config.ts";
 import {
@@ -102,6 +105,18 @@ const configSchema = z
       .nullable()
       .default(null),
     maxRoutinesPerPass: z.number().int().min(0).max(MAX_ROUTINES_PER_PASS).optional(),
+    shipMonitorWindowMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_SHIP_MONITOR_WINDOW_MINUTES)
+      .optional(),
+    shipCheckEveryMinutes: z
+      .number()
+      .int()
+      .min(MIN_SHIP_CHECK_MINUTES)
+      .max(MAX_SHIP_CHECK_MINUTES)
+      .optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -205,6 +220,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
         ...parsed.data,
         passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
         maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
+        shipMonitorWindowMinutes:
+          parsed.data.shipMonitorWindowMinutes ?? stored.shipMonitorWindowMinutes,
+        shipCheckEveryMinutes: parsed.data.shipCheckEveryMinutes ?? stored.shipCheckEveryMinutes,
       }),
     );
   });

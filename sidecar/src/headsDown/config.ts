@@ -49,6 +49,12 @@ export interface HeadsDownConfig {
    * time a pass would otherwise spend on the work streams. 0 turns them off.
    */
   maxRoutinesPerPass: number;
+  /**
+   * How long a ship stream watches production after its deploy finishes, and
+   * how often it looks in that time, in minutes.
+   */
+  shipMonitorWindowMinutes: number;
+  shipCheckEveryMinutes: number;
 }
 
 /**
@@ -68,7 +74,18 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   model: null,
   guidance: null,
   maxRoutinesPerPass: 2,
+  shipMonitorWindowMinutes: 60,
+  shipCheckEveryMinutes: 15,
 };
+
+/**
+ * Bounds on the ship monitoring settings. A check more often than every 5
+ * minutes spends a pass on little news; a window past a day is past what a
+ * deploy's own alerts are for.
+ */
+export const MIN_SHIP_CHECK_MINUTES = 5;
+export const MAX_SHIP_CHECK_MINUTES = 240;
+export const MAX_SHIP_MONITOR_WINDOW_MINUTES = 24 * 60;
 
 /** Past this a pass spends its time on routines rather than the work streams. */
 export const MAX_ROUTINES_PER_PASS = 10;
@@ -80,6 +97,12 @@ function validPassTimeout(minutes: unknown): number {
     return DEFAULT_HEADS_DOWN_CONFIG.passTimeoutMinutes;
   }
   return Math.min(minutes, MAX_PASS_TIMEOUT_MINUTES);
+}
+
+function boundedMinutes(value: unknown, min: number, max: number, fallback: number): number {
+  return Number.isInteger(value) && (value as number) >= min
+    ? Math.min(value as number, max)
+    : fallback;
 }
 
 export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
@@ -94,6 +117,18 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
       Number.isInteger(config.maxRoutinesPerPass) && config.maxRoutinesPerPass >= 0
         ? Math.min(config.maxRoutinesPerPass, MAX_ROUTINES_PER_PASS)
         : DEFAULT_HEADS_DOWN_CONFIG.maxRoutinesPerPass,
+    shipMonitorWindowMinutes: boundedMinutes(
+      config.shipMonitorWindowMinutes,
+      0,
+      MAX_SHIP_MONITOR_WINDOW_MINUTES,
+      DEFAULT_HEADS_DOWN_CONFIG.shipMonitorWindowMinutes,
+    ),
+    shipCheckEveryMinutes: boundedMinutes(
+      config.shipCheckEveryMinutes,
+      MIN_SHIP_CHECK_MINUTES,
+      MAX_SHIP_CHECK_MINUTES,
+      DEFAULT_HEADS_DOWN_CONFIG.shipCheckEveryMinutes,
+    ),
   };
 }
 

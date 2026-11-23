@@ -1644,12 +1644,67 @@ export const workStreams = pgTable(
      * up where the stream was.
      */
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    /** Set when the stream ships one PR: which stage it is at and how each went. */
+    ship: jsonb("ship").$type<WorkStreamShip>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
   (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
 );
+
+/**
+ * The stages a ship stream goes through, in order. Up to `merge` the PR is
+ * readied; after it, the merged change is followed into production.
+ */
+export const SHIP_STAGES = [
+  "ci",
+  "reviewer",
+  "feedback",
+  "staging_test",
+  "merge",
+  "deploy",
+  "monitor_deploy",
+  "monitor_production",
+  "test_production",
+  "done",
+] as const;
+
+export type ShipStage = (typeof SHIP_STAGES)[number];
+
+/** How a stage ended. A failed stage stays current until it is retried and passes. */
+export type ShipStageOutcome = "done" | "skipped" | "failed";
+
+export interface ShipStageResult {
+  status: ShipStageOutcome;
+  at: string;
+  /** Why, in the pass's words, or why the app skipped it. */
+  note?: string;
+}
+
+/** One line of what ran and what was seen after merge. */
+export interface ShipLogEntry {
+  at: string;
+  stage: ShipStage;
+  text: string;
+}
+
+export interface WorkStreamShip {
+  /** The GitHub PR being shipped. */
+  repo: string;
+  number: number;
+  url: string;
+  stage: ShipStage;
+  stages: Partial<Record<ShipStage, ShipStageResult>>;
+  /** When production monitoring started, and when its window ends. */
+  monitorStartedAt?: string;
+  monitorUntil?: string;
+  /**
+   * What the deploy, monitor and production-test steps ran and saw, oldest
+   * first. Model-written from what it read, so it is data, not instructions.
+   */
+  log: ShipLogEntry[];
+}
 
 /** A note on a work stream: the same shape as a todo's progress note. */
 export type WorkStreamNote = AgentTodoNote;

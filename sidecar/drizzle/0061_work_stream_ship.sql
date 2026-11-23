@@ -1,0 +1,1 @@
+ALTER TABLE "work_streams" ADD COLUMN "ship" jsonb;

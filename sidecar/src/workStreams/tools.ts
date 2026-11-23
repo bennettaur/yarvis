@@ -1,7 +1,14 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { ATTENTION_CATEGORIES, type WorkStreamLink, type WorkStreamLinkRef } from "../db/schema.ts";
+import {
+  ATTENTION_CATEGORIES,
+  SHIP_STAGES,
+  type WorkStreamLink,
+  type WorkStreamLinkRef,
+  type WorkStreamShip,
+} from "../db/schema.ts";
+import { getHeadsDownConfig } from "../headsDown/config.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   createStream,
@@ -9,11 +16,13 @@ import {
   getStream,
   linkToStream,
   listStreams,
+  OPEN_STREAM_STATUSES,
   streamOfLink,
   unlinkFromStream,
   updateStream,
   type WorkStreamWithLinks,
 } from "./service.ts";
+import { newShip, parseShipPr, shipNextAction, updateShipStage } from "./ship.ts";
 
 /**
  * Work stream tools: the assistant's record of the threads of work it is
@@ -101,6 +110,24 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
     wakeAt: stream.wakeAt?.toISOString() ?? null,
     updatedAt: stream.updatedAt.toISOString(),
     links: stream.links.map((link) => presentLink(link, nonce)),
+    ...(stream.ship ? { ship: presentShip(stream.ship, nonce) } : {}),
+  };
+}
+
+/** The ship log is the pass's account of what it read, so it is fenced like notes. */
+function presentShip(ship: WorkStreamShip, nonce: string) {
+  return {
+    pr: `${ship.repo}#${ship.number}`,
+    url: ship.url,
+    stage: ship.stage,
+    stages: Object.fromEntries(
+      Object.entries(ship.stages).map(([stage, r]) => [
+        stage,
+        { status: r.status, at: r.at, note: r.note ? fence(r.note, nonce) : undefined },
+      ]),
+    ),
+    monitorUntil: ship.monitorUntil ?? null,
+    log: ship.log.map((entry) => ({ ...entry, text: fence(entry.text, nonce) })),
   };
 }
 
@@ -208,19 +235,85 @@ export function buildWorkStreamTools(
 
     create_work_stream: tool({
       description:
-        "Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn't tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream.",
+        'Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn\'t tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream. To ship a GitHub PR through CI, review, staging, merge, deploy and production checks (the user says "ship owner/repo#N"), pass ship with the PR: the stream then moves through those stages with update_ship_stage, and the PR is linked for you. title defaults to "Ship owner/repo#N" for a ship stream.',
       inputSchema: z.object({
-        title: z.string().min(1).max(300),
+        title: z.string().min(1).max(300).optional().describe("Required unless ship is given"),
         summary: z.string().max(2000).optional().describe("What the work is and why it matters"),
         priority: priority.optional(),
         category: category.optional(),
         projectId: uuid.optional().describe("The project it serves, if any"),
         nextAction: z.string().max(1000).optional().describe("The next step you mean to take"),
         note: z.string().max(2000).optional(),
+        ship: z
+          .object({
+            pr: z.string().min(1).max(300).describe("owner/repo#N or the PR's GitHub URL"),
+          })
+          .optional()
+          .describe("Makes this a ship stream for one GitHub PR"),
       }),
-      execute: async (input) => {
-        const stream = await createStream(db, input);
-        return { id: stream.id, status: stream.status, priority: stream.priority };
+      execute: async ({ ship: shipInput, title, ...input }) => {
+        const pr = shipInput ? parseShipPr(shipInput.pr) : null;
+        if (shipInput && !pr) return { error: "ship.pr must be owner/repo#N or a GitHub PR URL" };
+        if (!title && !pr) return { error: "title is required" };
+        if (pr) {
+          const ref: WorkStreamLinkRef = { kind: "pr", provider: "github", url: pr.url };
+          const shipping = (await findStreamsLinkedTo(db, ref)).find(
+            (s) => s.ship !== null && OPEN_STREAM_STATUSES.some((open) => open === s.status),
+          );
+          if (shipping) {
+            return { error: `stream ${shipping.id} is already shipping that PR`, id: shipping.id };
+          }
+        }
+        const stream = await createStream(db, {
+          ...input,
+          title: title ?? `Ship ${pr!.repo}#${pr!.number}`,
+          ...(pr
+            ? {
+                ship: newShip(pr),
+                category: input.category ?? "build",
+                nextAction: input.nextAction ?? shipNextAction("ci"),
+              }
+            : {}),
+        });
+        if (pr) {
+          await linkToStream(db, stream.id, {
+            ref: { kind: "pr", provider: "github", url: pr.url },
+            createdBy: unattended ? "heads-down" : "chat",
+          });
+        }
+        return {
+          id: stream.id,
+          status: stream.status,
+          priority: stream.priority,
+          ...(stream.ship ? { shipStage: stream.ship.stage } : {}),
+        };
+      },
+    }),
+
+    update_ship_stage: tool({
+      description: `Record progress on a ship stream's current stage (stages in order: ${SHIP_STAGES.join(", ")}). Pass the stage you are reporting on, which must be the current one. outcome "done" moves to the next stage; stages whose playbook step the user left empty are skipped for you and listed in the result. "skipped" is only for a playbook stage with no playbook for its repo, after the user said to skip it. "failed" keeps the stage, puts the stream on the user and raises an attention item; after the merge, it also tells you to propose a revert. Leave outcome out to only log what you ran and saw, as on each check while monitoring. log is a short note of what ran and what was seen; after the merge, log every deploy, monitor and production test step. Production monitoring can't be marked done before its window ends.`,
+      inputSchema: z.object({
+        streamId: uuid,
+        stage: z.enum(SHIP_STAGES),
+        outcome: z.enum(["done", "skipped", "failed"]).optional(),
+        log: z.string().min(1).max(1000).optional(),
+        waitingOn: z.string().max(500).nullable().optional(),
+      }),
+      execute: async ({ streamId, ...input }) => {
+        const stream = await getStream(db, streamId);
+        if (!stream) return { error: "no work stream with that id" };
+        if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
+        const config = await getHeadsDownConfig();
+        return updateShipStage(
+          db,
+          stream,
+          input,
+          {
+            monitorWindowMinutes: config.shipMonitorWindowMinutes,
+            checkEveryMinutes: config.shipCheckEveryMinutes,
+          },
+          { unlessPaused: unattended },
+        );
       },
     }),
 

@@ -229,12 +229,15 @@ export async function decideCall(
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
-  if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
+  const needsUser =
+    mergeHeld ||
+    (!withinWorkingHours && isMergeCall(tool, args)) ||
+    reachesProductionCall(tool, args);
+  if (WORKSPACE_TOOLS.has(tool) && !needsUser) {
     const workspaceId = stringArg(args, "workspaceId");
     if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
   }
-  if (tool.startsWith("mcp:") && !mergeNeedsUser && (await isToolUnattended(db, tool))) {
+  if (tool.startsWith("mcp:") && !needsUser && (await isToolUnattended(db, tool))) {
     return "run";
   }
   // Grants are good for this run only, and for a day: what was approved may
@@ -329,6 +332,45 @@ function sessionText(tool: string, args: unknown): string | null | undefined {
     return rest ? `${command} ${rest}` : command;
   }
   return undefined;
+}
+
+/** Tool names that undo a change: `revert_pull_request`, `rollback_deploy`, … */
+const REVERT_TOOL = /revert|roll_?back/i;
+
+/** Tools that only read about reverts, like `list_rollbacks` or `get_revert_status`. */
+const READS_ONLY = /^(get|list|search|check|can|is|has|describe|view|show|read)|status$/i;
+
+/**
+ * Whether an instruction to a workspace's session reverts or rolls back
+ * shipped work, or deploys. Reverting a line in the session's own branch
+ * ("revert your change to foo.ts") doesn't count, so a revert has to name a
+ * PR, merge, commit, deploy or production.
+ */
+export function isProductionInstruction(instruction: string | null): boolean {
+  if (!instruction) return false;
+  const text = stripInvisible(instruction).text.normalize("NFKC");
+  const reverts =
+    /\b(revert(s|ing)?|roll(ing)?[ -]?back|rollback)\b/i.test(text) &&
+    /\b(PRs?|pull requests?|merges?|commits?|deploy\w*|releases?|prod|production)\b|#\d+/i.test(
+      text,
+    );
+  const deploys = /\b(re)?deploy\b|\bpromote\b[^.]*\bprod(uction)?\b/i.test(text);
+  return reverts || deploys;
+}
+
+/**
+ * A call that undoes shipped work or deploys: an MCP revert or rollback tool,
+ * or telling a workspace's session to revert, roll back or deploy. These wait
+ * for the user every time, even on a workspace the loop may steer or with a
+ * tool allowed for heads-down mode, and auto mode never settles them. An MCP
+ * deploy tool the user allowed still runs: allowing it was their go-ahead.
+ */
+export function reachesProductionCall(tool: string, args: unknown): boolean {
+  const told = sessionText(tool, args);
+  if (told !== undefined) return isProductionInstruction(told);
+  if (!tool.startsWith("mcp:")) return false;
+  const name = tool.slice(tool.lastIndexOf(":") + 1);
+  return REVERT_TOOL.test(name) && !READS_ONLY.test(name);
 }
 
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
@@ -629,9 +671,12 @@ export function passApprovalHooks(
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
         // A failed review is a no, never a reason to drop the question. A
-        // merge outside working hours is never the decision model's to allow.
+        // merge outside working hours, a revert and a deploy are never the
+        // decision model's to allow.
         const reason =
-          review && (withinWorkingHours || !isMergeCall(id, args))
+          review &&
+          (withinWorkingHours || !isMergeCall(id, args)) &&
+          !reachesProductionCall(id, args)
             ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
                 (e) => {
                   console.error(

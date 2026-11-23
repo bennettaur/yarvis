@@ -14,8 +14,10 @@ import {
   decideCall,
   isMergeCall,
   isMergeInstruction,
+  isProductionInstruction,
   mergeCallTarget,
   passApprovalHooks,
+  reachesProductionCall,
 } from "./policy.ts";
 import {
   addMessage,
@@ -685,5 +687,72 @@ describe("isMergeCall", () => {
     expect(
       isMergeCall("send_workspace_slash_command", { command: "/merge-pr", arguments: "12" }),
     ).toBe(true);
+  });
+});
+
+describe("reverts and deploys", () => {
+  async function pushedWorkspace() {
+    await sql`INSERT INTO workspaces (id, name, slug, status, root_path)
+              VALUES (${workspaceId}, 'billing', 'billing', 'active', '/tmp/ws')`;
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+  }
+
+  async function allowUnattended(tool: string) {
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
+              VALUES (${tool}, 'mcp', ${tool.slice(tool.lastIndexOf(":") + 1)}, 'h', true)`;
+  }
+
+  it("asks before telling a workspace it may steer to revert or deploy", async () => {
+    const run = await startRun(db, null);
+    await pushedWorkspace();
+    const steer = (instruction: string) =>
+      decideCall(db, run, "send_workspace_instruction", { workspaceId, instruction });
+
+    expect(await steer("fix the failing test")).toBe("run");
+    expect(await steer("revert your change to config.ts")).toBe("run");
+    expect(await steer("revert PR #12, production checkout is failing")).toBe("ask");
+    expect(await steer("deploy the api to production")).toBe("ask");
+
+    const args = { workspaceId, instruction: "revert acme/api#12" };
+    const approval = await askQuestion(db, {
+      kind: "approval",
+      question: "Heads-down mode wants to run send_workspace_instruction.",
+      action: "send_workspace_instruction",
+      toolArgs: args,
+    });
+    await answerQuestion(db, memory, approval.id, { choice: "approve" });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+  });
+
+  it("asks before an allowed MCP revert tool, but runs an allowed deploy or read", async () => {
+    const run = await startRun(db, null);
+    for (const tool of [
+      "mcp:deploys:revert_deploy",
+      "mcp:deploys:trigger_deploy",
+      "mcp:deploys:list_rollbacks",
+    ]) {
+      await allowUnattended(tool);
+    }
+    expect(await decideCall(db, run, "mcp:deploys:revert_deploy", { id: 1 })).toBe("ask");
+    expect(await decideCall(db, run, "mcp:deploys:trigger_deploy", { id: 1 })).toBe("run");
+    expect(await decideCall(db, run, "mcp:deploys:list_rollbacks", {})).toBe("run");
+  });
+
+  it("reads what reaches production in instructions and tool names", () => {
+    expect(isProductionInstruction("Roll back the deploy of #12")).toBe(true);
+    expect(isProductionInstruction("redeploy the api")).toBe(true);
+    expect(isProductionInstruction("promote the build to prod")).toBe(true);
+    expect(isProductionInstruction("revert the last edit to utils.ts")).toBe(false);
+    expect(isProductionInstruction("push a PR")).toBe(false);
+    expect(
+      reachesProductionCall("send_workspace_slash_command", {
+        command: "/rollback",
+        arguments: "PR 12",
+      }),
+    ).toBe(true);
+    expect(reachesProductionCall("mcp:gh:revert_pull_request", { pullNumber: 12 })).toBe(true);
+    expect(reachesProductionCall("mcp:gh:get_revert_status", {})).toBe(false);
+    expect(reachesProductionCall("archive_workspace", {})).toBe(false);
   });
 });
