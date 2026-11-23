@@ -282,10 +282,11 @@ mod unix_impl {
     pub async fn start(state: AppState) -> Result<PathBuf, String> {
         let data_dir = &state.config.server.data_dir;
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-        let path = socket_dir::socket_path(data_dir, SOCKET_FILE);
         // Who can connect is decided by the directory's permissions alone, so
         // the socket isn't served when they can't be set.
-        socket_dir::prepare(&path)?;
+        set_private(data_dir, 0o700)?;
+        let path = socket_dir::socket_path(data_dir, SOCKET_FILE);
+        socket_dir::prepare(data_dir, &path)?;
         // Clear a stale socket from a previous run, but only if it really is a
         // socket, so a symlink is never followed or a planted file clobbered.
         remove_stale_socket(&path)?;

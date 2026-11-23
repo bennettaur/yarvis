@@ -130,6 +130,31 @@ async fn a_long_data_dir_still_gets_a_working_private_socket() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+// The short dir's name is predictable, so another user could plant it.
+#[tokio::test]
+async fn a_planted_short_socket_dir_stops_the_hand_off() {
+    let server = serve_with(Setup::default()).await;
+    let data_dir = long_data_dir(server.dir.path());
+    let short = yarvis_server::socket_dir::socket_path(&data_dir, "core-control.sock")
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    std::os::unix::fs::symlink(server.dir.path(), &short).unwrap();
+    let mut state = server.state.clone();
+    let mut config = (*state.config).clone();
+    config.server.data_dir = data_dir;
+    state.config = std::sync::Arc::new(config);
+
+    let database = yarvis_server::database_url::DatabaseUrl {
+        url: "postgres://localhost:5432/unused".into(),
+        source: yarvis_server::database_url::UrlSource::ConfigFile,
+    };
+    let result = yarvis_server::hand_off_to_sidecar(&mut state, database).await;
+    std::fs::remove_file(&short).unwrap();
+    let err = result.unwrap_err();
+    assert!(err.contains("isn't a directory"), "{err}");
+}
+
 #[tokio::test]
 async fn firing_and_releasing_an_alarm_become_events() {
     let (server, path) = start().await;

@@ -273,7 +273,9 @@ With `secrets.backend` unset, the server follows `secretBackend` in
 laptop already on 1Password, keeps its store when the Tauri app starts a local
 server, and Settings can still switch between the two. Once `server.toml`
 names a backend, it wins, and Settings can only change which 1Password item a
-1Password server reads.
+1Password server reads. Every settings response carries that choice as
+`configuredSecretBackend` (`null` when `secretBackend` decides), so Settings
+shows the store really in use and offers no switch the server would refuse.
 
 The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
 since the vault is where the signing key lives.
@@ -746,8 +748,11 @@ The sidecar's control socket is `core-control.sock` in the server's data dir
 (108 on Linux), so when the data dir is too deep for that, the server's
 sockets go in a 0700 folder named `yarvis-<hash of the data dir>` under
 `$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp`, whichever is short enough
-(`socket_dir.rs`). The server refuses that folder if another user owns it or it
-is a symlink, and refuses to start if the control socket can't be bound. It keeps `control.rs`'s method list and checks. Two things
+(`socket_dir.rs`). The server refuses that folder if it is a symlink, another
+user owns it, or its mode isn't 0700, and refuses to start if the control
+socket can't be bound.
+
+The control socket keeps `control.rs`'s method list and checks. Two things
 differ from the desktop app: the alarm methods append `alarm.fire` and
 `alarm.release` events instead of taking over a window, and `mcp.saveOAuth`
 and `github.saveToken` write the secrets blob in whichever backend the server

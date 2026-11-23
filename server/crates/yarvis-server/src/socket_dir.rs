@@ -29,11 +29,15 @@ pub fn socket_path(data_dir: &Path, name: &str) -> PathBuf {
         .unwrap_or(in_data_dir)
 }
 
-/// Gets the socket's directory ready to bind in: it must be a real directory
-/// (not a symlink) owned by this user, and is made mode 0700, since those
-/// permissions alone decide who can connect. A short directory is created if
-/// missing. Errors when the path is too long to bind.
-pub fn prepare(socket: &Path) -> Result<(), String> {
+/// Gets the directory of a [`socket_path`] ready to bind in. Errors when the
+/// path is too long to bind.
+///
+/// A socket in `data_dir` needs nothing more: the data dir is the server's
+/// own, made 0700 at startup. A short directory's permissions alone decide who
+/// can connect, so it is created mode 0700 if missing, and one that already
+/// exists must be a real directory (not a symlink) owned by this user with
+/// mode 0700.
+pub fn prepare(data_dir: &Path, socket: &Path) -> Result<(), String> {
     if !fits(socket) {
         return Err(format!(
             "the socket path {} is too long for a Unix socket, and no shorter private directory \
@@ -44,13 +48,20 @@ pub fn prepare(socket: &Path) -> Result<(), String> {
     let dir = socket
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", socket.display()))?;
+    if dir == data_dir {
+        return Ok(());
+    }
     match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => {}
+        // The umask can only clear bits, so make sure the mode is exactly 0700.
+        Ok(()) => {
+            return std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("couldn't make {} private: {e}", dir.display()));
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("couldn't create {}: {e}", dir.display())),
     }
-    // A short directory sits in a shared place like /tmp, where another user
-    // could have made it first, so check it before trusting it.
+    // A short directory's name is predictable and sits in a shared place like
+    // /tmp, so another user could have made it first.
     let meta = std::fs::symlink_metadata(dir)
         .map_err(|e| format!("couldn't inspect {}: {e}", dir.display()))?;
     if !meta.file_type().is_dir() {
@@ -59,10 +70,19 @@ pub fn prepare(socket: &Path) -> Result<(), String> {
     // SAFETY: geteuid has no preconditions and can't fail.
     let uid = unsafe { libc::geteuid() };
     if meta.uid() != uid {
-        return Err(format!("{} is owned by another user", dir.display()));
+        return Err(format!(
+            "{} is owned by another user; remove it, or choose a shorter data_dir",
+            dir.display()
+        ));
     }
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("couldn't make {} private: {e}", dir.display()))
+    let mode = meta.permissions().mode() & 0o777;
+    if mode != 0o700 {
+        return Err(format!(
+            "{} has mode {mode:o}, not 700, so other users may reach the socket",
+            dir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// Whether `path` is short enough to bind as a Unix socket on this OS.
@@ -119,27 +139,45 @@ mod tests {
     }
 
     #[test]
-    fn prepare_makes_the_directory_private() {
+    fn prepare_creates_a_private_directory_and_accepts_it_again() {
         let base = tempfile::tempdir().unwrap();
         let socket = base.path().join("yarvis-x").join("s.sock");
-        prepare(&socket).unwrap();
+        prepare(base.path(), &socket).unwrap();
         let mode = std::fs::metadata(socket.parent().unwrap())
             .unwrap()
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
+        prepare(base.path(), &socket).unwrap();
+    }
 
-        std::fs::set_permissions(
-            socket.parent().unwrap(),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        prepare(&socket).unwrap();
-        let mode = std::fs::metadata(socket.parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700, "a loosened directory is tightened");
+    #[test]
+    fn prepare_refuses_an_existing_directory_others_can_reach() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("yarvis-x");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = prepare(base.path(), &dir.join("s.sock")).unwrap_err();
+        assert!(err.contains("not 700"), "{err}");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o777, "left as found, not taken over");
+    }
+
+    #[test]
+    fn prepare_refuses_a_directory_another_user_owns() {
+        // SAFETY: geteuid has no preconditions and can't fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root owns /usr, so there is no other user to test against
+        }
+        let err = prepare(Path::new("/srv/yarvis"), Path::new("/usr/s.sock")).unwrap_err();
+        assert!(err.contains("owned by another user"), "{err}");
+    }
+
+    #[test]
+    fn prepare_leaves_the_data_dir_to_the_server() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        prepare(base.path(), &base.path().join("s.sock")).unwrap();
     }
 
     #[test]
@@ -149,14 +187,15 @@ mod tests {
         std::fs::create_dir(&elsewhere).unwrap();
         let link = base.path().join("yarvis-x");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        let err = prepare(&link.join("s.sock")).unwrap_err();
+        let err = prepare(base.path(), &link.join("s.sock")).unwrap_err();
         assert!(err.contains("isn't a directory"), "{err}");
     }
 
     #[test]
     fn prepare_refuses_a_path_too_long_to_bind() {
         let base = tempfile::tempdir().unwrap();
-        let err = prepare(&long_dir(base.path()).join("s.sock")).unwrap_err();
+        let data_dir = long_dir(base.path());
+        let err = prepare(&data_dir, &data_dir.join("s.sock")).unwrap_err();
         assert!(err.contains("too long"), "{err}");
     }
 }

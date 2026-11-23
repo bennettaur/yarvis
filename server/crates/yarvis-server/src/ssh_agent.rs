@@ -107,6 +107,7 @@ pub fn start(state: &AppState) -> Result<(), String> {
         .signing_seed()
         .map_err(|e| format!("couldn't read the signing key: {e}"))?;
     let agent = VaultAgent::new(&seed, state.approvals.clone(), APPROVAL_TIMEOUT);
+    socket_dir::prepare(&state.config.server.data_dir, &socket)?;
     *running = Some(spawn(agent, socket).map_err(|e| format!("couldn't open the socket: {e}"))?);
     tracing::info!("ssh-agent listening");
     Ok(())
@@ -289,7 +290,6 @@ impl Drop for RunningAgent {
 /// left by a crashed run is replaced.
 pub fn spawn(agent: VaultAgent, socket: PathBuf) -> std::io::Result<RunningAgent> {
     use std::os::unix::fs::PermissionsExt;
-    socket_dir::prepare(&socket).map_err(std::io::Error::other)?;
     match std::fs::remove_file(&socket) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
