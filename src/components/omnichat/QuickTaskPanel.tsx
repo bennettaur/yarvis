@@ -20,7 +20,7 @@ function linkLabel(ref: WorkStreamLinkRef, title?: string): string {
   if (title) return title;
   switch (ref.kind) {
     case "pr":
-      return ref.url;
+      return title ? `${title} (${ref.url})` : ref.url;
     case "ticket":
       return ref.key;
     case "workspace":
@@ -111,7 +111,7 @@ export default function QuickTaskPanel({
         value={message}
         onChange={(e) => setMessage(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             void parse();
           }

@@ -52,9 +52,20 @@ describe("QuickTaskPanel", () => {
     expect(calls.map((c) => c.path)).toEqual(["/api/work-streams/quick-task/propose"]);
     expect(calls[0]?.body.workspaceId).toBe("w1");
 
+    const title = view.host.querySelector("input") as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setValue?.call(title, "Edited title");
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(
+      () => (view.host.querySelector("input") as HTMLInputElement).value === "Edited title",
+    );
+    (view.host.querySelector('[aria-label^="Remove"]') as HTMLButtonElement).click();
+    await waitFor(() => view.host.querySelector('[aria-label^="Remove"]') === null);
     button("Add to heads down")?.click();
     await waitFor(() => calls.length === 2);
     expect(calls[1]?.path).toBe("/api/work-streams/quick-task");
+    expect(calls[1]?.body.title).toBe("Edited title");
+    expect(calls[1]?.body.links).toEqual([]);
     await waitFor(() => (view.host.textContent ?? "").includes("Added"));
     unregister();
     view.unmount();

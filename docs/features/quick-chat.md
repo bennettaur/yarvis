@@ -30,6 +30,13 @@ from **Help → Ask Yarvis** (the **?** below it).
   Clicking one hides Omni Chat so you can see the page. The Chat tab's links
   work the same way.
 
+The screen description is capped at a few thousand characters and is sent only
+with that turn. It is never saved to the chat history, and the assistant
+treats it as data, not instructions.
+
+Only the PRs, Issues and Calendar views describe themselves in detail today.
+Other tabs only say which tab you're on.
+
 ### Send to heads down
 
 The **Send to heads down** button in the panel header (or **Cmd/Ctrl+Shift+H**)
@@ -42,8 +49,8 @@ turns the line into a proposed work stream: a title, a kind (general, ship or
 watch), a priority, a focus note, and links. The call sees the workspace you
 have open (its repos, branches and linked PRs) and the same screen description
 a chat message carries. Both are treated as data, and a link is kept only when
-it comes from that context: the open workspace, a PR from the workspace or the
-screen, or a ticket named in your line or on screen.
+it comes from that context: the open workspace, a PR from the workspace or a
+github.com or Azure DevOps PR link on screen, or a ticket named in your line or on screen.
 
 The proposal is shown for you to edit. Change the title, kind, priority or
 focus, or remove a link. Nothing is created until you press **Add to heads
@@ -52,13 +59,6 @@ down**, which creates the stream the same way the assistant's
 
 Ship and watch are saved as a general stream with the kind written at the start
 of its summary.
-
-The screen description is capped at a few thousand characters and is sent only
-with that turn. It is never saved to the chat history, and the assistant
-treats it as data, not instructions.
-
-Only the PRs, Issues and Calendar views describe themselves in detail today.
-Other tabs only say which tab you're on.
 
 ## The Chat tab
 

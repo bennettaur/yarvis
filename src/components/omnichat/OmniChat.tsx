@@ -191,6 +191,13 @@ export default function OmniChat({
         </div>
       </div>
 
+      <ToolApprovalBar
+        approvals={approvals}
+        visible={open}
+        onRespond={(id, approved) => void respondApproval(id, approved)}
+        onAlwaysAllow={(a) => void alwaysAllow(a)}
+      />
+
       {headsDownMode ? (
         <QuickTaskPanel open={open} provider={provider} model={model} />
       ) : (
@@ -209,13 +216,6 @@ export default function OmniChat({
               emptyHint="Ask about whatever you're looking at — it's sent along as context."
             />
           </div>
-
-          <ToolApprovalBar
-            approvals={approvals}
-            visible={open}
-            onRespond={(id, approved) => void respondApproval(id, approved)}
-            onAlwaysAllow={(a) => void alwaysAllow(a)}
-          />
 
           {error && (
             <ErrorNotice

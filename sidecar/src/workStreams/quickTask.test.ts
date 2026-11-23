@@ -40,6 +40,36 @@ describe("proposeQuickTask", () => {
     expect(proposal.kind).toBe("ship");
     expect(proposal.links.map((l) => l.ref.kind)).toEqual(["pr", "ticket"]);
     expect(prompt).toContain("The user is not in a workspace.");
-    expect(prompt).toMatch(/<recalled-content-[^>]+>\nReviewing/);
+    expect(prompt).toMatch(/<context-[^>]+>\nReviewing/);
+  });
+
+  it("drops screen PR links from other hosts and keys that don't fit their provider", async () => {
+    const proposal = await proposeQuickTask(
+      config,
+      db,
+      {
+        message: "merge it",
+        screen:
+          "https://evil.example/o/r/pull/1 https://github.com/o/r/pull/2/files?x=1 ABC-12 a/b#3",
+        provider: "p",
+        model: "m",
+      },
+      async () =>
+        ({
+          ...answer,
+          workspace: false,
+          prUrls: ["https://evil.example/o/r/pull/1", "https://github.com/o/r/pull/2/files?x=1"],
+          tickets: [
+            { provider: "jira", key: "ABC-12" },
+            { provider: "github", key: "ABC-12" },
+            { provider: "github", key: "a/b#3" },
+          ],
+        }) as never,
+    );
+    expect(proposal.links.map((l) => l.ref)).toEqual([
+      { kind: "pr", provider: "github", url: "https://github.com/o/r/pull/2" },
+      { kind: "ticket", provider: "jira", key: "ABC-12" },
+      { kind: "ticket", provider: "github", key: "a/b#3" },
+    ]);
   });
 });

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { describeError } from "../llm/errors.ts";
+import { getWorkspace } from "../workspaces/service.ts";
 import {
   createStreamForKind,
   proposeInputSchema,
@@ -63,13 +64,18 @@ export function createWorkStreamRoutes(
     try {
       return c.json(await propose(config, db(), parsed.data));
     } catch (e) {
-      return c.json({ error: "could not parse the message", detail: describeError(e) }, 502);
+      return c.json({ error: "could not propose a task", detail: describeError(e) }, 502);
     }
   });
 
   router.post("/quick-task", async (c) => {
     const parsed = quickTaskProposalSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    for (const { ref } of parsed.data.links) {
+      if (ref.kind === "workspace" && !(await getWorkspace(db(), ref.workspaceId))) {
+        return c.json({ error: "that workspace no longer exists" }, 400);
+      }
+    }
     return c.json(await createStreamForKind(db(), parsed.data), 201);
   });
 
