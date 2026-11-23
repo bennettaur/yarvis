@@ -78,10 +78,17 @@ describe("buildPassPrompt", () => {
   });
 
   it("says when it is night shift, and that a run with no focus keeps going on its own", () => {
-    const prompt = buildPassPrompt({ ...base, run: { ...run, focus: null }, nightShift: true });
+    const prompt = buildPassPrompt({
+      ...base,
+      run: { ...run, focus: null },
+      duringNightShift: true,
+      alwaysOn: true,
+    });
     expect(prompt).toContain("It is night shift");
     expect(prompt).toContain("This run has no focus");
     expect(buildPassPrompt(base)).not.toContain("night shift");
+    // A run started by hand with no focus isn't told it is always on.
+    expect(buildPassPrompt({ ...base, run: { ...run, focus: null } })).not.toContain("no focus");
   });
 
   it("fences a wake-up's prompt, which an earlier pass wrote", () => {
@@ -105,10 +112,10 @@ describe("buildPassPrompt", () => {
     };
     const prompt = buildPassPrompt({ ...base, wakes: [wake], pendingWakes: [] });
     expect(prompt).toMatch(
-      /This pass was woken for these[\s\S]*- Check PR 42 \(due 2026-10-19T09:59:00.000Z\)\n<recalled-content-\w+>\nMerge PR 42 if CI is green.\n<\/recalled-content-\w+>/,
+      /woken for these reminders[\s\S]*never from the reminder alone[\s\S]*- Due 2026-10-19T09:59:00.000Z\n<recalled-content-\w+>\nCheck PR 42\n\nMerge PR 42 if CI is green.\n<\/recalled-content-\w+>/,
     );
-    expect(buildPassPrompt({ ...base, pendingWakes: [wake] })).toContain(
-      "Wake-ups already scheduled",
+    expect(buildPassPrompt({ ...base, pendingWakes: [wake] })).toMatch(
+      /Wake-ups already scheduled[\s\S]*- 2026-10-19T09:59:00.000Z: <recalled-content-\w+>\nCheck PR 42\n<\/recalled-content-\w+>/,
     );
   });
 

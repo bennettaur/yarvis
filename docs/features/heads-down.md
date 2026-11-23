@@ -25,12 +25,16 @@ Tick **Always on** under **Pace and working hours** and heads-down mode keeps
 running without a planning chat. If no run is going, it starts one with no
 focus within a minute, and again whenever Yarvis restarts. Each pass works
 the streams you have, the routines that are due and your messages, and looks
-for new work. **Pause** still pauses it. **Stop** stops the run and turns
-always-on off, so it stays off until you tick it again or press **Go heads
-down**. Unticking it leaves a run that is going alone.
+for new work. It can also schedule its own [wake-ups](#coming-back-later)
+and propose new [routines](#routines-a-pass-proposes).
+
+**Pause** still pauses it. **Stop** stops the run and turns always-on off, so
+no new run starts until you tick it again. **Go heads down** still starts a
+single run. A stop time does the same as **Stop** when it comes: the run
+stops and always-on turns off. Unticking it leaves a run that is going alone.
 
 It is off by default. Without it, heads-down mode runs only after you start
-it, as above.
+it, as above, and passes don't schedule wake-ups or propose routines.
 
 ## Pause it, or set when it stops
 
@@ -88,7 +92,8 @@ most urgent first:
 - **Routines:** recurring jobs that run on their own schedule, such as
   setting alarms for your meetings. See [Routines](#routines).
 
-Each pass ends by choosing how long to sleep, up to a day. It sleeps at least the idle time
+Each pass ends by choosing how long to sleep, up to the longest sleep you set.
+It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
 waiting on you or someone else, when you haven't replied for a while, and after
 a pass that failed. A message from you, an answer, a wake-up a pass
@@ -96,17 +101,23 @@ scheduled, or a workspace that needs attention wakes it early.
 
 ## Coming back later
 
-For something to look at at a set time ("check PR 42 again at 3pm, and merge
-it if it's green"), a pass schedules a wake-up: at that time a pass runs, with
-the note the earlier pass left. Up to 10 wake-ups can wait at once. A pass can
-also schedule a task that only looks and reports, which reaches you through
-the attention bell (see [Scheduled tasks](assistant.md#scheduled-tasks)).
+With always-on, a pass can schedule a wake-up for something to look at at a
+set time ("check whether PR 42 is green at 3pm"). At that time a pass runs,
+with the reminder the earlier pass left. The reminder says what to look at;
+what the pass does still follows your words and the usual approval rules. A
+wake-up is at least 5 minutes out, never wakes it sooner than the shortest
+sleep after a pass, and up to 10 can wait at once. One that comes due while
+the run is paused, or once the daily pass limit is reached, runs on the first
+pass after that. A pass can also schedule a task that only looks and reports,
+which reaches you through the attention bell (see
+[Scheduled tasks](assistant.md#scheduled-tasks)).
 
 ## Night shift
 
 Set night-shift hours under **Pace and working hours**, say 23:00 to 07:00.
 They apply every day. During them passes sleep at least **Shortest sleep at
-night** (2 hours by default), and each routine does what its `nightShift`
+night** (2 hours by default, and never more than the longest sleep), and
+each routine does what its `nightShift`
 says (see [Write your own](#write-your-own)). A wake-up a pass scheduled
 still runs on time.
 
@@ -115,7 +126,7 @@ still runs on time.
 Every pass costs what a chat turn of its size costs. **Limit passes per day**
 caps how many passes start in one day, counted from midnight on this machine,
 across runs. Once it is reached no pass runs until midnight, even for a
-message or an answer. The page shows how many passes have run today, and the
+message, an answer or a wake-up. The page shows how many passes have run today, and the
 limit when you set one. There is no limit by default.
 
 ## Routines
@@ -239,9 +250,10 @@ or file there is refused rather than followed.
 
 ### Routines a pass proposes
 
-When a pass sees work that comes back on a schedule, it can propose a routine.
-The proposal is an approval under **Needs you**, showing the name, schedule
-and the exact body. Approve it and a later pass writes the file to
+With always-on, when a pass sees work that comes back on a schedule, it can
+propose a routine. The proposal is an approval under **Needs you**, showing
+the name, schedule and the exact body. A proposal with invisible characters
+in it is refused, so what you read is what passes get. Approve it and a later pass writes the file to
 `~/.yarvis/routines` and picks it up from then on. Deny it and it isn't asked
 again in this run. It never replaces a routine you already have. Read the
 body before you approve: like any routine, it reaches every pass as your own
@@ -487,6 +499,7 @@ use is kept in the database with the tool's other consent, not in that file.
 - It runs on one instance of the app. Another instance sharing the same
   database leaves it to the first.
 - A pass can schedule a task to look at something later (see
-  [Scheduled tasks](assistant.md#scheduled-tasks)). When it runs, its item in
+  [Scheduled tasks](assistant.md#scheduled-tasks)), or with always-on a
+  [wake-up](#coming-back-later) for a full pass. When it runs, its item in
   the attention bell opens this page rather than a chat, since passes run in
   chats you don't see.

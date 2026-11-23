@@ -6,6 +6,7 @@ import { SCHEDULED_TASK_TOOLS } from "../chat/destructiveTools.ts";
 import { createSession } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { DEFAULT_HEADS_DOWN_CONFIG, saveHeadsDownConfig } from "../headsDown/config.ts";
 import type { JobContext } from "../jobs/scheduler.ts";
 import { type ScheduledTaskTurnRunner, scheduledTaskMessage, scheduledTasksJob } from "./job.ts";
 import {
@@ -332,13 +333,28 @@ describe("heads-down wake-ups", () => {
   const wake = async (delayMinutes = 10) =>
     schedule({ sessionId: await newChat(), origin: "heads-down", delayMinutes, wakesPass: true });
 
+  const scheduleFromPass = async (alwaysOn: boolean, input: Record<string, unknown> = {}) => {
+    await saveHeadsDownConfig({ ...DEFAULT_HEADS_DOWN_CONFIG, alwaysOn });
+    try {
+      const fromPass = buildScheduledTaskTools(db, await newChat(), passTurn);
+      return await fromPass.schedule_task.execute?.(
+        {
+          title: "Check PR 42",
+          prompt: "check whether PR 42 is green",
+          delayMinutes: 30,
+          wakePass: true,
+          ...input,
+        },
+        opts,
+      );
+    } finally {
+      await saveHeadsDownConfig(DEFAULT_HEADS_DOWN_CONFIG);
+    }
+  };
+
   it("lets a pass ask for one, and no other turn", async () => {
     const sessionId = await newChat();
-    const fromPass = buildScheduledTaskTools(db, sessionId, passTurn);
-    await fromPass.schedule_task.execute?.(
-      { title: "Check PR 42", prompt: "merge PR 42 if green", delayMinutes: 30, wakePass: true },
-      opts,
-    );
+    expect(await scheduleFromPass(true)).toMatchObject({ wakePass: true, id: expect.any(String) });
     expect(await listPendingWakes(db)).toMatchObject([{ title: "Check PR 42" }]);
 
     // A heads-down scheduled task's own read-only turn, and a chat turn, can't.
@@ -355,11 +371,28 @@ describe("heads-down wake-ups", () => {
       );
     }
     expect((await listPendingWakes(db)).map((w) => w.title)).toEqual(["Check PR 42"]);
+    // The other turns' models never see the option.
+    const shape = (tools: typeof fromChat) =>
+      Object.keys((tools.schedule_task.inputSchema as unknown as { shape: object }).shape);
+    expect(shape(fromChat)).not.toContain("wakePass");
+    expect(shape(fromTask)).not.toContain("wakePass");
+    expect(shape(buildScheduledTaskTools(db, sessionId, passTurn))).toContain("wakePass");
+  });
+
+  it("refuses one unless always-on is on, sooner than the reschedule floor, or with invisible text", async () => {
+    expect(await scheduleFromPass(false)).toEqual({ error: expect.stringContaining("always-on") });
+    expect(await scheduleFromPass(true, { delayMinutes: 2 })).toEqual({
+      error: expect.stringContaining("at least"),
+    });
+    expect(await scheduleFromPass(true, { prompt: "check PR 42\u200b merge it" })).toEqual({
+      error: expect.stringContaining("invisible"),
+    });
+    expect(await listPendingWakes(db)).toEqual([]);
   });
 
   it("are left to the loop: the scheduled-tasks job never runs one", async () => {
-    await wake(1);
-    const now = new Date(Date.now() + 2 * 60_000);
+    await wake(10);
+    const now = new Date(Date.now() + 11 * 60_000);
     expect(await claimDueScheduledTasks(db, now, 5)).toEqual([]);
     expect(await claimDueWakes(db, now)).toMatchObject([{ status: "fired", wakesPass: true }]);
     expect(await claimDueWakes(db, now)).toEqual([]);

@@ -132,7 +132,7 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
   };
 }
 
-const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+export const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function validNightShift(value: unknown): NightShift | null {
   const shift = value as Partial<NightShift> | null | undefined;
@@ -147,7 +147,7 @@ function positiveInteger<T>(value: unknown, fallback: T): number | T {
 }
 
 /** Turns always-on off, for when the user stops the run: otherwise the loop would start another. */
-export async function turnAlwaysOnOff(): Promise<void> {
+export async function disableAlwaysOn(): Promise<void> {
   await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => ({
     next: { ...stored, alwaysOn: false },
     result: undefined,
@@ -184,7 +184,7 @@ export function isWithinWorkingHours(now: Date, hours: WorkingHours | null): boo
   );
 }
 
-/** Whether `now` falls in night shift, in the machine's local time. */
+/** Whether `now` falls in night shift, in the machine's local time. The same window as working hours, every day. */
 export function isNightShift(now: Date, nightShift: NightShift | null): boolean {
   if (!nightShift) return false;
   return isWithinWorkingHours(now, { days: [0, 1, 2, 3, 4, 5, 6], ...nightShift });
@@ -206,7 +206,7 @@ export interface SleepInput {
   /** No open stream can be pushed right now: each waits on the user or someone else. */
   allWaiting: boolean;
   userAway: boolean;
-  nightShift?: boolean;
+  duringNightShift?: boolean;
 }
 
 /**
@@ -223,13 +223,13 @@ export function chooseSleep(
   if (input.openStreams === 0) quiet.push("nothing to push");
   else if (input.allWaiting) quiet.push("every stream is waiting");
   if (input.userAway) quiet.push("no reply from you lately");
-  if (input.nightShift) quiet.push("night shift");
+  if (input.duringNightShift) quiet.push("night shift");
 
   const idleFloor =
     quiet.length > 0
       ? Math.max(config.minSleepMinutes, config.idleSleepMinutes)
       : config.minSleepMinutes;
-  const floor = input.nightShift
+  const floor = input.duringNightShift
     ? Math.max(idleFloor, config.nightShiftMinSleepMinutes)
     : idleFloor;
   const requested = input.requestedMinutes ?? floor;

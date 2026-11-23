@@ -47,6 +47,7 @@ export interface LoopDeps {
 }
 
 async function readConfig(): Promise<HeadsDownConfig> {
+  // A settings file that won't parse mustn't stop the loop.
   try {
     return await getHeadsDownConfig();
   } catch {
@@ -122,8 +123,10 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
     let nextMs = IDLE_CHECK_MS;
     let untilStop = Infinity;
     try {
-      const hd = await (deps.config ?? readConfig)();
+      // The run before the settings: Stop turns always-on off before it stops
+      // the run, so a cycle that finds no run then reads always-on as off.
       let run = await getActiveRun(db);
+      const hd = await (deps.config ?? readConfig)();
       if (!run && hd.alwaysOn) {
         run = await startRun(db, null);
         publish({ type: "changed" });
@@ -154,10 +157,14 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
       if (wakeRequested) nextMs = Math.min(nextMs, await deps.minSleepMs());
       // A wake-up a pass scheduled ends the sleep early. Only after a pass, so
       // one that is due but can't run yet (another instance holds the lease)
-      // doesn't spin the loop.
+      // doesn't spin the loop, and never sooner than the shortest sleep, so a
+      // pass can't keep the loop running every minute with wake-ups.
       if (ranPass) {
         const [wake] = await listPendingWakes(db);
-        if (wake) nextMs = Math.min(nextMs, Math.max(wake.dueAt.getTime() - Date.now(), 0));
+        if (wake) {
+          const untilWake = Math.max(wake.dueAt.getTime() - Date.now(), await deps.minSleepMs());
+          nextMs = Math.min(nextMs, untilWake);
+        }
       }
       // Read again: the stop time may have changed while the pass ran.
       untilStop = msUntilStop(await getActiveRun(db));

@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import type { ChatScheduledTask } from "../db/schema.ts";
+import { getHeadsDownConfig } from "../headsDown/config.ts";
 import {
   cancelScheduledTask,
   listPendingScheduledTasks,
@@ -30,15 +31,16 @@ export interface ScheduledTaskTurnContext {
 export function buildScheduledTaskTools(db: Db, sessionId: string, turn: ScheduledTaskTurnContext) {
   // Only a heads-down pass itself may ask for a pass: a scheduled task's
   // read-only turn waking the loop would be a way around its tool limits.
-  const isPass =
+  const isHeadsDownPass =
     turn.origin === "heads-down" && turn.scheduledTaskId === null && turn.attempt === 0;
-  const wakePassField = isPass
+  // Left out of the schema entirely for any other turn, so no other model sees it.
+  const wakePassField: { wakePass?: z.ZodOptional<z.ZodBoolean> } = isHeadsDownPass
     ? {
         wakePass: z
           .boolean()
           .optional()
           .describe(
-            "Heads-down only. True to wake heads-down mode for a full pass at that time, with this prompt in its context, instead of running a read-only turn. Use it for a check that may need you to act (e.g. 'check whether PR 42 is green at 15:00 and merge it if the rules allow').",
+            `Heads-down with always-on only. True to wake heads-down mode for a full pass at that time, with this prompt as a reminder of what to look at, instead of running a read-only turn. None of the read-only limits above apply then: the pass runs under its usual rules. At least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out.`,
           ),
       }
     : {};
@@ -68,8 +70,11 @@ export function buildScheduledTaskTools(db: Db, sessionId: string, turn: Schedul
           .describe("How long from now to run it"),
         ...wakePassField,
       }),
-      execute: async ({ title, prompt, delayMinutes, ...rest }) => {
-        const wakesPass = isPass && (rest as { wakePass?: boolean }).wakePass === true;
+      execute: async ({ title, prompt, delayMinutes, wakePass }) => {
+        const wakesPass = isHeadsDownPass && wakePass === true;
+        if (wakesPass && !(await getHeadsDownConfig()).alwaysOn) {
+          return { error: "wake-ups need always-on heads-down mode; leave wakePass out" };
+        }
         // A delegated specialist runs with no session. NEVER_DELEGATABLE already keeps
         // these tools from it; this stops a row being written if that ever changes.
         if (!sessionId) return { error: "there is no chat to come back to from here" };
@@ -90,7 +95,7 @@ export function buildScheduledTaskTools(db: Db, sessionId: string, turn: Schedul
           id: result.scheduledTask.id,
           dueAt: result.scheduledTask.dueAt.toISOString(),
           attempt: result.scheduledTask.attempt,
-          ...(wakesPass ? { wakesPass: true } : {}),
+          ...(wakesPass ? { wakePass: true } : {}),
         };
       },
     }),

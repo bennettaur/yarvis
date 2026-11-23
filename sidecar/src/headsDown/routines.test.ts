@@ -410,12 +410,12 @@ describe("dueRoutines at night", () => {
   it("holds a skip routine and stretches a slow one's cadence", () => {
     const lastDone = new Map(routines.map((r) => [r.name, hoursAgo(2)]));
     const names = (nightShift: boolean) =>
-      dueRoutines({ ...input, lastDone, nightShift }).map((r) => r.name);
+      dueRoutines({ ...input, lastDone, duringNightShift: nightShift }).map((r) => r.name);
     expect(names(false)).toEqual(["runs", "skips", "slows"]);
     expect(names(true)).toEqual(["runs"]);
     const longAgo = new Map(routines.map((r) => [r.name, hoursAgo(4)]));
     expect(
-      dueRoutines({ ...input, lastDone: longAgo, nightShift: true }).map((r) => r.name),
+      dueRoutines({ ...input, lastDone: longAgo, duringNightShift: true }).map((r) => r.name),
     ).toEqual(["runs", "slows"]);
   });
 });

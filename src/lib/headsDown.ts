@@ -344,8 +344,10 @@ export const setHeadsDownStopAt = (stopAt: string | null) =>
 
 export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-down/config");
 
-export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
-  request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+/** `alwaysOn` left out keeps what is stored. */
+export const saveHeadsDownConfig = (
+  config: Omit<HeadsDownConfig, "alwaysOn"> & { alwaysOn?: boolean },
+) => request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
 
 /** A recurring job a pass takes on beside the work streams, read from a markdown file. */
 export interface Routine {

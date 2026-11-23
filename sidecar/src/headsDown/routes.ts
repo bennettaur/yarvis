@@ -8,7 +8,9 @@ import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
 import {
+  DEFAULT_HEADS_DOWN_CONFIG,
   getHeadsDownConfig,
+  HHMM,
   MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
   saveHeadsDownConfig,
@@ -53,7 +55,6 @@ import { wakeHeadsDown } from "./wake.ts";
  */
 
 const UUID = /^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/;
-const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** A stalled page can't grow the stream's queue without limit. */
 const MAX_STREAM_QUEUE = 500;
@@ -159,7 +160,8 @@ export function createHeadsDownRoutes(config: Config): Hono {
     const [run, questions, hd, passesToday] = await Promise.all([
       getActiveRun(db()),
       listQuestions(db()),
-      getHeadsDownConfig(),
+      // A settings file that won't parse mustn't take the page down with it.
+      getHeadsDownConfig().catch(() => DEFAULT_HEADS_DOWN_CONFIG),
       countPassesSince(db(), startOfLocalDay(new Date())),
     ]);
     // This run's last pass: a pass from an earlier run says nothing about when this one looks next.
@@ -232,6 +234,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
     // A client that doesn't send these keeps what is stored rather than resetting it.
     const stored = await getHeadsDownConfig();
     const wasHeldByLimit = await passLimitReached(db(), stored);
+    // Null clears night shift and the pass limit, so only a field left out keeps what is stored.
     const saved = await saveHeadsDownConfig({
       ...parsed.data,
       passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
@@ -247,8 +250,8 @@ export function createHeadsDownRoutes(config: Config): Hono {
     });
     changed();
     // Turning always-on on starts a run now, and lifting a limit that held the loop lets it run.
-    const lifted = wasHeldByLimit && !(await passLimitReached(db(), saved));
-    if ((saved.alwaysOn && !stored.alwaysOn) || lifted) wakeHeadsDown();
+    const limitLifted = wasHeldByLimit && !(await passLimitReached(db(), saved));
+    if ((saved.alwaysOn && !stored.alwaysOn) || limitLifted) wakeHeadsDown();
     return c.json(saved);
   });
 

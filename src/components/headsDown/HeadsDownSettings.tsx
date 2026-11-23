@@ -136,7 +136,10 @@ export default function HeadsDownSettings({
     setSaving(true);
     setError(null);
     try {
-      await saveHeadsDownConfig(draft);
+      // Stop turns always-on off on the server while this form may still hold
+      // it on, so it is only sent when the user changed it here.
+      const { alwaysOn, ...rest } = draft;
+      await saveHeadsDownConfig(alwaysOn === config.alwaysOn ? rest : draft);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

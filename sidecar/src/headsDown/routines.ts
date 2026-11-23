@@ -13,6 +13,7 @@ import {
   readMarkdownDir,
 } from "../agents/frontmatter.ts";
 import type { RegistryTool } from "../agentTools/store.ts";
+import { hasInvisibleChars } from "../web/extract.ts";
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
 
@@ -64,9 +65,9 @@ export type RoutineConfig = Record<string, string | string[]>;
  * `run` keeps the routine's cadence at night, `slow` stretches it by
  * `NIGHT_SLOW_FACTOR`, and `skip` holds it until night shift ends.
  */
-export type NightShiftMode = "run" | "slow" | "skip";
+export type NightShiftMode = (typeof NIGHT_SHIFT_MODES)[number];
 
-const NIGHT_SHIFT_MODES: readonly NightShiftMode[] = ["run", "slow", "skip"];
+export const NIGHT_SHIFT_MODES = ["run", "slow", "skip"] as const;
 
 /** How much longer a `nightShift: slow` routine waits between runs at night. */
 export const NIGHT_SLOW_FACTOR = 4;
@@ -94,7 +95,7 @@ export function routinesDir(): string {
 }
 
 /** A name is a filename and what `finish_pass` reports back, so it stays to the shape of both. */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] as const;
 
@@ -348,6 +349,10 @@ export async function writeRoutineFile(
   const content = `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
   const dir = routinesDir();
   const path = join(dir, `${input.name}.md`);
+  // A routine is read by every pass unfenced; invisible text would reach them unseen.
+  if (hasInvisibleChars(`${input.description}\n${input.body}`)) {
+    return { error: "the description or body contains invisible characters" };
+  }
   try {
     parseRoutine(path, content, "user");
   } catch (e) {
@@ -397,7 +402,7 @@ export interface DueInput {
   now: Date;
   withinWorkingHours: boolean;
   /** Whether it is night shift now; each routine's `nightShift` decides what that means for it. */
-  nightShift?: boolean;
+  duringNightShift?: boolean;
   /** The most routines one pass takes on. */
   limit: number;
 }
@@ -415,7 +420,7 @@ export interface DueInput {
 export function dueRoutines(input: DueInput): Routine[] {
   const minutesSince = (at: Date) => (input.now.getTime() - at.getTime()) / 60_000;
   const cadence = (routine: Routine): number =>
-    input.nightShift && routine.nightShift === "slow"
+    input.duringNightShift && routine.nightShift === "slow"
       ? routine.everyMinutes * NIGHT_SLOW_FACTOR
       : routine.everyMinutes;
   const cadencesSinceDone = (routine: Routine): number => {
@@ -430,7 +435,7 @@ export function dueRoutines(input: DueInput): Routine[] {
   };
   return input.routines
     .filter((r) => r.enabled && (input.withinWorkingHours || !r.workingHoursOnly))
-    .filter((r) => !(input.nightShift && r.nightShift === "skip"))
+    .filter((r) => !(input.duringNightShift && r.nightShift === "skip"))
     .filter((r) => !waitingToRetry(r))
     .map((routine) => ({ routine, overdue: cadencesSinceDone(routine) }))
     .filter(({ overdue }) => overdue >= 1)

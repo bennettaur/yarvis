@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
 import { type ChatScheduledTask, chatScheduledTasks } from "../db/schema.ts";
 import { redactSecrets } from "../llm/errors.ts";
+import { hasInvisibleChars } from "../web/extract.ts";
 
 /**
  * Scheduled tasks: prompts the assistant leaves for itself to run later in the
@@ -76,6 +77,13 @@ export async function scheduleTask(
     return {
       error: `schedule the next run at least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out`,
     };
+  }
+  if (input.wakesPass && input.delayMinutes < MIN_RESCHEDULE_DELAY_MINUTES) {
+    return { error: `schedule a wake-up at least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out` };
+  }
+  if (input.wakesPass && hasInvisibleChars(`${input.title}\n${input.prompt}`)) {
+    // The woken pass reads both; invisible text would reach it unseen on the page.
+    return { error: "the title or prompt contains invisible characters" };
   }
   if (input.wakesPass && (await listPendingWakes(db)).length >= MAX_PENDING_WAKES) {
     return {

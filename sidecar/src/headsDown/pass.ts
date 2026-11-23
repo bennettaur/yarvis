@@ -25,7 +25,12 @@ import { type MergeFeedbackLoader, mergeFeedbackLoader } from "./mergeFeedback.t
 import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, PASS_REFUSED_TOOLS, passApprovalHooks } from "./policy.ts";
-import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
+import {
+  ALWAYS_ON_INSTRUCTIONS,
+  buildPassPrompt,
+  buildRetryPrompt,
+  PASS_INSTRUCTIONS,
+} from "./prompt.ts";
 import { dueRoutines, resolveRoutineTools, routineCatalog } from "./routines.ts";
 import {
   answeredSince,
@@ -60,8 +65,10 @@ const PASS_FAMILIES = [
   "browser",
   "calendar",
   "alarms",
-  "scheduledTasks",
 ];
+
+/** Mounted only with always-on, which is what lets a pass schedule its own wake-ups. */
+const ALWAYS_ON_FAMILIES = ["scheduledTasks"];
 
 /**
  * What the user asked for in this run, in their own words, for the decision
@@ -174,9 +181,9 @@ async function passModel(config: Config, hd: HeadsDownConfig) {
   };
 }
 
-function passToolIds(): string[] {
+function passToolIds(alwaysOn: boolean): string[] {
   const families = builtinToolMetadataByFamily();
-  return PASS_FAMILIES.flatMap((family) =>
+  return [...PASS_FAMILIES, ...(alwaysOn ? ALWAYS_ON_FAMILIES : [])].flatMap((family) =>
     Object.keys(families[family] ?? {}).map((name) => `builtin:${name}`),
   );
 }
@@ -220,13 +227,14 @@ export async function runPass(
     ),
   ]);
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
-  const nightShift = isNightShift(now, headsDownConfig.nightShift);
+  const duringNightShift = isNightShift(now, headsDownConfig.nightShift);
+  const { alwaysOn } = headsDownConfig;
   const routines = dueRoutines({
     routines: catalog.routines,
     ...history,
     now,
     withinWorkingHours,
-    nightShift,
+    duringNightShift,
     limit: headsDownConfig.maxRoutinesPerPass,
   });
   // Most passes have no routine naming a tool, and skip the registry read.
@@ -236,8 +244,6 @@ export async function runPass(
     registry,
     new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
   );
-  const wakes = await claimDueWakes(db, now);
-  const pendingWakes = await listPendingWakes(db);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -303,6 +309,9 @@ export async function runPass(
       stoppedBy = active?.id === run.id && msUntilStop(active) === 0 ? "stop-time" : "user";
       throw new Error("stopped before it started");
     }
+    // Claimed only once the pass is sure to run, so a paused run keeps them.
+    const wakes = await claimDueWakes(db, now);
+    const pendingWakes = await listPendingWakes(db);
     const saidMessages = [...earlier, ...messages];
     // Guidance alone, with nothing said this run, mustn't turn on auto-approval.
     const userSaidSomething = Boolean(run.focus) || saidMessages.length > 0;
@@ -310,7 +319,7 @@ export async function runPass(
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
-    mountTools(session.id, [...passToolIds(), ...routineTools.ids]);
+    mountTools(session.id, [...passToolIds(alwaysOn), ...routineTools.ids]);
 
     const runAttempt = async (message: string, record: AttemptRecord): Promise<AttemptResult> => {
       const result: AttemptResult = { error: null, transient: false, saved: false };
@@ -337,7 +346,9 @@ export async function runPass(
           mergeFeedback,
         }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
-        instructions: PASS_INSTRUCTIONS,
+        instructions: alwaysOn
+          ? `${PASS_INSTRUCTIONS}\n\n${ALWAYS_ON_INSTRUCTIONS}`
+          : PASS_INSTRUCTIONS,
         extraTools: buildPassTools(
           db,
           outcome,
@@ -345,6 +356,7 @@ export async function runPass(
           announcedMerges,
           routines.map((r) => r.name),
           mergeFeedback,
+          { alwaysOn },
         ),
         budget,
         maxRetries: PASS_MODEL_RETRIES,
@@ -366,7 +378,8 @@ export async function runPass(
       run,
       guidance: headsDownConfig.guidance,
       withinWorkingHours,
-      nightShift,
+      duringNightShift,
+      alwaysOn,
       minutesSinceUserReplied,
       messages,
       earlierMessages: earlier,
@@ -467,7 +480,7 @@ export async function runPass(
       openStreams: awake?.length ?? 0,
       allWaiting: awake?.every((s) => s.status !== "active") ?? true,
       userAway: minutesSinceUserReplied >= headsDownConfig.userAwayAfterMinutes,
-      nightShift,
+      duringNightShift,
     },
     headsDownConfig,
   );

@@ -123,6 +123,9 @@ const CONFIG = {
   maxPassesPerDay: null,
 };
 
+/** What the settings form sends: always-on only when the user changed it. */
+const { alwaysOn: _alwaysOn, ...SENT } = CONFIG;
+
 const ROUTINES = {
   routines: [
     {
@@ -700,7 +703,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+      body: { ...SENT, provider: "anthropic", model: "claude-haiku-5-5" },
     });
   });
 
@@ -723,7 +726,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, guidance: "Don't merge during market hours" },
+      body: { ...SENT, guidance: "Don't merge during market hours" },
     });
   });
 
@@ -755,7 +758,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
+      body: { ...SENT, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
     });
   });
 
@@ -780,10 +783,10 @@ describe("HeadsDownSettings", () => {
     };
     await type("0");
     await type("-1");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 0 });
     await type("10");
     await type("11");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 10 });
   });
 
   it("saves always-on, a daily pass limit and night-shift hours", async () => {
@@ -808,12 +811,24 @@ describe("HeadsDownSettings", () => {
       method: "PUT",
       path: "/api/heads-down/config",
       body: {
-        ...CONFIG,
+        ...SENT,
         alwaysOn: true,
         maxPassesPerDay: 100,
         nightShift: { start: "23:00", end: "07:00" },
       },
     });
+  });
+
+  it("doesn't send always-on unless it was changed, so a stale form can't turn it back on", async () => {
+    // Stop turned it off on the server after this form loaded it as on.
+    savedConfig = { ...CONFIG, alwaysOn: true };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+    buttonNamed(host, "Save").click();
+    await settle();
+    const body = writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    expect(body).not.toHaveProperty("alwaysOn");
   });
 
   it("goes back to the default chat model", async () => {
@@ -838,7 +853,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: null, model: null },
+      body: { ...SENT, provider: null, model: null },
     });
   });
 
@@ -861,7 +876,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: savedConfig,
+      body: { ...SENT, provider: "openai", model: "gpt-x" },
     });
   });
 });

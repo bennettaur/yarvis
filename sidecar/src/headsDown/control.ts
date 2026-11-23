@@ -5,7 +5,7 @@ import { claimJob, finishJob } from "../jobs/store.ts";
 import { cancelPendingWakes } from "../scheduledTasks/service.ts";
 import { dropOpenStreams } from "../workStreams/service.ts";
 import { dismissOpenQuestions } from "./attention.ts";
-import { getHeadsDownConfig, turnAlwaysOnOff } from "./config.ts";
+import { disableAlwaysOn, getHeadsDownConfig } from "./config.ts";
 import { publish } from "./hub.ts";
 import {
   deleteAllMessages,
@@ -108,7 +108,14 @@ export async function setHeadsDownStopTime(
  * loop would start a fresh run a minute later.
  */
 export async function stopHeadsDown(db: Db): Promise<HeadsDownRun | null> {
-  if ((await getHeadsDownConfig().catch(() => null))?.alwaysOn) await turnAlwaysOnOff();
+  // Before the run stops, so a loop cycle that finds no run can't still see
+  // always-on and start a fresh one. A settings file that can't be read or
+  // written mustn't keep the run going.
+  try {
+    if ((await getHeadsDownConfig()).alwaysOn) await disableAlwaysOn();
+  } catch (e) {
+    console.error("[heads-down] turning always-on off failed:", e);
+  }
   const run = await stopRun(db);
   abortHeadsDownPass();
   await dismissOpenQuestions(db);

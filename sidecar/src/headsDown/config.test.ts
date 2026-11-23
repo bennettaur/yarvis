@@ -5,11 +5,11 @@ import { join } from "node:path";
 import {
   chooseSleep,
   DEFAULT_HEADS_DOWN_CONFIG,
+  disableAlwaysOn,
   getHeadsDownConfig,
   isNightShift,
   isWithinWorkingHours,
   saveHeadsDownConfig,
-  turnAlwaysOnOff,
 } from "./config.ts";
 
 const officeHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
@@ -108,7 +108,7 @@ describe("chooseSleep at night", () => {
         openStreams: 2,
         allWaiting: false,
         userAway: false,
-        nightShift: true,
+        duringNightShift: true,
       },
       { ...DEFAULT_HEADS_DOWN_CONFIG, nightShiftMinSleepMinutes: 90 },
     );
@@ -182,7 +182,7 @@ describe("getHeadsDownConfig", () => {
       alwaysOn: true,
       guidance: "be nice",
     });
-    await turnAlwaysOnOff();
+    await disableAlwaysOn();
     expect(await getHeadsDownConfig()).toMatchObject({ alwaysOn: false, guidance: "be nice" });
   });
 });

@@ -789,6 +789,15 @@ report there and leaves the fixes to the author.
   model's words go in the body, so injected text can't pose as an app alert.
   A heads-down pass runs in a hidden chat, so a task it schedules carries
   `origin: "heads-down"` and its bell item opens the Heads down page.
+  With always-on, a pass (and only a pass: `origin: "heads-down"`, no
+  `scheduledTaskId`, attempt 0) also gets `wakePass` on `schedule_task`. That
+  row (`wakes_pass`) is skipped by the `scheduled-tasks` job and claimed by the
+  next pass instead (`claimDueWakes`, after the pass knows it will run). The
+  loop sleeps no later than the soonest one, but never under the shortest
+  sleep, so wake-ups can't drive a pass a minute. The prompt reaches the pass
+  fenced, as a reminder of what to look at rather than an instruction. At most
+  `MAX_PENDING_WAKES` wait across every pass, since each pass has its own chat,
+  and stopping heads-down mode cancels them.
 - A feature that needs Claude Code to work *while the user watches* (a
   verification report, mutation testing) starts it with `startClaudeRun` in
   `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
@@ -1008,6 +1017,12 @@ report there and leaves the fixes to the author.
   than `mount_tools` allows: the calls still go through `passApprovalHooks`, so
   naming an MCP tool never skips the heads-down allowlist. Its `config:` reaches
   the pass fenced, as values the body refers to.
+  With always-on, a pass can propose one with `create_routine`, which is in
+  `PASS_APPROVAL_TOOLS` and so only runs once the user approved its exact
+  arguments. It refuses invisible characters, since what the user approves has
+  to be what later passes read, and `writeRoutineFile` refuses a name already
+  in the catalogue and writes with `O_EXCL | O_NOFOLLOW`. `stopHeadsDown` turns
+  `alwaysOn` off before it stops the run, or the loop would start a new one.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

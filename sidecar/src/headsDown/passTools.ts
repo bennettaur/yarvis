@@ -1,11 +1,12 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
+import { hasInvisibleChars } from "../web/extract.ts";
 import { getStream, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
-import { writeRoutineFile } from "./routines.ts";
+import { NAME_PATTERN, NIGHT_SHIFT_MODES, writeRoutineFile } from "./routines.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -41,8 +42,10 @@ export function buildPassTools(
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
   mergeFeedback?: MergeFeedbackLoader,
+  { alwaysOn = false }: { alwaysOn?: boolean } = {},
 ) {
   return {
+    ...(alwaysOn ? { create_routine: createRoutineTool(onAsked) } : {}),
     announce_merge: tool({
       description:
         "Call when a merge can go ahead now, right before you merge the PR, whether with a tool or by telling a workspace's session to. Not while the merge still waits on the user's approval: announce it on the pass that makes it. It pops up an alert over whatever the user has open; it doesn't merge anything or wait for them. Judge the risk from the files the PR changes first, and ask with ask_user instead when it is high or you can't tell.",
@@ -146,37 +149,6 @@ export function buildPassTools(
       },
     }),
 
-    create_routine: tool({
-      description:
-        "Propose a new recurring routine for heads-down mode, for work you see coming back on a schedule (e.g. checking a release channel every morning). It waits for the user's approval, who sees exactly these arguments; once approved, a later pass makes the same call and the routine is written to the user's routines folder. The body is what a pass is told to do each time, in plain words addressed to you. It runs unattended under every heads-down rule, so keep it to what the user would want done without them. Don't propose one the user already turned down, or one that copies an existing routine.",
-      inputSchema: z.object({
-        name: z
-          .string()
-          .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
-          .describe("Lowercase letters, digits and hyphens"),
-        description: z.string().min(1).max(200).describe("One line, shown on the Heads down page"),
-        every: z
-          .string()
-          .regex(/^\d+[mhd]$/)
-          .describe("How long between runs, such as 30m, 3h or 1d; at least 15m"),
-        workingHours: z.boolean().optional().describe("True to run it only in working hours"),
-        nightShift: z
-          .enum(["run", "slow", "skip"])
-          .optional()
-          .describe("What it does during night shift: run as usual, slow (rarer) or skip"),
-        body: z.string().min(1).max(4000).describe("What a pass is told to do each time"),
-      }),
-      execute: async (routine) => {
-        const written = await writeRoutineFile(routine);
-        if ("error" in written) return { ok: false, error: written.error };
-        onAsked();
-        return {
-          ok: true,
-          message: `Routine '${routine.name}' saved to ${written.path}. Passes are given it from now on when it is due.`,
-        };
-      },
-    }),
-
     finish_pass: tool({
       description:
         "End the pass. Notes are for the next pass, which starts with no memory of this one: only what isn't already on the streams, tickets and PRs, short and direct. Ask for a sleep in minutes: short when there is work you can push soon, long when everything is waiting.",
@@ -216,4 +188,60 @@ export function buildPassTools(
       },
     }),
   };
+}
+
+/**
+ * Text the user approves has to be what the model reads: invisible characters
+ * copied from a message would reach every later pass unseen.
+ */
+function visibleText(max: number) {
+  return z
+    .string()
+    .min(1)
+    .max(max)
+    .refine(
+      (text) => !hasInvisibleChars(text),
+      "contains invisible characters; write it in plain visible text",
+    );
+}
+
+/**
+ * Kept well under what the approved-calls section of the prompt shows
+ * (`MAX_ARGS_SHOWN`), so a later pass can make the approved call again exactly.
+ */
+const MAX_PROPOSED_BODY_CHARS = 2500;
+
+/**
+ * Proposing a routine. In `PASS_APPROVAL_TOOLS`, so it only runs once the user
+ * approved these exact arguments.
+ */
+function createRoutineTool(onChanged: () => void) {
+  return tool({
+    description:
+      "Propose a new recurring routine for heads-down mode, for work you see coming back on a schedule (e.g. checking a release channel every morning). It waits for the user's approval, who sees exactly these arguments; once approved, a later pass makes the same call and the routine is written to the user's routines folder. The body is what a pass is told to do each time, in your own words addressed to a future pass. It runs unattended under every heads-down rule, so keep it to what the user would want done without them. Don't propose one the user already turned down, or one that copies an existing routine.",
+    inputSchema: z.object({
+      name: z.string().regex(NAME_PATTERN).describe("Lowercase letters, digits and hyphens"),
+      description: visibleText(200).describe("One line, shown on the Heads down page"),
+      every: z
+        .string()
+        .regex(/^\d+[mhd]$/)
+        .describe("How long between runs, such as 30m, 3h or 1d; at least 15m"),
+      workingHours: z.boolean().optional().describe("True to run it only in working hours"),
+      nightShift: z
+        .enum(NIGHT_SHIFT_MODES)
+        .optional()
+        .describe("What it does during night shift: run as usual, slow (rarer) or skip"),
+      body: visibleText(MAX_PROPOSED_BODY_CHARS).describe("What a pass is told to do each time"),
+    }),
+    execute: async (routine) => {
+      const written = await writeRoutineFile(routine);
+      if ("error" in written) return { ok: false, error: written.error };
+      // The page's routine list changed.
+      onChanged();
+      return {
+        ok: true,
+        message: `Routine '${routine.name}' saved to ${written.path}. Passes are given it from now on when it is due.`,
+      };
+    },
+  });
 }

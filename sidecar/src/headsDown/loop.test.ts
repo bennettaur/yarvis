@@ -337,6 +337,17 @@ describe("wake-ups", () => {
     loop.stop();
   });
 
+  it("never wake the loop sooner than the shortest sleep", async () => {
+    await startRun(db, null);
+    await scheduleWake(20);
+    await sql`UPDATE chat_scheduled_tasks SET due_at = now() + interval '1 minute'`;
+    const { loop, scheduled } = testLoop(sleeping(60));
+
+    await loop.cycle();
+    expect(scheduled[0]).toBe(MIN_SLEEP_MS);
+    loop.stop();
+  });
+
   it("are cancelled when heads-down mode stops", async () => {
     await startRun(db, null);
     await scheduleWake(20);
