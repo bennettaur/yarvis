@@ -79,6 +79,12 @@ function hangingModel(closeAfterMs = 5_000): MockLanguageModelV3 {
     doStream: async ({ abortSignal }) => ({
       stream: new ReadableStream<StreamPart>({
         start(controller) {
+          // A pass that set up slowly can abort before the model is called, and
+          // a listener added after that never fires.
+          if (abortSignal?.aborted) {
+            controller.error(abortSignal.reason);
+            return;
+          }
           const timer = setTimeout(() => {
             controller.enqueue(finish("stop"));
             controller.close();
