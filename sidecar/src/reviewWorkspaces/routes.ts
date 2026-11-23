@@ -7,6 +7,7 @@ import { type Db, getDb } from "../db/client.ts";
 import { clientError, describeError } from "../llm/errors.ts";
 import { prEvidence } from "../pr/evidence.ts";
 import { runChoiceSchema } from "../pr/models.ts";
+import { seenCommitFields } from "../pr/reviewMarks.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
@@ -21,6 +22,15 @@ import {
   startReviewClaudeSession,
 } from "./claudeSession.ts";
 import { isValidSymbol } from "./definitions.ts";
+import {
+  answerReviewDraft,
+  type DraftPoster,
+  defaultDraftPoster,
+  listReviewDrafts,
+  MAX_DRAFT_BODY_CHARS,
+  postAcceptedDrafts,
+  syncVerificationDrafts,
+} from "./drafts.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -137,6 +147,20 @@ const startVerificationSchema = z
   .nullable();
 // No body starts with the workspace's saved choice.
 const startClaudeSessionSchema = z.object({ loadRepoConfig: z.boolean().optional() }).nullable();
+const draftAnswerSchema = z.discriminatedUnion("action", [
+  z.object({
+    action: z.literal("accept"),
+    body: z.string().max(MAX_DRAFT_BODY_CHARS).optional(),
+  }),
+  z.object({ action: z.literal("drop") }),
+  z.object({ action: z.literal("reopen") }),
+]);
+const postDraftsSchema = z
+  .object({
+    summary: z.string().max(MAX_DRAFT_BODY_CHARS).optional(),
+    ...seenCommitFields,
+  })
+  .nullable();
 /** The path is checked as a repo path by the search itself; the symbol only here. */
 const symbolQuerySchema = z.object({
   path: z.string().min(1).max(4096),
@@ -157,6 +181,8 @@ export interface ReviewWorkspaceRouteOptions {
   evidenceSource?: (ref: PrRef) => PrCodeSource | { error: string };
   /** Replaces the core control channel the workspace's Ask Claude session starts through, for tests. */
   claudeSession?: ReviewClaudeDeps;
+  /** Replaces the provider accepted review drafts are posted to, for tests. */
+  draftPoster?: DraftPoster;
 }
 
 /**
@@ -568,6 +594,56 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+  // The PR's draft review comments, brought in line with the verification
+  // report at its head first, so a report that finished while nobody was
+  // looking still has its drafts.
+  router.get("/:id/prs/:prId/drafts", async (c) => {
+    try {
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      await syncVerificationDrafts(db(), pr.workspaceId, pr.id);
+      return c.json({ headSha: pr.headSha, drafts: await listReviewDrafts(db(), pr.refKey) });
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Accept (optionally with edited text), drop or reopen one draft. Nothing is posted here.
+  router.patch("/:id/prs/:prId/drafts/:draftId", async (c) => {
+    if (!idSchema.safeParse(c.req.param("draftId")).success) {
+      return c.json({ error: "invalid draft id" }, 400);
+    }
+    const parsed = draftAnswerSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      const pr = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      return c.json(await answerReviewDraft(db(), pr.refKey, c.req.param("draftId"), parsed.data));
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Post every accepted draft as one review. A partial failure (Azure posts
+  // one thread at a time) still marks what went up, so a retry skips it.
+  router.post("/:id/prs/:prId/drafts/post", async (c) => {
+    const parsed = postDraftsSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    const { summary, ...seen } = parsed.data ?? {};
+    try {
+      const result = await postAcceptedDrafts(
+        db(),
+        config,
+        c.req.param("id"),
+        c.req.param("prId"),
+        deps(),
+        options.draftPoster ?? defaultDraftPoster(config),
+        { summary, seen },
+      );
+      return c.json(result, result.error ? 502 : 201);
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
   // What other tools already said about the PR: CI checks and their
   // annotations, code scanning alerts and bot comments, read from its provider.
   router.get("/:id/prs/:prId/evidence", async (c) => {

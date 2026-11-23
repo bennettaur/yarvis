@@ -1,19 +1,23 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { buildFileTree, flattenFileTree } from "../../../lib/fileTree";
 import type { ReviewChangedFile } from "../../../lib/reviewWorkspaces/api";
+import { inlineDrafts } from "../../../lib/reviewWorkspaces/drafts";
 import { seenAt } from "../../../lib/reviewWorkspaces/sinceReview";
 import type { VerificationMustRead } from "../../../lib/reviewWorkspaces/verification";
 import LoadingIndicator from "../../LoadingIndicator";
-import { MonacoDiffView } from "../editor";
+import { type EditorZone, MonacoDiffView } from "../editor";
 import { useReviewNavigation } from "../navigation";
 import { AnnotationBar, CenteredNote } from "./FileChrome";
 import FileTab from "./FileTab";
+import { DraftBlock, DraftsBar, useDraftActions } from "./ReviewDrafts";
 import { type FileNote, fileNotes, reportDecorations } from "./reportHighlights";
 import {
+  draftsKey,
   modelUri,
   mustReadFor,
   reportOf,
   useReviewChangedFiles,
+  useReviewDrafts,
   useReviewFile,
   useReviewViewed,
   useVerificationChecklist,
@@ -145,6 +149,31 @@ function ChangedFileDiff({
     seen: seenAt(ctx.pr),
   });
 
+  const draftKey = draftsKey(ctx.pr.id, ctx.pr.headSha, checklist.data);
+  const drafts = useReviewDrafts(ctx.workspaceId, ctx.pr.id, draftKey);
+  const draftActions = useDraftActions(ctx, draftKey, drafts.refresh);
+  const fileDrafts = useMemo(
+    () => inlineDrafts(drafts.data?.drafts ?? [], path, ctx.pr.headSha),
+    [drafts.data, path, ctx.pr.headSha],
+  );
+  // Read when a zone renders, so a draft's buttons follow the current request.
+  const liveDraftActions = useRef(draftActions);
+  liveDraftActions.current = draftActions;
+  const zones = useMemo<EditorZone[]>(
+    () => [
+      ...annotations.zones,
+      ...fileDrafts.map(
+        (draft): EditorZone => ({
+          id: `draft:${draft.id}`,
+          side: "RIGHT",
+          afterLine: draft.line,
+          render: () => <DraftBlock draft={draft} actions={liveDraftActions.current} />,
+        }),
+      ),
+    ],
+    [annotations.zones, fileDrafts],
+  );
+
   const isViewed = viewed.viewed.has(path);
   const next = useMemo(
     () => nextUnviewed(order, path, viewed.viewed),
@@ -186,7 +215,7 @@ function ChangedFileDiff({
         modified={headContent}
         sideBySide={ctx.diffMode === "split"}
         hideUnchanged={!showAll}
-        zones={annotations.zones}
+        zones={zones}
         decorations={decorations}
         onLineAction={annotations.onLineAction}
         revealLine={reveal.line}
@@ -261,6 +290,22 @@ function ChangedFileDiff({
       </div>
       {(mustRead || notes.length > 0) && (
         <ReportNotes reason={mustRead?.reason} notes={notes} onJump={reveal.jump} />
+      )}
+      {drafts.data && (
+        <DraftsBar
+          ctx={ctx}
+          drafts={drafts.data.drafts}
+          actions={draftActions}
+          onJump={(draft) =>
+            ctx.openTab({
+              kind: "diff",
+              prId: ctx.pr.id,
+              path: draft.path,
+              revealLine: draft.line,
+              revealNonce: Date.now(),
+            })
+          }
+        />
       )}
       <AnnotationBar annotations={annotations} error={viewed.error} />
       <div className="relative min-h-0 flex-1">{body}</div>
