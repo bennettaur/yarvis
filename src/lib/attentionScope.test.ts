@@ -17,6 +17,7 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
     sessionKey: "ws:w1/t1/p1",
     workspaceId: "w1",
     kind: "permission",
+    category: "general",
     title: "Fix API",
     body: "Needs permission",
     status: "pending",

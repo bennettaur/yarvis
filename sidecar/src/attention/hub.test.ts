@@ -10,6 +10,7 @@ function row(id: string): AttentionItemRow {
     sessionKey: "ws-claude:w1",
     workspaceId: "w1",
     kind: "permission",
+    category: "general",
     title: "Fix API",
     body: null,
     status: "pending",

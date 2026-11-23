@@ -38,6 +38,8 @@ export interface CreateStreamInput {
   summary?: string | null;
   status?: WorkStream["status"];
   priority?: WorkStream["priority"];
+  /** The kind of work, which attention items about the stream take on. */
+  category?: WorkStream["category"];
   projectId?: string | null;
   nextAction?: string | null;
   waitingOn?: string | null;
@@ -50,6 +52,8 @@ export interface UpdateStreamInput {
   summary?: string | null;
   status?: WorkStream["status"];
   priority?: WorkStream["priority"];
+  /** The kind of work, which attention items about the stream take on. */
+  category?: WorkStream["category"];
   projectId?: string | null;
   nextAction?: string | null;
   waitingOn?: string | null;
@@ -121,6 +125,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
       summary: input.summary ?? null,
       status,
       priority: input.priority ?? "medium",
+      category: input.category ?? null,
       projectId: input.projectId ?? null,
       nextAction: input.nextAction ?? null,
       waitingOn: input.waitingOn ?? null,
@@ -216,6 +221,7 @@ export async function updateStream(
       ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),
       ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+      ...(patch.category !== undefined ? { category: patch.category } : {}),
       ...(patch.projectId !== undefined ? { projectId: patch.projectId } : {}),
       ...(patch.nextAction !== undefined ? { nextAction: patch.nextAction } : {}),
       ...(patch.waitingOn !== undefined ? { waitingOn: patch.waitingOn } : {}),

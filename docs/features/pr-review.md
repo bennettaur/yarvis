@@ -187,7 +187,9 @@ the background, and the attention bell tells you when they're done.
 
 - **Guided review**: the agent writes the guide as if you had pressed
   **Guided review**, with the model set for guided reviews under **Settings →
-  PR review**. Open the bell item to read it in the PRs tab. If the PR already
+  PR review**. Open the bell item to read it in the PRs tab. Once you start
+  reading, the bell item clears and the review shows under **In progress** in
+  the attention panel until you reach the last step. If the PR already
   has a guide, the assistant tells you how far you got and whether the PR has
   moved on since. It writes a new one only if you ask, and asks you to approve
   that, because a new guide replaces the old one and your place in it.

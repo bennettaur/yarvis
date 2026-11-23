@@ -19,6 +19,7 @@ const SETTINGS_KEY = "wipConfig";
 export const DEFAULT_WIP_SOURCES: WipSourcesConfig = {
   myPrs: true,
   starredPrs: true,
+  reviews: true,
   issues: true,
   tasks: true,
   workspaces: true,

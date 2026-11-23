@@ -1,4 +1,5 @@
 import { and, eq, like } from "drizzle-orm";
+import { streamCategory } from "../attention/category.ts";
 import { publish as publishAttention } from "../attention/hub.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Db } from "../db/client.ts";
@@ -39,6 +40,7 @@ export async function askUser(
     source: "system",
     sessionKey: sessionKeyFor(question.id),
     kind: question.kind === "approval" ? "permission" : "info",
+    category: (await streamCategory(db, input.streamId)) ?? "general",
     title:
       question.kind === "approval" ? "Heads down needs your approval" : "Heads down has a question",
     body: question.question,
@@ -159,6 +161,7 @@ export async function announceMerge(db: Db, merge: MergeAnnouncement): Promise<v
     // One item per PR: announcing the same merge again updates it.
     sessionKey: `${MERGE_KEY_PREFIX}${keyOf(shown)}`,
     kind: "info",
+    category: "build",
     title:
       shown.number === null
         ? "Heads down told a workspace to merge a PR"

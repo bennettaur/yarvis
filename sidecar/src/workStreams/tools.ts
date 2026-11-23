@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import type { WorkStreamLink, WorkStreamLinkRef } from "../db/schema.ts";
+import { ATTENTION_CATEGORIES, type WorkStreamLink, type WorkStreamLinkRef } from "../db/schema.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   createStream,
@@ -28,6 +28,11 @@ export const STREAM_PAUSED =
 const uuid = z.string().uuid();
 const priority = z.enum(["urgent", "high", "medium", "low"]);
 const status = z.enum(["active", "waiting-on-user", "waiting-on-others", "done", "dropped"]);
+const category = z
+  .enum(ATTENTION_CATEGORIES)
+  .describe(
+    "The kind of work: review (someone else's PR), build (the user's own code, PRs, CI, deploys), slack (a chat message to answer) or general. What you raise about the stream is grouped under it",
+  );
 const instant = z.string().datetime({ offset: true });
 
 /** A short piece of text: a ticket key, channel, conversation, message ref or handle. */
@@ -88,6 +93,7 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
     status: stream.status,
     paused: stream.pausedAt !== null,
     priority: stream.priority,
+    category: stream.category,
     projectId: stream.projectId,
     summary: text(stream.summary),
     nextAction: text(stream.nextAction),
@@ -207,6 +213,7 @@ export function buildWorkStreamTools(
         title: z.string().min(1).max(300),
         summary: z.string().max(2000).optional().describe("What the work is and why it matters"),
         priority: priority.optional(),
+        category: category.optional(),
         projectId: uuid.optional().describe("The project it serves, if any"),
         nextAction: z.string().max(1000).optional().describe("The next step you mean to take"),
         note: z.string().max(2000).optional(),
@@ -224,6 +231,7 @@ export function buildWorkStreamTools(
         id: uuid,
         status: status.optional(),
         priority: priority.optional(),
+        category: category.optional(),
         title: z.string().min(1).max(300).optional(),
         summary: z.string().max(2000).nullable().optional(),
         projectId: uuid.nullable().optional(),

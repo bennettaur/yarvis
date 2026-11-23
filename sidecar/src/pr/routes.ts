@@ -15,7 +15,7 @@ import {
   claimGuide,
   guideSessionKey,
   resolvePrRunModel,
-  syncGuideAttention,
+  settleGuideAttention,
   writeGuide,
 } from "./guideRun.ts";
 import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
@@ -258,7 +258,8 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
     const guide = await setGuideProgress(db(), ref, step);
     if (!guide) return c.json({ error: "no guide for this pull request" }, 404);
-    await syncGuideAttention(db(), ref, guide);
+    // Reading the guide picks up its "ready" item.
+    await settleGuideAttention(db(), ref);
     return c.json({ currentStep: guide.currentStep });
   });
 

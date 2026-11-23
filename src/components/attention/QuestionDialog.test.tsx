@@ -71,6 +71,7 @@ const ITEM: AttentionItem = {
   sessionKey: "ws-claude:w1",
   workspaceId: "w1",
   kind: "question",
+  category: "general",
   title: "Fix the API",
   body: "Which limiter should the API use?",
   status: "pending",

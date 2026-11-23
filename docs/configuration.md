@@ -480,7 +480,8 @@ The tabs in **Settings**, in order:
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.
 9. **Work in progress.** Which sources feed the **In progress** list in the
-   attention panel.
+   attention panel: your open PRs, starred PRs, guided reviews you haven't
+   finished, issues, today's tasks and active workspaces.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
 11. **Devices.** The devices signed in to the server, revoking one, creating a

@@ -51,6 +51,7 @@ const ITEM: AttentionItem = {
   sessionKey: "heads-down:q-clicked",
   workspaceId: null,
   kind: "permission",
+  category: "general",
   title: "Heads down needs your approval",
   body: CLICKED.question,
   status: "pending",

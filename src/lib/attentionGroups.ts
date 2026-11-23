@@ -1,5 +1,7 @@
 import { sessionWorkspaceId } from "../components/shell/terminalTabs/sessionIds";
 import {
+  ATTENTION_CATEGORIES,
+  type AttentionCategory,
   type AttentionItem,
   type AttentionKind,
   type AttentionScope,
@@ -29,15 +31,18 @@ export interface AttentionGroup {
 
 /**
  * Urgency order for picking a group's lead: blocked (permission, question, idle)
- * beats broken, which beats a nudge, which beats finished. Lower sorts first.
+ * beats broken, which beats something to do, a nudge, finished work and a note
+ * to read. Lower sorts first.
  */
 const KIND_RANK: Record<AttentionKind, number> = {
   permission: 0,
   question: 1,
   idle: 2,
   error: 3,
-  info: 4,
-  completed: 5,
+  action: 4,
+  info: 5,
+  completed: 6,
+  message: 7,
 };
 
 function moreUrgent(a: AttentionItem, b: AttentionItem): boolean {
@@ -84,6 +89,47 @@ export function groupAttentionItems(items: AttentionItem[]): AttentionGroup[] {
   }
 
   return [...groups.values()];
+}
+
+/** One block of the panel: a category's groups, or every group when not grouping. */
+export interface AttentionSection {
+  /** Null for the single section of an ungrouped view. */
+  category: AttentionCategory | null;
+  groups: AttentionGroup[];
+}
+
+export interface AttentionView {
+  byCategory: boolean;
+  /** Only this category's groups, or every category when null. */
+  only: AttentionCategory | null;
+}
+
+/** How many groups each category holds, for the filter's counts. */
+export function countByCategory(groups: AttentionGroup[]): Record<AttentionCategory, number> {
+  const counts = Object.fromEntries(ATTENTION_CATEGORIES.map((c) => [c, 0])) as Record<
+    AttentionCategory,
+    number
+  >;
+  for (const group of groups) counts[group.lead.category] += 1;
+  return counts;
+}
+
+/**
+ * Lays the groups out for the panel. Grouped, the categories come in
+ * {@link ATTENTION_CATEGORIES} order, so review work leads; empty ones are left
+ * out. Ungrouped, the groups stay newest-first. A group belongs to its lead's
+ * category.
+ */
+export function arrangeAttention(
+  groups: AttentionGroup[],
+  view: AttentionView,
+): AttentionSection[] {
+  const shown = view.only ? groups.filter((g) => g.lead.category === view.only) : groups;
+  if (!view.byCategory) return shown.length > 0 ? [{ category: null, groups: shown }] : [];
+  return ATTENTION_CATEGORIES.map((category) => ({
+    category,
+    groups: shown.filter((g) => g.lead.category === category),
+  })).filter((section) => section.groups.length > 0);
 }
 
 /**

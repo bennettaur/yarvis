@@ -2413,6 +2413,7 @@ export async function raiseIntegrityAlert(
       sessionKey: `workspace-integrity:${workspace.id}`,
       workspaceId: workspace.id,
       kind: "error",
+      category: "build",
       title: workspace.name,
       body: `Yarvis won't push or merge for this workspace until you look at its git data — ${describeFindings(findings)}`.slice(
         0,
@@ -2507,6 +2508,7 @@ async function raiseArchiveFailure(
       source: "system",
       workspaceId: detail.id,
       kind: "error",
+      category: "build",
       title: detail.name,
       body: `Archive stopped — ${summary}`.slice(0, ARCHIVE_ERROR_BODY_CAP),
       navTarget: { type: "workspace", workspaceId: detail.id },
@@ -2939,6 +2941,7 @@ async function raiseIssueCloseFailure(
       source: "system",
       workspaceId: detail.id,
       kind: "error",
+      category: "build",
       title: detail.name,
       body: `Archived, but could not close ${summary}`.slice(0, ARCHIVE_ERROR_BODY_CAP),
       navTarget: { type: "workspace", workspaceId: detail.id },

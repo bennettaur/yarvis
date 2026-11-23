@@ -1,11 +1,21 @@
+import { prNavTarget } from "../attention/navTarget.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { AttentionNavTarget, GithubStar, IssueLink, IssueStar, Task } from "../db/schema.ts";
+import type {
+  AttentionNavTarget,
+  GithubStar,
+  IssueLink,
+  IssueStar,
+  PrGuideRow,
+  Task,
+} from "../db/schema.ts";
 import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { listStars as listPrStars } from "../github/service.ts";
 import { listIssueRepos, listStars as listIssueStars, listLinks } from "../issues/service.ts";
 import type { IssueSummary } from "../issues/types.ts";
+import { listGuides } from "../pr/guides.ts";
 import type { PrSummary } from "../pr/types.ts";
+import { parseRefKey } from "../pr/types.ts";
 import { listTasks } from "../tasks/service.ts";
 import type { WorkspaceSummary } from "../workspaces/service.ts";
 import { listWorkspaces } from "../workspaces/service.ts";
@@ -17,7 +27,7 @@ import { getWipConfig } from "./config.ts";
  * workspace services. Purely derived — it creates nothing and owns no table.
  */
 
-export type WipSource = "starred-pr" | "pr" | "issue" | "task" | "workspace";
+export type WipSource = "starred-pr" | "pr" | "review" | "issue" | "task" | "workspace";
 
 export interface WipItem {
   id: string;
@@ -31,6 +41,8 @@ export interface WipItem {
 export interface WipInputs {
   starredPrs: GithubStar[];
   myPrs: PrSummary[];
+  /** Guided reviews the user has not read to the end. */
+  reviewsInProgress: PrGuideRow[];
   inProgressIssues: IssueLink[];
   /** Open issues assigned to the user carrying a configured label. */
   labeledIssues: IssueSummary[];
@@ -45,7 +57,7 @@ const issueKey = (provider: string, sourceKey: string, externalId: string) =>
 
 /**
  * Orders the sources into one flat list. Priority (highest first): starred PRs,
- * my open PRs, in-progress issues, labeled issues, starred issues, today's open
+ * my open PRs, guided reviews in progress, in-progress issues, labeled issues, starred issues, today's open
  * tasks, active workspaces — recency preserved within each bucket by the callers'
  * ordering. Deduplicates a PR that is both mine and starred, and an issue that
  * appears in more than one issue source. Pure, so ordering is unit-testable.
@@ -72,6 +84,18 @@ export function buildWipItems(inputs: WipInputs): WipItem[] {
       title: pr.title,
       subtitle: `${pr.owner}/${pr.repo} #${pr.number}`,
       navTarget: { type: "pr", owner: pr.owner, repo: pr.repo, number: pr.number },
+    });
+  }
+
+  for (const guide of inputs.reviewsInProgress) {
+    const ref = parseRefKey(guide.refKey);
+    if (!ref) continue;
+    items.push({
+      id: `review:${guide.refKey}`,
+      source: "review",
+      title: guide.title ?? guide.refKey,
+      subtitle: `Step ${guide.currentStep + 1} of ${guide.steps.length}`,
+      navTarget: prNavTarget(ref),
     });
   }
 
@@ -212,6 +236,7 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
   const [
     starredPrs,
     myPrs,
+    reviewsInProgress,
     inProgressIssues,
     labeledIssues,
     starredIssues,
@@ -225,6 +250,13 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
           async () =>
             token ? await createGitHubClient(config, token).search("is:pr is:open author:@me") : [],
           [] as PrSummary[],
+        )
+      : [],
+    sources.reviews
+      ? safe(
+          "guided reviews",
+          async () => (await listGuides(db)).filter((g) => g.currentStep < g.steps.length - 1),
+          [] as PrGuideRow[],
         )
       : [],
     sources.issues
@@ -264,6 +296,7 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
   return buildWipItems({
     starredPrs,
     myPrs,
+    reviewsInProgress,
     inProgressIssues,
     labeledIssues,
     starredIssues,

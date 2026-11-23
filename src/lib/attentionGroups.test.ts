@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { AttentionItem } from "./attention";
-import { groupAttentionItems, nextAnswerable } from "./attentionGroups";
+import {
+  arrangeAttention,
+  countByCategory,
+  groupAttentionItems,
+  nextAnswerable,
+} from "./attentionGroups";
 
 function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): AttentionItem {
   return {
@@ -8,6 +13,7 @@ function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): 
     sessionKey: "ws-claude:w1",
     workspaceId: "w1",
     kind: "permission",
+    category: "general",
     title: "Fix API",
     body: "Needs permission",
     status: "pending",
@@ -163,5 +169,41 @@ describe("nextAnswerable", () => {
       sessionKey: "heads-down:q2",
     });
     expect(nextAnswerable([other, loose], loose)).toBeNull();
+  });
+});
+
+describe("arrangeAttention", () => {
+  // Newest first: a build item, then a review item, then a general one.
+  const groups = groupAttentionItems([
+    item({ id: "g", seq: 3, sessionKey: null, workspaceId: null, category: "general" }),
+    item({ id: "r", seq: 2, sessionKey: "raise:pr", workspaceId: null, category: "review" }),
+    item({ id: "b", seq: 1, category: "build" }),
+  ]);
+  const ids = (sections: ReturnType<typeof arrangeAttention>) =>
+    sections.map((s) => [s.category, s.groups.map((g) => g.lead.id)]);
+
+  it("groups by category with review first, leaving empty categories out", () => {
+    expect(ids(arrangeAttention(groups, { byCategory: true, only: null }))).toEqual([
+      ["review", ["r"]],
+      ["build", ["b"]],
+      ["general", ["g"]],
+    ]);
+  });
+
+  it("keeps the stream newest-first when not grouping", () => {
+    expect(ids(arrangeAttention(groups, { byCategory: false, only: null }))).toEqual([
+      [null, ["g", "r", "b"]],
+    ]);
+  });
+
+  it("filters to one category", () => {
+    expect(ids(arrangeAttention(groups, { byCategory: true, only: "build" }))).toEqual([
+      ["build", ["b"]],
+    ]);
+    expect(arrangeAttention(groups, { byCategory: false, only: "slack" })).toEqual([]);
+  });
+
+  it("counts groups per category, including empty ones", () => {
+    expect(countByCategory(groups)).toEqual({ review: 1, build: 1, slack: 0, general: 1 });
   });
 });

@@ -170,6 +170,7 @@ async function raiseAttention(
     source: "chat-agent",
     sessionKey: `scheduled-task:${scheduledTask.id}`,
     kind,
+    category: "general",
     title,
     body,
     navTarget: navTargetFor(scheduledTask),

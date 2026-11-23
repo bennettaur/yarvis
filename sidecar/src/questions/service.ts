@@ -1,4 +1,5 @@
 import { and, eq, notExists, sql } from "drizzle-orm";
+import { workspaceCategory } from "../attention/category.ts";
 import { publish } from "../attention/hub.ts";
 import { navTargetFor } from "../attention/navTarget.ts";
 import { createAttention } from "../attention/service.ts";
@@ -87,6 +88,7 @@ export async function askQuestions(db: Db, input: AskInput): Promise<AgentQuesti
     sessionKey: input.sessionKey,
     workspaceId,
     kind: "question",
+    category: fromYarvis ? "general" : await workspaceCategory(db, workspaceId),
     title: fromYarvis ? "Yarvis" : (ws?.name ?? "Claude session"),
     body: preview(input.questions),
     // The chat target names no session: it opens the chat tab on whatever thread

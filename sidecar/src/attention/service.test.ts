@@ -33,6 +33,7 @@ const base = {
   source: "claude-hook" as const,
   sessionKey: "ws-claude:w1",
   kind: "permission" as const,
+  category: "build" as const,
   title: "Fix API",
 };
 
@@ -47,14 +48,14 @@ describe("attention service", () => {
   });
 
   it("keeps distinct kinds for the same session as separate items", async () => {
-    await createAttention(db, { ...base, kind: "permission" });
-    await createAttention(db, { ...base, kind: "idle" });
+    await createAttention(db, { ...base, category: "general", kind: "permission" });
+    await createAttention(db, { ...base, category: "general", kind: "idle" });
     expect(await listAttention(db, { status: "pending" })).toHaveLength(2);
   });
 
   it("resolves a session's other pending items when it completes", async () => {
-    await createAttention(db, { ...base, kind: "permission" });
-    await createAttention(db, { ...base, kind: "completed", title: "Done" });
+    await createAttention(db, { ...base, category: "general", kind: "permission" });
+    await createAttention(db, { ...base, category: "general", kind: "completed", title: "Done" });
 
     const pending = await listAttention(db, { status: "pending" });
     // The permission prompt is superseded; only the completion remains pending.
@@ -64,8 +65,18 @@ describe("attention service", () => {
   });
 
   it("does not coalesce sourceless items (null sessionKey)", async () => {
-    await createAttention(db, { source: "chat-agent", kind: "info", title: "Chat" });
-    await createAttention(db, { source: "chat-agent", kind: "info", title: "Chat" });
+    await createAttention(db, {
+      source: "chat-agent",
+      category: "general",
+      kind: "info",
+      title: "Chat",
+    });
+    await createAttention(db, {
+      source: "chat-agent",
+      category: "general",
+      kind: "info",
+      title: "Chat",
+    });
     expect(await listAttention(db, { status: "pending" })).toHaveLength(2);
   });
 
@@ -100,6 +111,7 @@ describe("clearAttentionScope", () => {
       workspaceId: WORKSPACE_ID,
       sessionKey: `ws:${WORKSPACE_ID}/t2/p1`,
       kind: "idle",
+      category: "general",
     });
     const untouched = await createAttention(db, { ...base, sessionKey: "ws-claude:other" });
 

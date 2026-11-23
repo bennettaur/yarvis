@@ -8,7 +8,22 @@ import type { QuestionItem } from "./questions";
  */
 
 export type AttentionSource = "claude-hook" | "chat-agent" | "system";
-export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info" | "question";
+export type AttentionKind =
+  | "permission"
+  | "idle"
+  | "completed"
+  | "error"
+  | "info"
+  | "question"
+  | "action"
+  | "message";
+
+/**
+ * The kind of work an item is about, mirroring the sidecar. Listed in the order
+ * the stream shows them: review work comes first.
+ */
+export const ATTENTION_CATEGORIES = ["review", "build", "slack", "general"] as const;
+export type AttentionCategory = (typeof ATTENTION_CATEGORIES)[number];
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 /** Where clicking an item should take the user; mirrors the sidecar union. */
@@ -34,6 +49,7 @@ export interface AttentionItem {
   sessionKey: string | null;
   workspaceId: string | null;
   kind: AttentionKind;
+  category: AttentionCategory;
   title: string;
   body: string | null;
   status: AttentionStatus;
