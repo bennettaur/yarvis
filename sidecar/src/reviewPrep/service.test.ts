@@ -22,7 +22,7 @@ import {
 import type { PrMeta, ReviewDeps } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
 import { DEFAULT_SECTIONS, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
-import { prepReview, prepsSettled, type ReviewPrepDeps } from "./service.ts";
+import { prepReview, prepsSettled, type ReviewPrepDeps, withVerificationSlot } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -371,5 +371,28 @@ describe("the attention item", () => {
     });
     await prepsSettled();
     expect(await attention()).toHaveLength(1);
+  });
+});
+
+describe("withVerificationSlot", () => {
+  it("holds work outside the queue to the same limit", async () => {
+    const one = async () => ({ maxConcurrentVerifications: 1 });
+    let finishFirst = () => {};
+    const first = withVerificationSlot(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve;
+        }),
+      one,
+    );
+    let secondRan = false;
+    const second = withVerificationSlot(async () => {
+      secondRan = true;
+    }, one);
+    await Bun.sleep(50);
+    expect(secondRan).toBe(false);
+    finishFirst();
+    await Promise.all([first, second]);
+    expect(secondRan).toBe(true);
   });
 });

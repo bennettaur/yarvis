@@ -737,6 +737,35 @@ fetch's progress as it goes. Your tabs stay open and show the new commits once i
 done, and the banner then offers **See what changed since you last reviewed** —
 or, if more commits were pushed while it ran, another **Refresh**.
 
+### PR updated since your review
+
+When someone pushes to a PR you reviewed, and the PR is still in an active
+review workspace, Yarvis gets it ready for another look and tells you. It
+counts as reviewed once there is a [last review](#since-last-review) for it:
+a review or line comment you posted, on GitHub, Azure DevOps or through
+Yarvis, or **Mark reviewed here**.
+
+A background job checks those PRs every 5 minutes. It waits until the PR's
+head has stayed the same for 10 minutes, so a burst of pushes gives one
+alert. Then it:
+
+1. Fetches the new commits and moves the checkout, as **Refresh** does.
+2. Works out what changed since your review, as the
+   [Since last review](#since-last-review) tab shows it, and which of your
+   review threads the new commits touch (the provider marks them outdated, or
+   their file changed) and which are still open.
+3. Re-runs the verification checks the PR's report already has, at the new
+   head. It runs them in one of [review prep](#review-prep)'s slots, so
+   `maxConcurrentVerifications` covers them too. A PR with no report isn't
+   checked, and one that would need your go-ahead (a large PR, or one over
+   budget) waits for it.
+4. Adds a **PR updated since your review** item under Review, with that
+   summary, which opens the PR's **Since last review** tab.
+
+Each head gets one item, and a later push updates the item while you haven't
+read it yet. A merged or closed PR is left alone. Nothing is posted to the
+PR.
+
 ### Tabs
 
 Description, reviewers, checks, comments, since last review and the agent tabs
