@@ -31,6 +31,7 @@ On this page:
    - **Run script** (optional). It adds a **Run** button that starts the app,
      for example `bun run dev`.
    - **Pull issues**. Tick it to show the repo's issues on the Issues tab.
+   - **Playbooks** (optional). See [Repo playbooks](#repo-playbooks).
 3. Optional: install the GitHub CLI and the stack extension for the
    [Stack tab](#stacked-pull-requests)'s grouping and merge button:
    ```bash
@@ -43,6 +44,22 @@ On this page:
 
 Workspaces keep their clones and worktrees under `~/dev/yarvis-workspaces`.
 Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
+
+### Repo playbooks
+
+Each repo can carry up to seven prompts for shipping a PR, one text area each
+under **Settings → Repositories → Playbooks**: **Test in staging**, **Deploy**,
+**Monitor the deploy**, **Monitor production**, **Test in production**,
+**Revert** and **Pick a reviewer**. Write them in plain text, up to 4000
+characters each. A repo with none saved has no playbook.
+
+Playbooks are stored in Yarvis, never read from the repo. An agent follows them
+as your own words, so only your Settings can supply them, the same reason
+routines are read only from `~/.yarvis`. The assistant and heads-down passes read
+a repo's playbook with the `get_repo_playbook` tool, giving the repo's name or
+`owner/repo`. It returns only the prompts you filled in, and an empty result
+means there is no playbook to follow. Reading one doesn't let an agent merge,
+deploy or revert without asking: those still wait for your approval.
 
 ### The agent command
 

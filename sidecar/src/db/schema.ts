@@ -19,6 +19,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { GraphEdge, GraphNode } from "../pr/graph.ts";
 import type { PrRef, ReviewDecision } from "../pr/types.ts";
+import type { RepoPlaybooks } from "../workspaces/playbooks.ts";
 import type { RepoTracker } from "../workspaces/tracker.ts";
 
 /**
@@ -624,6 +625,8 @@ export const repos = pgTable(
     pullIssues: boolean("pull_issues").notNull().default(false), // include this repo in the Issues dashboard
     // Which tracker the repo's tickets are filed in; null until the user sets it.
     tracker: jsonb("tracker").$type<RepoTracker>(),
+    // The user's prompts for shipping a PR in this repo; only keys with text are stored.
+    playbooks: jsonb("playbooks").$type<RepoPlaybooks>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

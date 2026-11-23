@@ -5,7 +5,11 @@ import {
   createRepo,
   deleteRepo,
   listRepos,
+  PLAYBOOK_FIELDS,
+  PLAYBOOK_MAX_CHARS,
+  type PlaybookKey,
   type Repo,
+  type RepoPlaybooks,
   type RepoTracker,
   updateRepo,
 } from "../lib/repos";
@@ -24,6 +28,14 @@ interface Draft {
   azureProject: string;
   azureAreaPath: string;
   jiraProjectKey: string;
+  playbooks: Record<PlaybookKey, string>;
+}
+
+function playbookDraft(saved: RepoPlaybooks | undefined): Record<PlaybookKey, string> {
+  return Object.fromEntries(PLAYBOOK_FIELDS.map((f) => [f.key, saved?.[f.key] ?? ""])) as Record<
+    PlaybookKey,
+    string
+  >;
 }
 
 function blankDraft(): Draft {
@@ -37,6 +49,7 @@ function blankDraft(): Draft {
     azureProject: "",
     azureAreaPath: "",
     jiraProjectKey: "",
+    playbooks: playbookDraft({}),
   };
 }
 
@@ -53,6 +66,7 @@ function draftFromRepo(r: Repo): Draft {
     azureProject: t?.provider === "azure-boards" ? t.project : "",
     azureAreaPath: t?.provider === "azure-boards" ? (t.areaPath ?? "") : "",
     jiraProjectKey: t?.provider === "jira" ? t.projectKey : "",
+    playbooks: playbookDraft(r.playbooks),
   };
 }
 
@@ -147,6 +161,7 @@ export default function ReposSection() {
         runScript: draft.runScript.trim() || null,
         pullIssues: draft.pullIssues,
         tracker: tracker.tracker,
+        playbooks: draft.playbooks,
       };
       if (draft.id) {
         await updateRepo(draft.id, payload);
@@ -348,6 +363,31 @@ function DraftEditor({
         )}
       </div>
 
+      <div className="mt-4">
+        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+          Playbooks
+        </div>
+        <p className="mb-2 text-xs text-zinc-500">
+          Your own instructions for shipping a PR in this repo. Agents read them as written here and
+          never from the repo itself.
+        </p>
+        {PLAYBOOK_FIELDS.map((f) => (
+          <label key={f.key} className="mb-3 block text-xs text-zinc-400">
+            <span className="block uppercase tracking-wide">{f.label}</span>
+            <span className="mb-1 block text-zinc-500">{f.hint}</span>
+            <textarea
+              value={draft.playbooks[f.key]}
+              maxLength={PLAYBOOK_MAX_CHARS}
+              rows={3}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, playbooks: { ...d.playbooks, [f.key]: e.target.value } }))
+              }
+              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+            />
+          </label>
+        ))}
+      </div>
+
       <div className="mt-4 flex justify-end gap-2">
         <button
           onClick={onCancel}
@@ -450,6 +490,9 @@ function RepoCard({
         <span>{repo.runScript ? "run ✓" : "no run"}</span>
         {repo.pullIssues && <span className="text-indigo-400">issues ✓</span>}
         {repo.tracker && <span>tickets: {trackerLabel(repo.tracker)}</span>}
+        {Object.keys(repo.playbooks).length > 0 && (
+          <span>playbooks: {Object.keys(repo.playbooks).length}</span>
+        )}
       </div>
     </div>
   );
