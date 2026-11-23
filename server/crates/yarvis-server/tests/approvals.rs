@@ -213,7 +213,13 @@ async fn an_approval_whose_requester_stopped_waiting_is_denied() {
             .then_some(())
     })
     .await;
-    let answered = h.events("approval.answered").await;
+    // The row is settled first and the event appended after, so the list
+    // above can empty before the event lands.
+    let answered = until("the abandoned approval's event", || async {
+        let answered = h.events("approval.answered").await;
+        (!answered.is_empty()).then_some(answered)
+    })
+    .await;
     assert_eq!(answered[0].data["reason"], "abandoned");
     let (st, _) = h
         .call(
