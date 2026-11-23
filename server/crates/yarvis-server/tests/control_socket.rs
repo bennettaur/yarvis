@@ -99,6 +99,37 @@ async fn the_socket_is_private_to_the_user() {
     assert_eq!(dir_mode & 0o777, 0o700);
 }
 
+/// A data dir nested deep enough that a socket in it passes `sun_path`'s
+/// limit (104 bytes on macOS).
+fn long_data_dir(under: &std::path::Path) -> PathBuf {
+    under.join("a-data-dir-whose-name-goes-on-".repeat(5))
+}
+
+#[tokio::test]
+async fn a_long_data_dir_still_gets_a_working_private_socket() {
+    use std::os::unix::fs::PermissionsExt;
+    let server = serve_with(Setup::default()).await;
+    let data_dir = long_data_dir(server.dir.path());
+    assert!(data_dir.join("core-control.sock").as_os_str().len() > 104);
+    let mut state = server.state.clone();
+    let mut config = (*state.config).clone();
+    config.server.data_dir = data_dir.clone();
+    state.config = std::sync::Arc::new(config);
+
+    let path = yarvis_server::control::start(state).await.unwrap();
+    let dir = path.parent().unwrap().to_path_buf();
+    assert!(!path.starts_with(&data_dir), "{}", path.display());
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let dir_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+    assert_eq!(dir_mode & 0o777, 0o700);
+
+    let mut control = Control::connect(&path).await;
+    let reply = control.call("nope", json!({})).await;
+    assert!(reply["error"].is_string(), "{reply}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn firing_and_releasing_an_alarm_become_events() {
     let (server, path) = start().await;

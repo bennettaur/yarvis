@@ -1262,7 +1262,9 @@ async fn the_sidecar_gets_the_database_the_control_socket_and_the_scoped_tokens(
         url: "postgres://localhost:5432/handed-over".into(),
         source: yarvis_server::database_url::UrlSource::ConfigFile,
     };
-    yarvis_server::hand_off_to_sidecar(&mut h.state, database).await;
+    yarvis_server::hand_off_to_sidecar(&mut h.state, database)
+        .await
+        .unwrap();
     assert_eq!(
         h.state.database.as_ref().map(|d| d.url.as_str()),
         Some("postgres://localhost:5432/handed-over"),

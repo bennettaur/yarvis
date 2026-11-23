@@ -254,6 +254,47 @@ async fn with_the_agent_on_it_runs_only_while_unlocked() {
 }
 
 #[tokio::test]
+async fn a_long_data_dir_still_gets_an_agent_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("a-data-dir-whose-name-goes-on-".repeat(5));
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = data_dir.clone();
+    config.secrets.backend = Some(SecretBackendKind::Vault);
+    config.ssh_agent.enabled = true;
+    config.validate().unwrap();
+    let created = Vault::init(&data_dir, true, VAULT_PASSPHRASE).unwrap();
+    let v = VaultHarness {
+        harness: Harness::with_config(config).await,
+        dir,
+        recovery_key: created.recovery_key.expose().to_string(),
+    };
+    let token = v.harness.setup().await;
+    let socket = ssh_agent::socket_path(&v.harness.state).unwrap();
+    assert!(!socket.starts_with(&data_dir), "{}", socket.display());
+
+    v.unlock_with_recovery(&token).await;
+    assert!(v.harness.state.ssh_agent.is_running());
+    assert!(
+        std::fs::symlink_metadata(&socket)
+            .unwrap()
+            .file_type()
+            .is_socket()
+    );
+    let mode = std::fs::metadata(socket.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+
+    v.harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    assert!(!socket.exists(), "the socket outlived the lock");
+    std::fs::remove_dir_all(socket.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
 async fn a_live_server_sees_vault_init() {
     let mut v = vault_harness_without_a_vault(false).await;
     let token = v.harness.setup().await;

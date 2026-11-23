@@ -9,8 +9,9 @@
 //! harness's program and environment to a verification run (`harness.runEnv`).
 //!
 //! Security model: the socket lives in the server's private data dir (mode
-//! 0700) as a mode-0600 file, so only the same user can connect, and a UDS is
-//! never reachable over the network. The protocol is deliberately narrow: the
+//! 0700), or in a private short directory when that path is too long to bind
+//! (`socket_dir`), as a mode-0600 file, so only the same user can connect, and
+//! a UDS is never reachable over the network. The protocol is deliberately narrow: the
 //! sidecar can only start, stop, or talk to an agent session for a workspace,
 //! and chooses only whether to launch one and which saved harness, by id,
 //! never what runs. The command comes from settings, which only an admin
@@ -49,8 +50,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The socket's file name in the server's data dir. The sidecar gets the full
-/// path as `YARVIS_CORE_SOCK`.
+/// The socket's file name. It goes where [`crate::socket_dir::socket_path`]
+/// says, and the sidecar gets the full path as `YARVIS_CORE_SOCK`.
 pub const SOCKET_FILE: &str = "core-control.sock";
 
 /// Workspace ids are UUIDs; reject anything else so the value can't smuggle a
@@ -130,6 +131,7 @@ mod unix_impl {
     use super::{Alarm, SOCKET_FILE, check_alarm, validate_alarm_id, validate_workspace_id};
     use crate::AppState;
     use crate::pty::{PtyManager, review_session_id};
+    use crate::socket_dir;
 
     /// Cap on a single request line, bounding what one message can buffer.
     const MAX_LINE: usize = 64 * 1024;
@@ -274,16 +276,16 @@ mod unix_impl {
         id: String,
     }
 
-    /// Binds the control socket in the server's data dir and starts serving
-    /// it. Returns the socket's path, which the sidecar needs in its env, so
-    /// call this before starting the sidecar.
+    /// Binds the control socket and starts serving it. Returns the socket's
+    /// path, which the sidecar needs in its env, so call this before starting
+    /// the sidecar.
     pub async fn start(state: AppState) -> Result<PathBuf, String> {
-        let dir = state.config.server.data_dir.clone();
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        // Who can connect is decided by these permissions alone, so the
-        // socket isn't served when they can't be set.
-        set_private(&dir, 0o700)?;
-        let path = dir.join(SOCKET_FILE);
+        let data_dir = &state.config.server.data_dir;
+        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+        let path = socket_dir::socket_path(data_dir, SOCKET_FILE);
+        // Who can connect is decided by the directory's permissions alone, so
+        // the socket isn't served when they can't be set.
+        socket_dir::prepare(&path)?;
         // Clear a stale socket from a previous run, but only if it really is a
         // socket, so a symlink is never followed or a planted file clobbered.
         remove_stale_socket(&path)?;

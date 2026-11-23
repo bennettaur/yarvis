@@ -742,7 +742,12 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
 
 The sidecar's control socket is `core-control.sock` in the server's data dir
 (mode 0600, in a 0700 folder). The sidecar gets its path as
-`YARVIS_CORE_SOCK`. It keeps `control.rs`'s method list and checks. Two things
+`YARVIS_CORE_SOCK`. A Unix socket path must fit in about 104 bytes on macOS
+(108 on Linux), so when the data dir is too deep for that, the server's
+sockets go in a 0700 folder named `yarvis-<hash of the data dir>` under
+`$XDG_RUNTIME_DIR`, `$TMPDIR` or `/tmp`, whichever is short enough
+(`socket_dir.rs`). The server refuses that folder if another user owns it or it
+is a symlink, and refuses to start if the control socket can't be bound. It keeps `control.rs`'s method list and checks. Two things
 differ from the desktop app: the alarm methods append `alarm.fire` and
 `alarm.release` events instead of taking over a window, and `mcp.saveOAuth`
 and `github.saveToken` write the secrets blob in whichever backend the server
@@ -750,7 +755,8 @@ uses.
 
 Each PTY gets `SSH_AUTH_SOCK` from the `[ssh_agent]` config: with
 `enabled = false`, `upstream_socket` when set, else the server's own value;
-with `enabled = true`, always `<data_dir>/ssh-agent.sock`, never another
+with `enabled = true`, always the server's own `ssh-agent.sock` (in the data
+dir, or the short folder above), never another
 agent. That socket exists only while the vault is unlocked, so a shell signs
 while it's open and fails to sign while it's locked, including a shell started
 while it was locked.
@@ -791,7 +797,8 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   with the key and socket only while the agent runs; 404 when
   `ssh_agent.enabled = false`.
 
-The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir while the
+The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir (or the
+short folder, for a long data dir) while the
 vault is unlocked, and locking removes it. It serves one Ed25519 key and signs
 only SSHSIG blobs in the `git` namespace with a `sha256` or `sha512` hash,
 refusing anything else before asking anyone. Each signature is an approval of kind `git.sign`, with the key's

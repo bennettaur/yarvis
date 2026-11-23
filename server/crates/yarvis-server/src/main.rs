@@ -175,7 +175,9 @@ async fn serve(config: Config, store: Store, database: DatabaseUrl) {
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .unwrap_or_else(|e| fail(format!("couldn't listen on {bind}: {e}")));
-    yarvis_server::hand_off_to_sidecar(&mut state, database).await;
+    yarvis_server::hand_off_to_sidecar(&mut state, database)
+        .await
+        .unwrap_or_else(|e| fail(e));
     let pty = state.pty.clone();
     // Listening first, so `/api/health` answers 503 while Postgres comes up
     // rather than the port refusing connections.

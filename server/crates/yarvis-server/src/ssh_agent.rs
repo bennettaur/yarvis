@@ -3,7 +3,8 @@
 //! its signing key in 1Password, and then nothing here runs, makes a key or
 //! opens a socket.
 //!
-//! When on, the agent listens on `ssh-agent.sock` in the data dir while the
+//! When on, the agent listens on `ssh-agent.sock` in the data dir (or a short
+//! private directory when that path is too long; see `socket_dir`) while the
 //! vault is unlocked, and stops (removing the socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
 //! host, and every signature waits for an answer on the approvals route.
@@ -35,6 +36,7 @@ use crate::approvals::Approvals;
 use crate::auth::{Authed, Read};
 use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
+use crate::socket_dir;
 
 /// The approval kind a signature request is filed under.
 pub const APPROVAL_KIND: &str = "git.sign";
@@ -57,7 +59,7 @@ pub(crate) fn configured_socket(config: &Config) -> Option<PathBuf> {
     config
         .ssh_agent
         .enabled
-        .then(|| config.server.data_dir.join(SOCKET_NAME))
+        .then(|| socket_dir::socket_path(&config.server.data_dir, SOCKET_NAME))
 }
 
 /// The OpenSSH public key for a seed, as `ssh-ed25519 AAAA… yarvis-server`.
@@ -287,6 +289,7 @@ impl Drop for RunningAgent {
 /// left by a crashed run is replaced.
 pub fn spawn(agent: VaultAgent, socket: PathBuf) -> std::io::Result<RunningAgent> {
     use std::os::unix::fs::PermissionsExt;
+    socket_dir::prepare(&socket).map_err(std::io::Error::other)?;
     match std::fs::remove_file(&socket) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}

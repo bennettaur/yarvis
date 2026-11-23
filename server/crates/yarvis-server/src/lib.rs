@@ -22,6 +22,7 @@ pub mod secret_store;
 pub mod settings;
 pub mod sidecar;
 pub mod sidecar_proxy;
+pub mod socket_dir;
 pub mod ssh_agent;
 pub mod store;
 pub mod vault;
@@ -126,17 +127,24 @@ impl AppState {
 /// connected with (`DATABASE_URL`) and the control socket's path
 /// (`YARVIS_CORE_SOCK`). Both are read at spawn, so this runs before the
 /// sidecar's supervisor starts. Without the socket the sidecar can't start or
-/// message agent sessions, fire alarms or save MCP and GitHub tokens.
-pub async fn hand_off_to_sidecar(state: &mut AppState, database: database_url::DatabaseUrl) {
+/// message agent sessions, fire alarms or save MCP and GitHub tokens, so an
+/// error here should stop the server rather than run without it.
+pub async fn hand_off_to_sidecar(
+    state: &mut AppState,
+    database: database_url::DatabaseUrl,
+) -> Result<(), String> {
     state.sidecar.set_env("DATABASE_URL", &database.url);
     state.database = Some(database);
     #[cfg(unix)]
-    match control::start(state.clone()).await {
-        Ok(path) => state
+    {
+        let path = control::start(state.clone())
+            .await
+            .map_err(|e| format!("the control socket isn't available: {e}"))?;
+        state
             .sidecar
-            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy()),
-        Err(e) => tracing::error!("the control socket isn't available: {e}"),
+            .set_env("YARVIS_CORE_SOCK", &path.to_string_lossy());
     }
+    Ok(())
 }
 
 impl FromRef<AppState> for Auth {
