@@ -353,6 +353,9 @@ In the bell they're filed under the category of the stream they belong to
 stream, and under **General** otherwise. See
 [Categories](workspaces.md#categories).
 
+One left unanswered gets a reminder in the bell after a while; see
+[Reminders about stalled work](assistant.md#reminders-about-stalled-work).
+
 Opening one from the bell answers it in a window over the page you're on,
 rather than taking you to the Heads down page. The window then shows the next
 open question or approval, until none are left. **Open Heads down** goes to the

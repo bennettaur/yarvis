@@ -1,16 +1,17 @@
-import { and, desc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { raiseAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
   agentRuns,
-  type PrReviewMark,
+  type PrUpdateWatch,
   prUpdateWatches,
   type ReviewWorkspacePr,
 } from "../db/schema.ts";
 import { createGitHubClient, POLL_BATCH_SIZE } from "../github/client.ts";
 import type { JobDefinition } from "../jobs/scheduler.ts";
 import { describeError } from "../llm/errors.ts";
+import { latestReviewMark } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
 import { type PrDetail, type PrRef, refKey } from "../pr/types.ts";
 import type { KickoffDeps } from "../reviewWorkspaces/kickoff.ts";
@@ -54,12 +55,19 @@ import { defaultPrepDeps, withVerificationSlot } from "./service.ts";
  */
 
 /** How long a head must stay the same before it is acted on. */
-export const SETTLE_MS = 10 * 60 * 1000;
+const SETTLE_MS = 10 * 60 * 1000;
 
 /** The longest it waits for a refresh to move the checkout. */
 const REFRESH_WAIT_MS = 10 * 60 * 1000;
 
-export const prUpdatedAttentionKey = (key: string) => `pr-updated:${key}`;
+/**
+ * Past this, an alert claimed but never raised is taken again. Longer than a
+ * refresh, a checkout and a verification run together, with room to wait
+ * for a slot.
+ */
+const STALE_CLAIM_MS = 2 * 60 * 60 * 1000;
+
+const prUpdatedAttentionKey = (key: string) => `pr-updated:${key}`;
 
 export interface ProviderHead {
   open: boolean;
@@ -80,7 +88,7 @@ export interface PrUpdateDeps {
   refreshWaitMs?: number;
 }
 
-export function defaultPrUpdateDeps(db: Db, config: Config): PrUpdateDeps {
+function defaultPrUpdateDeps(db: Db, config: Config): PrUpdateDeps {
   const prep = defaultPrepDeps(db, config);
   const rereview = defaultRereviewDeps(config);
   return {
@@ -95,16 +103,16 @@ export function defaultPrUpdateDeps(db: Db, config: Config): PrUpdateDeps {
 /** GitHub refs go in batched status queries; an Azure PR is read one at a time. */
 async function providerHeads(config: Config, refs: PrRef[]): Promise<Map<string, ProviderHead>> {
   const heads = new Map<string, ProviderHead>();
-  const github = refs.flatMap((r) => (r.provider === "github" ? [r] : []));
+  const githubRefs = refs.flatMap((r) => (r.provider === "github" ? [r] : []));
   const token = config.secrets?.githubToken;
-  if (github.length > 0 && token) {
+  if (githubRefs.length > 0 && token) {
     const gh = createGitHubClient(config, token);
-    for (let i = 0; i < github.length; i += POLL_BATCH_SIZE) {
-      const batch = github.slice(i, i + POLL_BATCH_SIZE);
+    for (let i = 0; i < githubRefs.length; i += POLL_BATCH_SIZE) {
+      const batch = githubRefs.slice(i, i + POLL_BATCH_SIZE);
       const results = await gh.prStatusesByNumber(batch);
-      results.forEach((result, j) => {
-        const ref = batch[j] as PrRef;
-        if (!result.ok) return;
+      batch.forEach((ref, j) => {
+        const result = results[j];
+        if (!result?.ok) return;
         const { status } = result.value;
         heads.set(refKey(ref), {
           open: status.state.toLowerCase() === "open" && !status.merged,
@@ -130,19 +138,14 @@ async function providerHeads(config: Config, refs: PrRef[]): Promise<Map<string,
   return heads;
 }
 
-const background = new Set<Promise<void>>();
+const inFlightAlerts = new Set<Promise<void>>();
 
 /** Resolves once every alert this process started has been raised or failed. For tests. */
 export async function prUpdatesSettled(): Promise<void> {
-  while (background.size > 0) await Promise.allSettled([...background]);
+  while (inFlightAlerts.size > 0) await Promise.allSettled([...inFlightAlerts]);
 }
 
-interface Watched {
-  pr: ReviewWorkspacePrSummary;
-  mark: PrReviewMark;
-}
-
-export interface PrUpdateResult {
+interface PrUpdateResult {
   /** PRs whose new head is being prepared for an alert. */
   started: string[];
   /** PRs with a new head still inside the settle time. */
@@ -156,70 +159,124 @@ export async function runPrUpdateWatch(
 ): Promise<PrUpdateResult> {
   const now = deps.now?.() ?? new Date();
   const settleMs = deps.settleMs ?? SETTLE_MS;
-  const watched = await reviewedPrs(db, deps);
+  const prs = await watchedPrs(db);
   const result: PrUpdateResult = { started: [], settling: 0 };
-  if (watched.length === 0) return result;
+  if (prs.length === 0) return result;
 
   let heads: Map<string, ProviderHead>;
   try {
-    heads = await deps.providerHeads(watched.map((w) => w.pr.ref));
+    heads = await deps.providerHeads(prs.map((pr) => pr.ref));
   } catch (e) {
     console.error("[pr-updates] could not read the PRs' heads:", describeError(e));
     return result;
   }
+  const watches = new Map(
+    (
+      await db
+        .select()
+        .from(prUpdateWatches)
+        .where(
+          inArray(
+            prUpdateWatches.refKey,
+            prs.map((pr) => pr.refKey),
+          ),
+        )
+    ).map((w) => [w.refKey, w]),
+  );
 
-  for (const { pr, mark } of watched) {
-    const head = heads.get(pr.refKey);
-    if (!head?.open || !head.headSha || head.headSha === mark.headSha) continue;
-    const [watch] = await db
-      .select()
-      .from(prUpdateWatches)
-      .where(eq(prUpdateWatches.refKey, pr.refKey));
-    if (watch?.alertedHeadSha === head.headSha) continue;
-    if (watch?.seenHeadSha !== head.headSha) {
+  for (const pr of prs) {
+    const head = heads.get(pr.refKey)?.open ? heads.get(pr.refKey)?.headSha : null;
+    if (!head) continue;
+    const watch = watches.get(pr.refKey);
+    if (watch?.alertedHeadSha === head && !claimIsStale(watch, now)) continue;
+    if (watch?.seenHeadSha !== head) {
       await db
         .insert(prUpdateWatches)
-        .values({ refKey: pr.refKey, seenHeadSha: head.headSha, seenAt: now })
+        .values({ refKey: pr.refKey, seenHeadSha: head, seenAt: now })
         .onConflictDoUpdate({
           target: prUpdateWatches.refKey,
-          set: { seenHeadSha: head.headSha, seenAt: now },
+          set: { seenHeadSha: head, seenAt: now },
         });
-      result.settling++;
+      // The provider is asked about the user's reviews once per new head, not on every run.
+      const mark = await latestMark(db, pr.ref, deps.review);
+      if (mark && mark.headSha !== head) result.settling++;
       continue;
     }
+    const local = await latestReviewMark(db, pr.ref);
+    if (!local || local.headSha === head) continue;
     if (now.getTime() - watch.seenAt.getTime() < settleMs) {
       result.settling++;
       continue;
     }
-    // Conditional, so two instances sharing the database alert once.
-    const [claimed] = await db
-      .update(prUpdateWatches)
-      .set({ alertedHeadSha: head.headSha, alertedAt: now })
-      .where(
-        and(
-          eq(prUpdateWatches.refKey, pr.refKey),
-          or(
-            isNull(prUpdateWatches.alertedHeadSha),
-            ne(prUpdateWatches.alertedHeadSha, head.headSha),
-          ),
-        ),
-      )
-      .returning({ refKey: prUpdateWatches.refKey });
-    if (!claimed) continue;
+    // Asked again, for a review given on the new head while it settled.
+    const mark = await latestMark(db, pr.ref, deps.review);
+    if (!mark || mark.headSha === head) continue;
+    if (!(await claimHead(db, pr.refKey, head, now))) continue;
     result.started.push(pr.refKey);
-    const work = alertUpdate(db, config, pr, head.headSha, deps)
-      .catch((e) => console.error(`[pr-updates] ${shortPrName(pr.ref)} failed:`, describeError(e)))
-      .finally(() => background.delete(work));
-    background.add(work);
+    const work = alertUpdate(db, config, pr, head, deps)
+      .then(() => finishClaim(db, pr.refKey, head, "raised"))
+      .catch(async (e) => {
+        console.error(`[pr-updates] ${shortPrName(pr.ref)} failed:`, describeError(e));
+        await finishClaim(db, pr.refKey, head, "failed").catch(() => {});
+      })
+      .finally(() => inFlightAlerts.delete(work));
+    inFlightAlerts.add(work);
   }
   return result;
 }
 
 /**
- * The PRs in active review workspaces that the user has reviewed, one per PR.
- * A PR in several workspaces is watched in the one opened most recently.
+ * A claim whose alert was never raised and has outlived anything the alert
+ * waits on. The instance that took it likely stopped, so it may be taken again.
  */
-async function reviewedPrs(db: Db, deps: PrUpdateDeps): Promise<Watched[]> {
+function claimIsStale(watch: PrUpdateWatch, now: Date): boolean {
+  return (
+    !watch.alertedAt &&
+    !!watch.alertingAt &&
+    now.getTime() - watch.alertingAt.getTime() > STALE_CLAIM_MS
+  );
+}
+
+/** Takes the alert for `head`; conditional, so two instances sharing the database alert once. */
+async function claimHead(db: Db, key: string, head: string, now: Date): Promise<boolean> {
+  const [claimed] = await db
+    .update(prUpdateWatches)
+    .set({ alertedHeadSha: head, alertingAt: now, alertedAt: null })
+    .where(
+      and(
+        eq(prUpdateWatches.refKey, key),
+        or(
+          isNull(prUpdateWatches.alertedHeadSha),
+          ne(prUpdateWatches.alertedHeadSha, head),
+          and(
+            isNull(prUpdateWatches.alertedAt),
+            lt(prUpdateWatches.alertingAt, new Date(now.getTime() - STALE_CLAIM_MS)),
+          ),
+        ),
+      ),
+    )
+    .returning({ refKey: prUpdateWatches.refKey });
+  return !!claimed;
+}
+
+/** Marks the head's alert raised, or gives the claim back so the next run tries again. */
+async function finishClaim(
+  db: Db,
+  key: string,
+  head: string,
+  outcome: "raised" | "failed",
+): Promise<void> {
+  await db
+    .update(prUpdateWatches)
+    .set(outcome === "raised" ? { alertedAt: new Date() } : { alertedHeadSha: null })
+    .where(and(eq(prUpdateWatches.refKey, key), eq(prUpdateWatches.alertedHeadSha, head)));
+}
+
+/**
+ * The ready PRs in active review workspaces, one per PR. A PR in several
+ * workspaces is watched in the one opened most recently.
+ */
+async function watchedPrs(db: Db): Promise<ReviewWorkspacePrSummary[]> {
   const workspaces = (await listReviewWorkspaces(db))
     .filter((ws) => ws.status === "active")
     .sort((a, b) => (b.lastOpenedAt?.getTime() ?? 0) - (a.lastOpenedAt?.getTime() ?? 0));
@@ -229,12 +286,7 @@ async function reviewedPrs(db: Db, deps: PrUpdateDeps): Promise<Watched[]> {
       if (pr.status === "ready" && pr.headSha && !byKey.has(pr.refKey)) byKey.set(pr.refKey, pr);
     }
   }
-  const watched: Watched[] = [];
-  for (const pr of byKey.values()) {
-    const mark = await latestMark(db, pr.ref, deps.review);
-    if (mark) watched.push({ pr, mark });
-  }
-  return watched;
+  return [...byKey.values()];
 }
 
 /** Fetches the new head, rechecks, and raises the item. */
@@ -251,9 +303,9 @@ async function alertUpdate(
 
   let pr = await getReviewPr(db, workspaceId, prId);
   if (pr.headSha !== head) pr = await refreshTo(db, config, pr, deps);
-  // A push during the refresh leaves the checkout on a later head, which is fine.
-  const moved = pr.headSha !== watchedPr.headSha || pr.headSha === head;
-  if (!moved) {
+  // A push during the refresh can leave the checkout past `head`, which is fine.
+  const onNewCommits = pr.headSha !== watchedPr.headSha || pr.headSha === head;
+  if (!onNewCommits) {
     notes.push(
       pr.error
         ? `Fetching the new commits failed (${pr.error}). Refresh the PR in its workspace.`
@@ -262,13 +314,13 @@ async function alertUpdate(
   }
 
   const lines: string[] = [];
-  const since = moved ? await sinceSummary(db, config, pr, deps) : null;
+  const since = onNewCommits ? await sinceSummary(db, config, pr, deps) : null;
   if (since) lines.push(since.line);
 
   const threads = await threadSummary(pr.ref, since?.changedPaths ?? null, deps);
   if (threads) lines.push(threads);
 
-  const recheck = moved ? await recheckVerification(db, config, pr, deps) : null;
+  const recheck = onNewCommits ? await recheckVerification(db, config, pr, deps) : null;
   if (recheck) lines.push(recheck);
 
   const body = [`${name}${pr.title ? `: ${pr.title}` : ""}`, ...lines, ...notes].join("\n");
@@ -311,7 +363,7 @@ async function sinceSummary(
   }
 }
 
-/** Moves the checkout to the PR's head, joining a refresh already running. Answers the PR as it ends up. */
+/** Moves the checkout to the PR's head, joining a refresh already running. Returns the PR as it ends up. */
 async function refreshTo(
   db: Db,
   config: Config,
@@ -327,10 +379,15 @@ async function refreshTo(
       return getReviewPr(db, pr.workspaceId, pr.id);
     }
   }
-  const timeout = new Promise<void>((resolve) =>
-    setTimeout(resolve, deps.refreshWaitMs ?? REFRESH_WAIT_MS),
-  );
-  await Promise.race([whenIdle(pr.id), timeout]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, deps.refreshWaitMs ?? REFRESH_WAIT_MS);
+  });
+  try {
+    await Promise.race([whenIdle(pr.id), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
   return getReviewPr(db, pr.workspaceId, pr.id);
 }
 
@@ -358,7 +415,7 @@ async function threadSummary(
 }
 
 /** The sections the PR's verification runs have covered, or none when it has no report. */
-async function reportSections(db: Db, key: string): Promise<ReportSection[]> {
+async function reportSections(db: Db, refKey: string): Promise<ReportSection[]> {
   const rows = await db
     .select({ meta: agentRuns.meta })
     .from(agentRuns)
@@ -366,10 +423,9 @@ async function reportSections(db: Db, key: string): Promise<ReportSection[]> {
       and(
         eq(agentRuns.kind, VERIFICATION_RUN_KIND),
         eq(agentRuns.status, "succeeded"),
-        sql`${agentRuns.meta}->>'refKey' = ${key}`,
+        sql`${agentRuns.meta}->>'refKey' = ${refKey}`,
       ),
-    )
-    .orderBy(desc(agentRuns.startedAt));
+    );
   const sections = new Set<ReportSection>();
   for (const row of rows) {
     for (const s of runSections(row.meta as Record<string, unknown>)) sections.add(s);
@@ -377,17 +433,24 @@ async function reportSections(db: Db, key: string): Promise<ReportSection[]> {
   return [...sections];
 }
 
-const RECHECK_TEXT: Record<VerifyOutcome["state"], string> = {
-  done: "The verification checks were re-run on the new commits.",
-  failed: "Re-running the verification checks failed",
-  "needs-confirmation": "The verification checks weren't re-run: they need your go-ahead",
-  cancelled: "Re-running the verification checks was cancelled.",
-};
+function recheckText(outcome: VerifyOutcome): string {
+  const why = outcome.note ? ` ${outcome.note}` : "";
+  switch (outcome.state) {
+    case "done":
+      return "The verification checks were re-run on the new commits.";
+    case "failed":
+      return `Re-running the verification checks failed.${why}`;
+    case "needs-confirmation":
+      return `The verification checks weren't re-run: they need your go-ahead.${why}`;
+    case "cancelled":
+      return "Re-running the verification checks was cancelled.";
+  }
+}
 
 /**
  * Re-runs the checks the PR's report already has, at the new head, in one of
- * review prep's verification slots. Nothing when it has no report, or the
- * checkout didn't move.
+ * review prep's verification slots. Nothing when it has no report, or its
+ * checkout isn't ready.
  */
 async function recheckVerification(
   db: Db,
@@ -402,10 +465,7 @@ async function recheckVerification(
       () => verifyAndWait(db, config, pr.ref, deps.kickoff, { sections }),
       deps.prepConfig,
     );
-    const text = RECHECK_TEXT[outcome.state];
-    return outcome.state === "failed" || outcome.state === "needs-confirmation"
-      ? `${text}${outcome.note ? `: ${outcome.note}` : "."}`
-      : text;
+    return recheckText(outcome);
   } catch (e) {
     console.error("[pr-updates] the recheck failed:", describeError(e));
     return "Re-running the verification checks failed. See Settings → Diagnostics.";
@@ -421,8 +481,11 @@ export const prUpdatesJob: JobDefinition = {
   description:
     "Every 5 minutes, check the PRs you reviewed in a review workspace for new commits, fetch them, re-run their checks and tell you they're ready for another look.",
   schedule: { kind: "interval", everyMs: 5 * 60 * 1000 },
-  run: async ({ db, config }) => {
-    const result = await runPrUpdateWatch(db, config, defaultPrUpdateDeps(db, config));
+  run: async ({ db, config, now }) => {
+    const result = await runPrUpdateWatch(db, config, {
+      ...defaultPrUpdateDeps(db, config),
+      now: () => now,
+    });
     return {
       skipped: result.started.length === 0,
       detail: `alerting on ${result.started.length}, ${result.settling} settling`,

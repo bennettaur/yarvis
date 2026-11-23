@@ -218,19 +218,86 @@ describe("runPrUpdateWatch", () => {
     expect(await items()).toHaveLength(1);
   });
 
-  it("leaves alone a PR that is closed, unreviewed, or at the reviewed commit", async () => {
-    const { head } = await reviewedWorkspace();
-    heads.set("gh:o/r/1", { open: true, headSha: head });
-    expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
-
+  it("leaves alone a closed PR", async () => {
+    await reviewedWorkspace();
     const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
     heads.set("gh:o/r/1", { open: false, headSha: pushed });
     expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
+    expect(await db.select().from(prUpdateWatches)).toEqual([]);
+  });
 
+  it("leaves alone a PR the user hasn't reviewed", async () => {
+    await reviewedWorkspace();
     await sql`TRUNCATE pr_review_marks`;
+    const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
     heads.set("gh:o/r/1", { open: true, headSha: pushed });
     expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
-    expect(await db.select().from(prUpdateWatches)).toEqual([]);
+    later(11);
+    expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
+  });
+
+  it("leaves alone a PR at the commit the user reviewed", async () => {
+    const { head } = await reviewedWorkspace();
+    heads.set("gh:o/r/1", { open: true, headSha: head });
+    expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
+    later(11);
+    expect(await runPrUpdateWatch(db, config, deps)).toEqual({ started: [], settling: 0 });
+  });
+
+  it("alerts once when two instances run at the same time", async () => {
+    await reviewedWorkspace();
+    const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
+    heads.set("gh:o/r/1", { open: true, headSha: pushed });
+    await runPrUpdateWatch(db, config, deps);
+    later(11);
+    const [a, b] = await Promise.all([
+      runPrUpdateWatch(db, config, deps),
+      runPrUpdateWatch(db, config, deps),
+    ]);
+    expect([...a.started, ...b.started]).toEqual(["gh:o/r/1"]);
+    await prUpdatesSettled();
+    expect(await items()).toHaveLength(1);
+    const [watch] = await db.select().from(prUpdateWatches);
+    expect(watch).toMatchObject({ alertedHeadSha: pushed });
+    expect(watch?.alertedAt).toBeInstanceOf(Date);
+  });
+
+  it("alerts again on a later push, updating the unread item", async () => {
+    await reviewedWorkspace();
+    const first = remote.pushToPr("src/a.ts", "export const a = 3;\n");
+    heads.set("gh:o/r/1", { open: true, headSha: first });
+    await runPrUpdateWatch(db, config, deps);
+    later(11);
+    await runPrUpdateWatch(db, config, deps);
+    await prUpdatesSettled();
+
+    const second = remote.pushToPr("src/b.ts", "export const b = 1;\n");
+    heads.set("gh:o/r/1", { open: true, headSha: second });
+    await runPrUpdateWatch(db, config, deps);
+    later(11);
+    expect((await runPrUpdateWatch(db, config, deps)).started).toEqual(["gh:o/r/1"]);
+    await prUpdatesSettled();
+    const raised = await items();
+    expect(raised).toHaveLength(1);
+    expect(raised[0]?.body).toContain("2 new commits and 2 files changed since your review.");
+  });
+
+  it("takes over a claim whose alert was never raised", async () => {
+    await reviewedWorkspace();
+    const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
+    heads.set("gh:o/r/1", { open: true, headSha: pushed });
+    await runPrUpdateWatch(db, config, deps);
+    // Another instance claimed it an hour in, then stopped before raising anything.
+    await db.update(prUpdateWatches).set({
+      alertedHeadSha: pushed,
+      alertingAt: new Date(clock.getTime() + 60 * 60_000),
+    });
+    later(90);
+    expect((await runPrUpdateWatch(db, config, deps)).started).toEqual([]);
+    later(120);
+    expect((await runPrUpdateWatch(db, config, deps)).started).toEqual(["gh:o/r/1"]);
+    await prUpdatesSettled();
+    expect(await items()).toHaveLength(1);
   });
 
   it("re-runs the checks a report already has, and says when they need a go-ahead", async () => {
@@ -252,7 +319,7 @@ describe("runPrUpdateWatch", () => {
     const [item] = await items();
     // The test PR carries a file over the size cap, so its checks wait for the user.
     expect(item?.body).toContain(
-      "The verification checks weren't re-run: they need your go-ahead: It's a large PR.",
+      "The verification checks weren't re-run: they need your go-ahead. It's a large PR.",
     );
   });
 });

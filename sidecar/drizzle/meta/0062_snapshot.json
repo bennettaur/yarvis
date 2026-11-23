@@ -1,5 +1,5 @@
 {
-  "id": "ae96d466-f447-4d55-b272-d2883f2e2c37",
+  "id": "52f1a2bf-f1b9-4f6e-87d0-8380a34e2893",
   "prevId": "fdbda103-6edf-424f-be62-2709b3e132d9",
   "version": "7",
   "dialect": "postgresql",
@@ -3643,6 +3643,12 @@
         "alerted_head_sha": {
           "name": "alerted_head_sha",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "alerting_at": {
+          "name": "alerting_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

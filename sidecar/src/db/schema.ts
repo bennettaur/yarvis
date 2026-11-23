@@ -2339,8 +2339,10 @@ export const prUpdateWatches = pgTable("pr_update_watches", {
   /** The provider's head when last polled, and when it was first seen there. */
   seenHeadSha: text("seen_head_sha").notNull(),
   seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
-  /** The head the last alert was raised for, so it isn't raised twice. */
+  /** The head the last alert was claimed for, so it isn't raised twice. */
   alertedHeadSha: text("alerted_head_sha"),
+  /** When that alert was claimed, and when it was raised: null while it is still being prepared. */
+  alertingAt: timestamp("alerting_at", { withTimezone: true }),
   alertedAt: timestamp("alerted_at", { withTimezone: true }),
 });
 

@@ -3,10 +3,12 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { getDb } from "../db/client.ts";
 import { attentionItems, stallReminders } from "../db/schema.ts";
+import { withSection } from "../settings/store.ts";
 import type { DanglingItem, DanglingWork } from "./service.ts";
 import {
   DEFAULT_STALLED_WORK_CONFIG,
   duration,
+  getStalledWorkConfig,
   runStalledWorkReminders,
   type StalledDeps,
 } from "./stalled.ts";
@@ -126,6 +128,18 @@ describe("runStalledWorkReminders", () => {
     expect(item?.status).toBe("resolved");
   });
 
+  it("keeps the count of an item still dangling but no longer counted as waiting", async () => {
+    at(24);
+    await run();
+    work = { items: [review({ waitingSince: undefined })], unavailable: [] };
+    expect((await run()).cleared).toBe(0);
+    work = { items: [review()], unavailable: [] };
+    at(24 + 71);
+    expect((await run()).reminded).toEqual([]);
+    const [row] = await db.select().from(stallReminders);
+    expect(row?.count).toBe(1);
+  });
+
   it("uses each category's own threshold and ignores items that can't stall", async () => {
     work = {
       items: [
@@ -141,6 +155,23 @@ describe("runStalledWorkReminders", () => {
       .from(stallReminders)
       .where(eq(stallReminders.itemKey, "question:1"));
     expect(row?.kind).toBe("question");
+  });
+});
+
+describe("getStalledWorkConfig", () => {
+  it("clamps hand-edited thresholds and ignores values that aren't numbers", async () => {
+    await withSection("stalledWork", () => ({
+      next: {
+        enabled: "yes",
+        thresholdHours: { review: 0.1, build: 100_000, slack: "8", general: 12 },
+      },
+      result: null,
+    }));
+    expect(await getStalledWorkConfig()).toEqual({
+      enabled: true,
+      thresholdHours: { review: 1, build: 720, slack: 8, general: 12 },
+    });
+    await withSection("stalledWork", () => ({ next: undefined, result: null }));
   });
 });
 

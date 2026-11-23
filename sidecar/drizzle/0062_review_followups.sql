@@ -3,6 +3,7 @@ CREATE TABLE "pr_update_watches" (
 	"seen_head_sha" text NOT NULL,
 	"seen_at" timestamp with time zone NOT NULL,
 	"alerted_head_sha" text,
+	"alerting_at" timestamp with time zone,
 	"alerted_at" timestamp with time zone
 );
 --> statement-breakpoint

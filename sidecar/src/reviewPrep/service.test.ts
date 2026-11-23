@@ -375,13 +375,17 @@ describe("the attention item", () => {
 });
 
 describe("withVerificationSlot", () => {
-  it("holds work outside the queue to the same limit", async () => {
-    const one = async () => ({ maxConcurrentVerifications: 1 });
-    let finishFirst = () => {};
+  it("holds work outside the queue to the same limit, and frees the slot when it throws", async () => {
+    let checks = 0;
+    const one = async () => {
+      checks++;
+      return { maxConcurrentVerifications: 1 };
+    };
+    let failFirst = (_e: Error) => {};
     const first = withVerificationSlot(
       () =>
-        new Promise<void>((resolve) => {
-          finishFirst = resolve;
+        new Promise<void>((_resolve, reject) => {
+          failFirst = reject;
         }),
       one,
     );
@@ -389,10 +393,11 @@ describe("withVerificationSlot", () => {
     const second = withVerificationSlot(async () => {
       secondRan = true;
     }, one);
-    await Bun.sleep(50);
+    await until(async () => checks >= 2, "the second call to find no free slot");
     expect(secondRan).toBe(false);
-    finishFirst();
-    await Promise.all([first, second]);
+    failFirst(new Error("boom"));
+    await expect(first).rejects.toThrow("boom");
+    await second;
     expect(secondRan).toBe(true);
   });
 });

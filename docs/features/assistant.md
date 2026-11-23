@@ -121,12 +121,15 @@ Some of that list is work you started and then left. Yarvis reminds you about
 it in the attention stream, with how long it has been waiting and a link back
 to where you left off:
 
-- **A review you started is unfinished**: a PR you opened in Yarvis (on the
-  PRs tab or in a review workspace) and haven't commented on, approved or
-  requested changes on since. A review where you've already said something
-  isn't counted. This needs a GitHub token, and covers GitHub PRs only.
-- **A prepared review is still unopened**: a PR review prep got ready for
-  you, whose workspace you haven't opened since.
+- **A review you started is unfinished**: someone else's open PR you opened
+  in Yarvis (on the PRs tab or in a review workspace) and have never
+  commented on, approved or requested changes on. The wait counts from the
+  last time you opened it, and only looks back as far as the reviewing list
+  does (**Settings → PR review**). This needs a GitHub token, and covers GitHub
+  PRs only.
+- **A prepared review is waiting on you**: a PR review prep finished for you
+  (ready, failed, or waiting on your go-ahead for its checks), whose workspace
+  you haven't opened since.
 - **Heads down is still waiting on you**: a heads-down question or approval
   nobody has answered.
 
@@ -136,7 +139,8 @@ heads-down question takes its work stream's category). Each later reminder
 waits three times as long as the gap before it, and there are at most three.
 Coming back to the item (opening the PR again, say) settles the reminder and
 starts the wait over. Reminders only go out in your heads-down
-[working hours](heads-down.md), whether or not heads-down mode is on.
+[working hours](heads-down.md) (any time, if you've cleared them), whether or
+not heads-down mode is on.
 
 Dismiss a reminder and that item gets no more. Telling the assistant you're
 not doing it ("drop that review") records a dismissal, which stops the

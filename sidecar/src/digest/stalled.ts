@@ -1,6 +1,5 @@
 import { desc, eq } from "drizzle-orm";
 import { raiseAttention, raisedSessionKey, resolveRaisedAttention } from "../attention/raise.ts";
-import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
   ATTENTION_CATEGORIES,
@@ -63,18 +62,20 @@ export async function getStalledWorkConfig(): Promise<StalledWorkConfig> {
 
 /** How much longer each reminder waits than the gap before it. */
 const BACKOFF_FACTOR = 3;
-export const MAX_REMINDERS = 3;
+const MAX_REMINDERS = 3;
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const stalledAttentionKey = (itemKey: string) => `stalled:${itemKey}`;
+const stalledAttentionKey = (itemKey: string) => `stalled:${itemKey}`;
 
 /** The kinds whose items come from GitHub, and vanish when it can't be read. */
 const PROVIDER_KINDS: DanglingKind[] = ["review-in-progress", "review-requested", "my-pr"];
 
 const TITLES: Partial<Record<DanglingKind, string>> = {
   "review-in-progress": "A review you started is unfinished",
-  "review-ready": "A prepared review is still unopened",
+  // A requested review stalls only once the user has opened it.
+  "review-requested": "A review you started is unfinished",
+  "review-ready": "A prepared review is waiting on you",
   question: "Heads down is still waiting on you",
 };
 
@@ -84,7 +85,7 @@ export interface StalledDeps {
   now?: () => Date;
 }
 
-export interface StalledResult {
+interface StalledResult {
   reminded: string[];
   /** Items the user stopped reminders for by dismissing one. */
   stopped: string[];
@@ -110,8 +111,12 @@ export async function runStalledWorkReminders(db: Db, deps: StalledDeps): Promis
   }
 
   const work = await deps.findWork();
-  const candidates = work.items.filter((item) => item.waitingSince);
-  const present = new Set(candidates.map((item) => item.key));
+  const candidates = work.items.filter(
+    (item): item is DanglingItem & { waitingSince: string } => !!item.waitingSince,
+  );
+  // A row goes only with its item: one still dangling but no longer counted as
+  // waiting (its last look fell out of the lookback) keeps its count and stop.
+  const present = new Set(work.items.map((item) => item.key));
   const providerDown = work.unavailable.some((source) => source.startsWith("github"));
 
   for (const row of rows.values()) {
@@ -123,14 +128,15 @@ export async function runStalledWorkReminders(db: Db, deps: StalledDeps): Promis
   }
 
   for (const item of candidates) {
-    const waitingSince = new Date(item.waitingSince as string);
+    const waitingSince = new Date(item.waitingSince);
     if (Number.isNaN(waitingSince.getTime())) continue;
     let row = rows.get(item.key);
     if (row?.stoppedAt) continue;
-    if (row && waitingSince > row.waitingSince) {
-      // The user came back to it: the earlier reminder is moot, and the count starts over.
+    const cameBack = row !== undefined && waitingSince > row.waitingSince;
+    if (row && cameBack) {
+      // The earlier reminder is moot, and the count starts over.
       await resolveRaisedAttention(db, stalledAttentionKey(item.key));
-      row = { ...row, waitingSince, count: 0, lastRemindedAt: null };
+      row = { ...row, kind: item.kind, waitingSince, count: 0, lastRemindedAt: null };
     }
     const count = row?.count ?? 0;
     if (count >= MAX_REMINDERS) continue;
@@ -140,19 +146,18 @@ export async function runStalledWorkReminders(db: Db, deps: StalledDeps): Promis
         ? waitingSince.getTime() + threshold
         : row.lastRemindedAt.getTime() + threshold * BACKOFF_FACTOR ** count;
     if (now.getTime() < dueAt) {
-      // A count reset by the user coming back is kept even when nothing is due yet.
-      if (row && row !== rows.get(item.key)) await saveRow(db, item, row);
+      if (row && cameBack) await saveRow(db, row);
       continue;
     }
     await raiseAttention(db, {
       category: item.category ?? "general",
       kind: "action",
       title: TITLES[item.kind] ?? "Work waiting on you",
-      body: `${item.title}\n${sentence(item.reason)} Waiting for ${duration(now.getTime() - waitingSince.getTime())}.`,
+      body: `${item.title}\n${asSentence(item.reason)} Waiting for ${duration(now.getTime() - waitingSince.getTime())}.`,
       dedupeKey: stalledAttentionKey(item.key),
       navTarget: item.navTarget ?? null,
     });
-    await saveRow(db, item, {
+    await saveRow(db, {
       itemKey: item.key,
       kind: item.kind,
       waitingSince,
@@ -165,12 +170,11 @@ export async function runStalledWorkReminders(db: Db, deps: StalledDeps): Promis
   return result;
 }
 
-async function saveRow(db: Db, item: DanglingItem, row: StallReminder): Promise<void> {
-  const values = { ...row, kind: item.kind };
+async function saveRow(db: Db, row: StallReminder): Promise<void> {
   await db
     .insert(stallReminders)
-    .values(values)
-    .onConflictDoUpdate({ target: stallReminders.itemKey, set: values });
+    .values(row)
+    .onConflictDoUpdate({ target: stallReminders.itemKey, set: row });
 }
 
 /** Whether the user dismissed the latest reminder raised for the row's item. */
@@ -186,11 +190,11 @@ async function reminderDismissed(db: Db, row: StallReminder): Promise<boolean> {
   return latest?.status === "dismissed";
 }
 
-function sentence(text: string): string {
+function asSentence(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
-  const capital = trimmed[0]?.toUpperCase() + trimmed.slice(1);
-  return /[.!?]$/.test(capital) ? capital : `${capital}.`;
+  const capitalized = trimmed[0]?.toUpperCase() + trimmed.slice(1);
+  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`;
 }
 
 /** A wait in the largest whole unit: "3 days", "5 hours". */
@@ -209,15 +213,16 @@ export const stalledWorkJob: JobDefinition = {
   description:
     "Every 30 minutes in working hours, remind you about reviews you started and left, prepared reviews you haven't opened, and heads-down questions waiting on you.",
   schedule: { kind: "interval", everyMs: 30 * 60 * 1000 },
-  run: async ({ db, config }: { db: Db; config: Config }) => {
+  run: async ({ db, config, now }) => {
     const [stalled, headsDown] = await Promise.all([getStalledWorkConfig(), getHeadsDownConfig()]);
     if (!stalled.enabled) return { skipped: true, detail: "turned off" };
-    if (!isWithinWorkingHours(new Date(), headsDown.workingHours)) {
+    if (!isWithinWorkingHours(now, headsDown.workingHours)) {
       return { skipped: true, detail: "outside working hours" };
     }
     const result = await runStalledWorkReminders(db, {
       findWork: () => findDanglingWork(db, config),
       config: async () => stalled,
+      now: () => now,
     });
     return {
       skipped: result.reminded.length + result.stopped.length + result.cleared === 0,

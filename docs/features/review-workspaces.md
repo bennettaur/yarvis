@@ -745,9 +745,11 @@ counts as reviewed once there is a [last review](#since-last-review) for it:
 a review or line comment you posted, on GitHub, Azure DevOps or through
 Yarvis, or **Mark reviewed here**.
 
-A background job checks those PRs every 5 minutes. It waits until the PR's
-head has stayed the same for 10 minutes, so a burst of pushes gives one
-alert. Then it:
+A background job checks those PRs every 5 minutes (GitHub PRs need a GitHub
+token). A PR in several workspaces is handled in the one you opened last. The
+job waits until it has seen the same head on checks at least 10 minutes
+apart, so a burst of pushes gives one alert, about 10 to 15 minutes after the
+last push. Then it:
 
 1. Fetches the new commits and moves the checkout, as **Refresh** does.
 2. Works out what changed since your review, as the
@@ -757,8 +759,10 @@ alert. Then it:
 3. Re-runs the verification checks the PR's report already has, at the new
    head. It runs them in one of [review prep](#review-prep)'s slots, so
    `maxConcurrentVerifications` covers them too. A PR with no report isn't
-   checked, and one that would need your go-ahead (a large PR, or one over
-   budget) waits for it.
+   checked. One that would need your go-ahead (a large PR, or one over
+   budget) isn't re-run, and the item says so, as it does when a re-run
+   fails. When the new commits couldn't be fetched, nothing is re-run and the
+   item asks you to refresh the PR yourself.
 4. Adds a **PR updated since your review** item under Review, with that
    summary, which opens the PR's **Since last review** tab.
 

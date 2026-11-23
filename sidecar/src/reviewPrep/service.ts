@@ -240,7 +240,7 @@ const waiting: Waiting[] = [];
 const running = new Set<string>();
 const background = new Set<Promise<void>>();
 /** Verification runs started outside the queue (a re-review's recheck) that hold a slot. */
-let borrowed = 0;
+let borrowedSlots = 0;
 const slotWaiters: (() => void)[] = [];
 const SLOT_POLL_MS = 5_000;
 
@@ -273,7 +273,7 @@ async function pump(): Promise<void> {
     while (waiting.length > 0) {
       const next = waiting[0] as Waiting;
       const { maxConcurrentVerifications } = await (next.deps.prepConfig ?? getReviewPrepConfig)();
-      if (running.size + borrowed >= maxConcurrentVerifications) return;
+      if (running.size + borrowedSlots >= maxConcurrentVerifications) return;
       waiting.shift();
       running.add(next.id);
       const work = runPrep(next.db, next.config, next.id, next.deps)
@@ -306,21 +306,25 @@ export async function withVerificationSlot<T>(
 ): Promise<T> {
   for (;;) {
     const { maxConcurrentVerifications } = await prepConfig();
-    if (waiting.length === 0 && running.size + borrowed < maxConcurrentVerifications) break;
+    if (waiting.length === 0 && running.size + borrowedSlots < maxConcurrentVerifications) break;
     // A freed slot wakes it; the timeout covers a setting raised meanwhile.
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, SLOT_POLL_MS);
-      slotWaiters.push(() => {
+      const wake = () => {
         clearTimeout(timer);
         resolve();
-      });
+      };
+      const timer = setTimeout(() => {
+        slotWaiters.splice(slotWaiters.indexOf(wake), 1);
+        resolve();
+      }, SLOT_POLL_MS);
+      slotWaiters.push(wake);
     });
   }
-  borrowed++;
+  borrowedSlots++;
   try {
     return await fn();
   } finally {
-    borrowed--;
+    borrowedSlots--;
     void pump();
     wakeSlotWaiters();
   }

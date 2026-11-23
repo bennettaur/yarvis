@@ -119,6 +119,8 @@ async function reviewTouches(
   workspaces: ReviewWorkspaceList,
 ): Promise<Map<string, ReviewTouch>> {
   const touches = new Map<string, ReviewTouch>();
+  // Keeps the latest time, but remembers a workspace from any touch: it is a
+  // better place to send the user than the PRs tab, even when a later view was there.
   const touch = (key: string, at: Date, workspace?: ReviewTouch["workspace"]) => {
     const seen = touches.get(key);
     if (!seen || seen.at < at) touches.set(key, { at, workspace: workspace ?? seen?.workspace });
@@ -145,8 +147,13 @@ const MAX_VIEW_EVENTS = 500;
 /** A review workspace PR the searches don't cover is looked up; at most this many at once. */
 const MAX_WORKSPACE_LOOKUPS = 40;
 
-/** Review prep's finished states: an item reached the user. */
-const PREPARED_STATES: ReviewPrepState[] = ["ready", "failed", "needs-go-ahead"];
+/** Review prep's finished states, each of which raised an item for the user, and how to say so. */
+const PREPARED_REASONS: Partial<Record<ReviewPrepState, string>> = {
+  ready: "review prep got it ready for you and you haven't opened it",
+  failed: "review prep couldn't finish it and you haven't opened it",
+  "needs-go-ahead": "review prep is waiting on your go-ahead for its checks",
+};
+const PREPARED_STATES = Object.keys(PREPARED_REASONS) as ReviewPrepState[];
 
 /**
  * Prepared reviews the user hasn't opened since they reached them, keyed by
@@ -157,18 +164,19 @@ async function preparedReviews(db: Db, workspaces: ReviewWorkspaceList): Promise
     .select()
     .from(reviewPreps)
     .where(inArray(reviewPreps.state, PREPARED_STATES));
+  const active = new Map(workspaces.filter((w) => w.status === "active").map((w) => [w.id, w]));
   const items: DanglingItem[] = [];
   for (const row of rows) {
     if (!row.raisedAt || !row.workspaceId || !row.prId) continue;
-    const ws = workspaces.find((w) => w.id === row.workspaceId);
+    const ws = active.get(row.workspaceId);
     const pr = ws?.prs.find((p) => p.id === row.prId);
-    if (!ws || !pr || ws.status !== "active") continue;
+    if (!ws || !pr) continue;
     if (ws.lastOpenedAt && ws.lastOpenedAt >= row.raisedAt) continue;
     items.push({
       key: row.refKey,
       kind: "review-ready",
       title: `${shortPrName(row.ref)} ${pr.title}`.trim(),
-      reason: "review prep got it ready for you and you haven't opened it",
+      reason: PREPARED_REASONS[row.state] ?? "review prep finished it for you",
       navTarget: {
         type: "review-workspace",
         workspaceId: ws.id,
@@ -185,23 +193,23 @@ async function preparedReviews(db: Db, workspaces: ReviewWorkspaceList): Promise
 
 /** Heads-down questions and approvals still waiting on an answer. */
 async function openQuestions(db: Db, questions: HeadsDownQuestion[]): Promise<DanglingItem[]> {
-  const items: DanglingItem[] = [];
-  for (const q of questions) {
-    items.push({
-      key: `question:${q.id}`,
-      kind: "question",
-      title: q.question.replace(/\s+/g, " ").slice(0, 200),
-      reason:
-        q.kind === "approval"
-          ? "heads-down mode is waiting on your approval"
-          : "heads-down mode asked you this and is waiting on your answer",
-      navTarget: { type: "heads-down" },
-      updatedAt: q.createdAt.toISOString(),
-      waitingSince: q.createdAt.toISOString(),
-      category: (await streamCategory(db, q.streamId)) ?? "general",
-    });
-  }
-  return items;
+  const streamIds = [...new Set(questions.map((q) => q.streamId))];
+  const categories = new Map(
+    await Promise.all(streamIds.map(async (id) => [id, await streamCategory(db, id)] as const)),
+  );
+  return questions.map((q) => ({
+    key: `question:${q.id}`,
+    kind: "question",
+    title: q.question.replace(/\s+/g, " ").slice(0, 200),
+    reason:
+      q.kind === "approval"
+        ? "heads-down mode is waiting on your approval"
+        : "heads-down mode asked you this and is waiting on your answer",
+    navTarget: { type: "heads-down" },
+    updatedAt: q.createdAt.toISOString(),
+    waitingSince: q.createdAt.toISOString(),
+    category: categories.get(q.streamId) ?? "general",
+  }));
 }
 
 export interface FindDanglingOptions {
@@ -240,7 +248,9 @@ export async function findDanglingWork(
     options.includeDismissed ? Promise.resolve(new Set<string>()) : dismissedKeys(db),
     listQuestions(db),
   ]);
-  const reviewWorkspaces = listReviewWorkspaces(db);
+  const reviewWorkspacesPromise = listReviewWorkspaces(db);
+  // Awaited below on every path; this only keeps a failure from going unhandled meanwhile.
+  reviewWorkspacesPromise.catch(() => {});
 
   const token = config.secrets?.githubToken;
   if (!token) {
@@ -259,7 +269,7 @@ export async function findDanglingWork(
         gh.search(prConfig.reviewQuery),
         viewerPromise.then((v) => getReviewingList(db, gh, v.login, lookbackDays)),
         viewerPromise,
-        reviewWorkspaces.then((ws) => reviewTouches(db, since, ws)),
+        reviewWorkspacesPromise.then((ws) => reviewTouches(db, since, ws)),
       ]);
 
       // A PR opened only in a review workspace is a review started too, but
@@ -267,7 +277,11 @@ export async function findDanglingWork(
       const listed = new Set(
         [...reviewing.inProgress, ...reviewing.complete].map((i) => prKey(i.summary)),
       );
-      const unlisted = [...touches.entries()].flatMap(([key, touch]) => {
+      // Most recently opened first, so the cap below drops the same ones every run.
+      const byRecency = [...touches.entries()].sort(
+        ([, a], [, b]) => b.at.getTime() - a.at.getTime(),
+      );
+      const unlisted = byRecency.flatMap(([key, touch]) => {
         if (!touch.workspace || listed.has(key)) return [];
         const ref = parseRefKey(key);
         return ref?.provider === "github"
@@ -280,7 +294,7 @@ export async function findDanglingWork(
           unlisted.slice(0, MAX_WORKSPACE_LOOKUPS),
           viewer.login,
         );
-        inProgress.push(...found.filter((i) => !isReviewComplete(i)));
+        inProgress.push(...found);
       }
 
       // Ordered strongest claim first, because the dedupe below keeps the first
@@ -337,7 +351,7 @@ export async function findDanglingWork(
   const [workspaces, openTasks, todos, dismissed, questions] = await localReads;
   // Ahead of the provider's entries for the same PR: a prepared review is
   // the more useful place to send the user.
-  items.unshift(...(await preparedReviews(db, await reviewWorkspaces)));
+  items.unshift(...(await preparedReviews(db, await reviewWorkspacesPromise)));
   items.push(...(await openQuestions(db, questions)));
 
   for (const workspace of workspaces) {
@@ -385,13 +399,15 @@ export async function findDanglingWork(
   }
 
   // The first entry for a key wins, but the user's latest touch from any of
-  // them is when it started waiting.
+  // them is when it started waiting: a requested review the user opened and
+  // left can stall like any other.
   const deduped = new Map<string, DanglingItem>();
   for (const item of items) {
     const kept = deduped.get(item.key);
     if (!kept) deduped.set(item.key, item);
-    else if (kept.waitingSince && item.waitingSince && item.waitingSince > kept.waitingSince) {
+    else if (item.waitingSince && (!kept.waitingSince || item.waitingSince > kept.waitingSince)) {
       kept.waitingSince = item.waitingSince;
+      kept.category ??= item.category;
     }
   }
 
