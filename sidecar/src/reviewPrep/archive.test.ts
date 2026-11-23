@@ -147,8 +147,10 @@ describe("runReviewPrepUpkeep", () => {
     expect(result.archived).toEqual([ws.id]);
     await until(async () => (await statusOf(ws.id)) === "archived", "the archive");
 
-    // The next run sees it archived and resolves the PRs' items.
-    expect((await runReviewPrepUpkeep(db, config, deps)).resolved).toBe(2);
+    // The archive finishes in the background, so the run that started it may
+    // already see it archived and resolve the items; otherwise the next run does.
+    const next = await runReviewPrepUpkeep(db, config, deps);
+    expect(result.resolved + next.resolved).toBe(2);
     expect(await pending()).toEqual([]);
     const preps = await db.select().from(reviewPreps);
     expect(preps.map((p) => p.state)).toEqual(["done", "done"]);
