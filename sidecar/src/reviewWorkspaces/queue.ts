@@ -180,10 +180,7 @@ async function runQueue(
 export type VerifyOutcome = {
   state: Exclude<QueueItemState, "waiting" | "running">;
   note: string | null;
-  /** Why it needs the user's go-ahead, when it does. */
-  confirmReason?: ConfirmReason;
 };
-type Outcome = VerifyOutcome;
 
 /** Starts one PR's checks, waiting for its checkout first if it needs one, and waits for them to end. */
 function verifyOne(
@@ -192,7 +189,7 @@ function verifyOne(
   ref: PrRef,
   queue: VerificationQueue,
   deps: KickoffDeps,
-): Promise<Outcome> {
+): Promise<VerifyOutcome> {
   return verifyAndWait(db, config, ref, deps, {
     sections: queue.sections,
     override: queue.override,
@@ -242,11 +239,7 @@ export async function verifyAndWait(
   }
   switch (result.status) {
     case "needs-confirmation":
-      return {
-        state: "needs-confirmation",
-        note: CONFIRM_NOTE[result.reason],
-        confirmReason: result.reason,
-      };
+      return { state: "needs-confirmation", note: CONFIRM_NOTE[result.reason] };
     case "error":
       return { state: "failed", note: result.error };
     case "exists":
@@ -288,7 +281,7 @@ async function runEnd(db: Db, id: string, deps: KickoffDeps): Promise<string> {
   }
 }
 
-const STATE_TEXT: Record<Outcome["state"], string> = {
+const STATE_TEXT: Record<VerifyOutcome["state"], string> = {
   done: "checked",
   failed: "failed",
   "needs-confirmation": "needs your go-ahead",
@@ -299,7 +292,7 @@ function notifyQueueDone(db: Db, queue: VerificationQueue) {
   const count = (state: QueueItemState) => queue.items.filter((i) => i.state === state).length;
   const lines = queue.items.map(
     (i) =>
-      `${i.name}: ${STATE_TEXT[i.state as Outcome["state"]] ?? i.state}${i.note ? `. ${i.note}` : ""}`,
+      `${i.name}: ${STATE_TEXT[i.state as VerifyOutcome["state"]] ?? i.state}${i.note ? `. ${i.note}` : ""}`,
   );
   let kind: "completed" | "error" | "info" = "completed";
   if (count("failed") > 0) kind = "error";

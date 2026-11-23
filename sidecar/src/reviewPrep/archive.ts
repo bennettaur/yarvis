@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { raiseAttention, resolveRaisedAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -19,6 +19,7 @@ import { CHECKOUT_WAIT_MS } from "../reviewWorkspaces/kickoff.ts";
 import {
   archiveReviewWorkspace,
   assertWorktreeInWorkspace,
+  getReviewWorkspace,
   listReviewWorkspaces,
   type ReviewDeps,
   reviewSessionFolder,
@@ -27,17 +28,19 @@ import { VERIFICATION_RUN_TIMEOUT_MS } from "../reviewWorkspaces/verification.ts
 import {
   defaultPrepDeps,
   enqueuePrep,
+  IN_FLIGHT_STATES,
   inFlightPreps,
   isPrepInFlight,
   type ReviewPrepDeps,
+  whileNoPrepPlaces,
 } from "./service.ts";
 
 /**
  * The upkeep review prep needs between passes:
  *
- * - Archives a review workspace review prep opened once every PR in it is
+ * - Archives a review workspace that review prep opened once every PR in it is
  *   approved by the user, merged or closed. Built-in archiving always asks;
- *   this is the one exception, and only for workspaces review prep opened. A
+ *   this is the one exception, and only for workspaces that review prep opened. A
  *   workspace with uncommitted changes, or one where an Ask Claude session was
  *   started, is left alone and the user is asked instead.
  * - Resolves a prepared PR's attention item once its workspace is archived,
@@ -181,7 +184,22 @@ async function archiveDone(
         asked.push(ws.id);
         continue;
       }
-      await archiveReviewWorkspace(db, config, ws.id, deps.review);
+      // Re-read under the prep lock: a stack layer prepared since the list was
+      // read joins this workspace, and isn't done.
+      const archivedNow = await whileNoPrepPlaces(async () => {
+        const fresh = await getReviewWorkspace(db, ws.id);
+        const freshKeys = fresh?.prs.map((pr) => pr.refKey) ?? [];
+        if (
+          fresh?.status !== "active" ||
+          freshKeys.length !== keys.length ||
+          freshKeys.some((key) => !keys.includes(key))
+        ) {
+          return false;
+        }
+        await archiveReviewWorkspace(db, config, ws.id, deps.review);
+        return true;
+      });
+      if (!archivedNow) continue;
       await resolveRaisedAttention(db, archiveAttentionKey(ws.id));
       archived.push(ws.id);
     } catch (e) {
@@ -191,14 +209,12 @@ async function archiveDone(
   return { archived, asked };
 }
 
-/** A verification or mutation-testing run still going on one of the PRs; the next run tries again. */
+/** Prep, agent or mutation-testing work still going on one of the PRs; the next run tries again. */
 async function hasRunningWork(db: Db, keys: string[]): Promise<boolean> {
   const preps = await db
     .select({ id: reviewPreps.id })
     .from(reviewPreps)
-    .where(
-      and(inArray(reviewPreps.refKey, keys), inArray(reviewPreps.state, ["queued", "verifying"])),
-    )
+    .where(and(inArray(reviewPreps.refKey, keys), inArray(reviewPreps.state, IN_FLIGHT_STATES)))
     .limit(1);
   if (preps.length > 0) return true;
   const runs = await db
@@ -279,29 +295,39 @@ async function resolveClosed(db: Db): Promise<number> {
     .where(
       and(
         ne(reviewPreps.state, "done"),
-        notInFlight(),
+        notInArray(reviewPreps.state, IN_FLIGHT_STATES),
         or(isNull(reviewPreps.workspaceId), eq(reviewWorkspaces.status, "archived")),
       ),
     );
+  let resolved = 0;
   for (const row of rows) {
-    await resolveRaisedAttention(db, row.attentionKey);
-    if (row.workspaceId) await resolveRaisedAttention(db, archiveAttentionKey(row.workspaceId));
-    await db
+    // Only while it is as read: a prep of the same PR into a new workspace
+    // since then has its own item to raise.
+    const [claimed] = await db
       .update(reviewPreps)
       .set({ state: "done", updatedAt: new Date() })
-      .where(eq(reviewPreps.id, row.id));
+      .where(
+        and(
+          eq(reviewPreps.id, row.id),
+          row.workspaceId
+            ? eq(reviewPreps.workspaceId, row.workspaceId)
+            : isNull(reviewPreps.workspaceId),
+          notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "done"]),
+        ),
+      )
+      .returning({ id: reviewPreps.id });
+    if (!claimed) continue;
+    await resolveRaisedAttention(db, row.attentionKey);
+    if (row.workspaceId) await resolveRaisedAttention(db, archiveAttentionKey(row.workspaceId));
+    resolved++;
   }
-  return rows.length;
-}
-
-function notInFlight() {
-  return and(ne(reviewPreps.state, "queued"), ne(reviewPreps.state, "verifying"));
+  return resolved;
 }
 
 export const reviewPrepJob: JobDefinition = {
   name: "review-prep",
   description:
-    "Every 15 minutes, archive the review workspaces review prep opened once you're done with their PRs, and pick up a prep a restart interrupted.",
+    "Every 15 minutes, archive the review workspaces that review prep opened once you're done with their PRs, and pick up a prep a restart interrupted.",
   schedule: { kind: "interval", everyMs: 15 * 60 * 1000 },
   run: async ({ db, config }) => {
     const result = await runReviewPrepUpkeep(db, config, defaultUpkeepDeps(db, config));

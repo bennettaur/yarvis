@@ -2288,8 +2288,8 @@ export type ReviewPrepVerdict = (typeof REVIEW_PREP_VERDICTS)[number];
 /**
  * A pull request review prep got ready for the user: the review workspace it
  * went into, how its verification ended, and the attention item it raised.
- * One row per PR; preparing the same PR again reuses it. `done` means the
- * workspace was archived and the attention item resolved.
+ * One row per PR; preparing the same PR again reuses it. `done` means its
+ * workspace is gone (archived, or closed before it ran) and its items resolved.
  */
 export const reviewPreps = pgTable(
   "review_preps",

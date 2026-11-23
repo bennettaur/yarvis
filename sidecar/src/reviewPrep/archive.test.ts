@@ -11,7 +11,7 @@ import { attentionItems, reviewPreps, reviewWorkspacePrs, reviewWorkspaces } fro
 import { type PrRef, refKey } from "../pr/types.ts";
 import type { ReviewDeps } from "../reviewWorkspaces/service.ts";
 import { reviewSessionFolder, reviewWorkspaceDir } from "../reviewWorkspaces/service.ts";
-import { archiveAttentionKey, type ReviewPrepUpkeepDeps, runReviewPrepUpkeep } from "./archive.ts";
+import { type ReviewPrepUpkeepDeps, runReviewPrepUpkeep } from "./archive.ts";
 import { prepAttentionKey, prepsSettled } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -162,6 +162,17 @@ describe("runReviewPrepUpkeep", () => {
     expect(await pending()).toHaveLength(2);
   });
 
+  it("waits while a prep of one of its PRs is still running", async () => {
+    const { ws } = await workspace([ref(1), ref(2)]);
+    await db
+      .update(reviewPreps)
+      .set({ state: "verifying", updatedAt: new Date() })
+      .where(eq(reviewPreps.refKey, refKey(ref(2))));
+    done = new Set([refKey(ref(1)), refKey(ref(2))]);
+    expect(await runReviewPrepUpkeep(db, config, deps)).toMatchObject({ archived: [], asked: [] });
+    expect(await statusOf(ws.id)).toBe("active");
+  });
+
   it("never archives a workspace the user opened", async () => {
     const { ws } = await workspace([ref(1)], "user");
     done = new Set([refKey(ref(1))]);
@@ -229,7 +240,6 @@ describe("runReviewPrepUpkeep", () => {
       .where(eq(reviewWorkspaces.id, ws.id));
     await runReviewPrepUpkeep(db, config, deps);
     expect(await pending()).toEqual([]);
-    expect(archiveAttentionKey(ws.id)).toBe(`review-prep-archive:${ws.id}`);
   });
 
   it("does nothing when GitHub can't be asked", async () => {

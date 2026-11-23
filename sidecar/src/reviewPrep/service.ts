@@ -79,11 +79,11 @@ export type PrepResult =
       /** For already-prepared: how it ended. */
       state?: ReviewPrepState;
     }
-  /** Not started: the repo isn't one the user registered, and nobody is here to agree to it. */
+  /** Not started: the repo isn't one the user registered, and registering it is the user's call. */
   | { status: "needs-go-ahead"; pr: string; reason: "unregistered-repo" }
   | { status: "error"; pr: string; error: string };
 
-const IN_FLIGHT_STATES: ReviewPrepState[] = ["queued", "verifying"];
+export const IN_FLIGHT_STATES: ReviewPrepState[] = ["queued", "verifying"];
 
 /** A prep that ended and whose workspace is still open is left alone; the user re-runs it there. */
 const SETTLED_STATES: ReviewPrepState[] = ["ready", "failed", "needs-go-ahead"];
@@ -94,6 +94,14 @@ export const prepAttentionKey = (key: string) => `review-prep:${key}`;
 /** One find-or-create at a time, so a stack's layers prepped together share one workspace. */
 const withPrepLock = createKeyedLock();
 const PREP_LOCK = "review-prep";
+
+/**
+ * Runs `fn` while no prep can pick or create a workspace, so archiving can't
+ * race a stack layer being added to the workspace it is archiving.
+ */
+export function whileNoPrepPlaces<T>(fn: () => Promise<T>): Promise<T> {
+  return withPrepLock(PREP_LOCK, fn);
+}
 
 /**
  * Prepares `ref` for review, or says why it won't. Answers once the workspace
@@ -113,7 +121,7 @@ export function prepReview(
     let found = await findReviewWorkspacePr(db, ref);
 
     if (existing && IN_FLIGHT_STATES.includes(existing.state)) {
-      // Not queued here: a restart lost it, and the job picks it up again.
+      // Left alone: if a restart dropped it from the queue, the review-prep job requeues it.
       return {
         status: "already-preparing",
         pr: name,
@@ -186,7 +194,7 @@ export function prepReview(
 }
 
 /**
- * The review workspace review prep opened for another open layer of `ref`'s
+ * The review workspace that review prep opened for another open layer of `ref`'s
  * stack, so a stack is reviewed in one place. A layer the user opened by hand
  * doesn't count: adding to their workspace would change what they set up.
  */
@@ -264,11 +272,13 @@ async function pump(): Promise<void> {
       if (running.size >= maxConcurrentVerifications) return;
       waiting.shift();
       running.add(next.id);
-      const work = runPrep(next.db, next.config, next.id, next.deps).finally(() => {
-        running.delete(next.id);
-        background.delete(work);
-        void pump();
-      });
+      const work = runPrep(next.db, next.config, next.id, next.deps)
+        .catch((e) => console.error("[review-prep] a prep failed to start:", describeError(e)))
+        .finally(() => {
+          running.delete(next.id);
+          background.delete(work);
+          void pump();
+        });
       background.add(work);
     }
   } finally {
@@ -284,11 +294,22 @@ async function setState(db: Db, id: string, values: Partial<ReviewPrepRow>): Pro
 }
 
 async function runPrep(db: Db, config: Config, id: string, deps: ReviewPrepDeps): Promise<void> {
-  const [row] = await db.select().from(reviewPreps).where(eq(reviewPreps.id, id));
-  if (!row || !IN_FLIGHT_STATES.includes(row.state)) return;
+  // Claimed from `queued`, so a prep another instance requeued and took runs once.
+  const [row] = await db
+    .update(reviewPreps)
+    .set({ state: "verifying", updatedAt: new Date() })
+    .where(and(eq(reviewPreps.id, id), eq(reviewPreps.state, "queued")))
+    .returning();
+  if (!row) return;
   const name = shortPrName(row.ref);
   try {
-    await setState(db, id, { state: "verifying" });
+    // A workspace the user closed while this waited its turn stays closed:
+    // the kickoff would otherwise open a new one in their name.
+    const found = await findReviewWorkspacePr(db, row.ref);
+    if (!found || found.workspaceId !== row.workspaceId) {
+      await setState(db, id, { state: "done", note: "Its review workspace was closed." });
+      return;
+    }
     const outcome = await verifyAndWait(db, config, row.ref, deps.kickoff, {
       sections: DEFAULT_SECTIONS,
     });
@@ -362,7 +383,8 @@ async function setupWaiting(
   if (pr.setupConsent && pr.setupHeadSha === pr.headSha) return false;
   try {
     return (await deps.kickoff.review.setupScriptFor(pr.ref)) !== null;
-  } catch {
+  } catch (e) {
+    console.error("[review-prep] could not read the setup script:", describeError(e));
     return false;
   }
 }

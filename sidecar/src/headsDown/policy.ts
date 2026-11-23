@@ -1,10 +1,17 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { findSpecialist } from "../agents/catalog.ts";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
 } from "../chat/destructiveTools.ts";
 import type { Db } from "../db/client.ts";
-import { type HeadsDownRun, issueLinks, workStreamLinks, workStreams } from "../db/schema.ts";
+import {
+  type HeadsDownRun,
+  issueLinks,
+  reviewPreps,
+  workStreamLinks,
+  workStreams,
+} from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { stripInvisible } from "../web/extract.ts";
@@ -89,17 +96,36 @@ export const PASS_CONFIRMED_TOOLS: ReadonlySet<string> = new Set([
  */
 const FILING_TOOLS: ReadonlySet<string> = new Set(["jira_create_issue"]);
 
+/** Most PRs one pass may prepare without asking; the routine asks for five. */
+export const MAX_PREPS_PER_PASS = 5;
+
 /**
- * Finding and preparing reviews, which the review-prep routine does on every
- * run. Running the review-scout specialist reads only; the user's own file
- * can replace it, which is theirs to decide. Preparing a review clones and
- * verifies a PR without running its code, and only in a repo the user
- * registered and within their verification budget: anything past that waits
- * for them in the review workspace.
+ * Finding and preparing reviews, in a pass the user's review-prep routine was
+ * given to; any other pass asks, since a message or ticket it read could name
+ * any PR. The review-scout specialist only reads, so it runs without asking
+ * unless the user's own definition of it grants tools that act unattended.
+ * Preparing a review clones and verifies a PR without running its code, only
+ * in a repo the user registered and within their verification budget, and at
+ * most {@link MAX_PREPS_PER_PASS} per pass: anything past that asks.
  */
-function isReviewPrepCall(tool: string, args: unknown): boolean {
-  if (tool === "prep_pr_review") return true;
-  return tool === "delegate" && stringArg(args, "specialist") === "review-scout";
+async function isReviewPrepCall(
+  db: Db,
+  tool: string,
+  args: unknown,
+  reviewPrepSince: Date | undefined,
+): Promise<boolean> {
+  if (!reviewPrepSince) return false;
+  if (tool === "delegate") {
+    if (stringArg(args, "specialist") !== "review-scout") return false;
+    const scout = await findSpecialist("review-scout");
+    return scout !== null && scout.unattended.length === 0;
+  }
+  if (tool !== "prep_pr_review") return false;
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(reviewPreps)
+    .where(gte(reviewPreps.updatedAt, reviewPrepSince));
+  return (row?.count ?? 0) < MAX_PREPS_PER_PASS;
 }
 
 /** Tools that act on one workspace's session. Fine on a workspace the loop is pushing. */
@@ -226,6 +252,11 @@ export interface DecideOptions {
    * couldn't be checked: like a merge outside working hours, it needs the user.
    */
   mergeHeld?: boolean;
+  /**
+   * When the pass started, set only when it was given the review-prep routine:
+   * the preps it made since then count toward {@link MAX_PREPS_PER_PASS}.
+   */
+  reviewPrepSince?: Date;
 }
 
 /** Whether a pass may make this call now. `tool` is a built-in's name or an MCP tool's registry id. */
@@ -234,14 +265,14 @@ export async function decideCall(
   run: HeadsDownRun,
   tool: string,
   args: unknown,
-  { withinWorkingHours = true, mergeHeld = false }: DecideOptions = {},
+  { withinWorkingHours = true, mergeHeld = false, reviewPrepSince }: DecideOptions = {},
 ): Promise<CallDecision> {
   if (PASS_REFUSED_TOOLS.has(tool)) return "refuse";
   // Stopped, paused or past its stop time, here or on another instance:
   // nothing more runs, whatever the pass is still doing. "stopped" covers all three.
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
-  if (isReviewPrepCall(tool, args)) return "run";
+  if (await isReviewPrepCall(db, tool, args, reviewPrepSince)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
   const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
   if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
@@ -585,6 +616,8 @@ export interface PassHookOptions {
   mergeFeedback?: MergeFeedbackLoader;
   /** Types the feedback handoff into a workspace's session; the real session by default. */
   sendInstruction?: ClaudeSessionMessenger;
+  /** See {@link DecideOptions.reviewPrepSince}. */
+  reviewPrepSince?: Date;
 }
 
 /**
@@ -606,6 +639,7 @@ export function passApprovalHooks(
     withinWorkingHours = true,
     mergeFeedback,
     sendInstruction,
+    reviewPrepSince,
   }: PassHookOptions = {},
 ): ApprovalHooks {
   return {
@@ -626,6 +660,7 @@ export function passApprovalHooks(
         const decision = await decideCall(db, run, id, args, {
           withinWorkingHours,
           mergeHeld: held,
+          reviewPrepSince,
         });
         approved = decision === "run";
         if (decision === "refuse") return { deniedMessage: REFUSED };

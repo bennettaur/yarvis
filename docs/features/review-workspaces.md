@@ -823,7 +823,7 @@ mutation testing stays off.
 checkouts and moves it to **Show archived**. The clone each repo was fetched
 into is kept, so the next review of that repo starts faster.
 
-A workspace [review prep](#review-prep) opened is the one exception: it
+A workspace that [review prep](#review-prep) opened is the one exception: it
 archives itself, without asking, once you're done with it.
 
 ### Review prep
@@ -852,7 +852,7 @@ If a check fails or the checkout doesn't finish, the item still comes, as
 for a report (a large PR, or one over your report budget) is checked out but
 not verified, and the item says **Review prep needs your go-ahead**; run the
 checks from the workspace. A PR in a repo you haven't registered gets no
-workspace at all. Review prep never runs the repo's setup script, since that
+workspace and no item: whoever asked for it is told, and it is left to you. Review prep never runs the repo's setup script, since that
 runs the PR's code: the item says so when there is one, and you run it from
 the workspace as usual. It posts nothing to the PR.
 
@@ -860,15 +860,17 @@ The [review-prep routine](heads-down.md#routines) runs it for the PRs the
 `review-scout` specialist picks, and the assistant runs it when you ask it to
 get a PR ready.
 
-**Archiving.** A workspace review prep opened archives itself once every PR
-in it is approved by you (your latest review on GitHub is an approval),
-merged or closed. A background job checks every 15 minutes, and leaves alone
+**Archiving.** A workspace that review prep opened archives itself once
+every PR in it is approved by you (your latest review on GitHub is an
+approval), merged or closed. Only workspaces holding GitHub PRs alone are
+archived this way, since GitHub is what says whether you approved. A background job checks every 15 minutes, and leaves alone
 a workspace you opened in the last 15 minutes or that still has checks
 running. If an Ask Claude session was ever started in it, or a checkout has
 uncommitted changes, it doesn't archive it: it adds a **Review workspace
 ready to archive** item instead, and you archive it yourself. Workspaces you
 opened, and ones review prep only reused, are never archived this way. Once
-the workspace is archived, by the job or by you, the PR's items are resolved.
+the workspace is archived, by the job or by you, the PR's items are resolved
+on the job's next run.
 
 ## Reference
 

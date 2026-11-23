@@ -14,6 +14,7 @@ import {
   decideCall,
   isMergeCall,
   isMergeInstruction,
+  MAX_PREPS_PER_PASS,
   mergeCallTarget,
   passApprovalHooks,
 } from "./policy.ts";
@@ -43,7 +44,7 @@ const memory = new PgVectorMemoryStore(db, new HashEmbedder());
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, workspaces, issue_links, agent_tools, attention_items, memories, events RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_messages, heads_down_questions, work_streams, workspaces, issue_links, agent_tools, attention_items, memories, events, review_preps RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -200,23 +201,50 @@ describe("what a pass may do", () => {
     expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("run");
   });
 
-  it("runs the review scout and prepares reviews without asking, and asks before any other delegation", async () => {
-    const run = await startRun(db, null);
-    expect(await decideCall(db, run, "prep_pr_review", { owner: "o", repo: "r", number: 1 })).toBe(
-      "run",
-    );
+  describe("review prep", () => {
+    const pr = { owner: "o", repo: "r", number: 1 };
     const task = { task: "find reviews" };
-    expect(await decideCall(db, run, "delegate", { ...task, specialist: "review-scout" })).toBe(
-      "run",
-    );
-    expect(await decideCall(db, run, "delegate", { ...task, specialist: "project-manager" })).toBe(
-      "ask",
-    );
-    expect(await decideCall(db, run, "delegate", task)).toBe("ask");
-    await stopRun(db);
-    expect(await decideCall(db, run, "prep_pr_review", { owner: "o", repo: "r", number: 1 })).toBe(
-      "stopped",
-    );
+
+    it("asks in a pass the review-prep routine wasn't given to", async () => {
+      const run = await startRun(db, null);
+      expect(await decideCall(db, run, "prep_pr_review", pr)).toBe("ask");
+      expect(await decideCall(db, run, "delegate", { ...task, specialist: "review-scout" })).toBe(
+        "ask",
+      );
+    });
+
+    it("runs the scout and prepares reviews without asking in a review-prep pass", async () => {
+      const run = await startRun(db, null);
+      const options = { reviewPrepSince: new Date() };
+      expect(await decideCall(db, run, "prep_pr_review", pr, options)).toBe("run");
+      expect(
+        await decideCall(db, run, "delegate", { ...task, specialist: "review-scout" }, options),
+      ).toBe("run");
+    });
+
+    it("still asks before any other delegation, and once the pass has prepared five", async () => {
+      const run = await startRun(db, null);
+      const options = { reviewPrepSince: new Date(Date.now() - 1000) };
+      expect(
+        await decideCall(db, run, "delegate", { ...task, specialist: "project-manager" }, options),
+      ).toBe("ask");
+      expect(await decideCall(db, run, "delegate", task, options)).toBe("ask");
+      for (let n = 1; n <= MAX_PREPS_PER_PASS; n++) {
+        const ref = { provider: "github" as const, owner: "o", repo: "r", number: n };
+        await db
+          .insert(schema.reviewPreps)
+          .values({ refKey: `gh:o/r/${n}`, ref, attentionKey: `review-prep:gh:o/r/${n}` });
+      }
+      expect(await decideCall(db, run, "prep_pr_review", pr, options)).toBe("ask");
+    });
+
+    it("stops with the run", async () => {
+      const run = await startRun(db, null);
+      await stopRun(db);
+      expect(await decideCall(db, run, "prep_pr_review", pr, { reviewPrepSince: new Date() })).toBe(
+        "stopped",
+      );
+    });
   });
 
   it("starts work on a ticket the user put on a stream, and asks about any other", async () => {

@@ -93,6 +93,7 @@ trigger are under **Settings → Assistant**.
 | Transcript digest (`cc-session-digest`) | Daily at 02:00. **Off until you turn it on.** | Reads new or grown Claude Code transcripts under `~/.claude/projects` in the directories you allow, and writes a `session-summary` memory for each. Also writes an `agent-feedback` memory when a session held instructions about how an agent should behave. |
 | Event consolidation (`consolidate-events`) | Every 4 hours | Folds activity-log events nobody has summarized yet into one `activity-summary` memory |
 | Daily rollup (`daily-rollup`) | Daily at 03:00 | Folds yesterday's activity and session summaries into a single `day-summary` |
+| Review prep upkeep (`review-prep`) | Every 15 minutes | Archives the review workspaces that [review prep](review-workspaces.md#review-prep) opened once you're done with their PRs, or asks you to when one can't be archived on its own. Resolves a prepared PR's attention items once its workspace is archived, and picks up a prep a restart interrupted. |
 | Scheduled tasks (`scheduled-tasks`) | Every minute | Runs the tasks the assistant scheduled for itself, each as a turn in the chat that asked for it, and rings the bell with what it found. See [Scheduled tasks](assistant.md#scheduled-tasks). |
 
 About the transcript digest: transcripts are local files that often hold

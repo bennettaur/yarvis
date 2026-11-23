@@ -334,6 +334,30 @@ describe("prepReview", () => {
   });
 });
 
+describe("a prep waiting its turn", () => {
+  it("doesn't reopen a workspace the user closed while it waited", async () => {
+    maxConcurrent = 1;
+    await heldChecks();
+    await prepReview(db, config, ref, prepDeps);
+    await until(async () => (await prepOf(ref))?.state === "verifying", "the first prep");
+    await prepReview(db, config, ref2, prepDeps);
+    const waiting = await prepOf(ref2);
+    expect(waiting?.state).toBe("queued");
+    await db
+      .update(reviewWorkspaces)
+      .set({ status: "archived" })
+      .where(eq(reviewWorkspaces.id, waiting?.workspaceId ?? ""));
+
+    release();
+    await prepsSettled();
+    expect(await prepOf(ref2)).toMatchObject({
+      state: "done",
+      note: "Its review workspace was closed.",
+    });
+    expect(await db.select().from(reviewWorkspaces)).toHaveLength(2);
+  });
+});
+
 describe("the attention item", () => {
   it("is one per PR, updated in place when the PR is prepared again", async () => {
     await prepReview(db, config, ref, prepDeps);

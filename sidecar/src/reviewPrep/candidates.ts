@@ -99,7 +99,7 @@ export async function findReviewCandidates(
         return { reason, prs: await client.searchReviewCandidates(q, login) };
       } catch (e) {
         console.error(`[review-prep] candidate search failed (${q}):`, describeError(e));
-        unavailable.push(`search for ${reason} (${q})`);
+        unavailable.push(`the ${reason} search`);
         return { reason, prs: [] };
       }
     }),

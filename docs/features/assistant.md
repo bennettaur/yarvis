@@ -654,7 +654,7 @@ The shipped specialists:
 | --- | --- | --- |
 | `planner` | Three suggestions for what to work on, each with why now and a first step. Prefers finishing over starting, and includes a review when you've done few. | You, via chat |
 | `work-scout` | A short ranked list of everything outstanding, with one next action each. Reports only. | You, via chat |
-| `review-scout` | Finds pull requests worth your review now: review requests, plus PRs in repos, by people or for teams you name. Skips drafts, PRs with enough approvals and ones already in a review workspace, and says why for each. Reports only; never comments or approves. Extend it to change those rules. | You, via chat, and the [review-prep routine](heads-down.md#routines) |
+| `review-scout` | Finds pull requests worth your review now: review requests, plus PRs in repos, by people or for teams you name. Skips drafts, PRs with two or more approvals (unless your review was requested), ones you last approved, ones already in a review workspace or being prepared, and ones over 3000 changed lines unless your review was requested. Picks at most five and says why for each pick and skip. Reports only; never comments or approves. Extend it to change those rules. | You, via chat, and the [review-prep routine](heads-down.md#routines) |
 | `project-manager` | Reconciles a project's tracked tickets against JIRA. Files new tickets only when asked. | You, via chat |
 | `activity-consolidator` | Summarizes a window of events into prose. | The background jobs |
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |
@@ -815,10 +815,11 @@ rather than followed, and listed under the problems with the reason.
 
 ## Background jobs
 
-Four jobs ship with the app and keep memory and the activity log up to date: a
+Jobs ship with the app to keep memory and the activity log up to date: a
 sync of the reviews you gave on github.com every hour, a summary of
 recent activity every 4 hours, the transcript digest at 02:00 (if on), and a
-daily rollup at 03:00. Their status and a **Run now** button are under
+daily rollup at 03:00. Others run the assistant's scheduled tasks and tidy up
+after [review prep](review-workspaces.md#review-prep). Their status and a **Run now** button are under
 **Settings → Assistant**. See [Scheduled jobs](scheduled-jobs.md#background-jobs-that-ship-with-the-app)
 for the details, and for scheduling your own prompts.
 

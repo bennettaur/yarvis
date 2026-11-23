@@ -82,8 +82,8 @@ export function summarizePrep(
 }
 
 /**
- * About 300 changed lines an hour, plus a few minutes per file to find your
- * way around it, rounded up to 5 minutes. Skimmed files (lockfiles, generated
+ * About 300 changed lines an hour, plus a minute per file to find your way
+ * around it, rounded up to 5 minutes. Skimmed files (lockfiles, generated
  * code) and binaries add only the per-file time.
  */
 export function estimateReviewMinutes(
