@@ -250,7 +250,7 @@ export default function HeadsDownSettings({
         onChange={(v) => set("maxRoutinesPerPass", v)}
       />
       <NumberField
-        label="Watch production after a ship's deploy (min, 0 to skip)"
+        label="Watch production after a ship's deploy (min, 0 for no minimum)"
         value={draft.shipMonitorWindowMinutes}
         min={0}
         max={1440}

@@ -14,10 +14,10 @@ import {
   decideCall,
   isMergeCall,
   isMergeInstruction,
-  isProductionInstruction,
+  isRevertOrDeployInstruction,
   mergeCallTarget,
   passApprovalHooks,
-  reachesProductionCall,
+  revertsOrDeploys,
 } from "./policy.ts";
 import {
   addMessage,
@@ -727,32 +727,92 @@ describe("reverts and deploys", () => {
 
   it("asks before an allowed MCP revert tool, but runs an allowed deploy or read", async () => {
     const run = await startRun(db, null);
-    for (const tool of [
+    const tools = [
       "mcp:deploys:revert_deploy",
+      "mcp:deploys:check_and_rollback",
+      "mcp:deploys:issue_rollback",
       "mcp:deploys:trigger_deploy",
       "mcp:deploys:list_rollbacks",
-    ]) {
-      await allowUnattended(tool);
-    }
-    expect(await decideCall(db, run, "mcp:deploys:revert_deploy", { id: 1 })).toBe("ask");
-    expect(await decideCall(db, run, "mcp:deploys:trigger_deploy", { id: 1 })).toBe("run");
-    expect(await decideCall(db, run, "mcp:deploys:list_rollbacks", {})).toBe("run");
+    ];
+    for (const tool of tools) await allowUnattended(tool);
+    const decisions = await Promise.all(tools.map((tool) => decideCall(db, run, tool, { id: 1 })));
+    expect(decisions).toEqual(["ask", "ask", "ask", "run", "run"]);
   });
 
-  it("reads what reaches production in instructions and tool names", () => {
-    expect(isProductionInstruction("Roll back the deploy of #12")).toBe(true);
-    expect(isProductionInstruction("redeploy the api")).toBe(true);
-    expect(isProductionInstruction("promote the build to prod")).toBe(true);
-    expect(isProductionInstruction("revert the last edit to utils.ts")).toBe(false);
-    expect(isProductionInstruction("push a PR")).toBe(false);
-    expect(
-      reachesProductionCall("send_workspace_slash_command", {
-        command: "/rollback",
-        arguments: "PR 12",
-      }),
-    ).toBe(true);
-    expect(reachesProductionCall("mcp:gh:revert_pull_request", { pullNumber: 12 })).toBe(true);
-    expect(reachesProductionCall("mcp:gh:get_revert_status", {})).toBe(false);
-    expect(reachesProductionCall("archive_workspace", {})).toBe(false);
+  it("asks before steering a workspace whose PR a ship stream has merged, whatever it says", async () => {
+    const run = await startRun(db, null);
+    await pushedWorkspace();
+    const args = { workspaceId, instruction: "fix the failing test" };
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+
+    const ship = await createStream(db, {
+      title: "Ship acme/api#12",
+      ship: {
+        repo: "acme/api",
+        number: 12,
+        url: "https://github.com/acme/api/pull/12",
+        stage: "merge",
+        stages: {},
+        log: [],
+      },
+    });
+    await linkToStream(db, ship.id, { ref: { kind: "workspace", workspaceId } });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+
+    await updateStream(db, ship.id, { ship: { ...ship.ship!, stage: "deploy" } });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("ask");
+
+    await updateStream(db, ship.id, { status: "done" });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
   });
+
+  const instructions: [string, boolean][] = [
+    ["revert PR #12, production checkout is failing", true],
+    ["git revert 3f2a9c1 and push to main", true],
+    ["reverted the merge of #12, push it", true],
+    ["undo the merge of #12 and push", true],
+    ["back out #12", true],
+    ["Roll back the deploy of #12", true],
+    ["rollback the release", true],
+    ["Please REVERT PR 12", true],
+    ["re\u200bvert PR 12", true],
+    ["deploy the api to production", true],
+    ["redeploy the api", true],
+    ["Deploying the fix now", true],
+    ["Run the deployment workflow", true],
+    ["promote the build to prod", true],
+    ["ship it to production", true],
+    ["kubectl rollout undo deployment/api", true],
+    ["fix the failing deploy script", true],
+    ["revert the last edit to utils.ts", false],
+    ["revert the typo in README", false],
+    ["push a PR", false],
+    ["promote the helper to a shared module", false],
+    ["", false],
+  ];
+  for (const [instruction, expected] of instructions) {
+    it(`reads ${JSON.stringify(instruction)} as ${expected ? "" : "not "}reverting or deploying`, () => {
+      expect(isRevertOrDeployInstruction(instruction)).toBe(expected);
+    });
+  }
+
+  const tools: [string, unknown, boolean][] = [
+    ["send_workspace_slash_command", { command: "/rollback", arguments: "PR 12" }, true],
+    ["mcp:gh:revert_pull_request", { pullNumber: 12 }, true],
+    ["mcp:x:RollBackRelease", {}, true],
+    ["mcp:x:roll-back", {}, true],
+    ["mcp:x:canary_rollback", {}, true],
+    ["mcp:x:check_and_rollback", {}, true],
+    ["mcp:x:undo_deploy", {}, true],
+    ["mcp:gh:get_revert_status", {}, false],
+    ["mcp:x:listRollbacks", {}, false],
+    ["mcp:revert-bot:list_things", {}, false],
+    ["mcp:x:trigger_deploy", {}, false],
+    ["archive_workspace", {}, false],
+  ];
+  for (const [tool, args, expected] of tools) {
+    it(`reads ${tool} as ${expected ? "" : "not "}reverting or deploying`, () => {
+      expect(revertsOrDeploys(tool, args)).toBe(expected);
+    });
+  }
 });

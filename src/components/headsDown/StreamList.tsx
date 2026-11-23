@@ -29,10 +29,11 @@ const STATUS_STYLE: Record<WorkStream["status"], string> = {
   dropped: "bg-zinc-800 text-zinc-500",
 };
 
+/** Mirrors `SHIP_STAGE_LABEL` in sidecar/src/workStreams/ship.ts, which titles its attention items. */
 const SHIP_STAGE_LABEL: Record<ShipStage, string> = {
   ci: "CI",
   reviewer: "Reviewer",
-  feedback: "Feedback",
+  feedback: "Review feedback",
   staging_test: "Staging test",
   merge: "Merge",
   deploy: "Deploy",
@@ -42,30 +43,34 @@ const SHIP_STAGE_LABEL: Record<ShipStage, string> = {
   done: "Done",
 };
 
+const STAGE_STYLE: Record<"done" | "skipped" | "failed" | "current" | "pending", string> = {
+  failed: "bg-red-500/15 text-red-300",
+  current: "bg-sky-500/15 text-sky-200",
+  done: "bg-emerald-500/10 text-emerald-300/80",
+  skipped: "bg-zinc-800 text-zinc-500 line-through",
+  pending: "bg-zinc-800/60 text-zinc-500",
+};
+
 /** A ship stream's stages in order: where it is, and how each finished one went. */
 export function ShipStages({ ship }: { ship: WorkStreamShip }) {
-  const last = ship.log[ship.log.length - 1];
+  const latestLogEntry = ship.log[ship.log.length - 1];
   return (
     <div className="mt-2">
       <ol className="flex flex-wrap gap-1" aria-label="Ship stages">
         {SHIP_STAGES.filter((stage) => stage !== "done").map((stage) => {
           const result = ship.stages[stage];
-          const current = ship.stage === stage;
-          const status = result?.status ?? (current ? "current" : "pending");
+          const isCurrent = ship.stage === stage;
+          const status = result?.status ?? (isCurrent ? "current" : "pending");
           const style =
             status === "failed"
-              ? "bg-red-500/15 text-red-300"
-              : current
-                ? "bg-sky-500/15 text-sky-200"
-                : status === "done"
-                  ? "bg-emerald-500/10 text-emerald-300/80"
-                  : status === "skipped"
-                    ? "bg-zinc-800 text-zinc-500 line-through"
-                    : "bg-zinc-800/60 text-zinc-500";
+              ? STAGE_STYLE.failed
+              : isCurrent
+                ? STAGE_STYLE.current
+                : STAGE_STYLE[status];
           return (
             <li
               key={stage}
-              aria-current={current ? "step" : undefined}
+              aria-current={isCurrent ? "step" : undefined}
               title={status}
               className={`rounded px-1.5 py-0.5 text-[11px] ${style}`}
             >
@@ -80,9 +85,9 @@ export function ShipStages({ ship }: { ship: WorkStreamShip }) {
           Watching production until {new Date(ship.monitorUntil).toLocaleString()}
         </p>
       )}
-      {last && (
+      {latestLogEntry && (
         <p className="mt-1 truncate text-xs text-zinc-500">
-          Last seen ({SHIP_STAGE_LABEL[last.stage]}): {last.text}
+          Last logged ({SHIP_STAGE_LABEL[latestLogEntry.stage]}): {latestLogEntry.text}
         </p>
       )}
     </div>

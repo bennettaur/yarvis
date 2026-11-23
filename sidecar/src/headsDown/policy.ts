@@ -1,14 +1,22 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   ALWAYS_CONFIRM_BUILTIN_TOOLS,
   DESTRUCTIVE_BUILTIN_TOOLS,
 } from "../chat/destructiveTools.ts";
 import type { Db } from "../db/client.ts";
-import { type HeadsDownRun, issueLinks, workStreamLinks, workStreams } from "../db/schema.ts";
+import {
+  type HeadsDownRun,
+  issueLinks,
+  workStreamLinks,
+  workStreams,
+  workspaceRepoPr,
+  workspaceRepos,
+} from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { stripInvisible } from "../web/extract.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
+import { AFTER_MERGE_STAGES } from "../workStreams/ship.ts";
 import type { ClaudeSessionMessenger } from "../workspaces/claudeSession.ts";
 import { getRepo } from "../workspaces/service.ts";
 import {
@@ -230,12 +238,16 @@ export async function decideCall(
   if (FILING_TOOLS.has(tool)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
   const needsUser =
-    mergeHeld ||
-    (!withinWorkingHours && isMergeCall(tool, args)) ||
-    reachesProductionCall(tool, args);
+    mergeHeld || (!withinWorkingHours && isMergeCall(tool, args)) || revertsOrDeploys(tool, args);
   if (WORKSPACE_TOOLS.has(tool) && !needsUser) {
     const workspaceId = stringArg(args, "workspaceId");
-    if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
+    if (
+      workspaceId &&
+      (await isPushedWorkspace(db, workspaceId)) &&
+      !(await shipsMergedWork(db, workspaceId))
+    ) {
+      return "run";
+    }
   }
   if (tool.startsWith("mcp:") && !needsUser && (await isToolUnattended(db, tool))) {
     return "run";
@@ -334,43 +346,157 @@ function sessionText(tool: string, args: unknown): string | null | undefined {
   return undefined;
 }
 
-/** Tool names that undo a change: `revert_pull_request`, `rollback_deploy`, … */
-const REVERT_TOOL = /revert|roll_?back/i;
+/** Read verbs an MCP tool's name can start with, as in `get_revert_status` or `listRollbacks`. */
+const READ_VERBS: ReadonlySet<string> = new Set([
+  "get",
+  "list",
+  "search",
+  "describe",
+  "view",
+  "show",
+  "read",
+  "fetch",
+  "find",
+]);
 
-/** Tools that only read about reverts, like `list_rollbacks` or `get_revert_status`. */
-const READS_ONLY = /^(get|list|search|check|can|is|has|describe|view|show|read)|status$/i;
+/** Words in a tool's name that chain a second action, as in `check_and_rollback`. */
+const CHAINING_WORDS: ReadonlySet<string> = new Set(["and", "then"]);
+
+const REVERT_WORDS: ReadonlySet<string> = new Set([
+  "revert",
+  "reverts",
+  "rollback",
+  "rollbacks",
+  "undo",
+  "backout",
+]);
+
+const DEPLOY_WORDS: ReadonlySet<string> = new Set([
+  "deploy",
+  "deploys",
+  "redeploy",
+  "deployment",
+  "deployments",
+  "release",
+  "promote",
+  "rollout",
+  "publish",
+]);
+
+/** A tool name's words, lower-cased: `cancelAndRoll-back` is `cancel and roll back`. */
+function nameWords(tool: string): string[] {
+  const name = tool.slice(tool.lastIndexOf(":") + 1);
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  // "roll back" and "back out" as two words mean the same as one.
+  return words.flatMap((word, i) =>
+    (word === "roll" && words[i + 1] === "back") || (word === "back" && words[i + 1] === "out")
+      ? [`${word}${words[i + 1]}`]
+      : (word === "back" && words[i - 1] === "roll") || (word === "out" && words[i - 1] === "back")
+        ? []
+        : [word],
+  );
+}
+
+/** Whether an MCP tool only reads: it starts with a read verb and chains no other action. */
+function isReadOnlyName(words: string[]): boolean {
+  return READ_VERBS.has(words[0] ?? "") && !words.some((w) => CHAINING_WORDS.has(w));
+}
+
+/** An MCP tool named like a revert or rollback that isn't only reading about one. */
+function isRevertTool(tool: string): boolean {
+  if (!tool.startsWith("mcp:")) return false;
+  const words = nameWords(tool);
+  return words.some((w) => REVERT_WORDS.has(w)) && !isReadOnlyName(words);
+}
+
+/** An MCP tool named like a deploy or release that isn't only reading about one. */
+function isDeployTool(tool: string): boolean {
+  if (!tool.startsWith("mcp:")) return false;
+  const words = nameWords(tool);
+  return words.some((w) => DEPLOY_WORDS.has(w)) && !isReadOnlyName(words);
+}
+
+const REVERT_VERB =
+  /\b(revert(s|ed|ing)?|roll(s|ed|ing)?[ -]?back|rollback|undo(es|ne|ing)?|back(s|ed|ing)? out)\b/i;
+
+/** What a revert has to name to be about shipped work: a PR, merge, commit (or SHA), deploy or branch. */
+const SHIPPED_WORK =
+  /\b(PRs?|pull requests?|merges?|commits?|deploy\w*|releases?|prod|production|main|master)\b|#\d+|\b[0-9a-f]{7,40}\b/i;
 
 /**
- * Whether an instruction to a workspace's session reverts or rolls back
- * shipped work, or deploys. Reverting a line in the session's own branch
- * ("revert your change to foo.ts") doesn't count, so a revert has to name a
- * PR, merge, commit, deploy or production.
+ * Deploying, or shipping, promoting, releasing or rolling out to production
+ * within one sentence (`[^.\n]*`).
  */
-export function isProductionInstruction(instruction: string | null): boolean {
+const DEPLOY_VERB =
+  /\b(re-?)?deploy(s|ed|ing|ments?)?\b|\brollout\b|\b(ship|promote|release|roll(s|ing)?[ -]?out)\b[^.\n]*\bprod(uction)?\b/i;
+
+/**
+ * Whether an instruction to a workspace's session reverts shipped work or
+ * deploys. Reverting a line in the session's own branch ("revert your change
+ * to foo.ts") doesn't count, so a revert has to name shipped work. It reads
+ * words, so it is a best-effort net: it asks about "fix the deploy script"
+ * too, and can miss a revert phrased some other way, or written with
+ * lookalike letters from another alphabet.
+ */
+export function isRevertOrDeployInstruction(instruction: string | null): boolean {
   if (!instruction) return false;
   const text = stripInvisible(instruction).text.normalize("NFKC");
-  const reverts =
-    /\b(revert(s|ing)?|roll(ing)?[ -]?back|rollback)\b/i.test(text) &&
-    /\b(PRs?|pull requests?|merges?|commits?|deploy\w*|releases?|prod|production)\b|#\d+/i.test(
-      text,
-    );
-  const deploys = /\b(re)?deploy\b|\bpromote\b[^.]*\bprod(uction)?\b/i.test(text);
-  return reverts || deploys;
+  return (REVERT_VERB.test(text) && SHIPPED_WORK.test(text)) || DEPLOY_VERB.test(text);
 }
 
 /**
- * A call that undoes shipped work or deploys: an MCP revert or rollback tool,
- * or telling a workspace's session to revert, roll back or deploy. These wait
- * for the user every time, even on a workspace the loop may steer or with a
- * tool allowed for heads-down mode, and auto mode never settles them. An MCP
- * deploy tool the user allowed still runs: allowing it was their go-ahead.
+ * A call that reverts shipped work or deploys: an MCP revert or rollback
+ * tool, or telling a workspace's session to revert, roll back or deploy.
+ * These wait for the user every time, even on a workspace the loop may steer
+ * or with a tool allowed for heads-down mode. An MCP deploy tool the user
+ * allowed for heads-down mode isn't one: allowing it was their go-ahead.
  */
-export function reachesProductionCall(tool: string, args: unknown): boolean {
+export function revertsOrDeploys(tool: string, args: unknown): boolean {
   const told = sessionText(tool, args);
-  if (told !== undefined) return isProductionInstruction(told);
-  if (!tool.startsWith("mcp:")) return false;
-  const name = tool.slice(tool.lastIndexOf(":") + 1);
-  return REVERT_TOOL.test(name) && !READS_ONLY.test(name);
+  if (told !== undefined) return isRevertOrDeployInstruction(told);
+  return isRevertTool(tool);
+}
+
+/** Calls the decision model never approves: reverts and deploys of every kind. */
+function neverAutoApproved(tool: string, args: unknown): boolean {
+  return revertsOrDeploys(tool, args) || isDeployTool(tool);
+}
+
+/**
+ * Whether a workspace's PR is on an open ship stream that has merged it.
+ * From there anything the session is told can reach production, whatever
+ * the wording, so every instruction waits for the user. The workspace counts
+ * when a stream links it, or links a PR the workspace has.
+ */
+async function shipsMergedWork(db: Db, workspaceId: string): Promise<boolean> {
+  const prs = await db
+    .select({ url: workspaceRepoPr.prUrl })
+    .from(workspaceRepoPr)
+    .innerJoin(workspaceRepos, eq(workspaceRepos.id, workspaceRepoPr.workspaceRepoId))
+    .where(eq(workspaceRepos.workspaceId, workspaceId));
+  const refKeys = [
+    refKeyOf({ kind: "workspace", workspaceId }),
+    ...prs.flatMap((pr) =>
+      pr.url ? [refKeyOf({ kind: "pr", provider: "github", url: pr.url })] : [],
+    ),
+  ];
+  const rows = await db
+    .select({ id: workStreams.id })
+    .from(workStreamLinks)
+    .innerJoin(workStreams, eq(workStreams.id, workStreamLinks.streamId))
+    .where(
+      and(
+        inArray(workStreamLinks.refKey, refKeys),
+        inArray(workStreams.status, [...OPEN_STREAM_STATUSES]),
+        inArray(sql<string>`${workStreams.ship}->>'stage'`, [...AFTER_MERGE_STAGES]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
@@ -674,9 +800,7 @@ export function passApprovalHooks(
         // merge outside working hours, a revert and a deploy are never the
         // decision model's to allow.
         const reason =
-          review &&
-          (withinWorkingHours || !isMergeCall(id, args)) &&
-          !reachesProductionCall(id, args)
+          review && (withinWorkingHours || !isMergeCall(id, args)) && !neverAutoApproved(id, args)
             ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
                 (e) => {
                   console.error(

@@ -5,7 +5,7 @@ import postgres from "postgres";
 import * as schema from "../db/schema.ts";
 import type { RepoPlaybooks } from "../workspaces/playbooks.ts";
 import { createStream, getStream, updateStream } from "./service.ts";
-import { newShip, parseShipPr, shipAttentionKey, updateShipStage } from "./ship.ts";
+import { initialShip, parseShipPr, shipAttentionKey, updateShipStage } from "./ship.ts";
 import { buildWorkStreamTools, STREAM_PAUSED } from "./tools.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -14,6 +14,7 @@ const db = drizzle(sql, { schema });
 
 const opts = { toolCallId: "test", messages: [] } as never;
 const settings = { monitorWindowMinutes: 60, checkEveryMinutes: 15 };
+const merged = async () => ({ merged: true });
 const pr = { repo: "acme/api", number: 12, url: "https://github.com/acme/api/pull/12" };
 
 beforeEach(async () => {
@@ -37,7 +38,7 @@ async function registerRepo(playbooks: RepoPlaybooks) {
 
 /** A ship stream already at `stage`. */
 async function shipAt(stage: schema.ShipStage) {
-  const stream = await createStream(db, { title: "Ship", ship: { ...newShip(pr), stage } });
+  const stream = await createStream(db, { title: "Ship", ship: { ...initialShip(pr), stage } });
   return (await getStream(db, stream.id))!;
 }
 
@@ -100,13 +101,23 @@ describe("create_work_stream with ship", () => {
     );
   });
 
-  it("records a PR a pass linked as the pass's own", async () => {
+  it("won't let a pass start one", async () => {
     const tools = buildWorkStreamTools(db, { unattended: true });
-    const created = (await tools.create_work_stream.execute!(
+    expect(await tools.create_work_stream.execute!({ ship: { pr: "acme/api#12" } }, opts)).toEqual({
+      error: "only the user starts a ship stream",
+    });
+  });
+
+  it("allows a new ship stream once the last one for the PR closed", async () => {
+    const tools = buildWorkStreamTools(db);
+    const first = (await tools.create_work_stream.execute!(
       { ship: { pr: "acme/api#12" } },
       opts,
     )) as { id: string };
-    expect((await getStream(db, created.id))?.links[0]?.createdBy).toBe("heads-down");
+    await updateStream(db, first.id, { status: "dropped" });
+    expect(
+      await tools.create_work_stream.execute!({ ship: { pr: "acme/api#12" } }, opts),
+    ).toMatchObject({ shipStage: "ci" });
   });
 });
 
@@ -126,7 +137,7 @@ describe("updateShipStage", () => {
       { stage: "ci", outcome: "done", log: "all checks green" },
       settings,
     );
-    expect(result).toMatchObject({ stage: "reviewer", skipped: [] });
+    expect(result).toMatchObject({ stage: "reviewer", autoSkipped: [] });
     const after = await getStream(db, stream.id);
     expect(after?.ship?.stage).toBe("reviewer");
     expect(after?.ship?.stages.ci).toMatchObject({ status: "done", note: "all checks green" });
@@ -144,20 +155,20 @@ describe("updateShipStage", () => {
       { stage: "feedback", outcome: "done" },
       settings,
     );
-    expect(result).toMatchObject({ stage: "merge", skipped: ["staging_test"] });
+    expect(result).toMatchObject({ stage: "merge", autoSkipped: ["staging_test"] });
 
-    const merged = (await getStream(db, stream.id))!;
+    const atMerge = (await getStream(db, stream.id))!;
     const now = new Date("2026-11-23T15:00:00Z");
     const afterMerge = await updateShipStage(
       db,
-      merged,
+      atMerge,
       { stage: "merge", outcome: "done" },
       settings,
-      { now },
+      { now, checkMerged: merged },
     );
     expect(afterMerge).toMatchObject({
       stage: "monitor_production",
-      skipped: ["deploy", "monitor_deploy"],
+      autoSkipped: ["deploy", "monitor_deploy"],
       monitorUntil: "2026-11-23T16:00:00.000Z",
       nextCheckAt: "2026-11-23T15:15:00.000Z",
     });
@@ -171,7 +182,7 @@ describe("updateShipStage", () => {
     const stream = await shipAt("feedback");
     expect(
       await updateShipStage(db, stream, { stage: "feedback", outcome: "done" }, settings),
-    ).toMatchObject({ stage: "staging_test", skipped: [] });
+    ).toMatchObject({ stage: "staging_test", autoSkipped: [] });
   });
 
   it("won't skip a stage the playbook has a step for, or one with no playbook key", async () => {
@@ -264,8 +275,8 @@ describe("updateShipStage", () => {
     expect(item).toMatchObject({
       category: "build",
       kind: "action",
-      title: "Production test failed on acme/api#12",
-      body: "checkout returns 500",
+      title: "Ship stage failed: Production test",
+      body: "acme/api#12\n\nHeads down reported: checkout returns 500",
       navTarget: { type: "heads-down" },
       sessionKey: `raise:system:${shipAttentionKey(stream.id, "test_production")}`,
     });
@@ -277,10 +288,22 @@ describe("updateShipStage", () => {
       settings,
     );
     expect(passed).toMatchObject({ stage: "done" });
-    expect(await pendingAttention()).toEqual([]);
+    // A production alarm stays for the user to clear, even once a retry passes.
+    expect(await pendingAttention()).toHaveLength(1);
     const done = await getStream(db, stream.id);
     expect(done?.status).toBe("done");
     expect(done?.closedAt).not.toBeNull();
+  });
+
+  it("clears a failure alert before the merge once the stage passes", async () => {
+    const stream = await shipAt("staging_test");
+    await updateShipStage(db, stream, { stage: "staging_test", outcome: "failed" }, settings);
+    await updateShipStage(db, stream, { stage: "staging_test", outcome: "failed" }, settings);
+    expect(await pendingAttention()).toHaveLength(1);
+    const failed = (await getStream(db, stream.id))!;
+    expect(failed.waitingOn).toBe("You: staging test failed on acme/api#12");
+    await updateShipStage(db, failed, { stage: "staging_test", outcome: "done" }, settings);
+    expect(await pendingAttention()).toEqual([]);
   });
 
   it("doesn't propose a revert for a failure before the merge", async () => {
@@ -303,6 +326,83 @@ describe("updateShipStage", () => {
     expect(
       await updateShipStage(db, shipped, { stage: "done", outcome: "done" }, settings),
     ).toEqual({ error: "this PR has already shipped" });
+  });
+});
+
+describe("updateShipStage guards", () => {
+  it("leaves the merge stage only once GitHub shows the PR merged", async () => {
+    const stream = await shipAt("merge");
+    const done = { stage: "merge", outcome: "done" } as const;
+    expect(await updateShipStage(db, stream, done, settings)).toMatchObject({
+      error: expect.stringContaining("couldn't confirm"),
+    });
+    expect(
+      await updateShipStage(db, stream, done, settings, {
+        checkMerged: async () => ({ merged: false }),
+      }),
+    ).toEqual({ error: "the PR isn't merged yet" });
+    expect(
+      await updateShipStage(db, stream, done, settings, {
+        checkMerged: async () => ({ error: "github token not configured" }),
+      }),
+    ).toMatchObject({ error: expect.stringContaining("github token not configured") });
+    expect(
+      await updateShipStage(db, stream, done, settings, { checkMerged: merged }),
+    ).toMatchObject({ stage: "deploy" });
+  });
+
+  it("won't skip production monitoring before its window ends", async () => {
+    const stream = await shipAt("test_production");
+    await updateStream(db, stream.id, {
+      ship: {
+        ...stream.ship!,
+        stage: "monitor_production",
+        monitorUntil: "2026-11-23T16:00:00.000Z",
+      },
+    });
+    expect(
+      await updateShipStage(
+        db,
+        (await getStream(db, stream.id))!,
+        { stage: "monitor_production", outcome: "skipped" },
+        settings,
+        { now: new Date("2026-11-23T15:00:00Z") },
+      ),
+    ).toMatchObject({ error: expect.stringContaining("keep watching") });
+  });
+
+  it("won't bring back a closed stream", async () => {
+    const stream = await shipAt("ci");
+    await updateStream(db, stream.id, { status: "dropped" });
+    const dropped = (await getStream(db, stream.id))!;
+    expect(await updateShipStage(db, dropped, { stage: "ci", outcome: "done" }, settings)).toEqual({
+      error: "this work stream is closed",
+    });
+    expect((await getStream(db, stream.id))?.status).toBe("dropped");
+  });
+
+  it("refuses a write based on a read another update has overtaken", async () => {
+    const stream = await shipAt("ci");
+    await updateShipStage(db, stream, { stage: "ci", outcome: "done" }, settings);
+    expect(
+      await updateShipStage(db, stream, { stage: "ci", log: "late check" }, settings),
+    ).toMatchObject({ error: expect.stringContaining("read it again") });
+    const after = await getStream(db, stream.id);
+    expect(after?.ship?.stage).toBe("reviewer");
+    expect(after?.ship?.log).toEqual([]);
+  });
+
+  it("keeps the newest 50 log lines, each cut to 1000 characters", async () => {
+    let stream = await shipAt("ci");
+    for (let i = 0; i < 51; i++) {
+      await updateShipStage(db, stream, { stage: "ci", log: `check ${i}` }, settings);
+      stream = (await getStream(db, stream.id))!;
+    }
+    await updateShipStage(db, stream, { stage: "ci", log: "x".repeat(1500) }, settings);
+    const log = (await getStream(db, stream.id))!.ship!.log;
+    expect(log).toHaveLength(50);
+    expect(log[0]?.text).toBe("check 2");
+    expect(log.at(-1)?.text).toHaveLength(1000);
   });
 });
 

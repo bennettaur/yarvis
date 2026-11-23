@@ -214,8 +214,9 @@ ready, and its `config`.
   session on one of your tasks.
 - Telling a session what to do, or restarting it, in a workspace you put on a
   work stream, or one it started itself in this run. Telling it to deploy or
-  revert still asks (see [Shipping a PR](#shipping-a-pr)), and so does telling
-  it to merge outside your working hours.
+  revert still asks, and so does anything once a ship stream has merged its
+  PR (see [Shipping a PR](#shipping-a-pr)), or telling it to merge outside
+  your working hours.
 
 Anything else that can't be undone or reaches other people waits for your
 approval. That includes starting work on a ticket it found or filed itself, since the ticket's text becomes the session's
@@ -226,20 +227,23 @@ to do.
 ## Shipping a PR
 
 Tell the assistant "ship acme/api#12" (or give it the PR's link) and it
-tracks the PR as a **ship stream**. Heads-down mode then carries it through
-these stages, one at a time:
+tracks the PR as a **ship stream**. Only you start one: a pass can't, whatever
+a message or ticket asks. Heads-down mode then carries it through these
+stages, one at a time:
 
 1. **CI**: gets the checks green, telling the PR's workspace session to fix
    failures.
 2. **Reviewer**: asks for a review. Who to ask comes from the repo's
    **Pick a reviewer** playbook step, or your standing guidance. If neither
    says, it asks you.
-3. **Feedback**: waits for an approval with no open review feedback, handing
-   the feedback to the workspace's session as described under
+3. **Review feedback**: waits for an approval with no open review feedback,
+   handing the feedback to the workspace's session as described under
    [Open review feedback](#open-review-feedback).
 4. **Staging test**: follows the repo's **Test in staging** step.
 5. **Merge**: merges under the same rules as any other merge (see
-   [Merging PRs](#merging-prs)): working hours, risk and open feedback.
+   [Merging PRs](#merging-prs)): working hours, risk and open feedback. The
+   stage only finishes once GitHub shows the PR merged, so it needs a GitHub
+   token.
 6. **Deploy**: runs the repo's **Deploy** step.
 7. **Watch deploy**: follows the **Monitor the deploy** step until the deploy
    finishes.
@@ -248,36 +252,47 @@ these stages, one at a time:
    It can't finish this stage before the window ends.
 9. **Production test**: runs the **Test in production** step.
 
-Then the stream is marked done. A ship stream only moves while heads-down
-mode is on.
+Then the stream is marked done. Heads-down mode is what moves a ship stream,
+so it waits while heads-down mode is off.
 
 The steps come from the repo's [playbook](workspaces.md#repo-playbooks)
 (Settings → Repositories → Playbooks). A stage whose playbook step you left
 empty is skipped and shown as skipped. If the repo isn't registered in
-Yarvis, nothing is skipped for you: it asks you what to do at each of those
-stages instead. The Heads down page shows each ship
-stream's stages, which one it is at, which were skipped or failed, what it is
-waiting on, and the last thing it saw after the merge.
+Yarvis, nothing is skipped for you, and a pass marks one of those stages
+skipped only once you've said to. Whether a stage passed is the pass's
+judgement, apart from the merge. The Heads down page shows each ship stream's
+stages, which one it is at, which were skipped or failed, what it is waiting
+on, and the last thing it logged.
 
 Anything that reaches production or other people waits for your approval, as
-elsewhere in heads-down mode. On top of that, a deploy or revert it tells a
-workspace's session to do, and any MCP tool named like a revert or rollback,
-always asks you, even for a workspace it may steer, a tool you allowed for
-heads-down mode, or with auto mode on. An MCP deploy tool you allowed for
-heads-down mode still runs without asking. It spots these by the tool's name
-and the instruction's wording ("revert PR #12", "deploy the api", "roll back
-the release"), so it can miss one phrased some other way, and an instruction
-like "fix the deploy job" asks you too.
+elsewhere in heads-down mode. On top of that:
+
+- A revert always asks you: telling a workspace's session to revert or roll
+  back shipped work, or any MCP tool named like a revert or rollback. That
+  holds even for a workspace it may steer, a tool you allowed for heads-down
+  mode, or with auto mode on.
+- Telling a workspace's session to deploy always asks you too. An MCP deploy
+  tool you allowed for heads-down mode still runs without asking, since
+  allowing it was your go-ahead, but auto mode never approves one.
+- Once a ship stream has merged its PR, every instruction to that PR's
+  workspace session asks you, whatever it says.
+
+It spots reverts and deploys by the tool's name and the instruction's wording
+("revert PR #12", "git revert 3f2a9c1", "deploy the api", "roll back the
+release"). It can miss one phrased some other way, and it asks about some
+that aren't, such as "fix the deploy script". These rules apply to every
+heads-down pass, not only ship streams.
 
 If a check after the merge, or the production test, looks wrong, it marks the
 stage failed, puts the stream on you, and raises an action in the attention
 bell under **Build**. It then proposes the revert from the repo's **Revert**
-playbook step, which waits for your approval. It never reverts on its own. A
-stage that failed before the merge, like a staging test, raises the same
-action without proposing a revert. Once the stage passes on a later try, the
-action clears.
+playbook step, which waits for your approval. It never reverts on its own.
+That action stays until you clear it, even if a later check passes. A stage
+that fails before the merge, like a staging test, raises the same action
+without proposing a revert, and the action clears once the stage passes.
 
-Each step it runs after the merge, and what it saw, is kept on the stream.
+What it ran and saw at each stage is logged on the stream, up to the latest
+50 entries.
 
 ## Merging PRs
 
@@ -468,7 +483,7 @@ Under **Pace and working hours** on the page:
 - **Routines per pass**: the most [routines](#routines) one pass takes on, up
   to 10. 0 turns them off, including the meeting alarms.
 - How long a [ship stream](#shipping-a-pr) watches production after its
-  deploy (60 minutes by default, 0 to skip watching, up to a day), and how
+  deploy (60 minutes by default, 0 for no minimum, up to a day), and how
   often it checks in that time (every 15 minutes by default, from 5 to 240).
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
@@ -479,7 +494,8 @@ Under **Pace and working hours** on the page:
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The guidance, pace, routines per pass, ship monitoring and working hours are stored in
+The guidance, pace, routines per pass, ship monitoring and working hours are
+stored in
 `~/.yarvis/settings.json` under `headsDown` (see
 [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.

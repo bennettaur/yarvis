@@ -927,7 +927,7 @@ describe("ShipStages", () => {
     expect(text).toContain("Staging test (skipped)");
     expect(text).toContain("Deploy (failed)");
     expect(text).toContain("Watching production until");
-    expect(text).toContain("Last seen (Watch production): error rate flat");
+    expect(text).toContain("Last logged (Watch production): error rate flat");
     expect(html).toMatch(/aria-current="step"[^>]*>Watch production</);
   });
 });

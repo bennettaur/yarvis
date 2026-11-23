@@ -211,7 +211,14 @@ export async function updateStream(
   db: Db,
   id: string,
   patch: UpdateStreamInput,
-  { unlessPaused = false }: { unlessPaused?: boolean } = {},
+  {
+    unlessPaused = false,
+    expectedShip,
+  }: {
+    unlessPaused?: boolean;
+    /** Writes only while `ship` is still this, so two updates can't lose one another's. */
+    expectedShip?: WorkStreamShip | null;
+  } = {},
 ): Promise<WorkStream | null> {
   const [existing] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!existing) return null;
@@ -243,9 +250,15 @@ export async function updateStream(
       updatedAt: now,
     })
     .where(
-      unlessPaused
-        ? and(eq(workStreams.id, id), isNull(workStreams.pausedAt))
-        : eq(workStreams.id, id),
+      and(
+        eq(workStreams.id, id),
+        unlessPaused ? isNull(workStreams.pausedAt) : undefined,
+        expectedShip === undefined
+          ? undefined
+          : expectedShip === null
+            ? isNull(workStreams.ship)
+            : sql`${workStreams.ship} = ${JSON.stringify(expectedShip)}::jsonb`,
+      ),
     )
     .returning();
   if (row && closing && !existing.closedAt) {
