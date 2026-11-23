@@ -159,7 +159,7 @@ function notificationBody(text: string | undefined): string | null {
   return line.length > MAX_BODY_CHARS ? `${line.slice(0, MAX_BODY_CHARS)}…` : line;
 }
 
-async function raiseAttention(
+async function notifyTaskResult(
   db: Db,
   scheduledTask: ChatScheduledTask,
   kind: "info" | "error",
@@ -196,7 +196,7 @@ async function runDueScheduledTask(
     await recordScheduledTaskError(db, scheduledTask.id, error);
     // The user is expecting to hear back; a task that broke must not look like
     // one that is still waiting.
-    await raiseAttention(
+    await notifyTaskResult(
       db,
       scheduledTask,
       "error",
@@ -215,7 +215,7 @@ async function runDueScheduledTask(
     ? `Yarvis · stopped after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs: ${scheduledTask.title}`
     : `Yarvis · ${scheduledTask.title}`;
   const body = notificationBody(outcome.attentionReason ?? outcome.reply);
-  await raiseAttention(db, scheduledTask, "info", title, body);
+  await notifyTaskResult(db, scheduledTask, "info", title, body);
 }
 
 export function scheduledTasksJob(

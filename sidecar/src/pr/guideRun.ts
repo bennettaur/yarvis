@@ -34,6 +34,7 @@ async function announceGuideReady(db: Db, ref: PrRef, guide: PrGuideRow): Promis
   const item = await createAttention(db, {
     source: "system",
     sessionKey: guideSessionKey(ref),
+    // `completed` also resolves an earlier run's "Guided review failed" item.
     kind: "completed",
     category: "review",
     // The PR's title is the author's text, so it goes in the body, where it
@@ -46,7 +47,7 @@ async function announceGuideReady(db: Db, ref: PrRef, guide: PrGuideRow): Promis
 }
 
 /** Resolves a PR's guide items once the user has started reading the guide. */
-export async function settleGuideAttention(db: Db, ref: PrRef): Promise<void> {
+export async function resolveGuideAttention(db: Db, ref: PrRef): Promise<void> {
   const rows = await clearAttentionScope(db, { sessionKey: guideSessionKey(ref) }, "resolved");
   for (const row of rows) publish(row);
 }

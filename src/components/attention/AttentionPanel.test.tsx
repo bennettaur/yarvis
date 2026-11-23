@@ -148,8 +148,13 @@ describe("AttentionPanel needs-you-now stream", () => {
   });
 
   const text = (host: HTMLElement) => host.textContent ?? "";
-  const button = (host: HTMLElement, label: string) =>
-    Array.from(host.querySelectorAll("button")).find((b) => b.textContent?.startsWith(label));
+  const button = (host: HTMLElement, label: string): HTMLButtonElement => {
+    const found = Array.from(host.querySelectorAll("button")).find((b) =>
+      b.textContent?.startsWith(label),
+    );
+    if (!found) throw new Error(`no "${label}" button`);
+    return found;
+  };
 
   it("groups items by category with review first, and filters to one", async () => {
     pending = [
@@ -163,17 +168,31 @@ describe("AttentionPanel needs-you-now stream", () => {
     expect(t.indexOf("Review Sam's PR")).toBeLessThan(t.indexOf("CI is red"));
     expect(t).toContain("Build 1");
 
-    button(host, "Build")?.click();
+    button(host, "Build").click();
     await waitFor(() => !text(host).includes("Review Sam's PR"), "the filter");
     expect(text(host)).toContain("CI is red");
   });
 
-  it("remembers turning grouping off", async () => {
+  it("lists newest first once grouping is off, and remembers that", async () => {
+    pending = [
+      attention({ id: "b", seq: 2, category: "build", title: "CI is red" }),
+      attention({ id: "r", seq: 1, category: "review", title: "Review Sam's PR" }),
+    ];
     const host = await mountPanel();
+    await waitFor(() => text(host).includes("CI is red"), "the items");
     const toggle = host.querySelector<HTMLInputElement>('input[type="checkbox"]');
     expect(toggle?.checked).toBe(true);
     toggle?.click();
+    await waitFor(
+      () => text(host).indexOf("CI is red") < text(host).indexOf("Review Sam's PR"),
+      "newest-first order",
+    );
     expect(localStorage.getItem("yarvis.attention.groupByCategory")).toBe("0");
+
+    unmount?.();
+    const again = await mountPanel();
+    await waitFor(() => text(again).includes("CI is red"), "the items after remounting");
+    expect(again.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(false);
   });
 
   it("shows a message whole and marks it read", async () => {
@@ -188,9 +207,9 @@ describe("AttentionPanel needs-you-now stream", () => {
     ];
     const host = await mountPanel();
     await waitFor(() => text(host).includes("Staging test passed"), "the message");
-    expect(host.innerHTML).toContain("whitespace-pre-wrap");
+    expect(text(host)).toContain("All 42 checks passed.\nNothing to do.");
 
-    button(host, "Mark read")?.click();
+    button(host, "Mark read").click();
     await waitFor(() => patched.length > 0, "the read request");
     expect(patched[0]).toEqual({ path: "/api/attention/m1", body: '{"status":"read"}' });
     await waitFor(() => !text(host).includes("Staging test passed"), "the message to clear");

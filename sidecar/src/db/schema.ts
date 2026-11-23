@@ -1626,7 +1626,8 @@ export const workStreams = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     /**
      * What kind of work the stream is, which its sessions' and questions'
-     * attention items take on. Null when nobody said.
+     * attention items take on. Null when none was set; those items then use
+     * their producer's default.
      */
     category: attentionCategory("category"),
     /** The next step the assistant means to take. */

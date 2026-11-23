@@ -13,9 +13,8 @@ import { createGitHubClient, type GitHubClient } from "../github/client.ts";
 import { listStars as listPrStars } from "../github/service.ts";
 import { listIssueRepos, listStars as listIssueStars, listLinks } from "../issues/service.ts";
 import type { IssueSummary } from "../issues/types.ts";
-import { listGuides } from "../pr/guides.ts";
-import type { PrSummary } from "../pr/types.ts";
-import { parseRefKey } from "../pr/types.ts";
+import { isGuideFinished, listGuides } from "../pr/guides.ts";
+import { type PrSummary, parseRefKey } from "../pr/types.ts";
 import { listTasks } from "../tasks/service.ts";
 import type { WorkspaceSummary } from "../workspaces/service.ts";
 import { listWorkspaces } from "../workspaces/service.ts";
@@ -57,9 +56,9 @@ const issueKey = (provider: string, sourceKey: string, externalId: string) =>
 
 /**
  * Orders the sources into one flat list. Priority (highest first): starred PRs,
- * my open PRs, guided reviews in progress, in-progress issues, labeled issues, starred issues, today's open
- * tasks, active workspaces — recency preserved within each bucket by the callers'
- * ordering. Deduplicates a PR that is both mine and starred, and an issue that
+ * my open PRs, guided reviews in progress, in-progress issues, labeled issues,
+ * starred issues, today's open tasks, active workspaces — recency preserved
+ * within each bucket by the callers' ordering. Deduplicates a PR that is both mine and starred, and an issue that
  * appears in more than one issue source. Pure, so ordering is unit-testable.
  */
 export function buildWipItems(inputs: WipInputs): WipItem[] {
@@ -255,7 +254,7 @@ export async function getWipList(db: Db, config: Config): Promise<WipItem[]> {
     sources.reviews
       ? safe(
           "guided reviews",
-          async () => (await listGuides(db)).filter((g) => g.currentStep < g.steps.length - 1),
+          async () => (await listGuides(db)).filter((g) => !isGuideFinished(g)),
           [] as PrGuideRow[],
         )
       : [],

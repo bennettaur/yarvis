@@ -14,8 +14,8 @@ import { FixChecksInFlight, fixFailingChecksForPr } from "./fixChecks.ts";
 import {
   claimGuide,
   guideSessionKey,
+  resolveGuideAttention,
   resolvePrRunModel,
-  settleGuideAttention,
   writeGuide,
 } from "./guideRun.ts";
 import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
@@ -258,8 +258,8 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
     const guide = await setGuideProgress(db(), ref, step);
     if (!guide) return c.json({ error: "no guide for this pull request" }, 404);
-    // Reading the guide picks up its "ready" item.
-    await settleGuideAttention(db(), ref);
+    // Reading the guide resolves its "ready" item: the review is now work in progress.
+    await resolveGuideAttention(db(), ref);
     return c.json({ currentStep: guide.currentStep });
   });
 

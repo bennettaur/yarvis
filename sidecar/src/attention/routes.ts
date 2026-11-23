@@ -163,19 +163,22 @@ export function createAttentionIngestRoutes(config: Config): Hono {
    * Raises (or refreshes) the session's permission item to show this request.
    * A failure to store it is logged and never blocks the request itself.
    */
-  const raisePermissionItem = async (info: PermissionRequestInfo): Promise<void> => {
+  const raisePermissionItem = (info: PermissionRequestInfo): Promise<void> => {
     const summary = summarizePermission(info.toolName, info.toolInput);
-    return createAttention(db(), {
-      source: "claude-hook",
-      sessionKey: info.sessionKey,
-      workspaceId: info.workspaceId,
-      kind: "permission",
-      category: await workspaceCategory(db(), info.workspaceId),
-      title: info.workspaceName ?? "Claude session",
-      body: summary,
-      navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
-      payload: { requestId: info.id, toolName: info.toolName },
-    })
+    return workspaceCategory(db(), info.workspaceId)
+      .then((category) =>
+        createAttention(db(), {
+          source: "claude-hook",
+          sessionKey: info.sessionKey,
+          workspaceId: info.workspaceId,
+          kind: "permission",
+          category,
+          title: info.workspaceName ?? "Claude session",
+          body: summary,
+          navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
+          payload: { requestId: info.id, toolName: info.toolName },
+        }),
+      )
       .then(publish)
       .catch((e) => {
         console.error("[attention] could not raise a permission item:", e?.message ?? e);

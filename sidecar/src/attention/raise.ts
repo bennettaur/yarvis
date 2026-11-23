@@ -3,15 +3,22 @@ import type { AttentionCategory, AttentionItemRow, AttentionNavTarget } from "..
 import { publish } from "./hub.ts";
 import { type AttentionSource, clearAttentionScope, createAttention } from "./service.ts";
 
+/** What background work and the assistant may raise: something to do, or a note to read. */
+export const RAISABLE_KINDS = ["action", "message"] as const;
+
 /**
- * The one way a pass, routine, specialist or the assistant puts something in
- * the attention stream. `action` is something the user has to do; `message` is
- * a note Yarvis leaves them, which reading clears.
+ * How background work (heads-down passes, routines, specialists) and the
+ * assistant leave the user an action or a note in the attention stream.
+ * `action` is something the user has to do; `message` is a note, which reading
+ * clears.
  */
 export interface RaiseAttentionInput {
   category: AttentionCategory;
-  kind: "action" | "message";
-  /** Shown as the row's heading. Keep third-party text (PR titles, messages) in `body`. */
+  kind: (typeof RAISABLE_KINDS)[number];
+  /**
+   * Shown as the row's heading and the notification's title. Written by the
+   * app, never a model; third-party text (PR titles, messages) goes in `body`.
+   */
   title: string;
   body?: string | null;
   /** Where clicking the item takes the user. */
@@ -26,21 +33,24 @@ export interface RaiseAttentionInput {
   source?: AttentionSource;
 }
 
-const DEDUPE_PREFIX = "raise:";
-
-/** Stored as the item's session key, which is what pending items coalesce on. */
-function sessionKeyFor(dedupeKey: string): string {
-  return `${DEDUPE_PREFIX}${dedupeKey}`;
+/**
+ * Stored as the item's session key, which is what pending items coalesce on.
+ * Keyed by source too, so an agent re-raising a key can't rewrite an item the
+ * app itself raised.
+ */
+function sessionKeyFor(source: AttentionSource, dedupeKey: string): string {
+  return `raise:${source}:${dedupeKey}`;
 }
 
-/** Raises (or refreshes) an item and pushes it to open streams. */
+/** Raises (or refreshes) an item and publishes it to connected clients. */
 export async function raiseAttention(
   db: Db,
   input: RaiseAttentionInput,
 ): Promise<AttentionItemRow> {
+  const source = input.source ?? "system";
   const item = await createAttention(db, {
-    source: input.source ?? "system",
-    sessionKey: input.dedupeKey ? sessionKeyFor(input.dedupeKey) : null,
+    source,
+    sessionKey: input.dedupeKey ? sessionKeyFor(source, input.dedupeKey) : null,
     kind: input.kind,
     category: input.category,
     title: input.title,
@@ -55,7 +65,15 @@ export async function raiseAttention(
  * Resolves the pending items raised under a dedupe key, for when the thing
  * they asked about no longer needs the user (the PR merged, the review landed).
  */
-export async function resolveRaisedAttention(db: Db, dedupeKey: string): Promise<void> {
-  const rows = await clearAttentionScope(db, { sessionKey: sessionKeyFor(dedupeKey) }, "resolved");
+export async function resolveRaisedAttention(
+  db: Db,
+  dedupeKey: string,
+  source: AttentionSource = "system",
+): Promise<void> {
+  const rows = await clearAttentionScope(
+    db,
+    { sessionKey: sessionKeyFor(source, dedupeKey) },
+    "resolved",
+  );
   for (const row of rows) publish(row);
 }

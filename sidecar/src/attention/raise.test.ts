@@ -1,7 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { buildAttentionTools, newAttentionState } from "../chat/attentionTools.ts";
+import {
+  buildAttentionTools,
+  MAX_RAISES_PER_TURN,
+  newAttentionState,
+} from "../chat/attentionTools.ts";
 import type { AttentionItemRow } from "../db/schema.ts";
 import * as schema from "../db/schema.ts";
 import { askUser } from "../headsDown/attention.ts";
@@ -75,6 +79,13 @@ describe("raiseAttention", () => {
     expect(pending.map((i) => i.body)).toEqual(["green"]);
   });
 
+  it("moves a re-raised item to its new category", async () => {
+    await raiseAttention(db, { category: "build", kind: "action", title: "x", dedupeKey: "k" });
+    await raiseAttention(db, { category: "review", kind: "action", title: "x", dedupeKey: "k" });
+    const pending = await listAttention(db, { status: "pending" });
+    expect(pending.map((i) => i.category)).toEqual(["review"]);
+  });
+
   it("keeps items without a dedupe key apart", async () => {
     await raiseAttention(db, { category: "general", kind: "message", title: "one" });
     await raiseAttention(db, { category: "general", kind: "message", title: "two" });
@@ -111,7 +122,39 @@ describe("raise_attention tool", () => {
     );
     const [item] = await listAttention(db, { status: "pending" });
     expect(result).toEqual({ id: item!.id });
-    expect(item).toMatchObject({ source: "chat-agent", category: "slack", kind: "message" });
+    // The title is the app's; the model's heading leads the body.
+    expect(item).toMatchObject({
+      source: "chat-agent",
+      category: "slack",
+      kind: "message",
+      title: "Note from Yarvis",
+      body: "Reply waiting\nSam asked about the deploy",
+    });
+  });
+
+  it("stops raising after the per-turn cap", async () => {
+    const raise = tools().raise_attention;
+    const call = (n: number) =>
+      raise.execute!({ category: "general", kind: "action", title: `item ${n}` }, opts);
+    for (let n = 0; n < MAX_RAISES_PER_TURN; n++) await call(n);
+    expect(await call(99)).toHaveProperty("error");
+    expect(await listAttention(db, { status: "pending" })).toHaveLength(MAX_RAISES_PER_TURN);
+  });
+
+  it("can't rewrite an item the app raised under the same key", async () => {
+    const own = await raiseAttention(db, {
+      category: "review",
+      kind: "action",
+      title: "Review ready",
+      dedupeKey: "pr:o/r#1",
+    });
+    await tools().raise_attention.execute!(
+      { category: "review", kind: "action", title: "Something else", dedupeKey: "pr:o/r#1" },
+      opts,
+    );
+    const pending = await listAttention(db, { status: "pending" });
+    expect(pending).toHaveLength(2);
+    expect(pending.find((i) => i.id === own.id)?.title).toBe("Review ready");
   });
 
   it("refuses a category that doesn't exist and a malformed target", () => {

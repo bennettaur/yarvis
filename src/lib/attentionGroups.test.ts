@@ -183,7 +183,7 @@ describe("arrangeAttention", () => {
     sections.map((s) => [s.category, s.groups.map((g) => g.lead.id)]);
 
   it("groups by category with review first, leaving empty categories out", () => {
-    expect(ids(arrangeAttention(groups, { byCategory: true, only: null }))).toEqual([
+    expect(ids(arrangeAttention(groups, { groupByCategory: true, categoryFilter: null }))).toEqual([
       ["review", ["r"]],
       ["build", ["b"]],
       ["general", ["g"]],
@@ -191,16 +191,18 @@ describe("arrangeAttention", () => {
   });
 
   it("keeps the stream newest-first when not grouping", () => {
-    expect(ids(arrangeAttention(groups, { byCategory: false, only: null }))).toEqual([
-      [null, ["g", "r", "b"]],
-    ]);
+    expect(ids(arrangeAttention(groups, { groupByCategory: false, categoryFilter: null }))).toEqual(
+      [[null, ["g", "r", "b"]]],
+    );
   });
 
   it("filters to one category", () => {
-    expect(ids(arrangeAttention(groups, { byCategory: true, only: "build" }))).toEqual([
-      ["build", ["b"]],
-    ]);
-    expect(arrangeAttention(groups, { byCategory: false, only: "slack" })).toEqual([]);
+    expect(
+      ids(arrangeAttention(groups, { groupByCategory: true, categoryFilter: "build" })),
+    ).toEqual([["build", ["b"]]]);
+    expect(arrangeAttention(groups, { groupByCategory: false, categoryFilter: "slack" })).toEqual(
+      [],
+    );
   });
 
   it("counts groups per category, including empty ones", () => {

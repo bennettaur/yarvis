@@ -9,8 +9,8 @@ import {
 } from "../../lib/attention";
 import { type AttentionGroup, arrangeAttention, countByCategory } from "../../lib/attentionGroups";
 import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
-import { useGroupByCategory } from "../../lib/attentionView";
 import { formatRelativeTime } from "../../lib/time";
+import { useGroupByCategory } from "../../lib/useGroupByCategory";
 import type { WipItem, WipSource } from "../../lib/wip";
 import LoadingIndicator from "../LoadingIndicator";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
@@ -106,8 +106,9 @@ function AttentionGroupRow({
   const { lead, items } = group;
   const tabs = tabSummary(group.sessionKeys);
   // A note is shown whole and needs no answer, so reading it is what clears it.
+  // A note grouped with other items from the same origin is dismissed with them.
   const isMessage = lead.kind === "message" && items.length === 1;
-  const dismiss = () => {
+  const clear = () => {
     if (isMessage) {
       void markAttention(lead.id, "read");
       return;
@@ -155,7 +156,7 @@ function AttentionGroupRow({
       {isMessage ? (
         <button
           type="button"
-          onClick={dismiss}
+          onClick={clear}
           className="shrink-0 rounded px-1 text-xs text-zinc-400 hover:text-zinc-100"
         >
           Mark read
@@ -164,7 +165,7 @@ function AttentionGroupRow({
         <button
           type="button"
           aria-label={items.length > 1 ? `Dismiss ${items.length} items` : "Dismiss"}
-          onClick={dismiss}
+          onClick={clear}
           className="shrink-0 rounded px-1 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-300 group-hover:opacity-100"
         >
           ✕
@@ -239,16 +240,16 @@ function WipRow({ item, onOpen }: { item: WipItem; onOpen: (item: WipItem) => vo
  */
 function AttentionFilterBar({
   groups,
-  only,
-  onOnly,
-  byCategory,
-  onByCategory,
+  categoryFilter,
+  onCategoryFilterChange,
+  groupByCategory,
+  onGroupByCategoryChange,
 }: {
   groups: AttentionGroup[];
-  only: AttentionCategory | null;
-  onOnly: (category: AttentionCategory | null) => void;
-  byCategory: boolean;
-  onByCategory: (value: boolean) => void;
+  categoryFilter: AttentionCategory | null;
+  onCategoryFilterChange: (category: AttentionCategory | null) => void;
+  groupByCategory: boolean;
+  onGroupByCategoryChange: (value: boolean) => void;
 }) {
   const counts = countByCategory(groups);
   const chip = (active: boolean) =>
@@ -259,9 +260,9 @@ function AttentionFilterBar({
     <div className="flex flex-wrap items-center gap-1 border-b border-zinc-800 px-4 py-1.5">
       <button
         type="button"
-        aria-pressed={only === null}
-        onClick={() => onOnly(null)}
-        className={chip(only === null)}
+        aria-pressed={categoryFilter === null}
+        onClick={() => onCategoryFilterChange(null)}
+        className={chip(categoryFilter === null)}
       >
         All
       </button>
@@ -269,9 +270,9 @@ function AttentionFilterBar({
         <button
           key={category}
           type="button"
-          aria-pressed={only === category}
-          onClick={() => onOnly(only === category ? null : category)}
-          className={chip(only === category)}
+          aria-pressed={categoryFilter === category}
+          onClick={() => onCategoryFilterChange(categoryFilter === category ? null : category)}
+          className={chip(categoryFilter === category)}
         >
           {CATEGORY_LABEL[category]} {counts[category]}
         </button>
@@ -279,8 +280,8 @@ function AttentionFilterBar({
       <label className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-zinc-500">
         <input
           type="checkbox"
-          checked={byCategory}
-          onChange={(e) => onByCategory(e.target.checked)}
+          checked={groupByCategory}
+          onChange={(e) => onGroupByCategoryChange(e.target.checked)}
           className="h-3 w-3 accent-indigo-500"
         />
         Group
@@ -317,9 +318,9 @@ export default function AttentionPanel({
 }) {
   const groups = useAttentionGroups();
   const ringing = useRingingAlarms();
-  const [byCategory, setByCategory] = useGroupByCategory();
-  const [only, setOnly] = useState<AttentionCategory | null>(null);
-  const sections = arrangeAttention(groups, { byCategory, only });
+  const [groupByCategory, setGroupByCategory] = useGroupByCategory();
+  const [categoryFilter, setCategoryFilter] = useState<AttentionCategory | null>(null);
+  const sections = arrangeAttention(groups, { groupByCategory, categoryFilter });
 
   useEffect(() => {
     if (!open) return;
@@ -371,15 +372,15 @@ export default function AttentionPanel({
           <SectionHeader label="Needs you now" count={groups.length} />
           <AttentionFilterBar
             groups={groups}
-            only={only}
-            onOnly={setOnly}
-            byCategory={byCategory}
-            onByCategory={setByCategory}
+            categoryFilter={categoryFilter}
+            onCategoryFilterChange={setCategoryFilter}
+            groupByCategory={groupByCategory}
+            onGroupByCategoryChange={setGroupByCategory}
           />
           {sections.length === 0 ? (
             <p className="px-4 py-4 text-xs text-zinc-500">
-              {only
-                ? `Nothing in ${CATEGORY_LABEL[only]} needs you right now.`
+              {categoryFilter
+                ? `Nothing in ${CATEGORY_LABEL[categoryFilter]} needs you right now.`
                 : "Nothing needs you right now."}
             </p>
           ) : (

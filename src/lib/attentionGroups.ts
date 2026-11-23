@@ -99,9 +99,9 @@ export interface AttentionSection {
 }
 
 export interface AttentionView {
-  byCategory: boolean;
+  groupByCategory: boolean;
   /** Only this category's groups, or every category when null. */
-  only: AttentionCategory | null;
+  categoryFilter: AttentionCategory | null;
 }
 
 /** How many groups each category holds, for the filter's counts. */
@@ -124,8 +124,10 @@ export function arrangeAttention(
   groups: AttentionGroup[],
   view: AttentionView,
 ): AttentionSection[] {
-  const shown = view.only ? groups.filter((g) => g.lead.category === view.only) : groups;
-  if (!view.byCategory) return shown.length > 0 ? [{ category: null, groups: shown }] : [];
+  const shown = view.categoryFilter
+    ? groups.filter((g) => g.lead.category === view.categoryFilter)
+    : groups;
+  if (!view.groupByCategory) return shown.length > 0 ? [{ category: null, groups: shown }] : [];
   return ATTENTION_CATEGORIES.map((category) => ({
     category,
     groups: shown.filter((g) => g.lead.category === category),

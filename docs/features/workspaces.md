@@ -931,8 +931,8 @@ Every item has a category, so you can see what kind of work is waiting:
 
 | Category | What it holds |
 | --- | --- |
-| **Review** | Other people's pull requests: verification reports, guided reviews, review requests |
-| **Build** | Your own work: workspace sessions, your PRs, CI, deploys, merges |
+| **Review** | Other people's pull requests, such as verification reports and guided reviews |
+| **Build** | Your own work, such as workspace sessions, your PRs and merges |
 | **Slack** | Chat messages waiting for an answer |
 | **General** | Everything else, such as scheduled tasks and heads-down questions |
 
@@ -949,7 +949,10 @@ filter resets when the app reloads, so a category can't stay hidden.
 ### Messages from Yarvis
 
 Yarvis can leave you a note in the bell, for example to say a check you asked
-it to watch finished. A note shows in full in the panel and needs no answer.
+it to watch finished. A note is titled **Note from Yarvis**, and something it
+wants you to do is titled **Yarvis flagged something for you**, so neither can
+pass for an alert from the app itself; what it wrote is underneath. A note
+shows in full in the panel and needs no answer.
 **Mark read** clears it, and so does clicking it, which also opens what it
 points at, if anything.
 
