@@ -90,6 +90,7 @@ trigger are under **Settings → Assistant**.
 | Job | When | What it does |
 | --- | --- | --- |
 | GitHub review sync (`github-review-sync`) | Every hour. Needs a GitHub token. | Copies the approvals and change requests you gave on github.com into the activity log. Reviews you submitted in Yarvis are already there and are not logged twice. The first run reads the last 14 days. Covers every repo the token can see, private ones included. |
+| Revert investigation (`revert-investigation`) | Every hour. Needs a GitHub token. | Looks in your registered repos for a merged revert of a PR you wrote, or one a Yarvis workspace opened: a PR titled "Revert ..." that names the original, or a commit on the default branch saying "This reverts commit ...". Each one is handled once, and the first run looks back 3 days. It raises a [bell item](workspaces.md#revert-investigations) and tells you when a write-up is ready. |
 | Transcript digest (`cc-session-digest`) | Daily at 02:00. **Off until you turn it on.** | Reads new or grown Claude Code transcripts under `~/.claude/projects` in the directories you allow, and writes a `session-summary` memory for each. Also writes an `agent-feedback` memory when a session held instructions about how an agent should behave. |
 | Event consolidation (`consolidate-events`) | Every 4 hours | Folds activity-log events nobody has summarized yet into one `activity-summary` memory |
 | Daily rollup (`daily-rollup`) | Daily at 03:00 | Folds yesterday's activity and session summaries into a single `day-summary` |
