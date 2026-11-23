@@ -738,6 +738,10 @@ Also list issues assigned to me in the repos I work on.
   model, the step budget or an `unattended:` grant, replace the specialist
   with a file of the same name instead. A tool that needs an `unattended:`
   grant does nothing when added this way.
+- A specialist that acts unattended (`project-manager`, `merge-reviewer`)
+  can't be extended. Tools added to it would run in the same unattended run
+  as its grant, so changing one takes a full replacement, where you write the
+  grant yourself.
 - The body can be empty when the file only adds tools.
 - Only a shipped task specialist can be extended. Extending one that doesn't
   exist, one of your own, or a decision specialist is listed as a problem.

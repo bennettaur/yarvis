@@ -181,13 +181,13 @@ function routineExtras(routine: Routine, ctx: PassContext, nonce: string): strin
   const extras: string[] = [];
   const tools = ctx.routineTools?.get(routine.name) ?? [];
   if (tools.length) {
-    const lines = tools.map((t) =>
+    const toolLines = tools.map((t) =>
       t.problem
         ? `- ${t.tool}: not available (${t.problem})`
-        : `- ${t.tool}: call as ${t.ids.map(modelToolKey).join(" or ")}`,
+        : `- ${t.tool}: call as ${t.matchedIds.map(modelToolKey).join(" or ")}`,
     );
     extras.push(
-      `Tools this routine uses, mounted for this pass. Each call still follows the approval rules: an MCP tool the user hasn't allowed for heads-down mode waits for their approval.\n${lines.join("\n")}`,
+      `Tools this routine uses, mounted for this pass. Mounting allows nothing: each call goes through the same approval rules as any other, so one that needs the user's go-ahead, such as an MCP tool they haven't allowed for heads-down mode, waits for it.\n${toolLines.join("\n")}`,
     );
   }
   if (Object.keys(routine.config).length) {

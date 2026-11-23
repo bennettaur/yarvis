@@ -136,6 +136,8 @@ describe("a routine's tools and config", () => {
       "at most 20 tools",
     );
     expect(bad(`config:\n  long: ${"x".repeat(2001)}`)).toThrow("cannot be longer than 2000");
+    const keys = Array.from({ length: 21 }, (_, i) => `  k${i}: v`).join("\n");
+    expect(bad(`config:\n${keys}`)).toThrow("at most 20 keys");
   });
 });
 
@@ -145,29 +147,37 @@ describe("resolveRoutineTools", () => {
     { id: "mcp:s1:post_message", name: "post_message", policy: "search" },
     { id: "mcp:s2:post_message", name: "post_message", policy: "search" },
     { id: "mcp:s1:delete_channel", name: "delete_channel", policy: "disabled" },
-  ];
+    { id: "builtin:remember", name: "remember", policy: "always" },
+  ] as const;
 
-  it("matches a name on every server, an id on itself, and says why the rest didn't match", () => {
+  it("matches a name or an id, and says why the rest didn't match", () => {
     const resolved = resolveRoutineTools(
       [
         routine("watch", 60, {
-          tools: ["post_message", "builtin:list_events", "delete_channel", "nope"],
+          tools: ["post_message", "builtin:list_events", "delete_channel", "nope", "remember"],
         }),
         routine("plain", 60),
-        routine("again", 60, { tools: ["mcp:s1:post_message"] }),
+        routine("again", 60, { tools: ["mcp:s1:post_message", "list_events"] }),
       ],
       registry,
+      new Set(["builtin:remember"]),
     );
-    expect(resolved.ids).toEqual([
-      "mcp:s1:post_message",
-      "mcp:s2:post_message",
-      "builtin:list_events",
-    ]);
+    expect(resolved.ids).toEqual(["builtin:list_events", "mcp:s1:post_message"]);
     expect(resolved.byRoutine.get("watch")).toEqual([
-      { tool: "post_message", ids: ["mcp:s1:post_message", "mcp:s2:post_message"], problem: null },
-      { tool: "builtin:list_events", ids: ["builtin:list_events"], problem: null },
-      { tool: "delete_channel", ids: [], problem: "turned off in the Tool manager" },
-      { tool: "nope", ids: [], problem: "no tool by that name is installed" },
+      {
+        tool: "post_message",
+        matchedIds: [],
+        problem:
+          "2 tools have that name; name one by its id: mcp:s1:post_message, mcp:s2:post_message",
+      },
+      { tool: "builtin:list_events", matchedIds: ["builtin:list_events"], problem: null },
+      { tool: "delete_channel", matchedIds: [], problem: "turned off in the Tool manager" },
+      { tool: "nope", matchedIds: [], problem: "no tool by that name is installed" },
+      { tool: "remember", matchedIds: [], problem: "not available in heads-down mode" },
+    ]);
+    expect(resolved.byRoutine.get("again")?.map((m) => m.matchedIds)).toEqual([
+      ["mcp:s1:post_message"],
+      ["builtin:list_events"],
     ]);
     expect(resolved.byRoutine.has("plain")).toBe(false);
   });

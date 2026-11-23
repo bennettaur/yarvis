@@ -143,10 +143,13 @@ and leave a three-line summary in your notes for me to paste.
   default.
 - `enabled`: `false` to turn it off.
 - `tools`: tools the routine uses, as a list. Each is a tool's name as the
-  Tool manager shows it, or its id there, such as `builtin:list_events`. A
-  name matches that tool on every MCP server that has one. Up to 20.
+  Tool manager shows it, or its id there, such as `builtin:list_events`. When
+  two tools share a name, say on two MCP servers, use the id: the name alone
+  gets neither. Up to 20.
 - `config`: settings the body refers to, such as channels or your handle.
-  Each value is text or a list of text. Up to 20 keys.
+  Each value is text or a list of text; numbers and true/false are read as
+  text. A nested map is refused. Up to 20 keys and about 2000 characters in
+  all.
 
 ```markdown
 ---
@@ -165,8 +168,9 @@ that asks the handle for work becomes a ticket.
 ```
 
 When a pass is given a routine, the tools it names are ready for that pass,
-and the pass is told which ones it couldn't find or which you turned off in
-the Tool manager. `tools` doesn't grant anything. Each call follows the same
+and the pass is told which ones it couldn't use: not installed, turned off
+in the Tool manager, a name two tools share, or a tool heads-down mode never
+uses. `tools` doesn't grant anything. Each call follows the same
 rules as any other call in a pass: an MCP tool you haven't allowed for
 heads-down mode still waits for your approval, and a built-in action that
 asks still asks. A pass could reach the same tools by searching for them;
@@ -197,7 +201,8 @@ To share a routine, send someone the file. **Read a routine before you add
 it.** Its body reaches every pass as your own words, with no one watching, so
 it can do anything a pass may do without asking you: file tickets, set
 alarms, steer a workspace on a stream. Treat a file from someone else like a
-script they sent you.
+script they sent you. That includes its `tools`, which a pass will have
+ready, and its `config`.
 
 ## What it does without asking
 

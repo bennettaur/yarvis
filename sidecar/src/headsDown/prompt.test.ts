@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { HeadsDownQuestion, HeadsDownRun } from "../db/schema.ts";
+import { modelToolKey } from "../mcp/chatTools.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
 
 const run: HeadsDownRun = {
@@ -141,15 +142,22 @@ describe("buildPassPrompt", () => {
         [
           "slack-watch",
           [
-            { tool: "list_events", ids: ["builtin:list_events"], problem: null },
-            { tool: "nope", ids: [], problem: "no tool by that name is installed" },
+            { tool: "list_events", matchedIds: ["builtin:list_events"], problem: null },
+            { tool: "nope", matchedIds: [], problem: "no tool by that name is installed" },
+            {
+              tool: "post_message",
+              matchedIds: ["mcp:s1:post_message"],
+              problem: null,
+            },
           ],
         ],
       ]),
     });
     expect(prompt).toContain(
-      "Read the channels in my settings.\n\nTools this routine uses, mounted for this pass. Each call still follows the approval rules: an MCP tool the user hasn't allowed for heads-down mode waits for their approval.\n- list_events: call as list_events\n- nope: not available (no tool by that name is installed)",
+      "Read the channels in my settings.\n\nTools this routine uses, mounted for this pass. Mounting allows nothing: each call goes through the same approval rules as any other, so one that needs the user's go-ahead, such as an MCP tool they haven't allowed for heads-down mode, waits for it.\n- list_events: call as list_events\n- nope: not available (no tool by that name is installed)",
     );
+    // An MCP tool is called by a key the model can't guess.
+    expect(prompt).toContain(`- post_message: call as ${modelToolKey("mcp:s1:post_message")}`);
     const nonce = /<recalled-content-([0-9a-f]+)>\n\{\n {2}"channels"/.exec(prompt)?.[1];
     expect(nonce).toBeDefined();
     expect(prompt).toContain(

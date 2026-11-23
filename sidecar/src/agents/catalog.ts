@@ -173,8 +173,9 @@ export function parseSpecialist(
 ): SpecialistDefinition {
   const { data, body } = parseDocument(path, content);
   assertKnownKeys(path, data, KNOWN_KEYS);
+  // A user's extending file is routed to parseExtension, so only a shipped file gets here with it.
   if (data.extends !== undefined) {
-    throw new FrontmatterError(path, "'extends' is only for a file in your agents folder", 1);
+    throw new FrontmatterError(path, "a shipped definition can't use 'extends'", 1);
   }
 
   const name = asRequiredString(path, data, "name");
@@ -346,8 +347,8 @@ export function parseExtension(
 
 /**
  * The built-in with the extension's tools added and its body appended. Only a
- * built-in can be extended, so there is never a chain to follow, and a task
- * specialist only: a decision specialist has no tools and a prompt sized for a
+ * built-in can be extended, so there is never a chain to follow. It must be a
+ * task specialist: a decision specialist has no tools and a prompt sized for a
  * small decision model.
  */
 export function applyExtension(
@@ -361,10 +362,20 @@ export function applyExtension(
       1,
     );
   }
+  // Tools added beside a grant that writes outward with nobody approving each
+  // call would run in that same unattended run. Replacing the file makes the
+  // user restate the grant next to the tools, so that is the way to change one.
+  if (base.unattended.length) {
+    throw new FrontmatterError(
+      extension.path,
+      `'${base.name}' acts unattended (${base.unattended.join(", ")}), so it can't be extended; replace it with a file of the same name`,
+      1,
+    );
+  }
   const addedTools = extension.tools.filter((tool) => !base.tools.includes(tool));
   return {
     ...base,
-    prompt: extension.prompt ? `${base.prompt}\n\n${extension.prompt}` : base.prompt,
+    prompt: extension.prompt.trim() ? `${base.prompt}\n\n${extension.prompt}` : base.prompt,
     tools: [...base.tools, ...addedTools],
     enabled: extension.enabled ?? base.enabled,
     source: "user",
@@ -408,16 +419,17 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
       problems.push({ path: file.path, message: file.error });
       continue;
     }
+    let extension: SpecialistExtension | null = null;
     try {
       if (isExtension(file.path, file.content)) {
-        extensions.push(parseExtension(file.path, file.content, knownTools));
-        continue;
+        extension = parseExtension(file.path, file.content, knownTools);
       }
     } catch (e) {
       problems.push({ path: file.path, message: e instanceof Error ? e.message : String(e) });
       continue;
     }
-    add(file.path, file.content, "user");
+    if (extension) extensions.push(extension);
+    else add(file.path, file.content, "user");
   }
 
   // After every replacement has loaded, so an extension can tell whether its
@@ -425,19 +437,23 @@ export async function loadCatalog(): Promise<SpecialistCatalog> {
   for (const extension of extensions) {
     try {
       const base = byName.get(extension.base);
-      if (!builtinNames.has(extension.base) || !base) {
-        throw new Error(
-          `${extension.path}: extends '${extension.base}', which isn't a built-in specialist`,
+      // Not shipped at all, which also covers extending a user's own specialist.
+      if (!base || !builtinNames.has(extension.base)) {
+        throw new FrontmatterError(
+          extension.path,
+          `extends '${extension.base}', which isn't a built-in specialist`,
         );
       }
       if (base.extends) {
-        throw new Error(
-          `${extension.path}: another file already extends '${extension.base}' (${base.path})`,
+        throw new FrontmatterError(
+          extension.path,
+          `another file already extends '${extension.base}' (${base.path})`,
         );
       }
       if (base.source !== "builtin") {
-        throw new Error(
-          `${extension.path}: extends '${extension.base}', but ${base.path} replaces it. Extend the built-in or replace it, not both`,
+        throw new FrontmatterError(
+          extension.path,
+          `extends '${extension.base}', but ${base.path} replaces it. Extend the built-in or replace it, not both`,
         );
       }
       byName.set(base.name, applyExtension(base, extension));

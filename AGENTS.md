@@ -962,7 +962,8 @@ report there and leaves the fixes to the author.
     specialist and appends its body to the prompt (`applyExtension`), keeping
     the rest. It may set only `extends`, `name`, `tools` and `enabled`, so an
     `unattended` grant or a model change still takes a full replacement. Only
-    a shipped definition can be extended, which rules out chains.
+    a shipped definition can be extended, which rules out chains, and not one
+    with `unattended` grants, whose added tools would run beside the grant.
   - Definitions come from `~/.yarvis/agents` only — never a workspace or a
     checked-out repo. A definition is a system prompt plus a tool list, so a repo
     that could contribute one could hand the agent instructions and the means to

@@ -9,6 +9,7 @@ import {
   parseDocument,
   readMarkdownDir,
 } from "../agents/frontmatter.ts";
+import type { RegistryTool } from "../agentTools/store.ts";
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
 
@@ -190,10 +191,27 @@ function parseTools(path: string, data: Record<string, unknown>): string[] {
 }
 
 /** Text, numbers and true/false all become text: `channel: 123` is a name, not arithmetic. */
-function configScalar(value: unknown): string | null {
+function scalarToText(value: unknown): string | null {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return null;
+}
+
+function parseConfigValue(path: string, key: string, raw: unknown): string | string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((item, i) => {
+      const text = scalarToText(item);
+      if (text === null) {
+        throw new FrontmatterError(path, `'config.${key}' item ${i + 1} must be text`, 1);
+      }
+      return text;
+    });
+  }
+  const text = scalarToText(raw);
+  if (text === null) {
+    throw new FrontmatterError(path, `'config.${key}' must be text or a list of text`, 1);
+  }
+  return text;
 }
 
 /**
@@ -201,7 +219,7 @@ function configScalar(value: unknown): string | null {
  * channels to watch. A nested map is refused: the pass reads these as values,
  * and a structure deep enough to need nesting belongs in the body.
  */
-export function parseConfig(path: string, value: unknown): RoutineConfig {
+function parseConfig(path: string, value: unknown): RoutineConfig {
   if (value === undefined || value === null) return {};
   if (typeof value !== "object" || Array.isArray(value)) {
     throw new FrontmatterError(path, "'config' must be a map of names to values", 1);
@@ -219,21 +237,7 @@ export function parseConfig(path: string, value: unknown): RoutineConfig {
         1,
       );
     }
-    if (Array.isArray(raw)) {
-      config[key] = raw.map((item, i) => {
-        const text = configScalar(item);
-        if (text === null) {
-          throw new FrontmatterError(path, `'config.${key}' item ${i + 1} must be text`, 1);
-        }
-        return text;
-      });
-      continue;
-    }
-    const text = configScalar(raw);
-    if (text === null) {
-      throw new FrontmatterError(path, `'config.${key}' must be text or a list of text`, 1);
-    }
-    config[key] = text;
+    config[key] = parseConfigValue(path, key, raw);
   }
   if (JSON.stringify(config).length > MAX_CONFIG_CHARS) {
     throw new FrontmatterError(
@@ -342,43 +346,60 @@ export function dueRoutines(input: DueInput): Routine[] {
 }
 
 /** A registry row, as much of it as matching a routine's tools needs. */
-export interface ToolRow {
-  id: string;
-  name: string;
-  policy: string;
+export type ToolRow = Pick<RegistryTool, "id" | "name" | "policy">;
+
+/** One entry of a routine's `tools:`, and the registry tools it matched. */
+export interface RoutineToolMatch {
+  tool: string;
+  matchedIds: string[];
+  /** Why nothing matched, or null when something did. */
+  problem: string | null;
 }
 
 export interface RoutineTools {
   /** Registry ids to mount for the pass, across every routine given to it. */
   ids: string[];
-  /** Per routine, what each tool it names matched: the ids, or why none. */
-  byRoutine: Map<string, { tool: string; ids: string[]; problem: string | null }[]>;
+  byRoutine: Map<string, RoutineToolMatch[]>;
+}
+
+function toolProblem(
+  found: readonly ToolRow[],
+  usable: readonly ToolRow[],
+  refused: ReadonlySet<string>,
+): string | null {
+  if (!found.length) return "no tool by that name is installed";
+  if (!usable.length) return "turned off in the Tool manager";
+  if (usable.length > 1) {
+    return `${usable.length} tools have that name; name one by its id: ${usable.map((row) => row.id).join(", ")}`;
+  }
+  if (usable[0] && refused.has(usable[0].id)) return "not available in heads-down mode";
+  return null;
 }
 
 /**
  * Matches each routine's `tools:` against the tool registry. A registry id
- * matches itself; a bare name matches every tool of that name, since two MCP
- * servers can offer the same one and the file can't know which server id a
- * machine gave it. A disabled tool isn't mounted, the same rule `mount_tools`
- * follows, so a routine gets no tool a pass couldn't mount on its own.
+ * matches itself; a bare name matches the one tool of that name. A name two
+ * tools share (two MCP servers, or a server shadowing a built-in) mounts
+ * neither, since an unattended pass would have to guess which one the file
+ * meant. A disabled tool isn't mounted, the same rule `mount_tools` follows,
+ * so a routine gets no tool a pass couldn't mount on its own. `refused` holds
+ * the registry ids a pass may never call, reported rather than mounted.
  */
 export function resolveRoutineTools(
   routines: readonly Routine[],
   registry: readonly ToolRow[],
+  refused: ReadonlySet<string> = new Set(),
 ): RoutineTools {
   const ids = new Set<string>();
   const byRoutine: RoutineTools["byRoutine"] = new Map();
   for (const routine of routines) {
-    const matches = routine.tools.map((tool) => {
+    const matches = routine.tools.map((tool): RoutineToolMatch => {
       const found = registry.filter((row) => row.id === tool || row.name === tool);
       const usable = found.filter((row) => row.policy !== "disabled");
-      for (const row of usable) ids.add(row.id);
-      const problem = !found.length
-        ? "no tool by that name is installed"
-        : !usable.length
-          ? "turned off in the Tool manager"
-          : null;
-      return { tool, ids: usable.map((row) => row.id), problem };
+      const problem = toolProblem(found, usable, refused);
+      const matchedIds = problem ? [] : usable.map((row) => row.id);
+      for (const id of matchedIds) ids.add(id);
+      return { tool, matchedIds, problem };
     });
     if (matches.length) byRoutine.set(routine.name, matches);
   }

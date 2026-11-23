@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { renderToHtml, textOf } from "../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const CATALOG = {
@@ -140,6 +140,24 @@ describe("SpecialistSection", () => {
   it("marks a file that extends a built-in, rather than calling it the user's own", async () => {
     const text = textOf(await renderToHtml(createElement(SpecialistSection)));
     expect(text).toContain("work-scoutextends built-in work-scout");
+  });
+
+  it("shows the tools an extending file adds, under the prompt toggle", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(SpecialistSection));
+    try {
+      await waitFor(() => host.textContent?.includes("work-scout") ?? false, "the list");
+      expect(host.textContent).not.toContain("Your file adds");
+      const scout = [...host.querySelectorAll("li")].find((li) =>
+        li.textContent?.startsWith("work-scout"),
+      );
+      scout?.querySelector("button")?.click();
+      await waitFor(
+        () => host.textContent?.includes("Your file adds: recall") ?? false,
+        "added tools",
+      );
+    } finally {
+      unmount();
+    }
   });
 
   it("surfaces a file that failed to parse rather than hiding it", async () => {

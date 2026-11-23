@@ -22,7 +22,7 @@ import { publish } from "./hub.ts";
 import { type MergeFeedbackLoader, mergeFeedbackLoader } from "./mergeFeedback.ts";
 import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
-import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
+import { PASS_CONFIRMED_TOOLS, PASS_REFUSED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
 import { dueRoutines, resolveRoutineTools, routineCatalog } from "./routines.ts";
 import {
@@ -224,9 +224,12 @@ export async function runPass(
     withinWorkingHours,
     limit: headsDownConfig.maxRoutinesPerPass,
   });
+  // Most passes have no routine naming a tool, and skip the registry read.
+  const registry = routines.some((r) => r.tools.length) ? await listRegistryTools(db) : [];
   const routineTools = resolveRoutineTools(
     routines,
-    routines.some((r) => r.tools.length) ? await listRegistryTools(db) : [],
+    registry,
+    new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
   );
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
