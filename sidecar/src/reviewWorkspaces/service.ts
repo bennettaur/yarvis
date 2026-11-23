@@ -398,13 +398,16 @@ async function requireWorkspace(db: Db, id: string): Promise<ReviewWorkspaceDeta
 export async function createReviewWorkspace(
   db: Db,
   config: Config,
-  input: { name: string; refs?: PrRef[] },
+  input: { name: string; refs?: PrRef[]; openedBy?: ReviewWorkspace["openedBy"] },
   deps: ReviewDeps,
 ): Promise<ReviewWorkspaceDetail> {
   // Path checks first, so a bad ref refuses the whole request instead of
   // leaving a workspace holding half of what was asked for.
   for (const ref of input.refs ?? []) reviewClonePath(config, ref);
-  const [ws] = await db.insert(reviewWorkspaces).values({ name: input.name }).returning();
+  const [ws] = await db
+    .insert(reviewWorkspaces)
+    .values({ name: input.name, openedBy: input.openedBy ?? "user" })
+    .returning();
   if (!ws) throw new Error("failed to create review workspace");
   const seen = new Set<string>();
   for (const ref of input.refs ?? []) {

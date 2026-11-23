@@ -93,7 +93,7 @@ again after an hour, or sooner if the routine runs more often than that. When
 a routine asks you something, your answer is acted on as soon as it arrives,
 not on the routine's next run.
 
-Yarvis ships with two:
+Yarvis ships with three:
 
 - **meeting-alarms**, every 3 hours: if Google Calendar is connected, it reads
   your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
@@ -110,6 +110,15 @@ Yarvis ships with two:
   using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
   record what every attendee said, and filing a ticket doesn't wait for your
   approval, so turn it on only if you're happy for tickets to come from them.
+- **review-prep**, off by default, every 30 minutes in working hours: asks the
+  `review-scout` [specialist](assistant.md#specialists) which pull requests
+  are waiting on your review, and [prepares each one](review-workspaces.md#review-prep):
+  a review workspace, a verification report, and then an item in the
+  attention stream. It prepares at most five per run and never comments on,
+  approves or requests anything on a PR. Running the scout and preparing a
+  review don't wait for your approval in a pass. Preparing spends a
+  verification report on each PR, within your report budget; anything bigger,
+  or in a repo you haven't registered, waits for you.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a
@@ -184,7 +193,36 @@ key you leave out takes its default above, not the shipped routine's value.
 A file whose `name` matches a shipped routine replaces it whole, so it needs
 every required field too. To turn meeting-alarms off, write a file with
 `name: meeting-alarms`, a description, an `every`, a one-line body and
-`enabled: false`. When two of your own files use the same name, the first by
+`enabled: false`. To turn review-prep on, copy the shipped file (below) to
+`~/.yarvis/routines/review-prep.md` and change `enabled: false` to `true`. To
+have the scout also watch repos, people or teams, add them under `config`:
+
+```markdown
+---
+name: review-prep
+description: Finds pull requests waiting on my review and gets each one ready.
+every: 30m
+workingHours: true
+tools: [delegate, prep_pr_review]
+config:
+  repos: ["acme/api", "acme/web"]
+  authors: ["octocat"]
+  teams: ["acme/backend"]
+---
+
+Ask the review-scout specialist which pull requests to get ready now: call
+delegate with specialist "review-scout" and a task saying so. If this
+routine's config lists repos, authors or teams, put them in the task as the
+repos, authors and teams to watch.
+
+For each PR the scout picks, call prep_pr_review with its owner, repo and
+number. Prepare at most five PRs per run. Don't comment on, approve or
+request changes on any PR, and don't message anyone about them. If the scout
+found nothing to prepare, or GitHub isn't signed in, count the routine as
+done.
+```
+
+When two of your own files use the same name, the first by
 filename loads and the other is listed as a problem. Setting **Routines per
 pass** to 0 turns them all off.
 Passes keep using the files as they were until you press **Reload files** (or

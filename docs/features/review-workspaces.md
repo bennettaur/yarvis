@@ -823,6 +823,53 @@ mutation testing stays off.
 checkouts and moves it to **Show archived**. The clone each repo was fetched
 into is kept, so the next review of that repo starts faster.
 
+A workspace [review prep](#review-prep) opened is the one exception: it
+archives itself, without asking, once you're done with it.
+
+### Review prep
+
+Review prep gets a pull request ready before it reaches you. Given a GitHub
+PR, it:
+
+1. Opens a review workspace for it. A PR already in a review workspace stays
+   there, and no second one is opened. A layer of a stack goes into the
+   workspace review prep already opened for another layer of that stack.
+2. Runs the verification report's default checks (everything but the flow
+   diagram), at most two PRs at a time; the rest wait their turn. The number
+   is `maxConcurrentVerifications` in the `reviewPrep` section of
+   `~/.yarvis/settings.json` (see [Configuration](../configuration.md)).
+3. When the checks end, adds a **Ready for review** item to the attention
+   stream, under Review. It gives a verdict, the files to read first and an
+   estimated review time, and opens the PR's verification checklist. The
+   verdict comes from the checks alone: **Changes likely needed**, **Review
+   deeper first** or **The checks found no problems**, with the reasons. CI
+   and bot comments aren't part of it; the Decision panel adds them when you
+   open the PR. The time assumes about 300 changed lines an hour, plus a
+   minute a file.
+
+If a check fails or the checkout doesn't finish, the item still comes, as
+**Review prep failed**, with the reason. A PR that would need your go-ahead
+for a report (a large PR, or one over your report budget) is checked out but
+not verified, and the item says **Review prep needs your go-ahead**; run the
+checks from the workspace. A PR in a repo you haven't registered gets no
+workspace at all. Review prep never runs the repo's setup script, since that
+runs the PR's code: the item says so when there is one, and you run it from
+the workspace as usual. It posts nothing to the PR.
+
+The [review-prep routine](heads-down.md#routines) runs it for the PRs the
+`review-scout` specialist picks, and the assistant runs it when you ask it to
+get a PR ready.
+
+**Archiving.** A workspace review prep opened archives itself once every PR
+in it is approved by you (your latest review on GitHub is an approval),
+merged or closed. A background job checks every 15 minutes, and leaves alone
+a workspace you opened in the last 15 minutes or that still has checks
+running. If an Ask Claude session was ever started in it, or a checkout has
+uncommitted changes, it doesn't archive it: it adds a **Review workspace
+ready to archive** item instead, and you archive it yourself. Workspaces you
+opened, and ones review prep only reused, are never archived this way. Once
+the workspace is archived, by the job or by you, the PR's items are resolved.
+
 ## Reference
 
 ### Keyboard shortcuts

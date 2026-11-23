@@ -654,6 +654,7 @@ The shipped specialists:
 | --- | --- | --- |
 | `planner` | Three suggestions for what to work on, each with why now and a first step. Prefers finishing over starting, and includes a review when you've done few. | You, via chat |
 | `work-scout` | A short ranked list of everything outstanding, with one next action each. Reports only. | You, via chat |
+| `review-scout` | Finds pull requests worth your review now: review requests, plus PRs in repos, by people or for teams you name. Skips drafts, PRs with enough approvals and ones already in a review workspace, and says why for each. Reports only; never comments or approves. Extend it to change those rules. | You, via chat, and the [review-prep routine](heads-down.md#routines) |
 | `project-manager` | Reconciles a project's tracked tickets against JIRA. Files new tickets only when asked. | You, via chat |
 | `activity-consolidator` | Summarizes a window of events into prose. | The background jobs |
 | `session-summarizer` | Summarizes one Claude Code transcript into work, decisions and feedback. Has no tools, on purpose. | The transcript digest |

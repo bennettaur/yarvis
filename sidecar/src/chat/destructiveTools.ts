@@ -109,6 +109,10 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // the PR's code to disk.
   "start_pr_guided_review",
   "start_pr_verification_report",
+  // Opens a review workspace, which clones the PR's code, and spends a
+  // verification report on it. A heads-down pass runs it without asking
+  // (`decideCall`), since it only reaches registered repos within budget.
+  "prep_pr_review",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */

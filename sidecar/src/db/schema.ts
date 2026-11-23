@@ -2203,6 +2203,11 @@ export const reviewWorkspaces = pgTable("review_workspaces", {
   lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
   /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
   askClaudeRepoConfig: boolean("ask_claude_repo_config").notNull().default(false),
+  /**
+   * Who opened it: the user, or review prep (`reviewPrep/`). Only a workspace
+   * review prep opened is archived without asking once its PRs are done.
+   */
+  openedBy: text("opened_by").$type<"user" | "review-prep">().notNull().default("user"),
 });
 
 /**
@@ -2266,6 +2271,57 @@ export const reviewWorkspacePrs = pgTable(
 
 export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
+
+export const REVIEW_PREP_STATES = [
+  "queued",
+  "verifying",
+  "ready",
+  "failed",
+  "needs-go-ahead",
+  "done",
+] as const;
+export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
+
+export const REVIEW_PREP_VERDICTS = ["changes-needed", "review-deeper", "no-problems"] as const;
+export type ReviewPrepVerdict = (typeof REVIEW_PREP_VERDICTS)[number];
+
+/**
+ * A pull request review prep got ready for the user: the review workspace it
+ * went into, how its verification ended, and the attention item it raised.
+ * One row per PR; preparing the same PR again reuses it. `done` means the
+ * workspace was archived and the attention item resolved.
+ */
+export const reviewPreps = pgTable(
+  "review_preps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `refKey` of `ref`, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<PrRef>().notNull(),
+    workspaceId: uuid("workspace_id").references(() => reviewWorkspaces.id, {
+      onDelete: "set null",
+    }),
+    prId: uuid("pr_id").references(() => reviewWorkspacePrs.id, { onDelete: "set null" }),
+    state: text("state").$type<ReviewPrepState>().notNull().default("queued"),
+    /** The head commit verification last ran against. */
+    headSha: text("head_sha"),
+    verdict: text("verdict").$type<ReviewPrepVerdict>(),
+    /** Why it failed or waits for the user, in Yarvis's words. */
+    note: text("note"),
+    /** The attention item's dedupe key, raised with source `system`. */
+    attentionKey: text("attention_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When the attention item was raised, null before. */
+    raisedAt: timestamp("raised_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("review_preps_ref_key_idx").on(t.refKey),
+    index("review_preps_workspace_idx").on(t.workspaceId),
+  ],
+);
+
+export type ReviewPrepRow = typeof reviewPreps.$inferSelect;
 
 /**
  * A mutation-testing pass over one review PR: a planning run picks mutants, the

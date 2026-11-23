@@ -1,4 +1,5 @@
 import type { Db } from "../db/client.ts";
+import { reviewPrepJob } from "../reviewPrep/archive.ts";
 import { scheduledTasksJob } from "../scheduledTasks/job.ts";
 import {
   getAgentJob,
@@ -19,7 +20,13 @@ import type { JobDefinition } from "./scheduler.ts";
  * in the log before consolidation reads it.
  */
 export function allJobs(): JobDefinition[] {
-  return [githubReviewSyncJob, ccSessionDigestJob, ...consolidationJobs, scheduledTasksJob()];
+  return [
+    githubReviewSyncJob,
+    ccSessionDigestJob,
+    ...consolidationJobs,
+    scheduledTasksJob(),
+    reviewPrepJob,
+  ];
 }
 
 export function findJob(name: string): JobDefinition | undefined {

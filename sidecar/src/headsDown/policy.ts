@@ -89,6 +89,19 @@ export const PASS_CONFIRMED_TOOLS: ReadonlySet<string> = new Set([
  */
 const FILING_TOOLS: ReadonlySet<string> = new Set(["jira_create_issue"]);
 
+/**
+ * Finding and preparing reviews, which the review-prep routine does on every
+ * run. Running the review-scout specialist reads only; the user's own file
+ * can replace it, which is theirs to decide. Preparing a review clones and
+ * verifies a PR without running its code, and only in a repo the user
+ * registered and within their verification budget: anything past that waits
+ * for them in the review workspace.
+ */
+function isReviewPrepCall(tool: string, args: unknown): boolean {
+  if (tool === "prep_pr_review") return true;
+  return tool === "delegate" && stringArg(args, "specialist") === "review-scout";
+}
+
 /** Tools that act on one workspace's session. Fine on a workspace the loop is pushing. */
 const WORKSPACE_TOOLS: ReadonlySet<string> = new Set([
   "send_workspace_instruction",
@@ -228,6 +241,7 @@ export async function decideCall(
   // nothing more runs, whatever the pass is still doing. "stopped" covers all three.
   if (!(await mayRunPasses(db, run.id))) return "stopped";
   if (FILING_TOOLS.has(tool)) return "run";
+  if (isReviewPrepCall(tool, args)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
   const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
   if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {

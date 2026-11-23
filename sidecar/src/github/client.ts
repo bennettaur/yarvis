@@ -674,6 +674,26 @@ query($q:String!,$viewer:String!,$limit:Int!){
   }
 }`;
 
+const REVIEW_CANDIDATE_SEARCH_QUERY = `
+query($q:String!,$viewer:String!,$limit:Int!){
+  search(type:ISSUE, query:$q, first:$limit){
+    nodes{ ... on PullRequest {
+      ${PR_INVOLVEMENT_FIELDS}
+      additions deletions changedFiles reviewDecision
+      latestOpinionatedReviews(first:50){ nodes{ state } }
+    } }
+  }
+}`;
+
+/** A PR someone might want the viewer to review, with what deciding that needs. */
+export interface ReviewCandidate extends PrInvolvement {
+  approvals: number;
+  changesRequested: number;
+  reviewDecision: ReviewDecision | null;
+  changedLines: number;
+  changedFiles: number;
+}
+
 /**
  * Shapes a GraphQL PullRequest node into a PrInvolvement. GraphQL's
  * `PullRequestState` splits closed into CLOSED/MERGED where the REST search only
@@ -1514,6 +1534,34 @@ export class GitHubClient {
     // The ISSUE search type returns issues too; those match no inline fragment
     // and come back as empty objects.
     return (data.search?.nodes ?? []).filter((n) => n?.number).map(toPrInvolvement);
+  }
+
+  /** Search for PRs to review, with each one's size and the reviews standing on it. */
+  async searchReviewCandidates(
+    query: string,
+    viewerLogin: string,
+    limit = 30,
+  ): Promise<ReviewCandidate[]> {
+    const data = await this.graphql<{ search?: { nodes?: any[] } }>(REVIEW_CANDIDATE_SEARCH_QUERY, {
+      q: query,
+      viewer: viewerLogin,
+      limit,
+    });
+    return (data.search?.nodes ?? [])
+      .filter((n) => n?.number)
+      .map((node) => {
+        const states: string[] = (node.latestOpinionatedReviews?.nodes ?? []).map((r: any) =>
+          String(r?.state ?? "").toUpperCase(),
+        );
+        return {
+          ...toPrInvolvement(node),
+          approvals: states.filter((st) => st === "APPROVED").length,
+          changesRequested: states.filter((st) => st === "CHANGES_REQUESTED").length,
+          reviewDecision: toReviewDecision(node.reviewDecision),
+          changedLines: (Number(node.additions) || 0) + (Number(node.deletions) || 0),
+          changedFiles: Number(node.changedFiles) || 0,
+        };
+      });
   }
 
   /**

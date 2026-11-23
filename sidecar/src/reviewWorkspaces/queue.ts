@@ -177,25 +177,58 @@ async function runQueue(
   );
 }
 
-type Outcome = {
+export type VerifyOutcome = {
   state: Exclude<QueueItemState, "waiting" | "running">;
   note: string | null;
+  /** Why it needs the user's go-ahead, when it does. */
+  confirmReason?: ConfirmReason;
 };
+type Outcome = VerifyOutcome;
 
 /** Starts one PR's checks, waiting for its checkout first if it needs one, and waits for them to end. */
-async function verifyOne(
+function verifyOne(
   db: Db,
   config: Config,
   ref: PrRef,
   queue: VerificationQueue,
   deps: KickoffDeps,
 ): Promise<Outcome> {
+  return verifyAndWait(db, config, ref, deps, {
+    sections: queue.sections,
+    override: queue.override,
+    isCancelled: () => queue.cancelled,
+    onRuns: (runIds) => {
+      queue.currentRunIds = runIds;
+    },
+  });
+}
+
+export interface VerifyAndWaitOptions {
+  sections: readonly ReportSection[];
+  override?: RunChoice;
+  isCancelled?: () => boolean;
+  /** Called with the runs it waits on, so the caller can cancel them. */
+  onRuns?: (runIds: string[]) => void;
+}
+
+/**
+ * Starts a PR's checks quietly (no bell of their own), waiting for its
+ * checkout first if it needs one, and resolves once they have ended. A PR that
+ * needs the user's go-ahead isn't started.
+ */
+export async function verifyAndWait(
+  db: Db,
+  config: Config,
+  ref: PrRef,
+  deps: KickoffDeps,
+  { sections, override = {}, isCancelled = () => false, onRuns }: VerifyAndWaitOptions,
+): Promise<VerifyOutcome> {
   const pollMs = deps.pollMs ?? POLL_MS;
   const deadline = Date.now() + (deps.waitMs ?? CHECKOUT_WAIT_MS);
-  const options = { sections: queue.sections, override: queue.override, quiet: true };
+  const options = { sections, override, quiet: true };
   let result = await kickOffVerification(db, config, ref, options, deps);
   while (result.status === "waiting-for-checkout") {
-    if (queue.cancelled) return { state: "cancelled", note: null };
+    if (isCancelled()) return { state: "cancelled", note: null };
     if (Date.now() > deadline) return { state: "failed", note: "Its checkout didn't finish." };
     await Bun.sleep(pollMs);
     const pr = await getReviewPr(db, result.workspaceId, result.prId);
@@ -209,15 +242,19 @@ async function verifyOne(
   }
   switch (result.status) {
     case "needs-confirmation":
-      return { state: "needs-confirmation", note: CONFIRM_NOTE[result.reason] };
+      return {
+        state: "needs-confirmation",
+        note: CONFIRM_NOTE[result.reason],
+        confirmReason: result.reason,
+      };
     case "error":
       return { state: "failed", note: result.error };
     case "exists":
       return { state: "done", note: "Already checked at this commit." };
     default: {
-      queue.currentRunIds = result.runIds;
+      onRuns?.(result.runIds);
       const statuses = await Promise.all(result.runIds.map((id) => runEnd(db, id, deps)));
-      if (queue.cancelled) return { state: "cancelled", note: null };
+      if (isCancelled()) return { state: "cancelled", note: null };
       // A section whose run never started didn't check anything either.
       const total = statuses.length + result.sections.failed.length;
       const failed =

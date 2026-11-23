@@ -200,6 +200,25 @@ describe("what a pass may do", () => {
     expect(await decideCall(db, run, "jira_create_issue", { summary: "x" })).toBe("run");
   });
 
+  it("runs the review scout and prepares reviews without asking, and asks before any other delegation", async () => {
+    const run = await startRun(db, null);
+    expect(await decideCall(db, run, "prep_pr_review", { owner: "o", repo: "r", number: 1 })).toBe(
+      "run",
+    );
+    const task = { task: "find reviews" };
+    expect(await decideCall(db, run, "delegate", { ...task, specialist: "review-scout" })).toBe(
+      "run",
+    );
+    expect(await decideCall(db, run, "delegate", { ...task, specialist: "project-manager" })).toBe(
+      "ask",
+    );
+    expect(await decideCall(db, run, "delegate", task)).toBe("ask");
+    await stopRun(db);
+    expect(await decideCall(db, run, "prep_pr_review", { owner: "o", repo: "r", number: 1 })).toBe(
+      "stopped",
+    );
+  });
+
   it("starts work on a ticket the user put on a stream, and asks about any other", async () => {
     const run = await startRun(db, null);
     const args = { key: "BILL-12", repoIds: [] };

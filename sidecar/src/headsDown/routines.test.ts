@@ -202,6 +202,7 @@ describe("loadRoutines", () => {
     expect(routines.map((r) => [r.name, r.enabled])).toEqual([
       ["meeting-alarms", true],
       ["meeting-notes", false],
+      ["review-prep", false],
     ]);
   });
 
