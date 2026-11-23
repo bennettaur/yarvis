@@ -14,6 +14,7 @@ import {
   updateStream,
   type WorkStreamWithLinks,
 } from "./service.ts";
+import { DEFAULT_WATCH_EVERY, DEFAULT_WATCH_EXPIRES_IN, watchFields } from "./watches.ts";
 
 /**
  * Work stream tools: the assistant's record of the threads of work it is
@@ -25,6 +26,10 @@ import {
 export const STREAM_PAUSED =
   "The user paused this stream. Leave it alone until they resume it, and move on to the others.";
 
+/** What a pass is told when it tries to change a watch other than by reporting a check. */
+export const WATCH_REPORTED_ONLY =
+  "This is a watch: a pass only checks it when it is listed as due, and reports with report_watch.";
+
 const uuid = z.string().uuid();
 const priority = z.enum(["urgent", "high", "medium", "low"]);
 const status = z.enum(["active", "waiting-on-user", "waiting-on-others", "done", "dropped"]);
@@ -34,6 +39,29 @@ const category = z
     "The kind of work: review (someone else's PR), build (the user's own code, PRs, CI, deploys), slack (a chat message to answer) or general. What you raise about the stream is grouped under it",
   );
 const instant = z.string().datetime({ offset: true });
+const duration = z.string().regex(/^\d+\s*[mhd]$/i, "a duration such as 30m, 3h or 2d");
+
+const watchInput = z
+  .object({
+    condition: z
+      .string()
+      .min(1)
+      .max(1000)
+      .describe(
+        "What to look for, in the user's words, specific enough to check with read tools: 'alex has merged both billing PRs (acme/billing#41, #42)'",
+      ),
+    every: duration
+      .optional()
+      .describe(`How often to check, from 15m to 7d. Defaults to ${DEFAULT_WATCH_EVERY}`),
+    expiresIn: duration
+      .optional()
+      .describe(
+        `When to give up and tell the user it expired, from now, up to 30d. Defaults to ${DEFAULT_WATCH_EXPIRES_IN}`,
+      ),
+  })
+  .describe(
+    "Makes the stream a watch: heads-down passes check the condition on its cadence and tell the user when it is met, then close it",
+  );
 
 /** A short piece of text: a ticket key, channel, conversation, message ref or handle. */
 const shortText = z.string().min(1).max(300);
@@ -89,6 +117,7 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
   const text = (value: string | null) => fenceOrNull(value, nonce);
   return {
     id: stream.id,
+    kind: stream.kind,
     title: fence(stream.title, nonce),
     status: stream.status,
     paused: stream.pausedAt !== null,
@@ -100,6 +129,15 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
     waitingOn: text(stream.waitingOn),
     wakeAt: stream.wakeAt?.toISOString() ?? null,
     updatedAt: stream.updatedAt.toISOString(),
+    ...(stream.kind === "watch"
+      ? {
+          watch: {
+            condition: text(stream.watchCondition),
+            everyMinutes: stream.watchEveryMinutes,
+            expiresAt: stream.expiresAt?.toISOString() ?? null,
+          },
+        }
+      : {}),
     links: stream.links.map((link) => presentLink(link, nonce)),
   };
 }
@@ -166,7 +204,7 @@ export function buildWorkStreamTools(
       description: `The threads of work you are pushing forward, each with its tickets, workspaces, PRs and messages. Defaults to the open ones (active, waiting on the user, waiting on others), most urgent first, then the ones untouched longest. ${
         unattended
           ? "Streams the user paused are left out."
-          : "A paused stream is one heads-down mode leaves alone until the user resumes it."
+          : "A paused stream is one heads-down mode leaves alone until the user resumes it. Watches (kind 'watch') are listed too; drop one to cancel it."
       } Pass awakeOnly to leave out streams whose wakeAt hasn't come yet.`,
       inputSchema: z.object({
         statuses: z.array(status).optional().describe("Defaults to the open ones"),
@@ -179,6 +217,8 @@ export function buildWorkStreamTools(
           projectId,
           awakeAt: awakeOnly ? new Date() : undefined,
           excludePaused: unattended,
+          // A pass is handed the watches due a check in its prompt instead.
+          kind: unattended ? "work" : undefined,
         });
         const nonce = newNonce();
         return {
@@ -207,8 +247,11 @@ export function buildWorkStreamTools(
     }),
 
     create_work_stream: tool({
-      description:
-        "Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn't tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream.",
+      description: `Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn't tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream.${
+        unattended
+          ? ""
+          : " With watch, it is a watch instead: a one-off 'tell me when…' the user asked for, such as 'let me know when Alex merges his PRs'. Heads-down passes check it and tell the user when it is met, so it is only checked while heads-down mode is on; say so if it is off. Set category to what the watch is about."
+      }`,
       inputSchema: z.object({
         title: z.string().min(1).max(300),
         summary: z.string().max(2000).optional().describe("What the work is and why it matters"),
@@ -217,10 +260,21 @@ export function buildWorkStreamTools(
         projectId: uuid.optional().describe("The project it serves, if any"),
         nextAction: z.string().max(1000).optional().describe("The next step you mean to take"),
         note: z.string().max(2000).optional(),
+        watch: watchInput.optional(),
       }),
-      execute: async (input) => {
-        const stream = await createStream(db, input);
-        return { id: stream.id, status: stream.status, priority: stream.priority };
+      execute: async ({ watch, ...input }) => {
+        // A watch is something the user asked to hear about, not one a pass makes up.
+        if (unattended && watch) return { error: "only the user sets up a watch" };
+        const fields = watch ? watchFields(watch) : undefined;
+        if (fields && "error" in fields) return fields;
+        const stream = await createStream(db, { ...input, watch: fields });
+        return {
+          id: stream.id,
+          kind: stream.kind,
+          status: stream.status,
+          priority: stream.priority,
+          ...(stream.expiresAt ? { expiresAt: stream.expiresAt.toISOString() } : {}),
+        };
       },
     }),
 
@@ -253,6 +307,7 @@ export function buildWorkStreamTools(
         const current = await getStream(db, id);
         if (!current) return { error: "no work stream with that id" };
         if (isPausedForPass(current)) return { error: STREAM_PAUSED };
+        if (unattended && current.kind === "watch") return { error: WATCH_REPORTED_ONLY };
         // Whether a stream is open decides what heads-down mode may act on, so
         // only the user brings back one that was closed.
         if (

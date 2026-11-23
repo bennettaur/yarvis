@@ -195,6 +195,9 @@ you don't see.
   after 24 runs.
 - Tasks report in the app, not in Telegram, even when you asked for one from
   Telegram.
+- For a condition that could take days, such as "tell me when Alex merges his
+  PRs", the assistant sets up a [watch](heads-down.md#watches) instead, which
+  heads-down mode checks.
 
 ### Friday: what did I get done?
 

@@ -1,8 +1,10 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { navTargetSchema } from "../attention/navTarget.ts";
 import type { Db } from "../db/client.ts";
-import { getStream, updateStream } from "../workStreams/service.ts";
+import { getStream, OPEN_STREAM_STATUSES, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
+import { recordWatchCheck } from "../workStreams/watches.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
 
@@ -31,7 +33,8 @@ export function newPassOutcome(): PassOutcome {
  * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
  * names the routines this pass was given; `finish_pass` records only those.
  * `mergeFeedback` keeps a merge held for open review feedback from being
- * announced as happening.
+ * announced as happening. `offeredWatches` names the watches this pass was
+ * given to check; `report_watch` takes only those.
  */
 export function buildPassTools(
   db: Db,
@@ -40,6 +43,7 @@ export function buildPassTools(
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
   mergeFeedback?: MergeFeedbackLoader,
+  offeredWatches: readonly string[] = [],
 ) {
   return {
     announce_merge: tool({
@@ -142,6 +146,37 @@ export function buildPassTools(
         }
         onAsked();
         return { questionId: asked.id, status: asked.status };
+      },
+    }),
+
+    report_watch: tool({
+      description:
+        "Report one check of a watch listed as due in this pass. met: true only when what you saw with your tools shows the condition holds; the user is told and the watch closes. met: false keeps it open and schedules the next check. finding says what you saw, in a sentence or two, with the PR, ticket or message it is about.",
+      inputSchema: z.object({
+        id: z.string().uuid().describe("The watch's id, as listed in this pass's prompt"),
+        met: z.boolean(),
+        finding: z.string().min(1).max(1000),
+        navTarget: navTargetSchema
+          .optional()
+          .describe(
+            "When met, where clicking the user's notice should go, such as the PR it is about",
+          ),
+      }),
+      execute: async ({ id, met, finding, navTarget }) => {
+        if (!offeredWatches.includes(id)) {
+          return { error: "that watch wasn't given to this pass to check" };
+        }
+        const watch = await getStream(db, id);
+        if (!watch || !(OPEN_STREAM_STATUSES as readonly string[]).includes(watch.status)) {
+          return { error: "that watch is closed" };
+        }
+        if (watch.pausedAt) return { error: STREAM_PAUSED };
+        const recorded = await recordWatchCheck(db, watch, { met, finding, navTarget });
+        if (!recorded) return { error: STREAM_PAUSED };
+        onAsked();
+        return met
+          ? { ok: true, message: "The user has been told, and the watch is closed." }
+          : { ok: true, nextCheckAt: recorded.wakeAt?.toISOString() ?? null };
       },
     }),
 

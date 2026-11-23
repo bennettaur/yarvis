@@ -217,6 +217,8 @@ export interface WorkStreamLink {
 
 export interface WorkStream {
   id: string;
+  /** A watch waits for a condition the user asked to hear about, rather than work to push. */
+  kind: "work" | "watch";
   title: string;
   summary: string | null;
   status: WorkStreamStatus;
@@ -226,6 +228,10 @@ export interface WorkStream {
   wakeAt: string | null;
   /** Set while the user has paused it: heads-down mode leaves it alone. */
   pausedAt: string | null;
+  /** A watch's condition, how often it is checked, and when it gives up; null on other streams. */
+  watchCondition: string | null;
+  watchEveryMinutes: number | null;
+  expiresAt: string | null;
   updatedAt: string;
   links: WorkStreamLink[];
 }

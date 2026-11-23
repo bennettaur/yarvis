@@ -200,9 +200,19 @@ describe("loadRoutines", () => {
     const { routines, problems } = await loadRoutines();
     expect(problems).toEqual([]);
     expect(routines.map((r) => [r.name, r.enabled])).toEqual([
+      ["email-drafts", false],
       ["meeting-alarms", true],
       ["meeting-notes", false],
+      ["meeting-times", false],
+      ["message-people", false],
+      ["offer-help", false],
+      ["slack-watcher", false],
     ]);
+    // A template: the user's own file names their Slack tools and fills these in.
+    expect(routines.find((r) => r.name === "slack-watcher")).toMatchObject({
+      tools: [],
+      config: { channels: [], handle: "" },
+    });
   });
 
   it("lets a user file replace a shipped one, and reports a broken file", async () => {

@@ -12,6 +12,7 @@ import { clientError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
 import { listStreams } from "../workStreams/service.ts";
+import { dueWatches, expireWatches } from "../workStreams/watches.ts";
 import {
   chooseSleep,
   getHeadsDownConfig,
@@ -24,7 +25,7 @@ import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passR
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
 import { PASS_CONFIRMED_TOOLS, PASS_REFUSED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
-import { dueRoutines, resolveRoutineTools, routineCatalog } from "./routines.ts";
+import { dueRoutines, resolveRoutineTools, routineCatalog, SLACK_WATCHER } from "./routines.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -231,6 +232,17 @@ export async function runPass(
     registry,
     new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
   );
+  // Expired first, so a watch past its end is reported as expired rather than checked.
+  await expireWatches(db, now).catch((e) =>
+    console.error("[heads-down] expiring watches failed:", e),
+  );
+  const watches = await dueWatches(db, now).catch((e) => {
+    console.error("[heads-down] reading due watches failed:", e);
+    return [];
+  });
+  const slackWatcherOn =
+    headsDownConfig.maxRoutinesPerPass > 0 &&
+    catalog.routines.some((r) => r.name === SLACK_WATCHER && r.enabled);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -338,6 +350,7 @@ export async function runPass(
           announcedMerges,
           routines.map((r) => r.name),
           mergeFeedback,
+          watches.map((w) => w.id),
         ),
         budget,
         maxRetries: PASS_MODEL_RETRIES,
@@ -370,6 +383,8 @@ export async function runPass(
       routines,
       routinesLastDone: history.lastDone,
       routineTools: routineTools.byRoutine,
+      watches,
+      slackWatcherOn,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];

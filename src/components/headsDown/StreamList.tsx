@@ -48,6 +48,13 @@ export function linkLabel(link: WorkStreamLink, workspaceNames: WorkspaceNames):
   return `${name ? `${kind}: ${name}` : kind}${link.state ? ` · ${link.state}` : ""}`;
 }
 
+/** A watch's cadence the way the user wrote it: 30m, 3h, 1d. */
+export function everyLabel(minutes: number): string {
+  if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}d`;
+  if (minutes % 60 === 0) return `${minutes / 60}h`;
+  return `${minutes}m`;
+}
+
 /** What clicking a link does, when it goes anywhere. */
 function linkAction(link: WorkStreamLink): (() => void) | null {
   const ref = link.ref;
@@ -89,6 +96,11 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
                 Paused
               </span>
             )}
+            {stream.kind === "watch" && (
+              <span className="rounded bg-violet-500/15 px-1.5 py-0.5 text-[11px] text-violet-300">
+                Watch
+              </span>
+            )}
             <span className="text-[11px] uppercase text-zinc-500">{stream.priority}</span>
           </div>
           <div className="mt-1 text-sm font-medium text-zinc-100">{stream.title}</div>
@@ -124,6 +136,15 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
         </div>
       </div>
       {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
+      {stream.kind === "watch" && stream.watchCondition && (
+        <p className="mt-1 text-xs text-violet-200/80">
+          Watching for: {stream.watchCondition}
+          {stream.watchEveryMinutes
+            ? ` · checks every ${everyLabel(stream.watchEveryMinutes)}`
+            : ""}
+          {stream.expiresAt ? ` · until ${new Date(stream.expiresAt).toLocaleString()}` : ""}
+        </p>
+      )}
       {stream.waitingOn && (
         <p className="mt-1 text-xs text-amber-200/80">
           Waiting on: <WorkspaceMentionText text={stream.waitingOn} names={workspaceNames} />
