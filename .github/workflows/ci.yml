@@ -286,6 +286,21 @@ jobs:
         working-directory: server
         run: cargo test --all-targets
 
+  android:
+    name: Android app (unit tests, build, lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Also checks gradle-wrapper.jar against Gradle's published checksums.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+      - name: Test, build and lint
+        working-directory: apps/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lint
+
 
   e2e:
     name: End to end (server + web UI in Chromium)
