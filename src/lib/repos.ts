@@ -1,6 +1,7 @@
 import { sidecarFetch } from "./api";
 import type { PrRef } from "./pr/types";
 
+// Mirrors the sidecar's MAX_PLAYBOOK_CHARS, PLAYBOOK_KEYS and RepoPlaybooks.
 export const PLAYBOOK_MAX_CHARS = 4000;
 
 /** The prompts a repo can carry for shipping a PR, in the order Settings shows them. */

@@ -460,6 +460,7 @@ function RepoCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const playbookCount = Object.keys(repo.playbooks).length;
   return (
     <div className="rounded-lg border border-zinc-800 p-4">
       <div className="flex items-center justify-between">
@@ -490,9 +491,7 @@ function RepoCard({
         <span>{repo.runScript ? "run ✓" : "no run"}</span>
         {repo.pullIssues && <span className="text-indigo-400">issues ✓</span>}
         {repo.tracker && <span>tickets: {trackerLabel(repo.tracker)}</span>}
-        {Object.keys(repo.playbooks).length > 0 && (
-          <span>playbooks: {Object.keys(repo.playbooks).length}</span>
-        )}
+        {playbookCount > 0 && <span>playbooks: {playbookCount}</span>}
       </div>
     </div>
   );

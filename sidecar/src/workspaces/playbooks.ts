@@ -20,7 +20,10 @@ export type PlaybookKey = (typeof PLAYBOOK_KEYS)[number];
 
 export type RepoPlaybooks = Partial<Record<PlaybookKey, string>>;
 
-// Matches the cap on a routine's body.
+/** What a create or update may carry: a prompt left empty or null is dropped. */
+export type PlaybookInput = Partial<Record<PlaybookKey, string | null | undefined>>;
+
+// Matches MAX_BODY_CHARS, the cap on a routine's body. Mirrored by PLAYBOOK_MAX_CHARS in src/lib/repos.ts.
 export const MAX_PLAYBOOK_CHARS = 4000;
 
 const playbookText = z.string().max(MAX_PLAYBOOK_CHARS).nullish();
@@ -36,9 +39,7 @@ export const repoPlaybooksSchema = z.object({
 });
 
 /** Trims each prompt and drops the empty ones, so a cleared text area stores nothing. */
-export function normalizePlaybooks(
-  input: Partial<Record<PlaybookKey, string | null | undefined>>,
-): RepoPlaybooks {
+export function normalizePlaybooks(input: PlaybookInput): RepoPlaybooks {
   const out: RepoPlaybooks = {};
   for (const key of PLAYBOOK_KEYS) {
     const text = input[key]?.trim();

@@ -1280,6 +1280,38 @@ describe("repo routes", () => {
     expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e" });
   });
 
+  it("stores playbooks given when a repo is created, and lists none as an empty set", async () => {
+    const bare = await addRepo();
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        cloneUrl: "git@github.com:acme/with-playbooks.git",
+        playbooks: { deploy: "  ship it  ", revert: "   ", testStaging: null },
+      }),
+    });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { playbooks: unknown }).playbooks).toEqual({
+      deploy: "ship it",
+    });
+
+    const tooLong = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        cloneUrl: "git@github.com:acme/too-long.git",
+        playbooks: { deploy: "x".repeat(4001) },
+      }),
+    });
+    expect(tooLong.status).toBe(400);
+
+    const list = (await (await app.request("/api/repos", { headers: auth })).json()) as Array<{
+      id: string;
+      playbooks: unknown;
+    }>;
+    expect(list.find((r) => r.id === bare.id)?.playbooks).toEqual({});
+  });
+
   it("rejects a playbook over the length cap or of the wrong type", async () => {
     const repo = await addRepo();
     for (const playbooks of [{ deploy: "x".repeat(4001) }, { deploy: 5 }]) {

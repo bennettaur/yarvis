@@ -23,7 +23,7 @@ The assistant works as soon as you have a database and an LLM provider (see
 
 1. **A GitHub token** (Settings → Credentials). It powers PR lists, review
    requests and "what's waiting on me".
-2. **Your repos** under Settings → Repositories, so it can start workspaces. The assistant can also add a repo for you when you name one it does not know.
+2. **Your repos** under Settings → Repositories, so it can start workspaces. The assistant can also add a repo for you when you name one it does not know. Each repo can also carry [playbooks](workspaces.md#repo-playbooks), your own instructions for testing, deploying and reverting, which the assistant follows.
 3. **JIRA**, if your tickets live there (see
    [Issues and tasks](issues-and-tasks.md)).
 4. **Google Calendar**, so it can plan around your meetings (see

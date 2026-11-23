@@ -111,7 +111,7 @@ import {
   type IntegrityFinding,
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
-import { normalizePlaybooks, type PlaybookKey } from "./playbooks.ts";
+import { normalizePlaybooks, type PlaybookInput } from "./playbooks.ts";
 import { isOnBranch, orderPrs, prOnOwnBranch } from "./prs.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
@@ -131,7 +131,7 @@ export interface CreateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
-  playbooks?: Partial<Record<PlaybookKey, string | null | undefined>>;
+  playbooks?: PlaybookInput;
 }
 
 export interface UpdateRepoInput {
@@ -141,7 +141,7 @@ export interface UpdateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
-  playbooks?: Partial<Record<PlaybookKey, string | null | undefined>>;
+  playbooks?: PlaybookInput;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */

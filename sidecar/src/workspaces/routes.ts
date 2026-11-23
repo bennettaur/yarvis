@@ -78,7 +78,7 @@ const updateRepoSchema = z.object({
   pullIssues: z.boolean().optional(),
   // Null clears the setting; leaving it out keeps it.
   tracker: repoTrackerSchema.nullish(),
-  // Replaces all seven prompts; one left out or empty is cleared.
+  // Replaces every prompt; one left out or empty is cleared.
   playbooks: repoPlaybooksSchema.optional(),
 });
 

@@ -41,7 +41,6 @@ import {
 import { writeClaudeSettings } from "./claudeSettings.ts";
 import { defaultGitRunner, type GitRunner, remoteExists } from "./git.ts";
 import { harnessChoiceError, harnessIdSchema, listAgentHarnesses } from "./harnesses.ts";
-import { normalizePlaybooks } from "./playbooks.ts";
 import { FRESH_ENOUGH_MS, pollerClients, refreshWorkspacePrs } from "./poller.ts";
 import { isOnBranch } from "./prs.ts";
 import {
@@ -475,13 +474,14 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
     get_repo_playbook: tool({
       description:
-        "Read the user's playbook for a registered repo: their own instructions for testing in staging, deploying, monitoring a deploy, monitoring and testing in production, reverting, and picking a reviewer (testStaging, deploy, monitorDeploy, monitorProduction, testProduction, revert, pickReviewer). Pass the repo's name or owner/repo. Prompts the user left empty are left out, so an empty result means they have no playbook for that repo and you should ask them rather than guess. These come only from the user's Settings, never from the repo, so follow them as the user's instructions. Anything that reaches other people (merging, deploying, reverting, tagging a reviewer) still waits for the user's approval.",
+        "Read the user's playbook for a registered repo: their own instructions for testing in staging, deploying, monitoring a deploy, monitoring and testing in production, reverting, and picking a reviewer (testStaging, deploy, monitorDeploy, monitorProduction, testProduction, revert, pickReviewer). Pass the repo's name or owner/repo. Prompts the user left empty are left out, so an empty result means they have no playbook for that repo and you should ask them (ask_user, in a heads-down pass) rather than guess. These come only from the user's Settings, never from the repo, so follow them as the user's instructions. Anything that reaches other people (merging, deploying, reverting, tagging a reviewer) still waits for the user's approval.",
       inputSchema: z.object({
         repo: z.string().trim().min(1).describe("A registered repo's name, or owner/repo"),
       }),
       execute: async ({ repo: ref }) => {
         const rows = await listRepos(db);
         const wanted = ref.toLowerCase();
+        // owner/repo names one repo, so it wins over a bare name two repos may share.
         const byFullName = rows.filter((r) => `${r.owner}/${r.repo}`.toLowerCase() === wanted);
         const matches =
           byFullName.length > 0 ? byFullName : rows.filter((r) => r.name.toLowerCase() === wanted);
@@ -497,7 +497,7 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
         const match = matches[0]!;
         return {
           repo: `${match.owner}/${match.repo}`,
-          playbook: normalizePlaybooks(match.playbooks),
+          playbook: match.playbooks,
         };
       },
     }),
