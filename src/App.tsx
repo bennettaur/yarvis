@@ -337,6 +337,10 @@ export default function App() {
         case "heads-down":
           setTab("heads-down");
           break;
+        case "artifact":
+          setRequestedArtifact(target.id);
+          setTab("chat");
+          break;
         case "review-workspace":
           handleOpenReview({ workspaceId: target.workspaceId, prId: target.prId, tab: target.tab });
           break;
