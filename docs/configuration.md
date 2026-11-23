@@ -218,7 +218,8 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
-for approval on the laptop itself.
+for approval on the laptop itself. [Running the server](server.md#commit-signing-and-the-ssh-agent)
+explains how the server picks the socket and walks through both setups.
 
 ### `PATH` for a server launchd starts
 

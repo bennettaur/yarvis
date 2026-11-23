@@ -4,8 +4,11 @@ description: >-
   Walk a new developer through setting up a dev build of the Yarvis desktop
   app on their Mac: check prerequisites, install PostgreSQL 17 with pgvector,
   create the database, install dependencies, launch the app, and guide the
-  first configuration in its Settings screen. Can also set up Yarvis's
-  optional local speech server. Use only when someone asks to set up, install,
+  first configuration in its Settings screen. Can also run yarvis-server on
+  its own under launchd, reach it from a phone or another computer over
+  Tailscale or a Caddy reverse proxy, connect the Android app, sign commits
+  with 1Password's SSH agent, and set up the optional local speech server.
+  Use only when someone asks to set up, install,
   or get started with Yarvis itself, or runs /yarvis-setup.
 ---
 
@@ -13,8 +16,9 @@ description: >-
 
 You are helping someone get a Yarvis dev build running for the first time. The
 steps are written for people in `docs/getting-started.md`, and that file is the
-source of truth. Read it before you start, and read `docs/voice-server.md` if
-they want voice. This skill adds how to run the steps *with* the person.
+source of truth. Read it before you start. Read `docs/server.md` if they want
+the server run on its own, access from a phone or another computer, or commit
+signing, and `docs/voice-server.md` if they want voice. This skill adds how to run the steps *with* the person.
 
 ## Rules
 
@@ -74,6 +78,10 @@ optional features they want now, so you install the right tools once:
 - JIRA
 - Google Calendar and alarms
 - Secrets in 1Password instead of the Keychain (`op`)
+- Signing commits with 1Password's SSH agent
+- An always-on server that runs without the app open (launchd)
+- Reaching Yarvis from a phone or another computer (Tailscale or a Caddy
+  reverse proxy), and the Android app
 
 Everyone needs the core: build tools, Bun, Rust, Postgres with pgvector, and one
 LLM provider.
@@ -197,6 +205,50 @@ with.
 For Google Calendar, walk them through the Google Cloud Console steps one
 screen at a time. It's the step people most often get stuck on.
 
+### The server, remote access and signing
+
+Do these after the app works (step 7), since each one builds on it. Follow
+`docs/server.md`, and work through it with the same rules as above. A few
+things to know:
+
+- **Which server.** If they only want their phone to reach the desktop app,
+  they don't need a server of their own: use the app's server and skip to
+  remote access. Recommend running the server on its own only for an
+  always-on machine, or when they want it to keep running with the app
+  closed. Don't set one up beside the app's on the same database; point the
+  app at it instead ("Run the server on its own", step 7).
+- **The account.** The desktop app pairs itself and never creates the
+  server's account, and nothing else can sign in until it exists. Before
+  remote access, have them set it up in a browser ("Its account" in the
+  doc). The setup code is a secret like a password: tell them which file
+  holds it and let them open it. Don't read it or print it yourself.
+- **Builds and launchd.** `bun run build` and the `cargo build --release` of
+  the server are fine to run. Writing a LaunchAgent plist and running
+  `launchctl bootstrap` start a background service, so show the file and the
+  command and ask first. Fill the plist's paths from `echo $HOME` and the
+  repo's path, and the `[server] path` from their `echo $PATH`.
+- **`server.toml`.** Read it before you change it, and change only the keys
+  the step needs: the desktop app keeps other keys, and the person may have
+  added their own. Never put a database password in it for them; they add it
+  themselves, as in step 4.
+- **Tailscale or Caddy.** Ask which. Recommend Tailscale: it works away from
+  home, needs no domain, and its certificates work with the Android app as
+  they are. Caddy needs a domain they own and a DNS provider API token for
+  the Let's Encrypt DNS challenge, because the Android app doesn't trust
+  Caddy's own local CA. Never ask for that token: they paste it into the
+  Caddy LaunchAgent plist themselves. Ask before `tailscale serve` too, since
+  it publishes the server to their tailnet.
+- **`auth.origins`.** Whichever they pick, the new `https://` address goes
+  into `auth.origins` and the server restarts (for the app's server, restart
+  the app). A `403 unknown host` means this step was missed.
+- **The Android app.** Building it needs the Android SDK and its own pinned
+  JDK; `apps/android/README.md` has the steps. Installing needs the phone
+  connected over USB or wireless debugging, so ask them to do that part.
+- **1Password signing.** Check the agent socket exists with `ls` (it's a
+  path, not a secret). For the app's server there is nothing to configure.
+  For a server under launchd, add `upstream_socket` with the full path. Have
+  them confirm `ssh-add -l` in a new workspace terminal lists their keys.
+
 ### Voice
 
 Follow `docs/voice-server.md`:
@@ -215,7 +267,8 @@ Follow `docs/voice-server.md`:
 
 Finish with a short summary:
 
-- what's set up and working,
+- what's set up and working, including the server's address if they set up
+  remote access,
 - what's optional and still left, with the doc for each,
 - where things live (the "Where things live" table in the getting-started doc),
 - a pointer to `docs/features/assistant.md`, which explains the weekly
