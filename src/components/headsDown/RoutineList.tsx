@@ -76,7 +76,9 @@ export default function RoutineList({
               </span>
               <span className="shrink-0 text-zinc-500">
                 {r.enabled
-                  ? `${cadence(r.everyMinutes)}${r.workingHoursOnly ? ", working hours" : ""}`
+                  ? `${cadence(r.everyMinutes)}${r.workingHoursOnly ? ", working hours" : ""}${
+                      r.nightShift === "run" ? "" : `, ${r.nightShift} at night`
+                    }`
                   : "off"}
               </span>
             </div>

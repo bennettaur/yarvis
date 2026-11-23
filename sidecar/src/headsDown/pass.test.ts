@@ -8,7 +8,7 @@ import { getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
-import { saveHeadsDownConfig } from "./config.ts";
+import { DEFAULT_HEADS_DOWN_CONFIG, saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
 import { reloadRoutines } from "./routines.ts";
@@ -115,6 +115,7 @@ beforeEach(async () => {
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
   // Any time counts as working hours, so the sleep doesn't depend on when the test runs.
   await saveHeadsDownConfig({
+    ...DEFAULT_HEADS_DOWN_CONFIG,
     minSleepMinutes: 5,
     maxSleepMinutes: 120,
     idleSleepMinutes: 60,
@@ -355,6 +356,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the user's guidance, and shows the merge it announces", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -521,6 +523,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the routines that are due, and records the ones it reports done", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -585,6 +588,7 @@ describe("a heads-down pass", () => {
       const run = await startRun(db, null);
       const passWith = async (maxRoutinesPerPass: number) => {
         await saveHeadsDownConfig({
+          ...DEFAULT_HEADS_DOWN_CONFIG,
           minSleepMinutes: 5,
           maxSleepMinutes: 120,
           idleSleepMinutes: 60,
@@ -635,6 +639,7 @@ describe("a heads-down pass", () => {
     `;
     try {
       await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
         minSleepMinutes: 5,
         maxSleepMinutes: 120,
         idleSleepMinutes: 60,
@@ -691,6 +696,7 @@ describe("a heads-down pass", () => {
 
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,

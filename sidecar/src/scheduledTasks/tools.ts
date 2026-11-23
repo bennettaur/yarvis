@@ -28,6 +28,20 @@ export interface ScheduledTaskTurnContext {
 }
 
 export function buildScheduledTaskTools(db: Db, sessionId: string, turn: ScheduledTaskTurnContext) {
+  // Only a heads-down pass itself may ask for a pass: a scheduled task's
+  // read-only turn waking the loop would be a way around its tool limits.
+  const isPass =
+    turn.origin === "heads-down" && turn.scheduledTaskId === null && turn.attempt === 0;
+  const wakePassField = isPass
+    ? {
+        wakePass: z
+          .boolean()
+          .optional()
+          .describe(
+            "Heads-down only. True to wake heads-down mode for a full pass at that time, with this prompt in its context, instead of running a read-only turn. Use it for a check that may need you to act (e.g. 'check whether PR 42 is green at 15:00 and merge it if the rules allow').",
+          ),
+      }
+    : {};
   return {
     schedule_task: tool({
       description: `Leave yourself a prompt to run later in this same chat. Use it to check on something that takes time (CI finishing, PRs becoming mergeable, a workspace session getting somewhere) or to come back at a useful moment (a mid-week check-in on the goals the user set on Monday). Write the prompt in your own words: what to look at, with which tool and ids, and what to tell the user. When it runs, the user gets a notification that you have something for them. A task watching something unfinished can schedule the next one, at least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out; a chain stops after ${MAX_SCHEDULED_TASK_ATTEMPTS} runs. The future turn runs unattended with read-only tools: it can look things up, report and schedule another task, but it cannot start sessions, write tasks or memories, or use external (MCP) tools. Pick a delay that fits how fast the thing changes rather than the shortest one.`,
@@ -52,8 +66,10 @@ export function buildScheduledTaskTools(db: Db, sessionId: string, turn: Schedul
           .min(MIN_DELAY_MINUTES)
           .max(MAX_DELAY_MINUTES)
           .describe("How long from now to run it"),
+        ...wakePassField,
       }),
-      execute: async ({ title, prompt, delayMinutes }) => {
+      execute: async ({ title, prompt, delayMinutes, ...rest }) => {
+        const wakesPass = isPass && (rest as { wakePass?: boolean }).wakePass === true;
         // A delegated specialist runs with no session. NEVER_DELEGATABLE already keeps
         // these tools from it; this stops a row being written if that ever changes.
         if (!sessionId) return { error: "there is no chat to come back to from here" };
@@ -67,12 +83,14 @@ export function buildScheduledTaskTools(db: Db, sessionId: string, turn: Schedul
           model: turn.model,
           attempt: turn.attempt + 1,
           parentId: turn.scheduledTaskId,
+          wakesPass,
         });
         if ("error" in result) return result;
         return {
           id: result.scheduledTask.id,
           dueAt: result.scheduledTask.dueAt.toISOString(),
           attempt: result.scheduledTask.attempt,
+          ...(wakesPass ? { wakesPass: true } : {}),
         };
       },
     }),

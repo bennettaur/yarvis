@@ -5,6 +5,7 @@ import { getStream, updateStream } from "../workStreams/service.ts";
 import { STREAM_PAUSED } from "../workStreams/tools.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
+import { writeRoutineFile } from "./routines.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -142,6 +143,37 @@ export function buildPassTools(
         }
         onAsked();
         return { questionId: asked.id, status: asked.status };
+      },
+    }),
+
+    create_routine: tool({
+      description:
+        "Propose a new recurring routine for heads-down mode, for work you see coming back on a schedule (e.g. checking a release channel every morning). It waits for the user's approval, who sees exactly these arguments; once approved, a later pass makes the same call and the routine is written to the user's routines folder. The body is what a pass is told to do each time, in plain words addressed to you. It runs unattended under every heads-down rule, so keep it to what the user would want done without them. Don't propose one the user already turned down, or one that copies an existing routine.",
+      inputSchema: z.object({
+        name: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
+          .describe("Lowercase letters, digits and hyphens"),
+        description: z.string().min(1).max(200).describe("One line, shown on the Heads down page"),
+        every: z
+          .string()
+          .regex(/^\d+[mhd]$/)
+          .describe("How long between runs, such as 30m, 3h or 1d; at least 15m"),
+        workingHours: z.boolean().optional().describe("True to run it only in working hours"),
+        nightShift: z
+          .enum(["run", "slow", "skip"])
+          .optional()
+          .describe("What it does during night shift: run as usual, slow (rarer) or skip"),
+        body: z.string().min(1).max(4000).describe("What a pass is told to do each time"),
+      }),
+      execute: async (routine) => {
+        const written = await writeRoutineFile(routine);
+        if ("error" in written) return { ok: false, error: written.error };
+        onAsked();
+        return {
+          ok: true,
+          message: `Routine '${routine.name}' saved to ${written.path}. Passes are given it from now on when it is due.`,
+        };
       },
     }),
 

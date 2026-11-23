@@ -40,6 +40,12 @@ export const MAX_PROMPT_CHARS = 2_000;
 
 export const MAX_TITLE_CHARS = 80;
 
+/**
+ * Pending heads-down wake-ups across every pass. Each pass runs in a chat of
+ * its own, so the per-chat cap doesn't hold them, and each one costs a pass.
+ */
+export const MAX_PENDING_WAKES = 10;
+
 interface ScheduleTaskInput {
   sessionId: string;
   title: string;
@@ -50,6 +56,8 @@ interface ScheduleTaskInput {
   model: string | null;
   attempt: number;
   parentId: string | null;
+  /** Wake heads-down mode for a full pass at the due time instead of running a turn. */
+  wakesPass?: boolean;
 }
 
 type ScheduleTaskResult = { scheduledTask: ChatScheduledTask } | { error: string };
@@ -67,6 +75,11 @@ export async function scheduleTask(
   if (input.parentId && input.delayMinutes < MIN_RESCHEDULE_DELAY_MINUTES) {
     return {
       error: `schedule the next run at least ${MIN_RESCHEDULE_DELAY_MINUTES} minutes out`,
+    };
+  }
+  if (input.wakesPass && (await listPendingWakes(db)).length >= MAX_PENDING_WAKES) {
+    return {
+      error: `heads-down mode already has ${MAX_PENDING_WAKES} wake-ups scheduled; fold this into one of them`,
     };
   }
   const pending = await listPendingScheduledTasks(db, input.sessionId);
@@ -88,6 +101,7 @@ export async function scheduleTask(
       model: input.model,
       attempt: input.attempt,
       parentId: input.parentId,
+      wakesPass: input.wakesPass ?? false,
       dueAt: new Date(now.getTime() + input.delayMinutes * 60_000),
     })
     .returning();
@@ -141,7 +155,14 @@ export async function claimDueScheduledTasks(
   const due = db
     .select({ id: chatScheduledTasks.id })
     .from(chatScheduledTasks)
-    .where(and(eq(chatScheduledTasks.status, "pending"), lte(chatScheduledTasks.dueAt, now)))
+    .where(
+      and(
+        eq(chatScheduledTasks.status, "pending"),
+        lte(chatScheduledTasks.dueAt, now),
+        // Wake-ups are the heads-down loop's to claim, in a pass.
+        eq(chatScheduledTasks.wakesPass, false),
+      ),
+    )
     .orderBy(asc(chatScheduledTasks.dueAt))
     .limit(limit)
     .for("update", { skipLocked: true });
@@ -151,6 +172,43 @@ export async function claimDueScheduledTasks(
     .where(and(inArray(chatScheduledTasks.id, due), eq(chatScheduledTasks.status, "pending")))
     .returning();
   return rows.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime());
+}
+
+/** Heads-down wake-ups still waiting, soonest first. */
+export async function listPendingWakes(db: Db): Promise<ChatScheduledTask[]> {
+  return db
+    .select()
+    .from(chatScheduledTasks)
+    .where(and(eq(chatScheduledTasks.status, "pending"), eq(chatScheduledTasks.wakesPass, true)))
+    .orderBy(asc(chatScheduledTasks.dueAt));
+}
+
+/**
+ * Marks the wake-ups that have come due fired and returns them, for the pass
+ * about to start. Fired before the pass runs, like a scheduled task, so a pass
+ * that fails doesn't get the same wake-up on every retry.
+ */
+export async function claimDueWakes(db: Db, now: Date): Promise<ChatScheduledTask[]> {
+  const rows = await db
+    .update(chatScheduledTasks)
+    .set({ status: "fired", firedAt: now })
+    .where(
+      and(
+        eq(chatScheduledTasks.status, "pending"),
+        eq(chatScheduledTasks.wakesPass, true),
+        lte(chatScheduledTasks.dueAt, now),
+      ),
+    )
+    .returning();
+  return rows.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime());
+}
+
+/** Cancels every pending wake-up, for when heads-down mode stops: they belong to the run. */
+export async function cancelPendingWakes(db: Db): Promise<void> {
+  await db
+    .update(chatScheduledTasks)
+    .set({ status: "cancelled" })
+    .where(and(eq(chatScheduledTasks.status, "pending"), eq(chatScheduledTasks.wakesPass, true)));
 }
 
 export async function recordScheduledTaskError(db: Db, id: string, error: string): Promise<void> {

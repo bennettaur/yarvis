@@ -2,8 +2,10 @@ import { z } from "zod";
 import type { Db } from "../db/client.ts";
 import type { HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
+import { cancelPendingWakes } from "../scheduledTasks/service.ts";
 import { dropOpenStreams } from "../workStreams/service.ts";
 import { dismissOpenQuestions } from "./attention.ts";
+import { getHeadsDownConfig, turnAlwaysOnOff } from "./config.ts";
 import { publish } from "./hub.ts";
 import {
   deleteAllMessages,
@@ -101,13 +103,16 @@ export async function setHeadsDownStopTime(
 }
 
 /**
- * Stops the run and the pass in flight, and dismisses its open questions,
- * since no pass would read the answers.
+ * Stops the run and the pass in flight, and dismisses its open questions and
+ * wake-ups, since no pass would read them. Turns always-on off too, or the
+ * loop would start a fresh run a minute later.
  */
 export async function stopHeadsDown(db: Db): Promise<HeadsDownRun | null> {
+  if ((await getHeadsDownConfig().catch(() => null))?.alwaysOn) await turnAlwaysOnOff();
   const run = await stopRun(db);
   abortHeadsDownPass();
   await dismissOpenQuestions(db);
+  await cancelPendingWakes(db);
   publish({ type: "changed" });
   return run;
 }

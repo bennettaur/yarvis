@@ -12,6 +12,7 @@ import {
   MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
   saveHeadsDownConfig,
+  startOfLocalDay,
 } from "./config.ts";
 import {
   clearHeadsDown,
@@ -28,6 +29,7 @@ import { type RoutineCatalog, reloadRoutines, routineCatalog } from "./routines.
 import {
   addMessage,
   answerQuestion,
+  countPassesSince,
   dismissQuestion,
   getActiveRun,
   getPass,
@@ -38,6 +40,7 @@ import {
   listQuestions,
   listUnattendedTools,
   passCallSummaries,
+  passLimitReached,
   routineHistory,
   setToolUnattended,
 } from "./service.ts";
@@ -55,6 +58,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 /** A stalled page can't grow the stream's queue without limit. */
 const MAX_STREAM_QUEUE = 500;
 const HEARTBEAT_MS = 25_000;
+
+/** One pass a minute, all day: past that the loop couldn't start them anyway. */
+const MAX_PASSES_PER_DAY = 24 * 60;
 
 /** A page of rules at most: every pass carries the guidance in its prompt. */
 const MAX_GUIDANCE_CHARS = 4000;
@@ -102,6 +108,19 @@ const configSchema = z
       .nullable()
       .default(null),
     maxRoutinesPerPass: z.number().int().min(0).max(MAX_ROUTINES_PER_PASS).optional(),
+    // Optional, like the two above, so an older client doesn't reset them.
+    alwaysOn: z.boolean().optional(),
+    nightShift: z
+      .object({ start: z.string().regex(HHMM), end: z.string().regex(HHMM) })
+      .nullable()
+      .optional(),
+    nightShiftMinSleepMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(24 * 60)
+      .optional(),
+    maxPassesPerDay: z.number().int().min(1).max(MAX_PASSES_PER_DAY).nullable().optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -137,7 +156,12 @@ export function createHeadsDownRoutes(config: Config): Hono {
   const changed = () => publish({ type: "changed" });
 
   router.get("/", async (c) => {
-    const [run, questions] = await Promise.all([getActiveRun(db()), listQuestions(db())]);
+    const [run, questions, hd, passesToday] = await Promise.all([
+      getActiveRun(db()),
+      listQuestions(db()),
+      getHeadsDownConfig(),
+      countPassesSince(db(), startOfLocalDay(new Date())),
+    ]);
     // This run's last pass: a pass from an earlier run says nothing about when this one looks next.
     const last = run ? await lastFinishedPass(db(), run.id) : null;
     const nextPass =
@@ -147,7 +171,14 @@ export function createHeadsDownRoutes(config: Config): Hono {
     // A pass due after the stop time never runs: the run stops first.
     const nextPassAt =
       nextPass && !(run?.stopAt && run.stopAt <= nextPass) ? nextPass.toISOString() : null;
-    return c.json({ run, lastPass: last, nextPassAt, openQuestionCount: questions.length });
+    return c.json({
+      run,
+      lastPass: last,
+      nextPassAt,
+      openQuestionCount: questions.length,
+      passesToday,
+      maxPassesPerDay: hd.maxPassesPerDay,
+    });
   });
 
   router.post("/start", async (c) => {
@@ -200,13 +231,25 @@ export function createHeadsDownRoutes(config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     // A client that doesn't send these keeps what is stored rather than resetting it.
     const stored = await getHeadsDownConfig();
-    return c.json(
-      await saveHeadsDownConfig({
-        ...parsed.data,
-        passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
-        maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
-      }),
-    );
+    const wasHeldByLimit = await passLimitReached(db(), stored);
+    const saved = await saveHeadsDownConfig({
+      ...parsed.data,
+      passTimeoutMinutes: parsed.data.passTimeoutMinutes ?? stored.passTimeoutMinutes,
+      maxRoutinesPerPass: parsed.data.maxRoutinesPerPass ?? stored.maxRoutinesPerPass,
+      alwaysOn: parsed.data.alwaysOn ?? stored.alwaysOn,
+      nightShift: parsed.data.nightShift === undefined ? stored.nightShift : parsed.data.nightShift,
+      nightShiftMinSleepMinutes:
+        parsed.data.nightShiftMinSleepMinutes ?? stored.nightShiftMinSleepMinutes,
+      maxPassesPerDay:
+        parsed.data.maxPassesPerDay === undefined
+          ? stored.maxPassesPerDay
+          : parsed.data.maxPassesPerDay,
+    });
+    changed();
+    // Turning always-on on starts a run now, and lifting a limit that held the loop lets it run.
+    const lifted = wasHeldByLimit && !(await passLimitReached(db(), saved));
+    if ((saved.alwaysOn && !stored.alwaysOn) || lifted) wakeHeadsDown();
+    return c.json(saved);
   });
 
   // Read-only, like the specialists: the files are the source of truth, so the
@@ -223,6 +266,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
         description: r.description,
         everyMinutes: r.everyMinutes,
         workingHoursOnly: r.workingHoursOnly,
+        nightShift: r.nightShift,
         enabled: r.enabled,
         source: r.source,
         tools: r.tools,

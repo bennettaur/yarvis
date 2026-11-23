@@ -11,11 +11,13 @@ import type { HeadsDownRun, ToolActivity } from "../db/schema.ts";
 import { clientError } from "../llm/errors.ts";
 import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
+import { claimDueWakes, listPendingWakes } from "../scheduledTasks/service.ts";
 import { listStreams } from "../workStreams/service.ts";
 import {
   chooseSleep,
   getHeadsDownConfig,
   type HeadsDownConfig,
+  isNightShift,
   isWithinWorkingHours,
 } from "./config.ts";
 import { publish } from "./hub.ts";
@@ -58,6 +60,7 @@ const PASS_FAMILIES = [
   "browser",
   "calendar",
   "alarms",
+  "scheduledTasks",
 ];
 
 /**
@@ -217,11 +220,13 @@ export async function runPass(
     ),
   ]);
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
+  const nightShift = isNightShift(now, headsDownConfig.nightShift);
   const routines = dueRoutines({
     routines: catalog.routines,
     ...history,
     now,
     withinWorkingHours,
+    nightShift,
     limit: headsDownConfig.maxRoutinesPerPass,
   });
   // Most passes have no routine naming a tool, and skip the registry read.
@@ -231,6 +236,8 @@ export async function runPass(
     registry,
     new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
   );
+  const wakes = await claimDueWakes(db, now);
+  const pendingWakes = await listPendingWakes(db);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -359,6 +366,7 @@ export async function runPass(
       run,
       guidance: headsDownConfig.guidance,
       withinWorkingHours,
+      nightShift,
       minutesSinceUserReplied,
       messages,
       earlierMessages: earlier,
@@ -370,6 +378,8 @@ export async function runPass(
       routines,
       routinesLastDone: history.lastDone,
       routineTools: routineTools.byRoutine,
+      wakes,
+      pendingWakes,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];
@@ -457,6 +467,7 @@ export async function runPass(
       openStreams: awake?.length ?? 0,
       allWaiting: awake?.every((s) => s.status !== "active") ?? true,
       userAway: minutesSinceUserReplied >= headsDownConfig.userAwayAfterMinutes,
+      nightShift,
     },
     headsDownConfig,
   );

@@ -322,6 +322,7 @@ describe("/api/heads-down", () => {
         description: expect.any(String),
         everyMinutes: 180,
         workingHoursOnly: false,
+        nightShift: "run",
         enabled: true,
         source: "builtin",
         tools: [],

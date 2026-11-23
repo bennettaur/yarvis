@@ -1,10 +1,26 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { createSession } from "../chat/service.ts";
 import * as schema from "../db/schema.ts";
+import { listPendingWakes, scheduleTask } from "../scheduledTasks/service.ts";
 import { askUser } from "./attention.ts";
-import { createHeadsDownLoop, IDLE_CHECK_MS, type LoopDeps } from "./loop.ts";
-import { getActiveRun, listQuestions, pauseRun, setStopAt, startRun } from "./service.ts";
+import {
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  type HeadsDownConfig,
+  saveHeadsDownConfig,
+} from "./config.ts";
+import { stopHeadsDown } from "./control.ts";
+import { createHeadsDownLoop, IDLE_CHECK_MS, type LoopDeps, msUntilNextDay } from "./loop.ts";
+import {
+  getActiveRun,
+  listQuestions,
+  pauseRun,
+  setStopAt,
+  startPass,
+  startRun,
+} from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -14,11 +30,12 @@ const MIN_SLEEP_MS = 5 * 60_000;
 const PASS_TIMEOUT_MS = 90 * 60_000;
 
 /** A loop whose timers are recorded rather than run, and whose pass is a stub. */
-function testLoop(runPass: LoopDeps["runPass"]) {
+function testLoop(runPass: LoopDeps["runPass"], config: Partial<HeadsDownConfig> = {}) {
   const scheduled: number[] = [];
   const loop = createHeadsDownLoop({
     db,
     runPass,
+    config: async () => ({ ...DEFAULT_HEADS_DOWN_CONFIG, ...config }),
     minSleepMs: async () => MIN_SLEEP_MS,
     passTimeoutMs: async () => PASS_TIMEOUT_MS,
     setTimer: (_fn, ms) => {
@@ -36,7 +53,7 @@ const sleeping = (minutes: number) => async () => ({
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE heads_down_runs, heads_down_questions, attention_items, job_runs RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE heads_down_runs, heads_down_questions, attention_items, job_runs, chat_sessions RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -221,5 +238,109 @@ describe("the heads-down loop", () => {
     loop.stop();
     await loop.cycle();
     expect(scheduled).toEqual([]);
+  });
+});
+
+describe("always-on", () => {
+  it("starts a run with no focus when none is going, and runs a pass in it", async () => {
+    let passes = 0;
+    const { loop } = testLoop(
+      async () => {
+        passes++;
+        return sleeping(10)();
+      },
+      { alwaysOn: true },
+    );
+
+    await loop.cycle();
+    expect(await getActiveRun(db)).toMatchObject({ focus: null, status: "active" });
+    expect(passes).toBe(1);
+    loop.stop();
+  });
+
+  it("starts nothing while it is off", async () => {
+    const { loop } = testLoop(sleeping(10));
+    await loop.cycle();
+    expect(await getActiveRun(db)).toBeNull();
+    loop.stop();
+  });
+
+  it("is turned off by stopping the run, so the loop doesn't start another", async () => {
+    await saveHeadsDownConfig({ ...DEFAULT_HEADS_DOWN_CONFIG, alwaysOn: true });
+    await startRun(db, null);
+    await stopHeadsDown(db);
+    expect((await getHeadsDownConfig()).alwaysOn).toBe(false);
+    await saveHeadsDownConfig(DEFAULT_HEADS_DOWN_CONFIG);
+  });
+});
+
+describe("the daily pass limit", () => {
+  it("runs no pass once today's passes reach it, and looks again after midnight", async () => {
+    const run = await startRun(db, null);
+    for (let i = 0; i < 3; i++) await startPass(db, run.id, (await createSession(db)).id);
+    let passes = 0;
+    const { loop, scheduled } = testLoop(
+      async () => {
+        passes++;
+        return sleeping(10)();
+      },
+      { maxPassesPerDay: 3 },
+    );
+
+    await loop.cycle();
+    expect(passes).toBe(0);
+    expect(scheduled[0]).toBeGreaterThan(msUntilNextDay() - 60_000);
+    expect(scheduled[0]).toBeLessThanOrEqual(msUntilNextDay() + 2000);
+    loop.stop();
+  });
+
+  it("runs passes while under it", async () => {
+    const run = await startRun(db, null);
+    await startPass(db, run.id, (await createSession(db)).id);
+    let passes = 0;
+    const { loop } = testLoop(
+      async () => {
+        passes++;
+        return sleeping(10)();
+      },
+      { maxPassesPerDay: 3 },
+    );
+    await loop.cycle();
+    expect(passes).toBe(1);
+    loop.stop();
+  });
+});
+
+describe("wake-ups", () => {
+  const scheduleWake = async (delayMinutes: number) =>
+    scheduleTask(db, {
+      sessionId: (await createSession(db)).id,
+      title: "Check PR 42",
+      prompt: "Check whether PR 42 is green.",
+      delayMinutes,
+      origin: "heads-down",
+      provider: null,
+      model: null,
+      attempt: 1,
+      parentId: null,
+      wakesPass: true,
+    });
+
+  it("sleeps no later than the next wake-up a pass scheduled", async () => {
+    await startRun(db, null);
+    await scheduleWake(20);
+    const { loop, scheduled } = testLoop(sleeping(60));
+
+    await loop.cycle();
+    expect(scheduled[0]).toBeLessThanOrEqual(20 * 60_000);
+    expect(scheduled[0]).toBeGreaterThan(19 * 60_000);
+    loop.stop();
+  });
+
+  it("are cancelled when heads-down mode stops", async () => {
+    await startRun(db, null);
+    await scheduleWake(20);
+    await stopHeadsDown(db);
+    expect(await listPendingWakes(db)).toEqual([]);
   });
 });

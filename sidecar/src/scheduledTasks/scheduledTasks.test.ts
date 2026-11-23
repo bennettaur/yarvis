@@ -11,8 +11,11 @@ import { type ScheduledTaskTurnRunner, scheduledTaskMessage, scheduledTasksJob }
 import {
   cancelScheduledTask,
   claimDueScheduledTasks,
+  claimDueWakes,
   listPendingScheduledTasks,
+  listPendingWakes,
   MAX_PENDING_PER_SESSION,
+  MAX_PENDING_WAKES,
   MAX_SCHEDULED_TASK_ATTEMPTS,
   scheduleTask,
 } from "./service.ts";
@@ -51,7 +54,9 @@ function ctx(now: Date): JobContext {
   return { db, config, cursor: null, now, trigger: "schedule" };
 }
 
-async function schedule(input: Partial<typeof base> & { sessionId: string; prompt?: string }) {
+async function schedule(
+  input: Partial<typeof base> & { sessionId: string; prompt?: string; wakesPass?: boolean },
+) {
   const result = await scheduleTask(db, { ...base, prompt: "are my PRs mergeable?", ...input });
   if ("error" in result) throw new Error(result.error);
   return result.scheduledTask;
@@ -313,5 +318,62 @@ describe("the stored message", () => {
     const task = await schedule({ sessionId: await newChat(), prompt: "are my PRs mergeable?" });
     expect(scheduledTaskMessage(task)).toStartWith("[Scheduled task: Check PRs, scheduled ");
     expect(scheduledTaskMessage(task)).toEndWith("\nare my PRs mergeable?");
+  });
+});
+
+describe("heads-down wake-ups", () => {
+  const passTurn = {
+    provider: null,
+    model: null,
+    attempt: 0,
+    scheduledTaskId: null,
+    origin: "heads-down" as const,
+  };
+  const wake = async (delayMinutes = 10) =>
+    schedule({ sessionId: await newChat(), origin: "heads-down", delayMinutes, wakesPass: true });
+
+  it("lets a pass ask for one, and no other turn", async () => {
+    const sessionId = await newChat();
+    const fromPass = buildScheduledTaskTools(db, sessionId, passTurn);
+    await fromPass.schedule_task.execute?.(
+      { title: "Check PR 42", prompt: "merge PR 42 if green", delayMinutes: 30, wakePass: true },
+      opts,
+    );
+    expect(await listPendingWakes(db)).toMatchObject([{ title: "Check PR 42" }]);
+
+    // A heads-down scheduled task's own read-only turn, and a chat turn, can't.
+    const fromTask = buildScheduledTaskTools(db, sessionId, {
+      ...passTurn,
+      attempt: 1,
+      scheduledTaskId: crypto.randomUUID(),
+    });
+    const fromChat = buildScheduledTaskTools(db, sessionId, { ...passTurn, origin: "chat" });
+    for (const tools of [fromTask, fromChat]) {
+      await tools.schedule_task.execute?.(
+        { title: "Sneaky", prompt: "x", delayMinutes: 30, wakePass: true } as never,
+        opts,
+      );
+    }
+    expect((await listPendingWakes(db)).map((w) => w.title)).toEqual(["Check PR 42"]);
+  });
+
+  it("are left to the loop: the scheduled-tasks job never runs one", async () => {
+    await wake(1);
+    const now = new Date(Date.now() + 2 * 60_000);
+    expect(await claimDueScheduledTasks(db, now, 5)).toEqual([]);
+    expect(await claimDueWakes(db, now)).toMatchObject([{ status: "fired", wakesPass: true }]);
+    expect(await claimDueWakes(db, now)).toEqual([]);
+  });
+
+  it("caps how many can wait across every pass", async () => {
+    for (let i = 0; i < MAX_PENDING_WAKES; i++) await wake();
+    const result = await scheduleTask(db, {
+      ...base,
+      sessionId: await newChat(),
+      prompt: "one more",
+      origin: "heads-down",
+      wakesPass: true,
+    });
+    expect(result).toEqual({ error: expect.stringContaining("already has") });
   });
 });
