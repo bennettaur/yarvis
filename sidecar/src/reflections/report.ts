@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createArtifact } from "../artifacts/service.ts";
+import { createArtifact, listArtifacts, updateArtifact } from "../artifacts/service.ts";
 import { raiseAttention } from "../attention/raise.ts";
 import type { Db } from "../db/client.ts";
 
@@ -22,24 +22,41 @@ export const SUGGESTION_TARGETS = [
   "Claude instructions",
 ] as const;
 
-const text = (max: number) => z.string().trim().min(1).max(max);
+/**
+ * One line of plain text. The model writes it after reading other people's
+ * comments, so a newline (a heading of its own), a link or an image can't get
+ * into the rendered report.
+ */
+const boundedText = (max: number) =>
+  z
+    .string()
+    .transform((v) => v.replace(/\s+/g, " ").trim())
+    .pipe(
+      z
+        .string()
+        .min(1)
+        .max(max)
+        .refine((v) => !/https?:\/\/|\]\(|!\[/i.test(v), "links aren't allowed"),
+    );
 
 export const reflectionReportSchema = z.object({
-  summary: text(1500).describe("What the week showed, in a few sentences"),
+  summary: boundedText(1500).describe("What the week showed, in a few sentences"),
   suggestions: z
     .array(
       z.object({
         target: z.enum(SUGGESTION_TARGETS),
-        change: text(800).describe("The concrete edit: what to add, remove or reword"),
-        evidence: text(800).describe("The PRs and comments that show it, as owner/repo#number"),
+        change: boundedText(800).describe("The concrete edit: what to add, remove or reword"),
+        evidence: boundedText(800).describe(
+          "The PRs and comments that show it, as owner/repo#number",
+        ),
       }),
     )
     .max(15),
   noise: z
     .array(
       z.object({
-        flag: text(300).describe("The kind of flag verification raised"),
-        evidence: text(500).describe("How often and on which PRs it went unanswered"),
+        flag: boundedText(300).describe("The kind of flag verification raised"),
+        evidence: boundedText(500).describe("How often and on which PRs it went unanswered"),
       }),
     )
     .max(10)
@@ -49,14 +66,14 @@ export const reflectionReportSchema = z.object({
 
 export type ReflectionReport = z.infer<typeof reflectionReportSchema>;
 
-const HEADINGS: Record<ReflectionKind, { title: string; item: string }> = {
+const HEADINGS: Record<ReflectionKind, { title: string; source: string }> = {
   review: {
     title: "Review reflection",
-    item: "what verification missed in your reviews",
+    source: "what verification missed in your reviews",
   },
   generation: {
     title: "Generation reflection",
-    item: "what reviewers caught in your merged PRs",
+    source: "what reviewers caught in your merged PRs",
   },
 };
 
@@ -86,7 +103,7 @@ export function renderReflection(
   lines.push(
     "## Applying these",
     "",
-    "Nothing has been changed. To apply them, ask Yarvis to open a workspace on the repo and make these edits; you review the diff before anything is pushed.",
+    "These suggestions were written by a model from other people's comments, so check each against the PRs before applying it. Nothing has been changed. To apply them, ask Yarvis to open a workspace on the repo and make these edits; you review the diff before anything is pushed.",
   );
   return lines.join("\n");
 }
@@ -102,20 +119,42 @@ export async function saveReflection(
   now: Date,
 ): Promise<{ artifactId: string; suggestions: number }> {
   const week = weekStart(now);
-  const artifact = await createArtifact(db, {
-    title: `${HEADINGS[kind].title}: week of ${week}`,
-    content: renderReflection(kind, report, week),
-    writer: "heads-down",
-    untrusted: true,
-  });
+  const title = `${HEADINGS[kind].title}: week of ${week}`;
+  const content = renderReflection(kind, report, week);
+  // One report per kind and week, so a second save replaces the first.
+  const existing = (await listArtifacts(db, { titleContains: title })).find(
+    (a) => a.title === title && a.createdBy === "heads-down",
+  );
+  const artifact =
+    (existing &&
+      (await updateArtifact(db, existing.id, {
+        content,
+        writer: "heads-down",
+        untrusted: true,
+      }))) ||
+    (await createArtifact(db, { title, content, writer: "heads-down", untrusted: true }));
   const count = report.suggestions.length;
   await raiseAttention(db, {
     category: "general",
     kind: "message",
     title: `${HEADINGS[kind].title} is ready`,
-    body: `${count} suggested ${count === 1 ? "change" : "changes"} from ${HEADINGS[kind].item}. Open the report; to apply them, ask for a workspace.`,
+    body: `${count} suggested ${count === 1 ? "change" : "changes"} from ${HEADINGS[kind].source}. Open the report; to apply them, ask for a workspace.`,
     navTarget: { type: "artifact", id: artifact.id },
     dedupeKey: `reflection:${kind}:${week}`,
   });
   return { artifactId: artifact.id, suggestions: count };
+}
+
+/** Targets only the generation reflection proposes: they are about code the user wrote, not about reviews. */
+const GENERATION_ONLY_TARGETS: readonly string[] = ["repo AGENTS.md", "Claude instructions"];
+
+/** Why a report doesn't fit its kind, or null. */
+export function kindProblem(kind: ReflectionKind, report: ReflectionReport): string | null {
+  if (kind === "review") {
+    if (report.suggestions.some((s) => GENERATION_ONLY_TARGETS.includes(s.target))) {
+      return "a review reflection suggests changes to verification, not to AGENTS.md or instructions";
+    }
+    return null;
+  }
+  return report.noise?.length ? "noise belongs to the review reflection" : null;
 }

@@ -1,6 +1,7 @@
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import { createGitHubClient, type ReviewContributions } from "../github/client.ts";
+import { describeError } from "../llm/errors.ts";
 import type { PrDetail, PrSummary, ReviewComment } from "../pr/types.ts";
 import { refKey } from "../pr/types.ts";
 import { type ChecklistReport, storedReportFor } from "../reviewWorkspaces/checklist.ts";
@@ -97,6 +98,12 @@ export interface ReflectionDeps {
   now?: () => Date;
 }
 
+export function nowOf(deps: ReflectionDeps): Date {
+  return (deps.now ?? (() => new Date()))();
+}
+
+const prLabel = (owner: string, repo: string, number: number) => `${owner}/${repo}#${number}`;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function windowOf(now: Date, days: number): { from: Date; to: Date } {
@@ -173,10 +180,7 @@ async function reflectOn(
     repo: summary.repo,
     number: summary.number,
   });
-  const report = await loadReport(key).catch((e) => {
-    console.error("[reflection] could not read a verification report:", e);
-    return null;
-  });
+  const report = await loadReport(key);
   const comments = commentsOf(detail, keep);
   const flags: Flag[] = flagsOf(report).map((f) => ({ ...f, matched: false }));
   for (const comment of comments) {
@@ -188,7 +192,7 @@ async function reflectOn(
     }
   }
   return {
-    ref: `${summary.owner}/${summary.repo}#${summary.number}`,
+    ref: prLabel(summary.owner, summary.repo, summary.number),
     url: summary.url,
     title: detail.title,
     verification: report ? "report" : "none",
@@ -201,6 +205,7 @@ async function reflectOn(
   };
 }
 
+/** Counted over what is returned, so a PR marked `truncated` is undercounted. */
 function totals(prs: ReflectedPr[]) {
   const verified = prs.filter((p) => p.verification === "report");
   return {
@@ -227,7 +232,7 @@ export async function gatherReviewReflection(
   options: { days: number },
   deps: ReflectionDeps = {},
 ): Promise<ReviewReflectionData> {
-  const { from, to } = windowOf((deps.now ?? (() => new Date()))(), options.days);
+  const { from, to } = windowOf(nowOf(deps), options.days);
   const window = { from: from.toISOString(), to: to.toISOString() };
   const github = clientFor(config, deps);
   if (!github) {
@@ -249,7 +254,7 @@ export async function gatherReviewReflection(
 
   const seen = new Set<string>();
   const targets = contributions.filter((c) => {
-    const key = `${c.owner}/${c.repo}#${c.number}`;
+    const key = prLabel(c.owner, c.repo, c.number);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -264,8 +269,8 @@ export async function gatherReviewReflection(
       const url = `https://github.com/${target.owner}/${target.repo}/pull/${target.number}`;
       prs.push(await reflectOn({ ...target, url }, detail, (c) => c.author === login, loadReport));
     } catch (e) {
-      console.error("[reflection] could not read a reviewed PR:", e);
-      unavailable.push(`${target.owner}/${target.repo}#${target.number}`);
+      console.error("[reflection] could not read a reviewed PR:", describeError(e));
+      unavailable.push(prLabel(target.owner, target.repo, target.number));
     }
   }
   const draftOutcomes = await loadDraftOutcomes(
@@ -286,7 +291,7 @@ export async function gatherGenerationReflection(
   options: { days: number },
   deps: ReflectionDeps = {},
 ): Promise<GenerationReflectionData> {
-  const { from, to } = windowOf((deps.now ?? (() => new Date()))(), options.days);
+  const { from, to } = windowOf(nowOf(deps), options.days);
   const window = { from: from.toISOString(), to: to.toISOString() };
   const rootCauses = await loadRootCauseNotes(db, from);
   const github = clientFor(config, deps);
@@ -315,8 +320,8 @@ export async function gatherGenerationReflection(
       const detail = await github.prDetail(summary.owner, summary.repo, summary.number);
       prs.push(await reflectOn(summary, detail, (c) => c.author !== login && !c.isBot, loadReport));
     } catch (e) {
-      console.error("[reflection] could not read a merged PR:", e);
-      unavailable.push(`${summary.owner}/${summary.repo}#${summary.number}`);
+      console.error("[reflection] could not read a merged PR:", describeError(e));
+      unavailable.push(prLabel(summary.owner, summary.repo, summary.number));
     }
   }
   return { window, prs, ...totals(prs), rootCauses, unavailable };

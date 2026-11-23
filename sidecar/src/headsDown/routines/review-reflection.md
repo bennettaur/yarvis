@@ -11,7 +11,7 @@ Call gather_review_reflection. For each PR with verification "report", read the 
 
 A comment and a flag with matched true sit on the same spot. Judge the rest by meaning: an unmatched comment may still be about something a flag described in other words. A comment verification missed is one no flag covers. Look for what the missed comments have in common (a kind of bug, a repo convention, a file type) and turn that into one concrete change: which check to add or sharpen, and what it should look for. Name the target: the verify-pr skill, the reviewer agents, the review-scout prompt or the verification layer.
 
-A flag the user ignored (flagsWithoutComment, or a flag with matched false that the user's comments never touch) is likely noise when the same kind of flag goes unanswered on several PRs. Report it under noise, with how often. One ignored flag is not a pattern.
+A flag with matched false is one the user never commented near. It is likely noise when the same kind of flag goes unanswered on several PRs. Report it under noise, with how often. One ignored flag is not a pattern.
 
 If draftOutcomes has entries, dropped drafts count as noise and edited ones show how the wording missed.
 
