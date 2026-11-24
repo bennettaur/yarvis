@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useRef } from "react";
 import { recordEvent } from "../lib/events";
-import { usePrDetail, usePrStack } from "../lib/pr/cache";
+import { usePrDetail, usePrFiles, usePrStack } from "../lib/pr/cache";
 import { refKey } from "../lib/pr/ref";
 import { isStacked, layerIndexOf, needsUpdateCount } from "../lib/pr/stack";
 import type { CheckItem, PrRef, PrStack, PrSummary, Reviewer } from "../lib/pr/types";
@@ -168,6 +168,9 @@ export default function PrDetailView({
 }) {
   const prRef = pr.ref;
   const { data: detail, error, loading, refreshing } = usePrDetail(prRef);
+  // The same request the diffs below render, so a merge is pinned to the
+  // commit on screen rather than to a detail that may have reloaded since.
+  const diffHead = usePrFiles(prRef).data?.headSha ?? null;
   // Null for a provider with no stacks (Azure), and a one-entry stack for a PR
   // that simply isn't stacked — the section renders for neither.
   const { data: fetchedStack } = usePrStack(prRef);
@@ -210,6 +213,7 @@ export default function PrDetailView({
       <PrFloatingHeader
         pr={pr}
         detail={detail}
+        diffHeadSha={diffHead}
         loading={loading}
         refreshing={refreshing}
         onBack={onBack}

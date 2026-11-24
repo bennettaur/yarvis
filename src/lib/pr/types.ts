@@ -200,6 +200,15 @@ export interface PrFile {
 }
 
 /**
+ * A pull request's changed files and the commit they were read at. `headSha`
+ * is null when the provider doesn't say (Azure) or a push landed mid-read.
+ */
+export interface PrFileSet {
+  headSha: string | null;
+  files: PrFile[];
+}
+
+/**
  * A line comment the user wants to post. A multi-line comment names its first
  * line in `startLine`; `line` is always the last.
  */

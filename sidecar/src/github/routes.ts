@@ -273,14 +273,15 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
-  // Changed files with unified-diff patches for the in-app review view.
+  // Changed files with unified-diff patches for the in-app review view, and the
+  // commit they were read at, which a merge from that view is pinned to.
   router.get("/pr/:owner/:repo/:number/files", async (c) => {
     const gh = client();
     if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+      return c.json(await gh.prFilesAtHead(params.owner, params.repo, params.number));
     } catch (e) {
       return githubErrorResponse(c, e);
     }

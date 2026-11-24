@@ -43,6 +43,7 @@ import type {
   PostedCommentResult,
   PrDetail,
   PrFile,
+  PrFileSet,
   PrRef,
   PrStatus,
   PrSummary,
@@ -60,8 +61,10 @@ export const fetchPrStatus = (ref: PrRef): Promise<PrStatus> =>
 export const fetchPrDetail = (ref: PrRef): Promise<PrDetail> =>
   ref.provider === "github" ? ghPrDetail(ref) : azPrDetail(ref);
 
-export const fetchPrFiles = (ref: PrRef): Promise<PrFile[]> =>
-  ref.provider === "github" ? ghPrFiles(ref) : azPrFiles(ref);
+export const fetchPrFiles = (ref: PrRef): Promise<PrFileSet> =>
+  ref.provider === "github"
+    ? ghPrFiles(ref)
+    : azPrFiles(ref).then((files) => ({ headSha: null, files }));
 
 /**
  * One file's diff. GitHub returns patches in the file list, so the file is

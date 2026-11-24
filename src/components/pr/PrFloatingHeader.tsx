@@ -316,7 +316,12 @@ function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState
  * head the surface is showing, which a review records as where the user
  * reviewed.
  */
-export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
+export function usePrActions(
+  prRef: PrRef,
+  seen?: SeenCommits,
+  // The commit a merge is pinned to, when it differs from what reviews record.
+  mergeHeadSha: string | null | undefined = seen?.headSha,
+) {
   // Publishing, approving or merging changes both how this pull request reads
   // and how its layer reads in a stack, so the two caches are dropped together.
   const invalidatePr = (ref: PrRef) => {
@@ -359,9 +364,9 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
 
   const runMerge = async (op: "merge" | "auto_merge", method: MergeMethod) => {
     // Pinned to the head this surface shows, so a push since can't merge
-    // unseen. With no head yet (a checkout still cloning) it refuses rather
-    // than merge unpinned.
-    const headSha = seen?.headSha;
+    // unseen. With no head yet (a checkout still cloning, a diff still
+    // loading) it refuses rather than merge unpinned.
+    const headSha = mergeHeadSha;
     if (!headSha) {
       setError("There's no reviewed commit to merge yet.");
       return;
@@ -583,6 +588,7 @@ export function PrStatusBadge({ status }: { status: PrUiStatus }) {
 export default function PrFloatingHeader({
   pr,
   detail,
+  diffHeadSha = null,
   loading = false,
   refreshing = false,
   onBack,
@@ -591,6 +597,11 @@ export default function PrFloatingHeader({
 }: {
   pr: PrSummary;
   detail: PrDetail | null;
+  /**
+   * The commit the diff on screen was read at. Merge is pinned to it, and is
+   * refused while it's unknown (still loading, or a push landed mid-read).
+   */
+  diffHeadSha?: string | null;
   /**
    * Whether the detail behind this header is still on its way. Clicking a layer
    * of a stack swaps the pull request instantly and then waits on a provider
@@ -605,8 +616,9 @@ export default function PrFloatingHeader({
   onToggleStar: (pr: PrSummary, starred: boolean) => Promise<void>;
 }) {
   const prRef: PrRef = pr.ref;
-  // The classic page shows the provider's diff, which is at the detail's head.
-  const actions = usePrActions(prRef, { headSha: detail?.headSha });
+  // Reviews record the diff's commit, or the detail's where the provider
+  // doesn't name one (Azure). Merge takes only the diff's.
+  const actions = usePrActions(prRef, { headSha: diffHeadSha ?? detail?.headSha }, diffHeadSha);
   const [starPending, setStarPending] = useState(false);
   // The summary's title can be empty when the entry came from the workspace
   // poller cache, which doesn't store PR titles, so prefer the detail's.

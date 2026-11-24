@@ -1,9 +1,9 @@
 import { mock } from "bun:test";
-import type { PrFile } from "../lib/pr/types";
+import type { PrFile, PrFileSet } from "../lib/pr/types";
 import { passThrough } from "./passThrough";
 
 interface FilesResource {
-  data: PrFile[] | null;
+  data: PrFileSet | null;
   error: string | null;
   loading: boolean;
   refreshing: boolean;
@@ -38,11 +38,11 @@ export function setPrFileContent(text: string | null): void {
  */
 export function setPrFiles(
   data: PrFile[] | null,
-  over: Partial<Omit<FilesResource, "data">> = {},
+  over: Partial<Omit<FilesResource, "data">> & { headSha?: string | null } = {},
 ): void {
   stubPrFiles();
   filesResource = {
-    data,
+    data: data && { headSha: over.headSha ?? null, files: data },
     error: over.error ?? null,
     loading: over.loading ?? false,
     refreshing: over.refreshing ?? false,

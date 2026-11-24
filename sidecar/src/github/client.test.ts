@@ -789,6 +789,30 @@ describe("github client", () => {
     expect(bodies[1]!.variables).toEqual({ id: "PR_node2", method: "MERGE", head });
   });
 
+  describe("prFilesAtHead", () => {
+    const file = { filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@" };
+    // Answers the PR read with each head in turn, so a test can move the head mid-read.
+    const pushingFetch = (heads: string[]) =>
+      (async (url: string) => {
+        const path = String(url).replace("https://api.github.com", "");
+        const body = path.includes("/files") ? [file] : { head: { sha: heads.shift() } };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch;
+
+    it("names the commit the files were read at", async () => {
+      const head = "c".repeat(40);
+      const gh = new GitHubClient("t", pushingFetch([head, head]));
+      const result = await gh.prFilesAtHead("o", "r", 1);
+      expect(result.headSha).toBe(head);
+      expect(result.files.map((f) => f.filename)).toEqual(["a.ts"]);
+    });
+
+    it("names no commit when a push lands mid-read", async () => {
+      const gh = new GitHubClient("t", pushingFetch(["c".repeat(40), "d".repeat(40)]));
+      expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();
+    });
+  });
+
   it("fetches a single PR's list summary", async () => {
     const gh = new GitHubClient(
       "t",

@@ -503,7 +503,9 @@ export default function PrFileDiffs({
   focus?: DiffFocus | null;
 }) {
   const insights = usePrInsights(prRef);
-  const { data, error, loading } = usePrFiles(prRef);
+  const files = usePrFiles(prRef);
+  const { error, loading } = files;
+  const data = files.data?.files;
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
   const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
