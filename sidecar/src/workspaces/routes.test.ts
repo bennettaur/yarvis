@@ -1259,6 +1259,77 @@ describe("repo routes", () => {
     expect(((await cleared.json()) as { tracker: unknown }).tracker).toBeNull();
   });
 
+  it("saves a repo's playbooks, trims them, and replaces the whole set on edit", async () => {
+    const repo = await addRepo();
+    const patch = (body: unknown) =>
+      app.request(`/api/repos/${repo.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const playbooks = async (res: Response) =>
+      ((await res.json()) as { playbooks: unknown }).playbooks;
+
+    const set = await patch({ playbooks: { deploy: "  ship it  ", revert: "git revert" } });
+    expect(await playbooks(set)).toEqual({ deploy: "ship it", revert: "git revert" });
+
+    const renamed = await patch({ name: "renamed" });
+    expect(await playbooks(renamed)).toEqual({ deploy: "ship it", revert: "git revert" });
+
+    const replaced = await patch({ playbooks: { deploy: "", testStaging: "run e2e" } });
+    expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e" });
+  });
+
+  it("stores playbooks given when a repo is created, and lists none as an empty set", async () => {
+    const bare = await addRepo();
+    const created = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        cloneUrl: "git@github.com:acme/with-playbooks.git",
+        playbooks: { deploy: "  ship it  ", revert: "   ", testStaging: null },
+      }),
+    });
+    expect(created.status).toBe(201);
+    expect(((await created.json()) as { playbooks: unknown }).playbooks).toEqual({
+      deploy: "ship it",
+    });
+
+    const tooLong = await app.request("/api/repos", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        cloneUrl: "git@github.com:acme/too-long.git",
+        playbooks: { deploy: "x".repeat(4001) },
+      }),
+    });
+    expect(tooLong.status).toBe(400);
+
+    const list = (await (await app.request("/api/repos", { headers: auth })).json()) as Array<{
+      id: string;
+      playbooks: unknown;
+    }>;
+    expect(list.find((r) => r.id === bare.id)?.playbooks).toEqual({});
+  });
+
+  it("rejects a playbook over the length cap or of the wrong type", async () => {
+    const repo = await addRepo();
+    for (const playbooks of [{ deploy: "x".repeat(4001) }, { deploy: 5 }]) {
+      const res = await app.request(`/api/repos/${repo.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify({ playbooks }),
+      });
+      expect(res.status).toBe(400);
+    }
+    const ok = await app.request(`/api/repos/${repo.id}`, {
+      method: "PATCH",
+      headers: jsonAuth,
+      body: JSON.stringify({ playbooks: { deploy: "x".repeat(4000) } }),
+    });
+    expect(ok.status).toBe(200);
+  });
+
   it("rejects a tracker missing its project or with an unsafe project name", async () => {
     const repo = await addRepo();
     for (const tracker of [

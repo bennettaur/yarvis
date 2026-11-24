@@ -262,6 +262,44 @@ describe("workspace tools", () => {
     expect(result[0]!.name).toBe("widget");
   });
 
+  it("get_repo_playbook returns the filled prompts by repo name or owner/repo", async () => {
+    await createRepo(db, config, {
+      cloneUrl: "https://github.com/acme/widget.git",
+      playbooks: { deploy: "  Run the deploy workflow.  ", revert: "", pickReviewer: null },
+    });
+    await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const byName = await tools.get_repo_playbook.execute!({ repo: "Widget" }, opts);
+    const byFullName = await tools.get_repo_playbook.execute!({ repo: "acme/widget" }, opts);
+    const empty = await tools.get_repo_playbook.execute!({ repo: "gadget" }, opts);
+
+    expect(byName).toEqual({
+      repo: "acme/widget",
+      playbook: { deploy: "Run the deploy workflow." },
+    });
+    expect(byFullName).toEqual(byName);
+    expect(empty).toEqual({ repo: "acme/gadget", playbook: {} });
+  });
+
+  it("get_repo_playbook says so for an unknown repo and asks for owner/repo when a name is shared", async () => {
+    await createRepo(db, config, { cloneUrl: "https://github.com/acme/widget.git", name: "app" });
+    await createRepo(db, config, { cloneUrl: "https://github.com/other/widget.git", name: "app" });
+    const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
+
+    const missing = (await tools.get_repo_playbook.execute!({ repo: "nope" }, opts)) as {
+      error: string;
+    };
+    const shared = (await tools.get_repo_playbook.execute!({ repo: "app" }, opts)) as {
+      error: string;
+      candidates: string[];
+    };
+
+    expect(missing.error).toContain("not found");
+    expect(shared.error).toContain("owner/repo");
+    expect(shared.candidates.sort()).toEqual(["acme/widget", "other/widget"]);
+  });
+
   it("list_repos says which tracker each repo's tickets go to", async () => {
     await createRepo(db, config, {
       cloneUrl: "https://github.com/acme/widget.git",

@@ -111,6 +111,7 @@ import {
   type IntegrityFinding,
 } from "./integrity.ts";
 import { writeMcpConfig } from "./mcpConfig.ts";
+import { normalizePlaybooks, type PlaybookInput } from "./playbooks.ts";
 import { isOnBranch, orderPrs, prOnOwnBranch } from "./prs.ts";
 import { deleteWorkspaceReviewComments } from "./reviewComments.ts";
 import { isSafeBranch, resolveAdminName } from "./sandboxPaths.ts";
@@ -130,6 +131,7 @@ export interface CreateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: PlaybookInput;
 }
 
 export interface UpdateRepoInput {
@@ -139,6 +141,7 @@ export interface UpdateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: PlaybookInput;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */
@@ -354,6 +357,7 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       runScript: input.runScript ?? null,
       pullIssues: input.pullIssues ?? false,
       tracker: input.tracker ?? null,
+      playbooks: normalizePlaybooks(input.playbooks ?? {}),
     })
     .returning();
   return row!;
@@ -405,6 +409,7 @@ export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Pr
   if (patch.runScript !== undefined) values.runScript = patch.runScript;
   if (patch.pullIssues !== undefined) values.pullIssues = patch.pullIssues;
   if (patch.tracker !== undefined) values.tracker = patch.tracker;
+  if (patch.playbooks !== undefined) values.playbooks = normalizePlaybooks(patch.playbooks);
   if (patch.cloneUrl !== undefined) {
     assertSafeCloneUrl(patch.cloneUrl);
     const parsed = parseGitUrl(patch.cloneUrl);

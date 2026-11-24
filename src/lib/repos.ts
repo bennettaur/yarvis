@@ -1,6 +1,45 @@
 import { sidecarFetch } from "./api";
 import type { PrRef } from "./pr/types";
 
+// Mirrors the sidecar's MAX_PLAYBOOK_CHARS, PLAYBOOK_KEYS and RepoPlaybooks.
+export const PLAYBOOK_MAX_CHARS = 4000;
+
+/** The prompts a repo can carry for shipping a PR, in the order Settings shows them. */
+export const PLAYBOOK_FIELDS = [
+  {
+    key: "testStaging",
+    label: "Test in staging",
+    hint: "How to check a change once it is on staging.",
+  },
+  { key: "deploy", label: "Deploy", hint: "The manual steps to deploy, if it isn't automatic." },
+  {
+    key: "monitorDeploy",
+    label: "Monitor the deploy",
+    hint: "What to watch while a deploy rolls out.",
+  },
+  {
+    key: "monitorProduction",
+    label: "Monitor production",
+    hint: "What to watch in production after a deploy.",
+  },
+  {
+    key: "testProduction",
+    label: "Test in production",
+    hint: "How to check a change is working in production.",
+  },
+  { key: "revert", label: "Revert", hint: "How to back a change out when it goes wrong." },
+  {
+    key: "pickReviewer",
+    label: "Pick a reviewer",
+    hint: "Who should review a PR here, and how to choose.",
+  },
+] as const;
+
+export type PlaybookKey = (typeof PLAYBOOK_FIELDS)[number]["key"];
+
+/** Only prompts with text are present. */
+export type RepoPlaybooks = Partial<Record<PlaybookKey, string>>;
+
 /** A repo yarvis manages a primary clone + worktrees for. */
 export interface Repo {
   id: string;
@@ -15,6 +54,7 @@ export interface Repo {
   pullIssues: boolean;
   /** Where the repo's tickets are filed; mirrors the sidecar's `RepoTracker`. */
   tracker: RepoTracker | null;
+  playbooks: RepoPlaybooks;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,6 +71,7 @@ export interface CreateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: RepoPlaybooks;
 }
 
 export interface UpdateRepoInput {
@@ -40,6 +81,7 @@ export interface UpdateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: RepoPlaybooks;
 }
 
 /**

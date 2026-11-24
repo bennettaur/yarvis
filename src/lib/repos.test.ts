@@ -98,6 +98,7 @@ describe("repoPrRef", () => {
     runScript: null,
     pullIssues: false,
     tracker: null,
+    playbooks: {},
     createdAt: "",
     updatedAt: "",
   };

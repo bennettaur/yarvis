@@ -10,6 +10,7 @@ import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.t
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
 import { defaultGitRunner } from "./git.ts";
+import { repoPlaybooksSchema } from "./playbooks.ts";
 import {
   detectWorkspacePrs,
   linkWorkspacePr,
@@ -66,6 +67,7 @@ const createRepoSchema = z.object({
   runScript: z.string().nullish(),
   pullIssues: z.boolean().optional(),
   tracker: repoTrackerSchema.nullish(),
+  playbooks: repoPlaybooksSchema.optional(),
 });
 
 const updateRepoSchema = z.object({
@@ -76,6 +78,8 @@ const updateRepoSchema = z.object({
   pullIssues: z.boolean().optional(),
   // Null clears the setting; leaving it out keeps it.
   tracker: repoTrackerSchema.nullish(),
+  // Replaces every prompt; one left out or empty is cleared.
+  playbooks: repoPlaybooksSchema.optional(),
 });
 
 const createWorkspaceSchema = z.object({
