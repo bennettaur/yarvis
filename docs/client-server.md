@@ -820,9 +820,10 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   fresh device could rotate the key, then use the new key to replace the
   passphrase.
 - `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath?,
-  grantExpiresAt? }`, with the key and socket only while the agent runs and
-  `grantExpiresAt` only while signing is allowed without asking; 404 when
-  `ssh_agent.enabled = false`.
+  grantExpiresAt?, grantRemainingMs? }`, with the key and socket only while the
+  agent runs and the grant fields only while signing is allowed without
+  asking; 404 when `ssh_agent.enabled = false`. A client counts down from
+  `grantRemainingMs`, since its clock may not match the server's.
 - `DELETE /api/vault/ssh-agent/grant` (`approve`) → `204`. Goes back to
   asking before every signature. Also `204` when no grant was active.
 
@@ -839,10 +840,13 @@ An approver can also allow signing for a while, up to an hour
 (`allowForSecs` on the answer), as 1Password's agent does. Until it ends,
 signatures are made without asking, for any process that can reach the
 socket, and each one appends `ssh_agent.signed`; one that can't be recorded is
-refused. A grant whose `ssh_agent.grant_started` can't be recorded is dropped,
-though the signature that was approved still goes ahead. The grant runs on
-wall-clock time, so a Mac that sleeps through it wakes with it ended. The grant is kept only in memory, so locking the vault, the agent
-stopping or a restart ends it, as does `DELETE /api/vault/ssh-agent/grant`.
+refused. `ssh_agent.grant_started` is recorded before the grant can be used;
+if it can't be, there is no grant, though the signature that was approved
+still goes ahead. A grant ends by whichever of the wall clock and a monotonic
+clock runs out first, so a Mac that sleeps through it wakes with it ended,
+and setting the clock back can't stretch it. Of two grants, the one that ends
+later is kept. The grant is kept only in memory, so locking the vault, the
+agent stopping or a restart ends it, as does `DELETE /api/vault/ssh-agent/grant`.
 It never widens what is signed: the namespace and hash checks still come
 first.
 

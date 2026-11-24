@@ -7,7 +7,8 @@
 //! `socket_dir` puts it) while the vault is unlocked, and stops (removing the
 //! socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
-//! host, and every signature waits for an answer on the approvals route.
+//! host, and every signature waits for an answer on the approvals route
+//! unless a grant (below) covers it.
 //!
 //! An approver can also allow signing for a while ([`MAX_GRANT`] at most), as
 //! 1Password's agent does. Until then every signature is made without asking,
@@ -17,8 +18,9 @@
 //! /api/vault/ssh-agent/grant`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -99,13 +101,13 @@ impl SshAgent {
         lock(&self.0).as_ref().map(|r| r.public_key.clone())
     }
 
-    /// When the current grant ends, in milliseconds since the epoch, while
-    /// one is active.
-    pub fn grant_expires_at(&self) -> Option<i64> {
+    /// While a grant is active: when it ends, in milliseconds since the
+    /// epoch, and how long it has left.
+    pub fn grant_ends(&self) -> Option<(i64, Duration)> {
         lock(&self.0)
             .as_ref()
             .and_then(|r| r.shared.active_grant())
-            .map(|g| g.expires_at_ms)
+            .map(|g| (g.expires_at_ms, g.remaining()))
     }
 
     /// Ends the grant early. Returns whether one was active.
@@ -184,16 +186,43 @@ struct Shared {
     stopped: watch::Sender<bool>,
 }
 
-/// Signing allowed without asking until `expires_at_ms`.
-///
-/// Wall-clock time rather than `Instant`: on macOS `Instant` stops while the
-/// machine sleeps, so an hour's grant would outlast a night with the lid shut.
+/// Signing allowed without asking until whichever of its two clocks runs out
+/// first. On macOS `Instant` stops while the machine sleeps, so the wall
+/// clock ends a grant slept through; setting the wall clock back can't stretch
+/// it, because `deadline` still runs.
 #[derive(Clone)]
 struct Grant {
+    /// Tells one grant from the next, so a signature started under one isn't
+    /// recorded under another that replaced it.
+    id: u64,
     /// Milliseconds since the epoch.
     expires_at_ms: i64,
+    deadline: Instant,
     /// The device that allowed it.
     by: String,
+}
+
+impl Grant {
+    fn new(allow_for: Duration, by: &str) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            expires_at_ms: now_ms().saturating_add(allow_for.as_millis() as i64),
+            deadline: Instant::now() + allow_for,
+            by: by.to_string(),
+        }
+    }
+
+    fn has_run_out(&self) -> bool {
+        self.expires_at_ms <= now_ms() || self.deadline <= Instant::now()
+    }
+
+    /// How long it has left, by the clock that ends it first.
+    fn remaining(&self) -> Duration {
+        let by_wall =
+            Duration::from_millis(self.expires_at_ms.saturating_sub(now_ms()).max(0) as u64);
+        by_wall.min(self.deadline.saturating_duration_since(Instant::now()))
+    }
 }
 
 impl Shared {
@@ -210,7 +239,7 @@ impl Shared {
     /// The grant, if one is active. Drops one that has run out.
     fn active_grant(&self) -> Option<Grant> {
         let mut grant = lock(&self.grant);
-        if grant.as_ref().is_some_and(|g| g.expires_at_ms <= now_ms()) {
+        if grant.as_ref().is_some_and(Grant::has_run_out) {
             grant.take();
         }
         grant.clone()
@@ -247,8 +276,8 @@ impl VaultAgent {
     }
 
     /// Asks the approvals route. A denial, a timeout, a failure to ask, or the
-    /// agent stopping meanwhile is a refusal.
-    async fn approve(&self, hash_alg: &str) -> Decision {
+    /// agent stopping meanwhile comes back as a decision that isn't `Approved`.
+    async fn ask_approval(&self, hash_alg: &str) -> Decision {
         let fingerprint = self.fingerprint();
         // SSHSIG carries only a hash of the commit, so the key is all there
         // is to show.
@@ -283,31 +312,37 @@ impl VaultAgent {
     /// The signature that was approved goes ahead either way: the approver
     /// said yes to it, whatever happens to the grant.
     async fn start_grant(&self, allow_for: Duration, by: &str) {
-        let expires_at_ms = now_ms().saturating_add(allow_for.as_millis() as i64);
-        {
-            let mut grant = lock(&self.shared.grant);
-            // Checked under the grant lock, which `stop` takes after setting
-            // `stopped`, so a grant can't land on a stopped agent.
-            if *self.shared.stopped.borrow() {
-                return;
-            }
-            *grant = Some(Grant {
-                expires_at_ms,
-                by: by.to_string(),
-            });
+        if *self.shared.stopped.borrow() {
+            return;
         }
+        let new = Grant::new(allow_for, by);
+        // Recorded before it can be used, so no signature made under it can
+        // reach the log ahead of it. A grant nobody can see on the log isn't
+        // one to keep.
         let recorded = self
             .events
             .append(
                 Some(by),
                 "ssh_agent.grant_started",
-                json!({ "expiresAt": expires_at_ms, "keyFingerprint": self.fingerprint() }),
+                json!({ "expiresAt": new.expires_at_ms, "keyFingerprint": self.fingerprint() }),
             )
             .await;
         if let Err(e) = recorded {
-            // A grant nobody can see on the event log isn't one to keep.
-            self.shared.drop_grant();
-            tracing::error!("couldn't record a signing grant, so it was dropped: {e}");
+            tracing::error!("couldn't record a signing grant, so it wasn't started: {e}");
+            return;
+        }
+        let mut grant = lock(&self.shared.grant);
+        // Checked under the grant lock, which `stop` takes after setting
+        // `stopped`, so a grant can't land on a stopped agent.
+        if *self.shared.stopped.borrow() {
+            return;
+        }
+        // Two approvals answered together keep the longer grant.
+        let keep_current = grant
+            .as_ref()
+            .is_some_and(|g| !g.has_run_out() && g.expires_at_ms >= new.expires_at_ms);
+        if !keep_current {
+            *grant = Some(new);
         }
     }
 
@@ -395,7 +430,7 @@ impl Session for VaultAgent {
         };
         let grant = self.shared.active_grant();
         if grant.is_none() {
-            let Decision::Approved { by, allow_for } = self.approve(hash_alg).await else {
+            let Decision::Approved { by, allow_for } = self.ask_approval(hash_alg).await else {
                 return Err(refuse("signature denied"));
             };
             if let Some(allow_for) = allow_for {
@@ -410,9 +445,11 @@ impl Session for VaultAgent {
             key.try_sign(&request.data).map_err(AgentError::other)?
         };
         if let Some(grant) = grant {
-            // Signed first so a locked vault records nothing; checked again so
-            // a Stop pressed meanwhile wins.
-            if self.shared.active_grant().is_none() {
+            // Signed before recording, so a locked vault leaves no "signed"
+            // event. Checked again afterwards, so a Stop pressed during the
+            // signing wins, and so is the grant's identity: one that replaced
+            // it isn't what the signature started under.
+            if self.shared.active_grant().is_none_or(|g| g.id != grant.id) {
                 return Err(refuse("signing without asking was stopped"));
             }
             self.record_signature_under_grant(&grant, hash_alg).await?;
@@ -503,17 +540,23 @@ struct Status {
     /// milliseconds since the epoch.
     #[serde(skip_serializing_if = "Option::is_none")]
     grant_expires_at: Option<i64>,
+    /// The same, as time left. A client's clock can differ from the
+    /// server's, so this is what it should count down from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grant_remaining_ms: Option<u64>,
 }
 
 async fn status(State(state): State<AppState>, _: Authed<Read>) -> ApiResult<Json<Status>> {
     let running = state.ssh_agent.is_running();
+    let grant = state.ssh_agent.grant_ends();
     Ok(Json(Status {
         enabled: true,
         public_key: state.ssh_agent.public_key(),
         socket_path: socket_path(&state)
             .filter(|_| running)
             .map(|p| p.display().to_string()),
-        grant_expires_at: state.ssh_agent.grant_expires_at(),
+        grant_expires_at: grant.map(|(at, _)| at),
+        grant_remaining_ms: grant.map(|(_, left)| left.as_millis() as u64),
     }))
 }
 
@@ -524,14 +567,19 @@ async fn end_grant(
     Authed { device, .. }: Authed<Approve>,
 ) -> ApiResult<StatusCode> {
     if state.ssh_agent.end_grant() {
-        state
+        // The grant has ended whether or not this lands, so a failure to
+        // record it isn't the caller's error.
+        let recorded = state
             .events
             .append(
                 Some(&device.device_id),
                 "ssh_agent.grant_ended",
                 json!({ "reason": "stopped" }),
             )
-            .await?;
+            .await;
+        if let Err(e) = recorded {
+            tracing::error!("couldn't record the end of a signing grant: {e}");
+        }
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -755,11 +803,44 @@ mod tests {
         assert_eq!(signed[0]["grantExpiresAt"], expires_at);
     }
 
+    /// A grant whose wall-clock end is `expires_in_ms` away, positive or not.
+    /// Its monotonic deadline is five minutes out.
     fn grant(expires_in_ms: i64) -> Grant {
         Grant {
             expires_at_ms: now_ms() + expires_in_ms,
-            by: "device".into(),
+            ..Grant::new(Duration::from_secs(300), "device")
         }
+    }
+
+    #[test]
+    fn a_grant_ends_by_whichever_clock_runs_out_first() {
+        // The wall clock passed its end, as after a night asleep.
+        assert!(grant(-1_000).has_run_out());
+        // The wall clock was set back, but the monotonic deadline passed.
+        let rolled_back = Grant {
+            expires_at_ms: now_ms() + 3_600_000,
+            deadline: Instant::now(),
+            ..Grant::new(Duration::from_secs(300), "device")
+        };
+        assert!(rolled_back.has_run_out());
+        assert_eq!(rolled_back.remaining(), Duration::ZERO);
+        let fresh = Grant::new(Duration::from_secs(300), "device");
+        assert!(!fresh.has_run_out());
+        assert!(fresh.remaining() <= Duration::from_secs(300));
+        assert_ne!(fresh.id, Grant::new(Duration::from_secs(300), "device").id);
+    }
+
+    #[tokio::test]
+    async fn a_shorter_grant_doesnt_cut_a_longer_one_short() {
+        let approvals = approvals().await;
+        let agent = agent(&approvals, Duration::from_secs(5));
+        agent.start_grant(Duration::from_secs(900), "phone").await;
+        agent.start_grant(Duration::from_secs(300), "laptop").await;
+        assert_eq!(agent.shared.active_grant().unwrap().by, "phone");
+        agent
+            .start_grant(Duration::from_secs(1_800), "laptop")
+            .await;
+        assert_eq!(agent.shared.active_grant().unwrap().by, "laptop");
     }
 
     #[tokio::test]

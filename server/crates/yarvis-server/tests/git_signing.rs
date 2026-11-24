@@ -229,6 +229,8 @@ async fn allowing_signing_for_a_while_signs_later_commits_until_it_is_ended() {
         .call("GET", "/api/vault/ssh-agent", Some(&s.token), None)
         .await;
     assert!(agent["grantExpiresAt"].as_i64().is_some(), "{agent}");
+    let left = agent["grantRemainingMs"].as_u64().unwrap();
+    assert!(left > 800_000 && left <= 900_000, "{agent}");
 
     // Signed without asking: nothing answers, and it still succeeds.
     let out = commit("second").await.unwrap();

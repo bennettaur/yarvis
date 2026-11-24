@@ -292,8 +292,15 @@ export interface SshAgentStatus {
   enabled: boolean;
   publicKey?: string;
   socketPath?: string;
-  /** While commits are signed without asking, when that ends (ms since the epoch). */
+  /** While commits are signed without asking, when that ends by the server's clock. */
   grantExpiresAt?: number;
+  /** The same, as milliseconds left when the server answered. */
+  grantRemainingMs?: number;
+  /**
+   * When the grant ends by this device's clock, worked out on arrival from
+   * `grantRemainingMs`. Use this one: the two clocks can differ.
+   */
+  grantEndsAt?: number;
 }
 
 /** The signing agent's status, or `null` when the server runs without one. */
@@ -301,7 +308,10 @@ export async function getSshAgentStatus(): Promise<SshAgentStatus | null> {
   const res = await serverFetch("/api/vault/ssh-agent");
   if (res.status === 404) return null;
   await ensureOk(res, "signing agent");
-  return (await res.json()) as SshAgentStatus;
+  const status = (await res.json()) as SshAgentStatus;
+  return status.grantRemainingMs === undefined
+    ? status
+    : { ...status, grantEndsAt: Date.now() + status.grantRemainingMs };
 }
 
 /** Goes back to asking before every signature. */

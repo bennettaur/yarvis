@@ -10,6 +10,8 @@ import ApprovalsList from "./ApprovalsList";
 let approvals: Approval[] = [];
 let answerStatus = 204;
 let grantExpiresAt: number | undefined;
+let stopFails = false;
+let serverClockOffsetMs = 0;
 
 const server = stubServerRoutes({
   "GET /api/approvals": () => Response.json(approvals),
@@ -21,8 +23,23 @@ const server = stubServerRoutes({
       ? new Response(null, { status: 204 })
       : Response.json({ error: "already answered" }, { status: answerStatus });
   },
-  "GET /api/vault/ssh-agent": () => Response.json({ enabled: true, grantExpiresAt }),
+  // As the server does: an active grant comes with its time left, and one
+  // that has run out isn't reported. `serverClockOffsetMs` moves the server's
+  // clock away from this device's.
+  "GET /api/vault/ssh-agent": () => {
+    const left = grantExpiresAt === undefined ? 0 : grantExpiresAt - Date.now();
+    return Response.json(
+      left > 0
+        ? {
+            enabled: true,
+            grantExpiresAt: (grantExpiresAt ?? 0) + serverClockOffsetMs,
+            grantRemainingMs: left,
+          }
+        : { enabled: true },
+    );
+  },
   "DELETE /api/vault/ssh-agent/grant": () => {
+    if (stopFails) return Response.json({ error: "vault unreachable" }, { status: 500 });
     grantExpiresAt = undefined;
     return new Response(null, { status: 204 });
   },
@@ -41,6 +58,8 @@ afterEach(() => {
   server.calls.length = 0;
   answerStatus = 204;
   grantExpiresAt = undefined;
+  stopFails = false;
+  serverClockOffsetMs = 0;
 });
 
 const signing: Approval = {
@@ -142,12 +161,37 @@ describe("ApprovalsList", () => {
     expect(buttonNamed(mounted.host, "1 hour")).toBeUndefined();
   });
 
-  it("offers no durations on an approval that covers only itself", async () => {
-    approvals = [signing];
+  it("offers durations on the approval that allows them and not on one that doesn't", async () => {
+    approvals = [
+      { ...signing, maxAllowForSecs: 60 * 60 },
+      { ...signing, id: "ap-2", summary: "Covers only itself" },
+    ];
     const mounted = await mountForInteraction(createElement(ApprovalsList));
     unmount = mounted.unmount;
-    await waitFor(() => buttonNamed(mounted.host, "Approve") !== undefined, "the request");
-    expect(buttonNamed(mounted.host, "5 min")).toBeUndefined();
+    await waitFor(() => buttonNamed(mounted.host, "1 hour") !== undefined, "the durations");
+    const [offering, plain] = [...mounted.host.querySelectorAll("li")];
+    expect(offering?.textContent).toContain("Approve and stop asking for");
+    expect(plain?.textContent).toContain("Covers only itself");
+    expect(plain?.textContent).not.toContain("Approve and stop asking for");
+  });
+
+  it("sends each duration in seconds", async () => {
+    approvals = [{ ...signing, maxAllowForSecs: 60 * 60 }];
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => buttonNamed(mounted.host, "5 min") !== undefined, "the durations");
+
+    buttonNamed(mounted.host, "5 min")?.click();
+
+    await waitFor(
+      () => server.calls.some((c) => c.route === "POST /api/approvals/ap-1"),
+      "the answer",
+    );
+    expect(server.calls.find((c) => c.route === "POST /api/approvals/ap-1")?.body).toEqual({
+      approve: true,
+      allowForSecs: 300,
+    });
+    await waitFor(() => mounted.host.textContent?.includes("without asking") ?? false, "the grant");
   });
 
   it("approves for a while, shows until when, and stops on request", async () => {
@@ -168,6 +212,8 @@ describe("ApprovalsList", () => {
       approve: true,
       allowForSecs: 900,
     });
+    // An active grant is something to show, so the box isn't "empty".
+    expect(mounted.host.textContent).not.toContain("Nothing is waiting");
 
     buttonNamed(mounted.host, "Stop")?.click();
 
@@ -178,7 +224,7 @@ describe("ApprovalsList", () => {
 
   it("drops the banner when the grant runs out while it's shown", async () => {
     approvals = [];
-    grantExpiresAt = Date.now() + 300;
+    grantExpiresAt = Date.now() + 1_500;
     const mounted = await mountForInteraction(
       createElement(ApprovalsList, { hideWhenEmpty: true }),
     );
@@ -227,15 +273,44 @@ describe("ApprovalsList", () => {
     }
   });
 
-  it("shows nothing about signing once the grant has run out", async () => {
-    approvals = [];
+  it("offers durations again, with no banner, once a grant has run out", async () => {
+    approvals = [{ ...signing, maxAllowForSecs: 60 * 60 }];
     grantExpiresAt = Date.now() - 1_000;
     const mounted = await mountForInteraction(createElement(ApprovalsList));
     unmount = mounted.unmount;
-    await waitFor(
-      () => mounted.host.textContent?.includes("Nothing is waiting") ?? false,
-      "the empty list",
-    );
+    await waitFor(() => buttonNamed(mounted.host, "15 min") !== undefined, "the durations");
     expect(mounted.host.textContent).not.toContain("without asking");
+  });
+
+  it("keeps the banner up when this device's clock runs ahead of the server's", async () => {
+    approvals = [];
+    grantExpiresAt = Date.now() + 600_000;
+    // The server's clock is an hour behind, so its end time is already past
+    // by this device's clock. The time left is what counts.
+    serverClockOffsetMs = -3_600_000;
+    const mounted = await mountForInteraction(
+      createElement(ApprovalsList, { hideWhenEmpty: true }),
+    );
+    unmount = mounted.unmount;
+    await waitFor(() => buttonNamed(mounted.host, "Stop") !== undefined, "the banner");
+  });
+
+  it("says so when Stop fails, and keeps the banner", async () => {
+    approvals = [];
+    grantExpiresAt = Date.now() + 600_000;
+    stopFails = true;
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => buttonNamed(mounted.host, "Stop") !== undefined, "the banner");
+
+    buttonNamed(mounted.host, "Stop")?.click();
+
+    await waitFor(() => mounted.host.querySelector('[role="alert"]') !== null, "the error");
+    // The refetch after the failure still shows the grant the server has.
+    await waitFor(
+      () => server.calls.filter((c) => c.route === "GET /api/vault/ssh-agent").length > 1,
+      "the refetch",
+    );
+    expect(mounted.host.textContent).toContain("without asking");
   });
 });

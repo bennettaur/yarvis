@@ -183,6 +183,15 @@ async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
         )
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/approvals/nope",
+            Some(&laptop),
+            Some(json!({ "approve": true, "allowForSecs": 60 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a duration doesn't change a 404");
     let (st, body) = h
         .call(
             "POST",

@@ -233,7 +233,11 @@ impl Approvals {
             "UPDATE approvals
              SET status = $1, outcome = 'answered', answered_by = $2, answered_at = $3,
                  allow_for_secs = $5
-             WHERE id = $4 AND status = 'pending' AND expires_at > $3",
+             WHERE id = $4 AND status = 'pending' AND expires_at > $3
+               -- The check above, again: it can be skipped when the clock
+               -- moves between the two statements.
+               AND ($5::INTEGER IS NULL
+                    OR ($1 = 'approved' AND $5 > 0 AND $5 <= max_allow_for_secs))",
         )
         .bind(status)
         .bind(device_id)
@@ -287,14 +291,14 @@ impl Approvals {
         Ok(rows
             .into_iter()
             .map(
-                |(id, kind, summary, data, created_at, expires_at, max)| Pending {
+                |(id, kind, summary, data, created_at, expires_at, max_allow_for_secs)| Pending {
                     id,
                     kind,
                     summary,
                     data: serde_json::from_str(&data).unwrap_or(Value::Null),
                     created_at,
                     expires_at,
-                    max_allow_for_secs: max.and_then(|s| u32::try_from(s).ok()),
+                    max_allow_for_secs: max_allow_for_secs.and_then(|s| u32::try_from(s).ok()),
                 },
             )
             .collect())

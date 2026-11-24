@@ -22,7 +22,7 @@ const GRANT_DURATIONS = [
   { secs: 60 * 60, label: "1 hour" },
 ];
 
-// The events that can start or end a signing grant.
+/** The events that can start or end a signing grant. */
 const SIGNING_EVENTS = [
   "approval.answered",
   "ssh_agent.grant_started",
@@ -60,7 +60,7 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
     };
   }, []);
 
-  const grantEnds = signing.data?.grantExpiresAt;
+  const grantEnds = signing.data?.grantEndsAt;
   const [now, setNow] = useState(() => Date.now());
   // Re-render when the grant runs out, so it doesn't stay on screen after.
   useEffect(() => {
@@ -113,9 +113,9 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
           Actions the server waits on you to allow. The first device to answer decides.
         </p>
       )}
-      {(error ?? approvals.error) && (
+      {(error ?? approvals.error ?? signing.error) && (
         <p className="mb-3 text-sm text-red-400" role="alert">
-          {error ?? approvals.error}
+          {error ?? approvals.error ?? signing.error}
         </p>
       )}
       {grantActive && (
