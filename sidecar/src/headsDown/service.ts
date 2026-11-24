@@ -30,6 +30,7 @@ import {
 } from "../db/schema.ts";
 import { type DecisionDetail, decisionContent, decisionQuery } from "../memory/decisions.ts";
 import type { MemoryService } from "../memory/index.ts";
+import { type HeadsDownConfig, startOfLocalDay } from "./config.ts";
 import { MAX_EVERY_MINUTES } from "./routines.ts";
 
 /**
@@ -615,6 +616,25 @@ export async function routineHistory(db: Db): Promise<RoutineHistory> {
     latestPassByName(db, headsDownPasses.routinesOffered),
   ]);
   return { lastDone, lastOffered };
+}
+
+/** Passes started at or after `since`, in any run: what the daily pass limit counts. */
+export async function countPassesSince(db: Db, since: Date): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(headsDownPasses)
+    .where(gte(headsDownPasses.startedAt, since));
+  return row?.count ?? 0;
+}
+
+/** Whether today's passes, in any run, have reached the daily pass limit. */
+export async function passLimitReached(
+  db: Db,
+  config: HeadsDownConfig,
+  now = new Date(),
+): Promise<boolean> {
+  if (config.maxPassesPerDay === null) return false;
+  return (await countPassesSince(db, startOfLocalDay(now))) >= config.maxPassesPerDay;
 }
 
 export async function listPasses(db: Db, limit = 20): Promise<HeadsDownPass[]> {

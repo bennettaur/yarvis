@@ -40,13 +40,16 @@ the design):
   driven from `sidecar/src/core/controlClient.ts`. New ways to act on a session
   belong there, as another narrow method — not as a sidecar route that writes to
   a PTY. `harness.runEnv` is the one method that hands a secret back to the
-  sidecar: one Claude Code harness's program and environment, its secret
-  variables included, for a verification run. The harness is the one the user
-  set in Settings or picked for a run on the Verification tab; the
-  assistant's tools take none, though the runs it starts use the Settings one.
-  The values go only into the run's environment, never a log or a row, and a
-  harness setting a variable that would move what the run may not read
-  (`HOME`, `CLAUDE_CONFIG_DIR`) is refused. Like every method it trusts any
+  sidecar: one Claude Code, OpenCode or Pi harness's kind, program and
+  environment, its secret variables included, for a verification run. The
+  harness is the one the user set in Settings or picked for a run on the
+  Verification tab; the assistant's tools take none, though the runs it
+  starts use the Settings one. The values go only into the run's
+  environment, never a log or a row, and a harness setting a variable that
+  would move what the run may not read (`HOME`, `CLAUDE_CONFIG_DIR`, the
+  `XDG_*_HOME` folders, `NODE_OPTIONS`) or change how the harness runs (any `BUN_*`, on
+  OpenCode any `OPENCODE_*` but the Zen key `OPENCODE_API_KEY`, and on Pi
+  any `PI_*`) is refused. Like every method it trusts any
   process running as the user, so such a process can read those secrets
   through the socket; that was accepted rather than tying the socket to the
   sidecar's pid.
@@ -789,6 +792,15 @@ report there and leaves the fixes to the author.
   model's words go in the body, so injected text can't pose as an app alert.
   A heads-down pass runs in a hidden chat, so a task it schedules carries
   `origin: "heads-down"` and its bell item opens the Heads down page.
+  With always-on, a pass (and only a pass: `origin: "heads-down"`, no
+  `scheduledTaskId`, attempt 0) also gets `wakePass` on `schedule_task`. That
+  row (`wakes_pass`) is skipped by the `scheduled-tasks` job and claimed by the
+  next pass instead (`claimDueWakes`, after the pass knows it will run). The
+  loop sleeps no later than the soonest one, but never under the shortest
+  sleep, so wake-ups can't drive a pass a minute. The prompt reaches the pass
+  fenced, as a reminder of what to look at rather than an instruction. At most
+  `MAX_PENDING_WAKES` wait across every pass, since each pass has its own chat,
+  and stopping heads-down mode cancels them.
 - A feature that needs Claude Code to work *while the user watches* (a
   verification report, mutation testing) starts it with `startClaudeRun` in
   `sidecar/src/agentRuns/`, never its own `spawn`. It shares the job runner's
@@ -802,6 +814,54 @@ report there and leaves the fixes to the author.
   and the answers put together in code, so no model rewords or drops what
   another wrote. The verification report runs each section that way, one
   process per reading group.
+  A fan-out run can also run its parts on OpenCode or Pi
+  (`agentRuns/opencode.ts`, `agentRuns/pi.ts`, sharing the sandbox profile
+  and answer parsing in `agentRuns/sandboxedCli.ts`), for such a harness,
+  held to the same rules its own way. A harness's program is used as an
+  absolute path or looked up on the sidecar's `PATH`, since the profile
+  allows running only named files. Each process
+  starts `opencode run --standalone` (without it the session goes to a
+  background service the user's own sessions share) in a private folder
+  holding only the run's `opencode.json`, with `HOME` and `XDG_*_HOME`
+  pointed at folders of its own, since OpenCode loads config, plugins and MCP
+  servers from every folder between its working directory and `/` (a
+  checkout's plugin runs code the moment it loads), and with no global
+  `AGENTS.md` of its own it reads `~/.claude/CLAUDE.md` as instructions. Its
+  Claude Code compatibility and language servers are off. Its one agent is
+  the plugin agent's prompt with every tool denied but read, grep and glob,
+  and reads outside its folder allowed only in the checkout and the context
+  folder; a part that uses any other tool fails. It runs under a
+  `sandbox-exec` profile, so a build that ignored those permissions still
+  couldn't do much: it writes only to its folder, reads nothing in the home
+  folder, the temp folder (which holds other runs' context folders) or the
+  shared folders but the checkout and context folder (never
+  `SECRET_HOME_PATHS`, `.claude` or a CLI's own login folders),
+  and runs only OpenCode, ripgrep and what it put in its folder. Keys come
+  from the harness's secret environment only.
+  OpenCode has no structured-output tool, so the agent is given the JSON
+  schema and its last message is parsed, then checked like any part's
+  answer. The models.dev catalog is downloaded by the sidecar once a day and
+  handed over as a file (`OPENCODE_MODELS_PATH`), since a process with
+  empty folders downloads its own in the background and a run that picks a
+  newer model first fails.
+  Pi (`agentRuns/pi.ts`) runs the same way, from its own CLI flags, which
+  are the contract a customized Pi build has to keep. Pi has no permission
+  rules, so it is offered only read, grep, find and ls (`--tools`), and the
+  `sandbox-exec` profile alone keeps those to the checkout, the context
+  folder and Pi's own package (the folder whose `package.json` names the
+  script as its `pi` bin, never one holding the home folder); system folders
+  such as `/usr` stay readable. `PI_CODING_AGENT_DIR` and `HOME` point at
+  folders of its own, since `~/.pi/agent` holds extensions (code) and
+  logins. `--no-extensions`, `--no-mcp`, `--no-skills`, `--no-context-files` and
+  `--no-approve` load nothing else, `--no-session` writes no transcript,
+  and `--offline` keeps it from downloading the ripgrep or fd it lacks, so
+  a tool whose program isn't installed is left out instead (and the run
+  refused if none is left). An npm install's `pi` is a Node script, run
+  with the `node` beside it, since a version manager's shim can't run under
+  the sandbox. The plugin agent's prompt
+  is its `--system-prompt`, and its last message is the answer, as for
+  OpenCode. The parser trusts the read tool's `details`, not its text, for
+  what lines a read showed, since the text is the file's own.
   These runs are pointed at a pull request's checkout, which its author
   controls, so they read no settings files at all (`--setting-sources ""`):
   the checkout's can declare hooks, which are shell commands Claude Code runs
@@ -1017,6 +1077,12 @@ report there and leaves the fixes to the author.
   than `mount_tools` allows: the calls still go through `passApprovalHooks`, so
   naming an MCP tool never skips the heads-down allowlist. Its `config:` reaches
   the pass fenced, as values the body refers to.
+  With always-on, a pass can propose one with `create_routine`, which is in
+  `PASS_APPROVAL_TOOLS` and so only runs once the user approved its exact
+  arguments. It refuses invisible characters, since what the user approves has
+  to be what later passes read, and `writeRoutineFile` refuses a name already
+  in the catalogue and writes with `O_EXCL | O_NOFOLLOW`. `stopHeadsDown` turns
+  `alwaysOn` off before it stops the run, or the loop would start a new one.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

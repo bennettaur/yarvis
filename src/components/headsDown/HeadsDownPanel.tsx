@@ -148,11 +148,22 @@ function StopTime({
   );
 }
 
+function dailyLimitReached(state: HeadsDownState): boolean {
+  return state.maxPassesPerDay !== null && state.passesToday >= state.maxPassesPerDay;
+}
+
+function describePassesToday(state: HeadsDownState): string {
+  const limit = state.maxPassesPerDay === null ? "" : ` of ${state.maxPassesPerDay}`;
+  return `Passes today: ${state.passesToday}${limit}`;
+}
+
 /** The header's line about what happens next: paused, working, or when it looks again. */
 function describeNextPass(state: HeadsDownState, run: HeadsDownRun, working: boolean): string {
   if (run.pausedAt !== null)
     return "No passes until you resume it. Its streams and questions are kept.";
   if (working) return "Working now";
+  if (dailyLimitReached(state))
+    return "Reached today's pass limit. It starts again after midnight.";
   if (state.nextPassAt) return `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`;
   // The sidecar leaves out a next pass that would come after the stop time.
   if (state.lastPass && run.stopAt) return "No more passes before it stops";
@@ -226,6 +237,7 @@ function RunHeader({
               >
                 {describeNextPass(state, run, working)}
               </p>
+              <p className="mt-1 text-xs text-zinc-500">{describePassesToday(state)}</p>
               <StopTime
                 stopAt={run.stopAt}
                 disabled={busy}

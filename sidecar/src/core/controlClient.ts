@@ -161,23 +161,26 @@ export async function spawnClaudeSession(input: {
   });
 }
 
-/** What a headless Claude Code run needs to use a harness the user saved. */
+/** What a headless run needs to use a harness the user saved. */
 export interface HarnessRunEnv {
+  /** Which CLI it is, so the run knows how to drive it. */
+  kind: "claude-code" | "opencode" | "pi";
   program: string;
   /** The harness's environment, its secret variables included. */
   env: Record<string, string>;
 }
 
 const harnessRunEnvSchema = z.object({
+  kind: z.enum(["claude-code", "opencode", "pi"]),
   program: z.string().min(1),
   env: z.record(z.string(), z.string()),
 });
 
 /**
- * Asks the core for harness `harness`'s program and environment, secrets
+ * Asks the core for harness `harness`'s kind, program and environment, secrets
  * included, for a verification run. The core refuses any harness that isn't
- * Claude Code. The values are credentials: they go into the run's environment
- * and nowhere else, never into a log, a row or a reply.
+ * Claude Code, OpenCode or Pi. The values are credentials: they go into the run's
+ * environment and nowhere else, never into a log, a row or a reply.
  */
 export async function harnessRunEnv(harness: string): Promise<HarnessRunEnv> {
   return harnessRunEnvSchema.parse(
