@@ -37,11 +37,12 @@ struct WorkspaceDiffView: View {
                 // the rows are held at least as wide, and the stack as tall, as
                 // the viewport: the diff then starts top-left and fills the tab.
                 GeometryReader { viewport in
+                    let visible = Self.visibleSize(viewport.size)
                     ScrollView([.vertical, .horizontal]) {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             ForEach(model.lines) { line in
                                 DiffRow(line: line, selected: line.newLine.map { model.selection?.contains($0) ?? false } ?? false,
-                                        commentable: model.commentable, minWidth: viewport.size.width) {
+                                        commentable: model.commentable, minWidth: visible.width) {
                                     guard let n = line.newLine else { return }
                                     model.select(line: n, extend: NSEvent.modifierFlags.contains(.shift))
                                 }
@@ -57,11 +58,22 @@ struct WorkspaceDiffView: View {
                             }
                         }
                         .padding(.vertical, 4)
-                        .frame(minHeight: viewport.size.height, alignment: .top)
+                        .frame(minHeight: visible.height, alignment: .top)
                     }
                 }
             }
         }
+    }
+}
+
+extension WorkspaceDiffView {
+    /// The area left for content. Always-visible scrollbars take their width
+    /// out of the viewport, and content sized to the full viewport would then
+    /// scroll by that much.
+    static func visibleSize(_ size: CGSize) -> CGSize {
+        guard NSScroller.preferredScrollerStyle == .legacy else { return size }
+        let bar = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+        return CGSize(width: max(0, size.width - bar), height: max(0, size.height - bar))
     }
 }
 
