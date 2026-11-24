@@ -229,20 +229,38 @@ private func minter() -> TerminalUidMinter {
 
     @Test func readsAndSavesTheFontSize() async throws {
         let (session, id) = StubProtocol.session { req, _ in
-            req.url!.path.hasSuffix("get_settings") ? (200, json(#"{"terminalFontSize":40,"other":1}"#)) : (200, json("{}"))
+            req.url!.path.hasSuffix("get_settings") ? (200, json(#"{"terminalFontSize":40,"colorTheme":"palenight","other":1}"#)) : (200, json("{}"))
         }
         let client = YarvisClient(baseURL: base, token: "t", session: session)
-        #expect(try await client.terminalFontSize() == 32)
+        let saved = try await client.terminalAppearance()
+        #expect(saved.fontSize == 32)
+        #expect(saved.theme == .palenight)
         try await client.setTerminalFontSize(nil)
         try await client.setTerminalFontSize(12)
         let saves = StubProtocol.recorded(id).filter { $0.0.url!.path == "/api/core/set_terminal_font_size" }
         #expect(saves.map { bodyJSON($0.1) } == [.object(["value": .null]), .object(["value": .number(12)])])
     }
 
-    @Test func aMissingFontSizeIsTheDefault() async throws {
-        let (session, _) = StubProtocol.session { _, _ in (200, json(#"{"terminalFontSize":null}"#)) }
+    @Test func aMissingFontSizeOrThemeIsTheDefault() async throws {
+        let (session, _) = StubProtocol.session { _, _ in (200, json(#"{"terminalFontSize":null,"colorTheme":"neon"}"#)) }
         let client = YarvisClient(baseURL: base, token: "t", session: session)
-        #expect(try await client.terminalFontSize() == 16)
+        let saved = try await client.terminalAppearance()
+        #expect(saved.fontSize == 16)
+        #expect(saved.theme == .standard)
+    }
+
+    @Test func themeColoursParse() throws {
+        for theme in [TerminalTheme.standard, .palenight] {
+            #expect(theme.ansi.count == 16)
+            for hex in [theme.background, theme.foreground, theme.cursor, theme.selection] + theme.ansi {
+                #expect(parseHexColor(hex) != nil, "\(hex)")
+            }
+        }
+        let c = try #require(parseHexColor("#717cb450"))
+        #expect(c.red == 0x71 / 255.0 && c.alpha == 0x50 / 255.0)
+        #expect(parseHexColor("#ffffff")?.alpha == 1)
+        #expect(parseHexColor("ffffff") == nil)
+        #expect(parseHexColor("#fff") == nil)
     }
 
     @Test func busyErrorsCountAsIdle() async {

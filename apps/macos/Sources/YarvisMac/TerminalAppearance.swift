@@ -2,13 +2,14 @@ import AppKit
 import SwiftTerm
 import YarvisClient
 
-/// The one font size every terminal in the app uses. Saved on the server,
-/// so the web UI shares it.
+/// The font size and colours every terminal in the app uses. Both are server
+/// settings, so the web UI shares them.
 @MainActor
-final class TerminalFont {
-    static let shared = TerminalFont()
+final class TerminalAppearance {
+    static let shared = TerminalAppearance()
 
     private(set) var size = TerminalFontSize.defaultSize
+    private(set) var theme = TerminalTheme.standard
     private let views = NSHashTable<TerminalView>.weakObjects()
     private var loadedFrom: ObjectIdentifier?
     /// Cmd+= held down steps faster than a save lands; chaining the saves
@@ -23,15 +24,19 @@ final class TerminalFont {
     func attach(_ view: TerminalView) {
         views.add(view)
         view.font = font
+        paint(view)
     }
 
-    /// Reads the saved size once per signed-in client.
+    /// Reads the saved size and theme once per signed-in client.
     func load(client: YarvisClient) {
         let id = ObjectIdentifier(client)
         guard loadedFrom != id else { return }
         loadedFrom = id
         Task {
-            if let saved = try? await client.terminalFontSize() { apply(saved) }
+            guard let saved = try? await client.terminalAppearance() else { return }
+            apply(saved.fontSize)
+            theme = saved.theme
+            for view in views.allObjects { paint(view) }
         }
     }
 
@@ -51,9 +56,28 @@ final class TerminalFont {
         }
     }
 
+    private func paint(_ view: TerminalView) {
+        view.nativeBackgroundColor = nsColor(theme.background)
+        view.nativeForegroundColor = nsColor(theme.foreground)
+        view.caretColor = nsColor(theme.cursor)
+        view.selectedTextBackgroundColor = nsColor(theme.selection)
+        view.installColors(theme.ansi.map(terminalColor))
+    }
+
     private func apply(_ next: Int) {
         size = next
         let font = self.font
         for view in views.allObjects { view.font = font }
     }
+}
+
+private func nsColor(_ hex: String) -> NSColor {
+    guard let c = parseHexColor(hex) else { return .textColor }
+    return NSColor(srgbRed: c.red, green: c.green, blue: c.blue, alpha: c.alpha)
+}
+
+/// SwiftTerm's palette colours take 16-bit channels.
+private func terminalColor(_ hex: String) -> SwiftTerm.Color {
+    let c = parseHexColor(hex) ?? (0, 0, 0, 1)
+    return SwiftTerm.Color(red: UInt16(c.red * 65535), green: UInt16(c.green * 65535), blue: UInt16(c.blue * 65535))
 }

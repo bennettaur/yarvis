@@ -77,7 +77,7 @@ final class TerminalSurfaceModel {
         serverDefaults = ServerDefaults(server: client.baseURL)
         state = TerminalSurfaceState.load(serverDefaults.data(Self.defaultsKey(storageKey)),
                                           opensShellTab: opensShellTab)
-        TerminalFont.shared.load(client: client)
+        TerminalAppearance.shared.load(client: client)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // AppKit calls local monitors on the main thread.
             nonisolated(unsafe) let key = event
@@ -341,7 +341,7 @@ final class TerminalSurfaceModel {
         case .newTab: newTab()
         case .closeTab: if let tab = activeTab { close(tab) }
         case .split(let direction): split(direction)
-        case .fontSize(let step): TerminalFont.shared.step(step, app: app, client: client)
+        case .fontSize(let step): TerminalAppearance.shared.step(step, app: app, client: client)
         case .ignore: break
         }
         return true

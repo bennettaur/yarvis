@@ -34,11 +34,12 @@ extension YarvisClient {
         return (try? Self.decode(Bool.self, data)) ?? false
     }
 
-    /// The saved terminal font size, clamped, from `get_settings`.
-    public func terminalFontSize() async throws -> Int {
+    /// The saved terminal font size, clamped, and colour theme, from `get_settings`.
+    public func terminalAppearance() async throws -> (fontSize: Int, theme: TerminalTheme) {
         let settings = try Self.decode(JSONValue.self, await core("get_settings"))
-        if case .number(let n)? = settings["terminalFontSize"] { return TerminalFontSize.from(n) }
-        return TerminalFontSize.defaultSize
+        var size = TerminalFontSize.defaultSize
+        if case .number(let n)? = settings["terminalFontSize"] { size = TerminalFontSize.from(n) }
+        return (size, TerminalTheme.named(settings["colorTheme"]?.stringValue))
     }
 
     /// Saves the size every terminal uses; nil goes back to the default. Needs `admin`.

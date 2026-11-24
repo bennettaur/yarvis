@@ -123,7 +123,8 @@ Native:
 - **Terminal.** Tabs with split panes, as in the web UI: Cmd-T opens a tab,
   Cmd-W closes one (asking first if something is running), Cmd-D splits
   right and Cmd-Shift-D splits below. Tabs reorder by drag. Font size
-  (Cmd-=, Cmd--, Cmd-0) is the server's setting, shared with the web UI.
+  (Cmd-=, Cmd--, Cmd-0) and the colours (the web's Default or Palenight
+  theme) are the server's settings, shared with the web UI.
   Shift-Return sends a newline for Claude Code. The layout stays on this
   Mac, and each pane gets a fresh shell after a relaunch. Sessions resume
   after a dropped connection; a session the server started (`ws-claude:`,

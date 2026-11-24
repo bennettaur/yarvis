@@ -30,7 +30,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
         self.client = client
         self.sessionId = sessionId
         view = TerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
-        TerminalFont.shared.attach(view)
+        TerminalAppearance.shared.attach(view)
         let terminal = view.terminalDimensions
         var mayReconnect: (@Sendable () async -> Bool)?
         if isServerStartedSession(sessionId) {
