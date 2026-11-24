@@ -3,6 +3,7 @@ name: email-drafts
 description: Drafts replies to emails that are waiting on the user, and leaves them unsent in their drafts.
 every: 2h
 workingHours: true
+nightShift: skip
 enabled: false
 ---
 

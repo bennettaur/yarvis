@@ -3,6 +3,7 @@ name: message-people
 description: Offers to send the follow-ups the user's work needs, and sends each one only after they say yes.
 every: 4h
 workingHours: true
+nightShift: skip
 enabled: false
 ---
 

@@ -3,6 +3,7 @@ name: offer-help
 description: Once a day, offers a few things it could take off the user's plate.
 every: 1d
 workingHours: true
+nightShift: skip
 enabled: false
 ---
 

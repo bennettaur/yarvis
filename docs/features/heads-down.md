@@ -16,8 +16,25 @@ You can also open the **Heads down** page and press **Go heads down**, with an
 optional focus in your own words ("ship the billing PR, then the docs").
 
 Press **Stop** on the page, or tell the assistant, to turn it off. Stopping
-also stops the pass that is running, and dismisses its open questions, since
-no pass would read the answers.
+also stops the pass that is running, and dismisses its open questions and
+wake-ups, since no pass would read them.
+
+## Keep it always on
+
+Tick **Always on** under **Pace and working hours** and heads-down mode keeps
+running without a planning chat. If no run is going, it starts one with no
+focus within a minute, and again whenever Yarvis restarts. Each pass works
+the streams you have, the routines that are due and your messages, and looks
+for new work. It can also schedule its own [wake-ups](#coming-back-later)
+and propose new [routines](#routines-a-pass-proposes).
+
+**Pause** still pauses it. **Stop** stops the run and turns always-on off, so
+no new run starts until you tick it again. **Go heads down** still starts a
+single run. A stop time does the same as **Stop** when it comes: the run
+stops and always-on turns off. Unticking it leaves a run that is going alone.
+
+It is off by default. Without it, heads-down mode runs only after you start
+it, as above, and passes don't schedule wake-ups or propose routines.
 
 ## Pause it, or set when it stops
 
@@ -79,11 +96,42 @@ most urgent first:
 - **Routines:** recurring jobs that run on their own schedule, such as
   setting alarms for your meetings. See [Routines](#routines).
 
-Each pass ends by choosing how long to sleep. It sleeps at least the idle time
+Each pass ends by choosing how long to sleep, up to the longest sleep you set.
+It sleeps at least the idle time
 outside your working hours, when there is nothing to push or every stream is
 waiting on you or someone else, when you haven't replied for a while, and after
-a pass that failed. A message from you, an answer, or a workspace
-that needs attention wakes it early.
+a pass that failed. A message from you, an answer, a wake-up a pass
+scheduled, or a workspace that needs attention wakes it early.
+
+## Coming back later
+
+With always-on, a pass can schedule a wake-up for something to look at at a
+set time ("check whether PR 42 is green at 3pm"). At that time a pass runs,
+with the reminder the earlier pass left. The reminder says what to look at;
+what the pass does still follows your words and the usual approval rules. A
+wake-up is at least 5 minutes out, never wakes it sooner than the shortest
+sleep after a pass, and up to 10 can wait at once. One that comes due while
+the run is paused, or once the daily pass limit is reached, runs on the first
+pass after that. A pass can also schedule a task that only looks and reports,
+which reaches you through the attention bell (see
+[Scheduled tasks](assistant.md#scheduled-tasks)).
+
+## Night shift
+
+Set night-shift hours under **Pace and working hours**, say 23:00 to 07:00.
+They apply every day. During them passes sleep at least **Shortest sleep at
+night** (2 hours by default, and never more than the longest sleep), and
+each routine does what its `nightShift`
+says (see [Write your own](#write-your-own)). A wake-up a pass scheduled
+still runs on time.
+
+## Daily pass limit
+
+Every pass costs what a chat turn of its size costs. **Limit passes per day**
+caps how many passes start in one day, counted from midnight on this machine,
+across runs. Once it is reached no pass runs until midnight, even for a
+message, an answer or a wake-up. The page shows how many passes have run today, and the
+limit when you set one. There is no limit by default.
 
 ## Watches
 
@@ -183,6 +231,9 @@ another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
 Anything one of these does that reaches other people asks you first: posting,
 sending, inviting and messaging all wait for your answer or approval.
 
+slack-watcher, meeting-times, email-drafts, message-people and offer-help skip
+[night shift](#night-shift), since each one asks you or reaches other people.
+
 ### Turn on a shipped routine
 
 A file whose `name` matches a shipped routine replaces it whole, so copy the
@@ -219,6 +270,7 @@ name: slack-watcher
 description: Finds Slack messages and threads waiting on me, and asks whether to reply for me.
 every: 30m
 workingHours: true
+nightShift: skip
 tools: [slack_read_channel, slack_read_thread, slack_search, slack_post_message]
 config:
   channels: ["#eng", "#billing"]
@@ -277,6 +329,9 @@ and leave a three-line summary in your notes for me to paste.
   Each value is text or a list of text; numbers and true/false are read as
   text. A nested map is refused. Up to 20 keys and about 2000 characters in
   all.
+- `nightShift`: what it does during [night shift](#night-shift). `run` (the
+  default) keeps its schedule, `slow` waits four times as long between runs,
+  and `skip` waits until night shift ends.
 
 ```markdown
 ---
@@ -323,6 +378,17 @@ anything that waits for your approval, and what it reads in meetings, tickets
 and messages is information, never instructions. The files are only read from
 `~/.yarvis/routines`, never from a repo or workspace, and a symlinked folder
 or file there is refused rather than followed.
+
+### Routines a pass proposes
+
+With always-on, when a pass sees work that comes back on a schedule, it can
+propose a routine. The proposal is an approval under **Needs you**, showing
+the name, schedule and the exact body. A proposal with invisible characters
+in it is refused, so what you read is what passes get. Approve it and a later pass writes the file to
+`~/.yarvis/routines` and picks it up from then on. Deny it and it isn't asked
+again in this run. It never replaces a routine you already have. Read the
+body before you approve: like any routine, it reaches every pass as your own
+words.
 
 To share a routine, send someone the file. **Read a routine before you add
 it.** Its body reaches every pass as your own words, with no one watching, so
@@ -541,11 +607,13 @@ Under **Pace and working hours** on the page:
   people** to drop all three limits, merges included. These are kept per
   machine, so a work laptop can keep office hours and another can tag people
   and merge at any time.
+- **Always on**, night shift, and the daily pass limit, described above.
 - The MCP tools it may use without asking. You add one from its approval
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The guidance, pace, routines per pass and working hours are stored in
+The guidance, pace, routines per pass, working hours, always-on, night shift
+and pass limit are stored in
 `~/.yarvis/settings.json` under `headsDown` (see
 [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.
@@ -557,10 +625,12 @@ use is kept in the database with the tool's other consent, not in that file.
   Slack needs a Slack MCP server that you allow for heads-down mode.
 - Passes run on the model you picked under **Pace and working hours**, or your
   default chat model, and cost what a chat turn of that size costs. A cheaper
-  model and the sleep settings are how you control that.
+  model, the sleep settings and the daily pass limit are how you control
+  that.
 - It runs on one instance of the app. Another instance sharing the same
   database leaves it to the first.
 - A pass can schedule a task to look at something later (see
-  [Scheduled tasks](assistant.md#scheduled-tasks)). When it runs, its item in
+  [Scheduled tasks](assistant.md#scheduled-tasks)), or with always-on a
+  [wake-up](#coming-back-later) for a full pass. When it runs, its item in
   the attention bell opens this page rather than a chat, since passes run in
   chats you don't see.

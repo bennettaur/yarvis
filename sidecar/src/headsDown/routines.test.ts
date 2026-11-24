@@ -9,7 +9,10 @@ import {
   parseEvery,
   parseRoutine,
   type Routine,
+  reloadRoutines,
   resolveRoutineTools,
+  routineCatalog,
+  writeRoutineFile,
 } from "./routines.ts";
 
 const file = (frontmatter: string, body = "Do the thing.") =>
@@ -25,6 +28,7 @@ function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {
     enabled: true,
     tools: [],
     config: {},
+    nightShift: "run",
     source: "user",
     ...extra,
   };
@@ -379,5 +383,111 @@ describe("dueRoutines", () => {
         lastOffered: new Map([["flaky", hoursAgo(4)]]),
       }).map((r) => r.name),
     ).toEqual(["quick", "flaky"]);
+  });
+});
+
+describe("nightShift in a routine", () => {
+  const parse = (frontmatter: string) =>
+    parseRoutine("x.md", file(`name: x\ndescription: x\nevery: 1h\n${frontmatter}`), "user");
+
+  it("runs at night unless the file says otherwise", () => {
+    expect(parse("").nightShift).toBe("run");
+    expect(parse("nightShift: slow").nightShift).toBe("slow");
+    expect(parse("nightShift: skip").nightShift).toBe("skip");
+  });
+
+  it("refuses a value it doesn't know", () => {
+    expect(() => parse("nightShift: never")).toThrow("'nightShift' must be run, slow or skip");
+  });
+});
+
+describe("dueRoutines at night", () => {
+  const now = new Date("2026-10-27T03:00:00Z");
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60_000);
+  const routines = [
+    routine("runs", 60),
+    routine("slows", 60, { nightShift: "slow" }),
+    routine("skips", 60, { nightShift: "skip" }),
+  ];
+  const input = {
+    routines,
+    now,
+    withinWorkingHours: true,
+    limit: 5,
+    lastOffered: new Map<string, Date>(),
+  };
+
+  it("holds a skip routine and stretches a slow one's cadence", () => {
+    const lastDone = new Map(routines.map((r) => [r.name, hoursAgo(2)]));
+    const names = (nightShift: boolean) =>
+      dueRoutines({ ...input, lastDone, duringNightShift: nightShift }).map((r) => r.name);
+    expect(names(false)).toEqual(["runs", "skips", "slows"]);
+    expect(names(true)).toEqual(["runs"]);
+    const longAgo = new Map(routines.map((r) => [r.name, hoursAgo(4)]));
+    expect(
+      dueRoutines({ ...input, lastDone: longAgo, duringNightShift: true }).map((r) => r.name),
+    ).toEqual(["runs", "slows"]);
+  });
+});
+
+describe("writeRoutineFile", () => {
+  let dir: string;
+  const original = process.env.YARVIS_ROUTINES_DIR;
+
+  beforeEach(async () => {
+    dir = join(mkdtempSync(join(tmpdir(), "routines-write-")), "routines");
+    process.env.YARVIS_ROUTINES_DIR = dir;
+    await reloadRoutines();
+  });
+  afterEach(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    process.env.YARVIS_ROUTINES_DIR = original;
+    await reloadRoutines();
+  });
+
+  const standup = {
+    name: "standup-notes",
+    description: "Drafts my standup: what I merged, reviewed and commented on.",
+    every: "1d",
+    workingHours: true,
+    nightShift: "skip" as const,
+    body: "Leave a three-line summary in your notes.",
+  };
+
+  it("writes a file the loader reads back, and the catalogue has it straight away", async () => {
+    const written = await writeRoutineFile(standup);
+    expect(written).toEqual({ path: join(dir, "standup-notes.md") });
+    const loaded = (await routineCatalog()).routines.find((r) => r.name === "standup-notes");
+    expect(loaded).toMatchObject({
+      description: standup.description,
+      everyMinutes: 24 * 60,
+      workingHoursOnly: true,
+      nightShift: "skip",
+      source: "user",
+      prompt: expect.stringContaining("three-line summary"),
+    });
+  });
+
+  it("refuses a name already in use rather than replacing that routine", async () => {
+    expect(await writeRoutineFile({ ...standup, name: "meeting-alarms" })).toEqual({
+      error: "a routine named 'meeting-alarms' already exists",
+    });
+    await writeRoutineFile(standup);
+    expect(await writeRoutineFile(standup)).toEqual({
+      error: "a routine named 'standup-notes' already exists",
+    });
+  });
+
+  it("refuses what the loader would refuse, and writes nothing", async () => {
+    const result = await writeRoutineFile({ ...standup, every: "5m" });
+    expect(result).toEqual({ error: expect.stringContaining("'every' cannot be shorter") });
+    expect((await loadRoutines()).routines.some((r) => r.name === "standup-notes")).toBe(false);
+  });
+
+  it("refuses to write through a symlinked folder", async () => {
+    const target = mkdtempSync(join(tmpdir(), "routines-target-"));
+    symlinkSync(target, dir);
+    expect(await writeRoutineFile(standup)).toEqual({ error: `${dir} is a symlink` });
+    rmSync(target, { recursive: true, force: true });
   });
 });

@@ -1,0 +1,1 @@
+ALTER TABLE "chat_scheduled_tasks" ADD COLUMN "wakes_pass" boolean DEFAULT false NOT NULL;

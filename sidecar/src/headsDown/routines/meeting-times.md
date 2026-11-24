@@ -3,6 +3,7 @@ name: meeting-times
 description: Proposes times for meetings the user asked to set up, and books the one they pick.
 every: 2h
 workingHours: true
+nightShift: skip
 enabled: false
 ---
 

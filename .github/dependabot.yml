@@ -5,6 +5,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       tauri:
         patterns:
@@ -27,6 +29,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
     groups:
       tauri:
         patterns:

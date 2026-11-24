@@ -1,5 +1,5 @@
 {
-  "id": "d1c592e8-cf92-400d-b787-a76575094597",
+  "id": "97fff628-6baf-46c6-a140-5904a4888715",
   "prevId": "6763aa9e-6b6a-4541-8b06-ca6436cb5ceb",
   "version": "7",
   "dialect": "postgresql",
@@ -1197,6 +1197,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "wakes_pass": {
+          "name": "wakes_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "due_at": {
           "name": "due_at",
@@ -5071,14 +5078,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "kind": {
-          "name": "kind",
-          "type": "work_stream_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'work'"
-        },
         "status": {
           "name": "status",
           "type": "work_stream_status",
@@ -5135,24 +5134,6 @@
         },
         "paused_at": {
           "name": "paused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watch_condition": {
-          "name": "watch_condition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watch_every_minutes": {
-          "name": "watch_every_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -5219,12 +5200,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "work_streams_watch_fields_check": {
-          "name": "work_streams_watch_fields_check",
-          "value": "(\"work_streams\".\"kind\" = 'watch') = (\"work_streams\".\"watch_condition\" is not null and \"work_streams\".\"watch_every_minutes\" is not null and \"work_streams\".\"expires_at\" is not null)"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.workspace_agent_sessions": {
@@ -6206,14 +6182,6 @@
       "values": [
         "builtin",
         "mcp"
-      ]
-    },
-    "public.work_stream_kind": {
-      "name": "work_stream_kind",
-      "schema": "public",
-      "values": [
-        "work",
-        "watch"
       ]
     },
     "public.work_stream_link_kind": {

@@ -3,6 +3,7 @@ name: slack-watcher
 description: Finds Slack messages and threads waiting on the user, and asks whether to reply for them.
 every: 30m
 workingHours: true
+nightShift: skip
 enabled: false
 config:
   channels: []
