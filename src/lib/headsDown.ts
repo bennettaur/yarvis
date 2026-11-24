@@ -340,6 +340,10 @@ export interface Routine {
   enabled: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";
+  /** Tools the file names, mounted for the pass that runs it. */
+  tools: string[];
+  /** The names of the file's `config:` settings. */
+  configKeys: string[];
   /** ISO time of the last pass that reported it done. Null if none has. */
   lastDoneAt: string | null;
 }

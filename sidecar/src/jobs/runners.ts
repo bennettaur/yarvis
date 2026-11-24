@@ -74,6 +74,8 @@ function defaultAgentDefinition(): SpecialistDefinition {
     enabled: true,
     source: "builtin",
     path: "",
+    extends: null,
+    addedTools: [],
   };
 }
 

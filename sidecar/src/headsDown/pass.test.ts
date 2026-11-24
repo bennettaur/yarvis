@@ -624,6 +624,77 @@ describe("a heads-down pass", () => {
     }
   });
 
+  it("mounts the tools a due routine names, still asks before one that needs approval, and hands it its config", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    // Named to sort before the shipped routines, which are also due and never done.
+    writeFileSync(
+      join(routinesDir, "a-issue-filer.md"),
+      "---\nname: a-issue-filer\ndescription: x\nevery: 1h\ntools: [create_repo_issue, nope]\nconfig:\n  repo: me/app\n---\n\nFile an issue in the repo in my settings.\n",
+    );
+    // A built-in outside the families a pass carries, so only the routine puts it in reach.
+    await sql`
+      INSERT INTO agent_tools (id, source, name, description, policy, content_hash)
+      VALUES ('builtin:create_repo_issue', 'builtin', 'create_repo_issue', '', 'search', '')
+      ON CONFLICT (id) DO UPDATE SET policy = 'search'
+    `;
+    try {
+      await saveHeadsDownConfig({
+        minSleepMinutes: 5,
+        maxSleepMinutes: 120,
+        idleSleepMinutes: 60,
+        workingHours: null,
+        userAwayAfterMinutes: 120,
+        passTimeoutMinutes: 20,
+        provider: null,
+        model: null,
+        guidance: null,
+        maxRoutinesPerPass: 1,
+      });
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const model = streamingModel(
+        [
+          toolCall("c1", "create_repo_issue", {
+            repoId: "11111111-1111-4111-8111-111111111111",
+            title: "Planted",
+            body: "x",
+            callReason: "the routine asks for it",
+          }),
+          finish("tool-calls"),
+        ],
+        [finish("stop")],
+      );
+      await runPass(config, db, run, { model });
+
+      const tools = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      expect(tools).toContain("create_repo_issue");
+      expect(prompt).toContain("- create_repo_issue: call as create_repo_issue");
+      expect(prompt).toContain("- nope: not available (no tool by that name is installed)");
+      expect(prompt).toContain('\\"repo\\": \\"me/app\\"');
+      // Mounted by the routine, but a call still waits for the user.
+      const questions = await sql`SELECT kind, action, status FROM heads_down_questions`;
+      expect([...questions]).toEqual([
+        expect.objectContaining({ kind: "approval", action: "create_repo_issue", status: "open" }),
+      ]);
+
+      // Not finished, so the next pass isn't given it, and doesn't get its tool either.
+      const next = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: next });
+      expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### a-issue-filer");
+      expect((next.doStreamCalls[0]?.tools ?? []).map((t) => t.name)).not.toContain(
+        "create_repo_issue",
+      );
+    } finally {
+      await sql`DELETE FROM agent_tools WHERE id = 'builtin:create_repo_issue'`;
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
       minSleepMinutes: 5,

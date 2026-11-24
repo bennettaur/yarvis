@@ -3,7 +3,14 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dueRoutines, loadRoutines, parseEvery, parseRoutine, type Routine } from "./routines.ts";
+import {
+  dueRoutines,
+  loadRoutines,
+  parseEvery,
+  parseRoutine,
+  type Routine,
+  resolveRoutineTools,
+} from "./routines.ts";
 
 const file = (frontmatter: string, body = "Do the thing.") =>
   `---\n${frontmatter}\n---\n\n${body}\n`;
@@ -16,6 +23,8 @@ function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {
     everyMinutes,
     workingHoursOnly: false,
     enabled: true,
+    tools: [],
+    config: {},
     source: "user",
     ...extra,
   };
@@ -53,8 +62,8 @@ describe("parseRoutine", () => {
 
   it("rejects an unknown key, a missing cadence, one too short, and an empty body", () => {
     const base = "name: x\ndescription: y";
-    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h\ntools: a`), "user")).toThrow(
-      "unknown key(s): tools",
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h\ntool: a`), "user")).toThrow(
+      "unknown key(s): tool",
     );
     expect(() => parseRoutine("a.md", file(base), "user")).toThrow("'every' is required");
     expect(() => parseRoutine("a.md", file(`${base}\nevery: soon`), "user")).toThrow(
@@ -86,6 +95,91 @@ describe("parseRoutine", () => {
     expect(
       parseRoutine("a.md", file(`name: ${"a".repeat(64)}\ndescription: y\nevery: 1h`), "user").name,
     ).toHaveLength(64);
+  });
+});
+
+describe("a routine's tools and config", () => {
+  const base = "name: slack-watch\ndescription: Watches Slack\nevery: 1h";
+
+  it("reads the tools it names and a flat config map, as text", () => {
+    const parsed = parseRoutine(
+      "a.md",
+      file(
+        `${base}\ntools: [slack_read_channel, "mcp:0000:post", slack_read_channel]\nconfig:\n  channels: [eng, "#ops", 42]\n  handle: "@me"\n  maxPerRun: 3\n  quiet: false`,
+      ),
+      "user",
+    );
+    expect(parsed.tools).toEqual(["slack_read_channel", "mcp:0000:post"]);
+    expect(parsed.config).toEqual({
+      channels: ["eng", "#ops", "42"],
+      handle: "@me",
+      maxPerRun: "3",
+      quiet: "false",
+    });
+  });
+
+  it("defaults both to empty, and takes a comma-separated tool list", () => {
+    expect(parseRoutine("a.md", file(base), "user")).toMatchObject({ tools: [], config: {} });
+    expect(parseRoutine("a.md", file(`${base}\ntools: a, b`), "user").tools).toEqual(["a", "b"]);
+  });
+
+  it("refuses a nested config, a bad key, a tool name with spaces, and too much of either", () => {
+    const bad = (extra: string) => () => parseRoutine("a.md", file(`${base}\n${extra}`), "user");
+    expect(bad("config: eng")).toThrow("'config' must be a map");
+    expect(bad("config:\n  slack:\n    channel: eng")).toThrow(
+      "'config.slack' must be text or a list of text",
+    );
+    expect(bad("config:\n  list: [[a]]")).toThrow("'config.list' item 1 must be text");
+    expect(bad("config:\n  1st: a")).toThrow("must start with a letter");
+    expect(bad("tools: [post message]")).toThrow("with no spaces: post message");
+    expect(bad(`tools: [${Array.from({ length: 21 }, (_, i) => `t${i}`).join(", ")}]`)).toThrow(
+      "at most 20 tools",
+    );
+    expect(bad(`config:\n  long: ${"x".repeat(2001)}`)).toThrow("cannot be longer than 2000");
+    const keys = Array.from({ length: 21 }, (_, i) => `  k${i}: v`).join("\n");
+    expect(bad(`config:\n${keys}`)).toThrow("at most 20 keys");
+  });
+});
+
+describe("resolveRoutineTools", () => {
+  const registry = [
+    { id: "builtin:list_events", name: "list_events", policy: "always" },
+    { id: "mcp:s1:post_message", name: "post_message", policy: "search" },
+    { id: "mcp:s2:post_message", name: "post_message", policy: "search" },
+    { id: "mcp:s1:delete_channel", name: "delete_channel", policy: "disabled" },
+    { id: "builtin:remember", name: "remember", policy: "always" },
+  ] as const;
+
+  it("matches a name or an id, and says why the rest didn't match", () => {
+    const resolved = resolveRoutineTools(
+      [
+        routine("watch", 60, {
+          tools: ["post_message", "builtin:list_events", "delete_channel", "nope", "remember"],
+        }),
+        routine("plain", 60),
+        routine("again", 60, { tools: ["mcp:s1:post_message", "list_events"] }),
+      ],
+      registry,
+      new Set(["builtin:remember"]),
+    );
+    expect(resolved.ids).toEqual(["builtin:list_events", "mcp:s1:post_message"]);
+    expect(resolved.byRoutine.get("watch")).toEqual([
+      {
+        tool: "post_message",
+        matchedIds: [],
+        problem:
+          "2 tools have that name; name one by its id: mcp:s1:post_message, mcp:s2:post_message",
+      },
+      { tool: "builtin:list_events", matchedIds: ["builtin:list_events"], problem: null },
+      { tool: "delete_channel", matchedIds: [], problem: "turned off in the Tool manager" },
+      { tool: "nope", matchedIds: [], problem: "no tool by that name is installed" },
+      { tool: "remember", matchedIds: [], problem: "not available in heads-down mode" },
+    ]);
+    expect(resolved.byRoutine.get("again")?.map((m) => m.matchedIds)).toEqual([
+      ["mcp:s1:post_message"],
+      ["builtin:list_events"],
+    ]);
+    expect(resolved.byRoutine.has("plain")).toBe(false);
   });
 });
 

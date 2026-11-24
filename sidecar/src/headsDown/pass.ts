@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import { listRegistryTools } from "../agentTools/store.ts";
 import { runAgentTurn } from "../chat/agent.ts";
 import { builtinToolMetadataByFamily } from "../chat/builtinTools.ts";
 import { getChatBudget } from "../chat/config.ts";
@@ -21,9 +22,9 @@ import { publish } from "./hub.ts";
 import { type MergeFeedbackLoader, mergeFeedbackLoader } from "./mergeFeedback.ts";
 import { type AttemptRecord, clip, newAttemptRecord, recordEvent } from "./passRecord.ts";
 import { buildPassTools, newPassOutcome } from "./passTools.ts";
-import { PASS_CONFIRMED_TOOLS, passApprovalHooks } from "./policy.ts";
+import { PASS_CONFIRMED_TOOLS, PASS_REFUSED_TOOLS, passApprovalHooks } from "./policy.ts";
 import { buildPassPrompt, buildRetryPrompt, PASS_INSTRUCTIONS } from "./prompt.ts";
-import { dueRoutines, routineCatalog } from "./routines.ts";
+import { dueRoutines, resolveRoutineTools, routineCatalog } from "./routines.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -223,6 +224,13 @@ export async function runPass(
     withinWorkingHours,
     limit: headsDownConfig.maxRoutinesPerPass,
   });
+  // Most passes have no routine naming a tool, and skip the registry read.
+  const registry = routines.some((r) => r.tools.length) ? await listRegistryTools(db) : [];
+  const routineTools = resolveRoutineTools(
+    routines,
+    registry,
+    new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
+  );
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -295,7 +303,7 @@ export async function runPass(
     const { model, budget } = options.model
       ? { model: options.model, budget: undefined }
       : await passModel(config, headsDownConfig);
-    mountTools(session.id, passToolIds());
+    mountTools(session.id, [...passToolIds(), ...routineTools.ids]);
 
     const runAttempt = async (message: string, record: AttemptRecord): Promise<AttemptResult> => {
       const result: AttemptResult = { error: null, transient: false, saved: false };
@@ -361,6 +369,7 @@ export async function runPass(
       lastFailure,
       routines,
       routinesLastDone: history.lastDone,
+      routineTools: routineTools.byRoutine,
     });
     // Every call made this pass, across retries, for the retry prompt.
     const callsThisPass: ToolActivity[] = [];

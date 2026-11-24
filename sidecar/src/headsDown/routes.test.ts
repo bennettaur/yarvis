@@ -324,6 +324,8 @@ describe("/api/heads-down", () => {
         workingHoursOnly: false,
         enabled: true,
         source: "builtin",
+        tools: [],
+        configKeys: [],
         lastDoneAt: "2026-10-27T12:00:00.000Z",
       });
       expect(body.routines).toContainEqual(
@@ -332,7 +334,7 @@ describe("/api/heads-down", () => {
 
       writeFileSync(
         join(routinesDir, "standup.md"),
-        "---\nname: standup\ndescription: Standup notes\nevery: 1d\n---\n\nWrite them.\n",
+        "---\nname: standup\ndescription: Standup notes\nevery: 1d\ntools: [post_message]\nconfig:\n  channel: eng\n---\n\nWrite them.\n",
       );
       writeFileSync(join(routinesDir, "broken.md"), "no frontmatter");
       // Served from the cache until reloaded.
@@ -344,7 +346,13 @@ describe("/api/heads-down", () => {
         problems: { path: string }[];
       };
       expect(reloaded.routines).toContainEqual(
-        expect.objectContaining({ name: "standup", source: "user", everyMinutes: 24 * 60 }),
+        expect.objectContaining({
+          name: "standup",
+          source: "user",
+          everyMinutes: 24 * 60,
+          tools: ["post_message"],
+          configKeys: ["channel"],
+        }),
       );
       expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
     } finally {

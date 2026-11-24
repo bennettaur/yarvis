@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { renderToHtml, textOf } from "../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../test/sidecarApi";
 
 const CATALOG = {
@@ -27,6 +27,8 @@ const CATALOG = {
       enabled: true,
       source: "builtin",
       path: "definitions/planner.md",
+      extends: null,
+      addedTools: [],
     },
     {
       name: "project-manager",
@@ -43,6 +45,8 @@ const CATALOG = {
       enabled: true,
       source: "user",
       path: "/Users/me/.yarvis/agents/project-manager.md",
+      extends: null,
+      addedTools: [],
     },
     {
       name: "session-summarizer",
@@ -59,6 +63,8 @@ const CATALOG = {
       enabled: true,
       source: "builtin",
       path: "definitions/session-summarizer.md",
+      extends: null,
+      addedTools: [],
     },
     {
       name: "complexity-router",
@@ -75,6 +81,26 @@ const CATALOG = {
       enabled: true,
       source: "builtin",
       path: "definitions/complexity-router.md",
+      extends: null,
+      addedTools: [],
+    },
+    {
+      name: "work-scout",
+      description: "Finds dangling work.",
+      kind: "task",
+      choices: [],
+      prompt: "You scout.\n\nAlso my team's PRs.",
+      tools: ["list_workspaces", "recall"],
+      unattended: [],
+      provider: null,
+      model: null,
+      complexityTier: null,
+      maxSteps: 10,
+      enabled: true,
+      source: "user",
+      path: "/Users/me/.yarvis/agents/my-scout.md",
+      extends: "work-scout",
+      addedTools: ["recall"],
     },
   ],
 };
@@ -109,6 +135,29 @@ describe("SpecialistSection", () => {
     expect(text).toContain("/Users/me/.yarvis/agents");
     expect(text).toContain("yours");
     expect(text).toContain("built-in");
+  });
+
+  it("marks a file that extends a built-in, rather than calling it the user's own", async () => {
+    const text = textOf(await renderToHtml(createElement(SpecialistSection)));
+    expect(text).toContain("work-scoutextends built-in work-scout");
+  });
+
+  it("shows the tools an extending file adds, under the prompt toggle", async () => {
+    const { host, unmount } = await mountForInteraction(createElement(SpecialistSection));
+    try {
+      await waitFor(() => host.textContent?.includes("work-scout") ?? false, "the list");
+      expect(host.textContent).not.toContain("Your file adds");
+      const scout = [...host.querySelectorAll("li")].find((li) =>
+        li.textContent?.startsWith("work-scout"),
+      );
+      scout?.querySelector("button")?.click();
+      await waitFor(
+        () => host.textContent?.includes("Your file adds: recall") ?? false,
+        "added tools",
+      );
+    } finally {
+      unmount();
+    }
   });
 
   it("surfaces a file that failed to parse rather than hiding it", async () => {
