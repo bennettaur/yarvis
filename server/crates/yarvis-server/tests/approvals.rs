@@ -273,7 +273,7 @@ async fn a_duration_within_the_limit_reaches_the_requester() {
             "POST",
             &path,
             Some(&laptop),
-            Some(json!({ "approve": true, "allowForSecs": 300 })),
+            Some(json!({ "approve": true, "allowForSecs": 900 })),
         )
         .await;
     assert_eq!(st, StatusCode::OK, "{body}");
@@ -281,11 +281,24 @@ async fn a_duration_within_the_limit_reaches_the_requester() {
         settled(requester).await,
         Decision::Approved {
             by: laptop_id,
-            allow_for: Some(Duration::from_secs(300)),
+            allow_for: Some(Duration::from_secs(900)),
         }
     );
     let answered = h.events("approval.answered").await;
-    assert_eq!(answered[0].data["allowForSecs"], 300);
+    assert_eq!(
+        answered[0].data["allowForSecs"], 900,
+        "the full limit is allowed"
+    );
+
+    // A late answer is told it was already answered, duration or not, rather
+    // than that its duration is wrong.
+    for late in [
+        json!({ "approve": true, "allowForSecs": 60 }),
+        json!({ "approve": false, "allowForSecs": 60 }),
+    ] {
+        let (st, body) = h.call("POST", &path, Some(&laptop), Some(late)).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    }
 }
 
 #[tokio::test]

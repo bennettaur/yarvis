@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -105,14 +105,14 @@ impl SshAgent {
         lock(&self.0)
             .as_ref()
             .and_then(|r| r.shared.active_grant())
-            .map(|g| g.expires_at)
+            .map(|g| g.expires_at_ms)
     }
 
     /// Ends the grant early. Returns whether one was active.
     pub fn end_grant(&self) -> bool {
         lock(&self.0)
             .as_ref()
-            .is_some_and(|r| r.shared.end_grant().is_some())
+            .is_some_and(|r| r.shared.drop_grant())
     }
 }
 
@@ -184,35 +184,41 @@ struct Shared {
     stopped: watch::Sender<bool>,
 }
 
-/// Signing allowed without asking until `until`.
+/// Signing allowed without asking until `expires_at_ms`.
+///
+/// Wall-clock time rather than `Instant`: on macOS `Instant` stops while the
+/// machine sleeps, so an hour's grant would outlast a night with the lid shut.
 #[derive(Clone)]
 struct Grant {
-    until: Instant,
-    /// `until` as milliseconds since the epoch, for clients to show.
-    expires_at: i64,
+    /// Milliseconds since the epoch.
+    expires_at_ms: i64,
     /// The device that allowed it.
     by: String,
 }
 
 impl Shared {
     /// Drops the key, which zeroizes it, ends any grant, and wakes every
-    /// waiting signature.
+    /// waiting signature. `stopped` is set before the grant is taken, so a
+    /// [`start_grant`](VaultAgent::start_grant) that checks it under the grant
+    /// lock either sees it or has its grant taken here.
     fn stop(&self) {
         lock(&self.key).take();
-        lock(&self.grant).take();
         self.stopped.send_replace(true);
+        lock(&self.grant).take();
     }
 
+    /// The grant, if one is active. Drops one that has run out.
     fn active_grant(&self) -> Option<Grant> {
         let mut grant = lock(&self.grant);
-        if grant.as_ref().is_some_and(|g| g.until <= Instant::now()) {
+        if grant.as_ref().is_some_and(|g| g.expires_at_ms <= now_ms()) {
             grant.take();
         }
         grant.clone()
     }
 
-    fn end_grant(&self) -> Option<Grant> {
-        lock(&self.grant).take()
+    /// Returns whether a grant was there to drop.
+    fn drop_grant(&self) -> bool {
+        lock(&self.grant).take().is_some()
     }
 }
 
@@ -274,34 +280,44 @@ impl VaultAgent {
     }
 
     /// Starts a grant, unless the agent stopped while the approval was out.
-    async fn start_grant(&self, allow_for: Duration, by: &str) -> Result<(), AgentError> {
-        let grant = Grant {
-            until: Instant::now() + allow_for,
-            expires_at: now_ms() + allow_for.as_millis() as i64,
-            by: by.to_string(),
-        };
-        if *self.shared.stopped.borrow() {
-            return Err(refuse("the vault is locked"));
+    /// The signature that was approved goes ahead either way: the approver
+    /// said yes to it, whatever happens to the grant.
+    async fn start_grant(&self, allow_for: Duration, by: &str) {
+        let expires_at_ms = now_ms().saturating_add(allow_for.as_millis() as i64);
+        {
+            let mut grant = lock(&self.shared.grant);
+            // Checked under the grant lock, which `stop` takes after setting
+            // `stopped`, so a grant can't land on a stopped agent.
+            if *self.shared.stopped.borrow() {
+                return;
+            }
+            *grant = Some(Grant {
+                expires_at_ms,
+                by: by.to_string(),
+            });
         }
-        *lock(&self.shared.grant) = Some(grant.clone());
-        self.events
+        let recorded = self
+            .events
             .append(
                 Some(by),
                 "ssh_agent.grant_started",
-                json!({ "expiresAt": grant.expires_at, "keyFingerprint": self.fingerprint() }),
+                json!({ "expiresAt": expires_at_ms, "keyFingerprint": self.fingerprint() }),
             )
-            .await
-            .map_err(|e| {
-                // A grant nobody can see on the event log isn't one to keep.
-                self.shared.end_grant();
-                refuse(&format!("couldn't record the grant: {e}"))
-            })?;
-        Ok(())
+            .await;
+        if let Err(e) = recorded {
+            // A grant nobody can see on the event log isn't one to keep.
+            self.shared.drop_grant();
+            tracing::error!("couldn't record a signing grant, so it was dropped: {e}");
+        }
     }
 
     /// Records a signature made under a grant. Without the record there is no
     /// trace of it, so a failure refuses the signature.
-    async fn record_unasked(&self, grant: &Grant, hash_alg: &str) -> Result<(), AgentError> {
+    async fn record_signature_under_grant(
+        &self,
+        grant: &Grant,
+        hash_alg: &str,
+    ) -> Result<(), AgentError> {
         self.events
             .append(
                 None,
@@ -310,7 +326,7 @@ impl VaultAgent {
                     "keyFingerprint": self.fingerprint(),
                     "hashAlgorithm": hash_alg,
                     "grantedBy": grant.by,
-                    "grantExpiresAt": grant.expires_at,
+                    "grantExpiresAt": grant.expires_at_ms,
                 }),
             )
             .await
@@ -377,21 +393,31 @@ impl Session for VaultAgent {
             Some(b"sha512") => "sha512",
             _ => return Err(refuse("unknown SSHSIG hash algorithm")),
         };
-        if let Some(grant) = self.shared.active_grant() {
-            self.record_unasked(&grant, hash_alg).await?;
-        } else {
-            match self.approve(hash_alg).await {
-                Decision::Approved { by, allow_for } => {
-                    if let Some(allow_for) = allow_for {
-                        self.start_grant(allow_for.min(MAX_GRANT), &by).await?;
-                    }
-                }
-                _ => return Err(refuse("signature denied")),
+        let grant = self.shared.active_grant();
+        if grant.is_none() {
+            let Decision::Approved { by, allow_for } = self.approve(hash_alg).await else {
+                return Err(refuse("signature denied"));
+            };
+            if let Some(allow_for) = allow_for {
+                // The approvals already held it to MAX_GRANT; this keeps the
+                // agent's own limit should that ever change.
+                self.start_grant(allow_for.min(MAX_GRANT), &by).await;
             }
         }
-        let key = lock(&self.shared.key);
-        let key = key.as_ref().ok_or_else(|| refuse("the vault is locked"))?;
-        key.try_sign(&request.data).map_err(AgentError::other)
+        let signature = {
+            let key = lock(&self.shared.key);
+            let key = key.as_ref().ok_or_else(|| refuse("the vault is locked"))?;
+            key.try_sign(&request.data).map_err(AgentError::other)?
+        };
+        if let Some(grant) = grant {
+            // Signed first so a locked vault records nothing; checked again so
+            // a Stop pressed meanwhile wins.
+            if self.shared.active_grant().is_none() {
+                return Err(refuse("signing without asking was stopped"));
+            }
+            self.record_signature_under_grant(&grant, hash_alg).await?;
+        }
+        Ok(signature)
     }
 }
 
@@ -715,22 +741,32 @@ mod tests {
                 .unwrap();
         }
         assert!(approvals.pending().await.unwrap().is_empty());
+        let fingerprint = agent.fingerprint();
         let started = events_of(&approvals, "ssh_agent.grant_started").await;
         assert_eq!(started.len(), 1);
+        assert_eq!(started[0]["keyFingerprint"], fingerprint.as_str());
+        let expires_at = started[0]["expiresAt"].as_i64().unwrap();
+        assert!(expires_at > now_ms() + 290_000, "{expires_at}");
         let signed = events_of(&approvals, "ssh_agent.signed").await;
         assert_eq!(signed.len(), 3, "each unasked signature is recorded");
         assert_eq!(signed[0]["grantedBy"], "device");
+        assert_eq!(signed[0]["keyFingerprint"], fingerprint.as_str());
+        assert_eq!(signed[0]["hashAlgorithm"], "sha512");
+        assert_eq!(signed[0]["grantExpiresAt"], expires_at);
+    }
+
+    fn grant(expires_in_ms: i64) -> Grant {
+        Grant {
+            expires_at_ms: now_ms() + expires_in_ms,
+            by: "device".into(),
+        }
     }
 
     #[tokio::test]
     async fn a_grant_never_lets_through_what_asking_would_refuse() {
         let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_secs(5));
-        *lock(&agent.shared.grant) = Some(Grant {
-            until: Instant::now() + Duration::from_secs(300),
-            expires_at: now_ms() + 300_000,
-            by: "device".into(),
-        });
+        *lock(&agent.shared.grant) = Some(grant(300_000));
         let login = request(&agent, b"session-id-and-userauth".to_vec());
         assert!(agent.sign(login).await.is_err());
         assert!(
@@ -746,11 +782,7 @@ mod tests {
     async fn an_expired_grant_asks_again() {
         let approvals = approvals().await;
         let mut agent = agent(&approvals, Duration::from_millis(50));
-        *lock(&agent.shared.grant) = Some(Grant {
-            until: Instant::now() - Duration::from_secs(1),
-            expires_at: now_ms() - 1_000,
-            by: "device".into(),
-        });
+        *lock(&agent.shared.grant) = Some(grant(-1_000));
         // Nobody answers, so asking is what refuses it.
         assert!(
             agent
@@ -765,19 +797,61 @@ mod tests {
     #[tokio::test]
     async fn stopping_or_ending_the_grant_goes_back_to_asking() {
         let approvals = approvals().await;
-        let agent = agent(&approvals, Duration::from_secs(5));
-        let grant = || Grant {
-            until: Instant::now() + Duration::from_secs(300),
-            expires_at: now_ms() + 300_000,
-            by: "device".into(),
-        };
-        *lock(&agent.shared.grant) = Some(grant());
-        assert!(agent.shared.end_grant().is_some());
+        let mut agent = agent(&approvals, Duration::from_millis(50));
+        *lock(&agent.shared.grant) = Some(grant(300_000));
+        assert!(agent.shared.drop_grant());
+        assert!(!agent.shared.drop_grant(), "nothing left to drop");
         assert!(agent.shared.active_grant().is_none());
 
-        *lock(&agent.shared.grant) = Some(grant());
+        *lock(&agent.shared.grant) = Some(grant(300_000));
         agent.shared.stop();
         assert!(agent.shared.active_grant().is_none());
+        // Refused with nobody asked and nothing recorded as signed.
+        assert!(
+            agent
+                .sign(request(&agent, sshsig_blob("git")))
+                .await
+                .is_err()
+        );
+        assert!(approvals.pending().await.unwrap().is_empty());
+        assert!(events_of(&approvals, "ssh_agent.signed").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_grant_approved_as_the_agent_stops_is_not_kept() {
+        let approvals = approvals().await;
+        let agent = agent(&approvals, Duration::from_secs(5));
+        agent.shared.stop();
+        agent.start_grant(Duration::from_secs(300), "device").await;
+        assert!(agent.shared.active_grant().is_none());
+        assert!(
+            events_of(&approvals, "ssh_agent.grant_started")
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_grant_of_the_full_limit_is_allowed_and_no_longer() {
+        let approvals = approvals().await;
+        let mut agent = agent(&approvals, Duration::from_secs(5));
+        let answer = tokio::spawn({
+            let approvals = approvals.clone();
+            async move {
+                let pending = next_pending(&approvals).await;
+                approvals
+                    .answer(&pending.id, "device", true, Some(MAX_GRANT))
+                    .await
+                    .unwrap();
+            }
+        });
+        agent
+            .sign(request(&agent, sshsig_blob("git")))
+            .await
+            .unwrap();
+        answer.await.unwrap();
+        let grant = agent.shared.active_grant().unwrap();
+        assert!(grant.expires_at_ms <= now_ms() + MAX_GRANT.as_millis() as i64);
     }
 
     #[tokio::test]

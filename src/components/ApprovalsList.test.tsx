@@ -176,6 +176,57 @@ describe("ApprovalsList", () => {
     expect(server.calls.some((c) => c.route === "DELETE /api/vault/ssh-agent/grant")).toBe(true);
   });
 
+  it("drops the banner when the grant runs out while it's shown", async () => {
+    approvals = [];
+    grantExpiresAt = Date.now() + 300;
+    const mounted = await mountForInteraction(
+      createElement(ApprovalsList, { hideWhenEmpty: true }),
+    );
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("without asking") ?? false,
+      "the banner",
+    );
+    // No refetch moves it: the component's own timer does.
+    await waitFor(() => mounted.host.innerHTML === "", "the banner to go at expiry");
+  });
+
+  it("drops the banner when the server says the vault locked", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      approvals = [];
+      grantExpiresAt = Date.now() + 600_000;
+      const mounted = await mountForInteraction(createElement(ApprovalsList));
+      unmount = mounted.unmount;
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      await waitFor(
+        () => mounted.host.textContent?.includes("without asking") ?? false,
+        "the banner",
+      );
+      const socket = fakeSockets()[0];
+      socket?.open();
+
+      grantExpiresAt = undefined;
+      socket?.sendJson({
+        type: "event",
+        seq: 2, // The stream skips a seq it has already seen in this file.
+        at: 1,
+        deviceId: null,
+        kind: "vault.locked",
+        data: {},
+      });
+
+      await waitFor(
+        () => !(mounted.host.textContent?.includes("without asking") ?? true),
+        "the banner to go",
+      );
+    } finally {
+      unmount?.();
+      unmount = undefined;
+      restoreSockets();
+    }
+  });
+
   it("shows nothing about signing once the grant has run out", async () => {
     approvals = [];
     grantExpiresAt = Date.now() - 1_000;

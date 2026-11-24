@@ -94,8 +94,9 @@ commit. They show in a box at the bottom right of every page, and under
 the first answer counts. If another device answered first, the request just
 disappears from the list.
 
-A commit signature can also be approved for a while: under **Approve**, pick
-**5 min**, **15 min** or **1 hour**. Until then the server signs commits
+A commit signature can also be approved for a while: on the row below
+**Approve**, next to **Approve and stop asking for**, pick **5 min**,
+**15 min** or **1 hour**. Until then the server signs commits
 without asking, for any terminal or agent session on it, and the box says
 until when. Press **Stop** there to go back to asking. Locking the vault or
 restarting the server stops it too. A rebase signs each commit again, so this

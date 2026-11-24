@@ -16,7 +16,7 @@ const SIGNING_KEY = "server:ssh-agent";
 const BUTTON = "rounded-md border px-2.5 py-1 text-xs disabled:opacity-50";
 
 /** How long an approval may cover later requests, when it offers that. */
-const ALLOW_FOR = [
+const GRANT_DURATIONS = [
   { secs: 5 * 60, label: "5 min" },
   { secs: 15 * 60, label: "15 min" },
   { secs: 60 * 60, label: "1 hour" },
@@ -30,7 +30,7 @@ const SIGNING_EVENTS = [
   "vault.locked",
 ];
 
-const clock = (ms: number) =>
+const formatClockTime = (ms: number) =>
   new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
 /**
@@ -44,6 +44,7 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
   const approvals = useCachedResource(APPROVALS_KEY, listApprovals, SIDECAR_FRESHNESS);
   const signing = useCachedResource(SIGNING_KEY, getSshAgentStatus, SIDECAR_FRESHNESS);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -90,11 +91,14 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
 
   const stopGrant = async () => {
     setError(null);
+    setStopping(true);
     try {
       await endSigningGrant();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      setStopping(false);
+      // Even after a failure: the grant may have ended some other way.
       invalidate(SIGNING_KEY);
     }
   };
@@ -117,11 +121,12 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
       {grantActive && (
         <div className="mb-3 flex items-center gap-3 rounded-md border border-amber-800 bg-amber-950/40 px-3 py-2">
           <span className="min-w-0 flex-1 text-sm text-amber-200">
-            Signing commits without asking until {clock(grantEnds)}
+            Signing commits without asking until {formatClockTime(grantEnds)}
           </span>
           <button
             type="button"
             className={`${BUTTON} border-amber-700 text-amber-200 hover:bg-amber-900`}
+            disabled={stopping}
             onClick={() => void stopGrant()}
           >
             Stop
@@ -134,8 +139,8 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
       <ul className="space-y-2">
         {pending.map((approval) => {
           const busy = busyId === approval.id;
-          const max = approval.maxAllowForSecs ?? 0;
-          const durations = ALLOW_FOR.filter((d) => d.secs <= max);
+          const maxAllowForSecs = approval.maxAllowForSecs ?? 0;
+          const offeredDurations = GRANT_DURATIONS.filter((d) => d.secs <= maxAllowForSecs);
           return (
             <li key={approval.id} className="rounded-md border border-zinc-800 px-3 py-2">
               <div className="flex items-center gap-3">
@@ -160,10 +165,10 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
                   Deny
                 </button>
               </div>
-              {durations.length > 0 && (
+              {offeredDurations.length > 0 && (
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
                   <span>Approve and stop asking for</span>
-                  {durations.map((d) => (
+                  {offeredDurations.map((d) => (
                     <button
                       key={d.secs}
                       type="button"

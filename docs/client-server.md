@@ -620,7 +620,8 @@ Events and approvals:
     device that allowed it), `ssh_agent.grant_ended` (`{ reason: "stopped" }`)
     and `ssh_agent.signed` (`{ keyFingerprint, hashAlgorithm, grantedBy,
     grantExpiresAt }`, one per signature made without asking). See the
-    ssh-agent below.
+    ssh-agent below. `grant_ended` is sent only when a device stops a grant:
+    expiry sends nothing, and a lock sends `vault.locked`.
 - `GET  /api/approvals` (`read`) → the pending ones, oldest first:
   `[{ id, kind, summary, data, createdAt, expiresAt, maxAllowForSecs? }]`.
   `kind` names the requester (`git.sign`), `summary` is the line to show,
@@ -838,7 +839,9 @@ An approver can also allow signing for a while, up to an hour
 (`allowForSecs` on the answer), as 1Password's agent does. Until it ends,
 signatures are made without asking, for any process that can reach the
 socket, and each one appends `ssh_agent.signed`; one that can't be recorded is
-refused. The grant is kept only in memory, so locking the vault, the agent
+refused. A grant whose `ssh_agent.grant_started` can't be recorded is dropped,
+though the signature that was approved still goes ahead. The grant runs on
+wall-clock time, so a Mac that sleeps through it wakes with it ended. The grant is kept only in memory, so locking the vault, the agent
 stopping or a restart ends it, as does `DELETE /api/vault/ssh-agent/grant`.
 It never widens what is signed: the namespace and hash checks still come
 first.

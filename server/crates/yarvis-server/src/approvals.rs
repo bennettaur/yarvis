@@ -117,17 +117,17 @@ impl Approvals {
     }
 
     /// [`request`](Self::request), but the approver may also let it cover
-    /// later requests for up to `max_grant`. The decision carries what they
-    /// chose.
+    /// later requests for up to `max_allow_for`. The decision carries what
+    /// they chose.
     pub async fn request_allowing_grant(
         &self,
         kind: &str,
         summary: &str,
         data: Value,
         timeout: Duration,
-        max_grant: Duration,
+        max_allow_for: Duration,
     ) -> Result<Decision, StoreError> {
-        let max_secs = u32::try_from(max_grant.as_secs()).unwrap_or(u32::MAX);
+        let max_secs = u32::try_from(max_allow_for.as_secs()).unwrap_or(u32::MAX);
         self.ask(kind, summary, data, timeout, Some(max_secs)).await
     }
 
@@ -207,19 +207,27 @@ impl Approvals {
         allow_for: Option<Duration>,
     ) -> Result<Answer, StoreError> {
         if let Some(allow_for) = allow_for {
-            let max: Option<Option<i32>> =
-                sqlx::query_scalar("SELECT max_allow_for_secs FROM approvals WHERE id = $1")
-                    .bind(id)
-                    .fetch_optional(self.store.db()?)
-                    .await?;
-            let Some(max) = max else {
+            let row: Option<(Option<i32>, bool)> = sqlx::query_as(
+                "SELECT max_allow_for_secs, status = 'pending' AND expires_at > $2
+                 FROM approvals WHERE id = $1",
+            )
+            .bind(id)
+            .bind(now_ms())
+            .fetch_optional(self.store.db()?)
+            .await?;
+            let Some((max_allow_for_secs, still_pending)) = row else {
                 return Ok(Answer::NotFound);
             };
-            if let Some(refusal) = grant_refusal(approve, allow_for, max) {
+            // One that's settled falls through to the UPDATE, which matches
+            // nothing, so a late answer gets the same 409 with or without a
+            // duration.
+            if still_pending
+                && let Some(refusal) = grant_refusal(approve, allow_for, max_allow_for_secs)
+            {
                 return Ok(Answer::GrantRefused(refusal));
             }
         }
-        let allow_for_secs = allow_for.map(|d| secs_to_db(d.as_secs() as u32));
+        let allow_for_secs = allow_for.map(|d| secs_to_db(d.as_secs()));
         let status = if approve { "approved" } else { "denied" };
         let won = sqlx::query(
             "UPDATE approvals
@@ -381,6 +389,7 @@ fn grant_refusal(approve: bool, allow_for: Duration, max_secs: Option<i32>) -> O
     if secs == 0 {
         return Some("allowForSecs must be at least 1".into());
     }
+    // A negative limit, which nothing writes, allows nothing.
     if secs > u64::try_from(max_secs).unwrap_or(0) {
         return Some(format!(
             "this approval can cover later requests for at most {max_secs} seconds"
@@ -389,10 +398,10 @@ fn grant_refusal(approve: bool, allow_for: Duration, max_secs: Option<i32>) -> O
     None
 }
 
-/// Seconds as the `INTEGER` columns store them. Every value here is capped by
-/// a requester's limit, which is far below `i32::MAX`.
-fn secs_to_db(secs: u32) -> i32 {
-    i32::try_from(secs).unwrap_or(i32::MAX)
+/// Seconds as the `INTEGER` columns store them. Every value that reaches here
+/// is held to a requester's limit, so the clamp is a safety net, not a limit.
+fn secs_to_db(secs: impl Into<u64>) -> i32 {
+    i32::try_from(secs.into()).unwrap_or(i32::MAX)
 }
 
 /// Denies the approval if the requester stops waiting (its task was
