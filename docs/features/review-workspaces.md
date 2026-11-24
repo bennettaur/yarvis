@@ -870,7 +870,8 @@ get no workspace until their turn. The backlog is kept in the database, so it
 survives a restart.
 
 - A PR holds its place from when its prep starts until you're done with it:
-  you approve it or ask for changes on GitHub, someone else's approval
+  you review it on GitHub (approve, ask for changes, or leave comments),
+  someone else's approval
   settles it, it merges or closes, you dismiss its item, or its workspace is
   archived. Opening the item doesn't count, since you may come back to it. A
   PR waiting for your go-ahead holds its place too. One whose prep failed

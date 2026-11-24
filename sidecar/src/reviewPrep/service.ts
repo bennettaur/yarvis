@@ -16,7 +16,7 @@ import { createGitHubClient, type ReviewCandidate } from "../github/client.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { openStackRefs } from "../pr/startReviewTools.ts";
-import { type PrRef, refKey } from "../pr/types.ts";
+import { type PrRef, type ReviewerState, refKey } from "../pr/types.ts";
 import { verificationChecklist } from "../reviewWorkspaces/checklist.ts";
 import {
   findReviewWorkspacePr,
@@ -78,15 +78,23 @@ export interface ReviewPrepDeps {
 
 /**
  * Merged, closed or approved, the user's own, or one the user already
- * approved or asked changes on. A comment alone doesn't count as a review.
+ * reviewed. Any submitted review counts, comment-only ones included: leaving
+ * comments is acting on the PR. GitHub refuses an empty comment review, and an
+ * unsubmitted draft never reaches `myReviewStates`.
  */
+const REVIEWED_STATES: ReadonlySet<ReviewerState> = new Set([
+  "approved",
+  "changes_requested",
+  "commented",
+]);
+
 export function needsNoReview(pr: ReviewCandidate, viewer: string): boolean {
   return (
     pr.merged ||
     pr.summary.state === "closed" ||
     pr.reviewDecision === "approved" ||
     pr.summary.author === viewer ||
-    pr.myReviewStates.some((st) => st === "approved" || st === "changes_requested")
+    pr.myReviewStates.some((st) => REVIEWED_STATES.has(st))
   );
 }
 

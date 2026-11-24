@@ -646,10 +646,14 @@ describe("needsNoReview", () => {
     expect(needsNoReview(pr({}, { author: "me" }), "me")).toBe(true);
     expect(needsNoReview(pr({ myReviewStates: ["changes_requested"] }), "me")).toBe(true);
     expect(needsNoReview(pr({ myReviewStates: ["approved"] }), "me")).toBe(true);
+    // Leaving comments is acting on the PR, as much as approving it.
+    expect(needsNoReview(pr({ myReviewStates: ["commented"] }), "me")).toBe(true);
   });
 
-  it("is false for an open PR the user has only commented on", () => {
-    expect(needsNoReview(pr({ myReviewStates: ["commented"] }), "me")).toBe(false);
+  it("is false for an open PR waiting on the user, or one someone else only commented on", () => {
     expect(needsNoReview(pr(), "me")).toBe(false);
+    expect(needsNoReview(pr({ reviewDecision: "review_required", approvals: 0 }), "me")).toBe(
+      false,
+    );
   });
 });

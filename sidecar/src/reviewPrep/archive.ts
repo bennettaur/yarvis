@@ -158,7 +158,8 @@ async function releaseFinished(db: Db, deps: ReviewPrepDeps): Promise<number> {
   }
 
   // Opening an item marks it read, which takes it off the bell, so a review
-  // on GitHub is how the user says they are done with a PR they opened.
+  // on GitHub, comments included, is how the user says they are done with a
+  // PR they opened.
   const held = await db
     .select()
     .from(reviewPreps)
