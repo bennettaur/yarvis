@@ -1,10 +1,11 @@
 # Yarvis for macOS
 
 A native SwiftUI client for your own `yarvis-server`. It signs in with the
-server's passphrase and an authenticator code, and covers chat, the attention
-bell and approvals, and terminals natively (chat and attention are so far
-tested only against stubs; see Test). Everything else opens in a web
-view of the full web UI. The API it uses is in
+server's passphrase and an authenticator code, and is laid out like the web
+UI: Chat, Terminal and Workspaces pages, Settings for devices and the
+account, and the attention bell. Those are native (chat, workspaces and
+attention are so far tested only against stubs; see Test). Everything else
+opens in a web view of the full web UI. The API it uses is in
 [docs/client-server.md](../../docs/client-server.md), and
 [docs/native-macos.md](../../docs/native-macos.md) maps it to Swift.
 
@@ -94,31 +95,67 @@ socket closed with `4401`, signs the app out.
 
 ## What's native and what's web
 
+The sidebar lists the pages in the web UI's order, with Settings at the
+bottom. Cmd-1 to Cmd-3 open Chat, Terminal and Workspaces, Cmd-, opens
+Settings, and Cmd-Shift-] / Cmd-Shift-[ step through them. Page state (open
+chat tabs, terminal layouts, the sidebar) is kept on this Mac.
+
 Native:
 
-- **Chat.** The thread list, opening a thread, sending, the streamed reply as
-  markdown, tool calls as one line each, Stop (Cmd-.), a model picker, and
-  the approval bar for tool calls inside a turn.
-- **Attention.** Pending attention items and server approvals (such as git
-  signatures) in one list, live from the attention stream. Answer an
-  `ask_user` question, allow or deny a Claude Code permission prompt
-  (AskUserQuestion prompts get a question form), dismiss an item, or open it.
-  Opening goes to the chat thread or terminal it names, or to the web UI.
-  New items post a macOS notification from the wrapped app.
-- **Terminals.** Every session `GET /api/pty` lists, in SwiftTerm: each
-  active workspace's agent session (`ws-claude:<id>`, with Start when none
-  is running), shells from any client, and running review sessions. The list
-  is read again on each `pty.started` and `pty.exited` event. Exited shells
-  stay listed until you end them; opening one starts a new shell. Sessions
-  resume where they left off after a dropped connection; an agent session
-  that ended isn't reattached, since that would start a plain shell under
-  its id. Programs in a terminal can't write the clipboard (OSC 52 is
-  ignored), and only http(s) links open.
+- **Chat.** Threads open in tabs, and each tab runs its own turn, so a reply
+  keeps streaming while you work in another. The Chats sidebar collapses.
+  Return sends and Shift-Return adds a line; a message sent during a reply
+  is queued, and the queue waits after a turn fails or is stopped. Thinking
+  sends `reasoning` and shows the model's reasoning for the live turn. Tool
+  calls are cards folded under a summary line. A sent message can be edited
+  and resent, and a failed turn retried. The approval bar answers with A
+  and D, and offers Always allow for MCP tools. Replies render as markdown
+  with lists, tables and quotes; http(s) links open in the browser, and
+  `yarvis://` links and workspace ids open the place they name. Artifacts
+  open in a side pane (Excalidraw ones in the web UI), and links in an
+  untrusted artifact stay inert. An MCP bar offers sign-in or reconnect for
+  servers that aren't usable.
+- **Terminal.** Tabs with split panes, as in the web UI: Cmd-T opens a tab,
+  Cmd-W closes one (asking first if something is running), Cmd-D splits
+  right and Cmd-Shift-D splits below. Tabs reorder by drag. Font size
+  (Cmd-=, Cmd--, Cmd-0) is the server's setting, shared with the web UI.
+  Shift-Return sends a newline for Claude Code. The layout stays on this
+  Mac, and each pane gets a fresh shell after a relaunch. Sessions resume
+  after a dropped connection; a session the server started (`ws-claude:`,
+  `review-claude:`) isn't reattached after it ends, since that would start
+  a plain shell under its id. Programs in a terminal can't write the
+  clipboard (OSC 52 is ignored), and only http(s) links open.
+- **Workspaces.** The list grouped by repo, with status, PR glyphs and the
+  attention dot. A workspace's page has rename, repos, linked PRs (link,
+  unlink, detect), Start session with a harness picker, and Archive. Its
+  agent runs as a pinned tab on the workspace's own terminal surface, and
+  starts on its own the first time you open a workspace with none running.
+  It shows the provisioning log, with retry and ignore. The side panel has
+  changed files, all files, review comments with Copy for Claude, and PR
+  checks; files open as a diff (click a line number, then shift-click
+  another, to comment on a range) or in an editor that won't overwrite a
+  change made since it loaded. New workspaces are created with repos and
+  branches. Lists are polled only while the page is on screen.
+- **Settings.** Connection (this device, Sign Out), approvals, devices
+  (revoke, pair a device with a token) and the account (passphrase, a new
+  authenticator, backup codes, sign out other devices). While the server's
+  vault is locked or not set up, an unlock screen replaces the app.
+- **Attention.** The toolbar bell (Shift-Cmd-A) opens a panel of pending
+  attention items and server approvals (such as git signatures), live from
+  the attention stream. Answer an `ask_user` question, allow or deny a
+  Claude Code permission prompt (AskUserQuestion prompts get a question
+  form), dismiss an item, or open it. Opening goes to the chat thread,
+  workspace or terminal pane it names, or to the web UI. New items post a
+  macOS notification from the wrapped app.
+
+Not built natively yet: on Workspaces, PR checks' Fix with Claude, the
+Stack tab, Link work, the Run pane and the inline repo creator; voice in
+chat.
 
 Web (Show Web UI, Shift-Cmd-U, or the globe button):
 
-- Everything else: workspaces, PRs, memory, settings, devices, the vault
-  unlock screen, heads-down questions, first-run setup.
+- Everything else: PRs, tasks, memory, the rest of Settings, heads-down
+  questions, first-run setup.
 - The web view signs in on its own, with the same passphrase and a code. The
   app doesn't hand its token to the page, since the page's localStorage would
   then hold a second copy of it. Links off the server's origin open in your

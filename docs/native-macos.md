@@ -14,15 +14,28 @@ natively, and lists what in the API gets in its way.
   or the Android client's authors, would mirror.
 - `YarvisMac`: the SwiftUI app.
 
-Native: sign-in and sign-out, the code prompt for `reauth_required`, the
-events socket, chat (threads, streamed replies as markdown, tool activity,
-Stop, the tool approval bar), attention (items, server approvals, answering
-`ask_user` questions and permission prompts, dismissing, opening), and
-terminals in SwiftTerm. New attention items post a macOS notification when
-the app runs as `Yarvis.app`.
+The app is laid out like the web UI: a sidebar with the Chat, Terminal and
+Workspaces pages in the web's order and Settings at the bottom, and the
+attention bell as a panel. `AppModel` routes between pages as the web's
+`App.tsx` does: an attention item, a `yarvis://` link or a workspace mention
+opens the chat thread, workspace or terminal pane it names, and a PTY id is
+routed by the surface that owns it (`tab:terminal/…` to Terminal,
+`ws-claude:<id>` and `ws:<id>/…` to Workspaces).
 
-In a `WKWebView`: everything else, including first-run setup, the vault
-unlock screen, devices and Settings.
+Native: sign-in and sign-out, the code prompt for `reauth_required`, the
+events socket, the vault unlock screen, chat (tabs with concurrent turns,
+queued messages, reasoning, tool cards, edit and resend, the approval bar,
+artifacts, the MCP connection bar), terminals (tabs and split panes in
+SwiftTerm, a layout kept per surface in the web's shape), workspaces (the
+list, the detail page with its agent and terminals, provisioning, new
+workspaces, archiving, changed and all files, diffs with review comments,
+the editor), Settings (devices, pairing tokens, the account) and attention
+(items, server approvals, answering `ask_user` questions and permission
+prompts, dismissing, opening). New attention items post a macOS
+notification when the app runs as `Yarvis.app`.
+
+In a `WKWebView`: everything else, including first-run setup, PRs, tasks,
+memory, and the rest of Settings.
 
 Checked against a real `yarvis-server` with the sidecar off: sign-in with a
 passphrase and TOTP, `/api/devices/me`, signing out with
