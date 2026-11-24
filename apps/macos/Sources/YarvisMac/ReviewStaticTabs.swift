@@ -44,7 +44,7 @@ struct ReviewDescriptionTab: View {
             if general.isEmpty {
                 Text("No general comments.").foregroundStyle(.secondary)
             }
-            ForEach(Array(general.enumerated()), id: \.offset) { _, thread in
+            ForEach(keyedThreads(general), id: \.key) { _, thread in
                 PrThreadView(context: context, thread: thread, showsLocation: true)
             }
             if detail.reviewThreadsTruncated == true {
@@ -158,7 +158,7 @@ struct ReviewCommentsTab: View {
             if shown.isEmpty {
                 Text(threads.isEmpty ? "No review threads." : "Every thread is resolved.").foregroundStyle(.secondary)
             }
-            ForEach(Array(grouped.general.enumerated()), id: \.offset) { _, thread in
+            ForEach(keyedThreads(grouped.general), id: \.key) { _, thread in
                 PrThreadView(context: context, thread: thread, showsLocation: true)
             }
             ForEach(grouped.files, id: \.path) { group in
@@ -166,7 +166,7 @@ struct ReviewCommentsTab: View {
                     Button(group.path) { context.openTab(.diff(prId: context.pr.prId, path: group.path)) }
                         .buttonStyle(.link)
                         .font(.callout.monospaced())
-                    ForEach(Array(group.threads.enumerated()), id: \.offset) { _, thread in
+                    ForEach(keyedThreads(group.threads), id: \.key) { _, thread in
                         if let line = thread.line {
                             Button("Go to line \(line) →") {
                                 context.openTab(.diff(prId: context.pr.prId, path: group.path, revealLine: line))

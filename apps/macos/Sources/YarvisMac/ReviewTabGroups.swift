@@ -172,6 +172,8 @@ private struct ReviewTabHost: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSHostingView<ReviewTabBody> {
         let view = NSHostingView(rootView: content)
+        // The group decides the size; a hidden tab's content mustn't widen it or pin the divider.
+        view.sizingOptions = []
         view.isHidden = !active
         return view
     }

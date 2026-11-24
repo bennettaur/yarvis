@@ -77,8 +77,9 @@ final class ReviewRereviewModel: ReviewTabModel {
         }
     }
 
+    /// Only while the tab is showing: a paid run shouldn't start from a tab nobody sees.
     private func autoStartIfDue(from: String) {
-        guard let latest, !autoStarted.contains(from),
+        guard attached, let latest, !autoStarted.contains(from),
               shouldAutoStartRereview(latest, autoStart: true, alreadyStarted: startedId != nil) else { return }
         autoStarted.insert(from)
         run("autoStart") { [self] in
@@ -91,6 +92,7 @@ final class ReviewRereviewModel: ReviewTabModel {
     func attach() {
         attached = true
         followRun()
+        if let from { autoStartIfDue(from: from) }
     }
 
     /// Follows the run if it isn't already. Only while attached, so a late
