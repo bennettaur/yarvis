@@ -294,18 +294,21 @@ a message or ticket asks. Heads-down mode then carries it through these
 stages, one at a time:
 
 1. **CI**: gets the checks green, telling the PR's workspace session to fix
-   failures.
+   failures, as the repo's **CI** playbook step says.
 2. **Reviewer**: asks for a review. Who to ask comes from the repo's
    **Pick a reviewer** playbook step, or your standing guidance. If neither
    says, it asks you.
 3. **Review feedback**: waits for an approval with no open review feedback,
    handing the feedback to the workspace's session as described under
-   [Open review feedback](#open-review-feedback).
+   [Open review feedback](#open-review-feedback), along with the repo's
+   **Review feedback** step.
 4. **Staging test**: follows the repo's **Test in staging** step.
-5. **Merge**: merges under the same rules as any other merge (see
-   [Merging PRs](#merging-prs)): working hours, risk and open feedback. The
-   stage only finishes once GitHub shows the PR merged, so it needs a GitHub
-   token.
+5. **Merge**: first checks each item in the repo's **Review before merge**
+   step against the PR. If any is unmet, or it can't tell, it asks you
+   instead of merging. Then it merges the way the **Merge** step says, under
+   the same rules as any other merge (see [Merging PRs](#merging-prs)):
+   working hours, risk and open feedback. The stage only finishes once GitHub
+   shows the PR merged, so it needs a GitHub token.
 6. **Deploy**: runs the repo's **Deploy** step.
 7. **Watch deploy**: follows the **Monitor the deploy** step until the deploy
    finishes.
@@ -318,10 +321,12 @@ Then the stream is marked done. Heads-down mode is what moves a ship stream,
 so it waits while heads-down mode is off.
 
 The steps come from the repo's [playbook](workspaces.md#repo-playbooks)
-(Settings → Repositories → Playbooks). A stage whose playbook step you left
-empty is skipped and shown as skipped. If the repo isn't registered in
-Yarvis, nothing is skipped for you, and a pass marks one of those stages
-skipped only once you've said to. Whether a stage passed is the pass's
+(Settings → Repositories → Playbooks). Every stage follows its step when
+you wrote one. CI, reviewer, review feedback and merge always run, with or
+without a step. The staging test and the stages after the merge exist only to
+run their step, so one you left empty is skipped and shown as skipped. If the
+repo isn't registered in Yarvis, nothing is skipped for you, and a pass marks
+one of those stages skipped only once you've said to. Whether a stage passed is the pass's
 judgement, apart from the merge. The Heads down page shows each ship stream's
 stages, which one it is at, which were skipped or failed, what it is waiting
 on, and the last thing it logged.

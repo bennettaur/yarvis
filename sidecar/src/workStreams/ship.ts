@@ -18,13 +18,21 @@ import { type UpdateStreamInput, updateStream } from "./service.ts";
  * (`headsDown/policy.ts`); nothing here runs them.
  */
 
-/** The playbook prompt each stage follows. A stage with one is skipped when the prompt is empty. */
-const STAGE_PLAYBOOK: Partial<Record<ShipStage, PlaybookKey>> = {
-  staging_test: "testStaging",
-  deploy: "deploy",
-  monitor_deploy: "monitorDeploy",
-  monitor_production: "monitorProduction",
-  test_production: "testProduction",
+/**
+ * The playbook prompts each stage follows when the repo has them. The merge
+ * stage also checks `review`, the user's list of what must be true of the
+ * review before anything merges.
+ */
+const STAGE_PLAYBOOK: Record<Exclude<ShipStage, "done">, readonly PlaybookKey[]> = {
+  ci: ["ci"],
+  reviewer: ["pickReviewer"],
+  feedback: ["feedback"],
+  staging_test: ["testStaging"],
+  merge: ["review", "merge"],
+  deploy: ["deploy"],
+  monitor_deploy: ["monitorDeploy"],
+  monitor_production: ["monitorProduction"],
+  test_production: ["testProduction"],
 };
 
 /** Stages after the merge: what goes wrong here is live, so a failure proposes a revert. */
@@ -34,6 +42,21 @@ export const AFTER_MERGE_STAGES: readonly ShipStage[] = [
   "monitor_production",
   "test_production",
 ];
+
+/**
+ * Stages that only exist to run a playbook step, so they are skipped when the
+ * repo's step is empty. The rest have work of their own and always run.
+ */
+const PLAYBOOK_ONLY_STAGES: ReadonlySet<ShipStage> = new Set([
+  "staging_test",
+  ...AFTER_MERGE_STAGES,
+]);
+
+/** The prompts in the repo's playbook that a stage follows. */
+function stagePlaybookSteps(stage: ShipStage, playbook: RepoPlaybooks | null): PlaybookKey[] {
+  if (stage === "done" || !playbook) return [];
+  return STAGE_PLAYBOOK[stage].filter((key) => playbook[key]);
+}
 
 /** Stages a pass checks on a cadence rather than finishing in one go. */
 const MONITOR_STAGES: ReadonlySet<ShipStage> = new Set(["monitor_deploy", "monitor_production"]);
@@ -114,8 +137,11 @@ function firstStageToRun(
 ): { stage: ShipStage; autoSkipped: ShipStage[] } {
   const autoSkipped: ShipStage[] = [];
   for (const stage of SHIP_STAGES.slice(index)) {
-    const playbookKey = STAGE_PLAYBOOK[stage];
-    if (stage === "done" || !playbookKey || !playbook || playbook[playbookKey]) {
+    if (
+      !PLAYBOOK_ONLY_STAGES.has(stage) ||
+      !playbook ||
+      stagePlaybookSteps(stage, playbook).length > 0
+    ) {
       return { stage, autoSkipped };
     }
     autoSkipped.push(stage);
@@ -167,6 +193,8 @@ export type ShipUpdateResult =
       stage: ShipStage;
       /** Stages passed over because the playbook has no step for them. */
       autoSkipped: ShipStage[];
+      /** The repo's playbook prompts the new stage follows; read them with get_repo_playbook. */
+      playbookSteps?: PlaybookKey[];
       monitorUntil?: string;
       nextCheckAt?: string;
       note?: string;
@@ -219,13 +247,11 @@ export async function updateShipStage(
   const playbook = finishing ? await playbookFor(db, ship.repo) : null;
 
   if (input.outcome === "skipped") {
-    const playbookKey = STAGE_PLAYBOOK[stage];
-    if (!playbookKey) {
+    if (!PLAYBOOK_ONLY_STAGES.has(stage)) {
       return { error: `${stage} can't be skipped; mark it done with a log saying why` };
     }
-    if (playbook?.[playbookKey]) {
-      return { error: `the playbook has a ${playbookKey} step for this repo; follow it` };
-    }
+    const [step] = stagePlaybookSteps(stage, playbook);
+    if (step) return { error: `the playbook has a ${step} step for this repo; follow it` };
   }
   if (
     finishing &&
@@ -282,6 +308,7 @@ export async function updateShipStage(
     updatedShip = { ...updatedShip, stage: next.stage, stages };
     result.stage = next.stage;
     result.autoSkipped = next.autoSkipped;
+    result.playbookSteps = stagePlaybookSteps(next.stage, playbook);
     patch.nextAction = shipNextAction(next.stage);
     if (input.waitingOn === undefined) patch.waitingOn = null;
     patch.status = next.stage === "done" ? "done" : "active";

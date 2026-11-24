@@ -178,6 +178,37 @@ describe("updateShipStage", () => {
     expect(after?.wakeAt?.toISOString()).toBe("2026-11-23T15:15:00.000Z");
   });
 
+  it("runs the stages before the merge with an empty playbook step, and names the steps a stage follows", async () => {
+    await registerRepo({
+      review: "Two approvals, one from the payments team",
+      merge: "Use the merge queue",
+      deploy: "Run the deploy workflow",
+    });
+    const ci = await shipAt("ci");
+    expect(await updateShipStage(db, ci, { stage: "ci", outcome: "done" }, settings)).toMatchObject(
+      { stage: "reviewer", autoSkipped: [], playbookSteps: [] },
+    );
+
+    const feedback = await shipAt("feedback");
+    expect(
+      await updateShipStage(db, feedback, { stage: "feedback", outcome: "done" }, settings),
+    ).toMatchObject({
+      stage: "merge",
+      autoSkipped: ["staging_test"],
+      playbookSteps: ["review", "merge"],
+    });
+
+    const merge = await shipAt("merge");
+    expect(
+      await updateShipStage(db, merge, { stage: "merge", outcome: "skipped" }, settings),
+    ).toMatchObject({ error: expect.stringContaining("can't be skipped") });
+    expect(
+      await updateShipStage(db, merge, { stage: "merge", outcome: "done" }, settings, {
+        checkMerged: merged,
+      }),
+    ).toMatchObject({ stage: "deploy", playbookSteps: ["deploy"] });
+  });
+
   it("skips nothing for a repo that isn't registered", async () => {
     const stream = await shipAt("feedback");
     expect(

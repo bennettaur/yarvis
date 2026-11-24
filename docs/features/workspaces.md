@@ -47,11 +47,23 @@ Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
 
 ### Repo playbooks
 
-Each repo can carry up to seven prompts for shipping a PR, one text area each
-under **Settings → Repositories → Playbooks**: **Test in staging**, **Deploy**,
-**Monitor the deploy**, **Monitor production**, **Test in production**,
-**Revert** and **Pick a reviewer**. Write them in plain text, up to 4000
-characters each. A repo with none saved has no playbook.
+Each repo can carry up to eleven prompts for shipping a PR, one text area
+each under **Settings → Repositories → Playbooks**, one per step from CI to
+production:
+
+- **CI**: how to handle failing or flaky checks.
+- **Pick a reviewer**: who should review a PR, and how to choose.
+- **Review feedback**: how to handle review comments and change requests.
+- **Review before merge**: what must be true of the review before anything
+  merges, such as approvals, checks or who must sign off. A
+  [ship stream](heads-down.md#shipping-a-pr) checks each item before it
+  merges, and asks you about anything unmet instead of merging.
+- **Test in staging**, **Merge** (how and when to merge, e.g. merge queue or
+  squash), **Deploy**, **Monitor the deploy**, **Monitor production**,
+  **Test in production** and **Revert**.
+
+Write them in plain text, up to 4000 characters each. A repo with none saved
+has no playbook.
 
 Playbooks are stored in Yarvis, never read from the repo. An agent follows them
 as your own words, so only your Settings can supply them, the same reason

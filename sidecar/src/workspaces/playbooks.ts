@@ -1,19 +1,23 @@
 import { z } from "zod";
 
 /**
- * Per-repo prompts for shipping a PR: how to test, deploy, monitor and revert it.
+ * Per-repo prompts for shipping a PR, one per step from CI to production.
  * They are stored in the repo's settings and nowhere else. An agent reads them
  * as the user's own instructions with nobody watching, so text from the repo
  * (a README, a CONTRIBUTING file) must never stand in for them.
  */
 export const PLAYBOOK_KEYS = [
+  "ci",
+  "pickReviewer",
+  "feedback",
+  "review",
   "testStaging",
+  "merge",
   "deploy",
   "monitorDeploy",
   "monitorProduction",
   "testProduction",
   "revert",
-  "pickReviewer",
 ] as const;
 
 export type PlaybookKey = (typeof PLAYBOOK_KEYS)[number];
@@ -29,13 +33,17 @@ export const MAX_PLAYBOOK_CHARS = 4000;
 const playbookText = z.string().max(MAX_PLAYBOOK_CHARS).nullish();
 
 export const repoPlaybooksSchema = z.object({
+  ci: playbookText,
+  pickReviewer: playbookText,
+  feedback: playbookText,
+  review: playbookText,
   testStaging: playbookText,
+  merge: playbookText,
   deploy: playbookText,
   monitorDeploy: playbookText,
   monitorProduction: playbookText,
   testProduction: playbookText,
   revert: playbookText,
-  pickReviewer: playbookText,
 });
 
 /** Trims each prompt and drops the empty ones, so a cleared text area stores nothing. */

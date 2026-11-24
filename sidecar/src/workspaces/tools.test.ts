@@ -265,7 +265,12 @@ describe("workspace tools", () => {
   it("get_repo_playbook returns the filled prompts by repo name or owner/repo", async () => {
     await createRepo(db, config, {
       cloneUrl: "https://github.com/acme/widget.git",
-      playbooks: { deploy: "  Run the deploy workflow.  ", revert: "", pickReviewer: null },
+      playbooks: {
+        deploy: "  Run the deploy workflow.  ",
+        review: "Two approvals.",
+        revert: "",
+        pickReviewer: null,
+      },
     });
     await createRepo(db, config, { cloneUrl: "https://github.com/acme/gadget.git" });
     const tools = buildWorkspaceTools(db, config, { gitRunner: okRunner });
@@ -276,7 +281,7 @@ describe("workspace tools", () => {
 
     expect(byName).toEqual({
       repo: "acme/widget",
-      playbook: { deploy: "Run the deploy workflow." },
+      playbook: { deploy: "Run the deploy workflow.", review: "Two approvals." },
     });
     expect(byFullName).toEqual(byName);
     expect(empty).toEqual({ repo: "acme/gadget", playbook: {} });

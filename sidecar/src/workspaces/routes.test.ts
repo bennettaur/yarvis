@@ -1276,8 +1276,11 @@ describe("repo routes", () => {
     const renamed = await patch({ name: "renamed" });
     expect(await playbooks(renamed)).toEqual({ deploy: "ship it", revert: "git revert" });
 
-    const replaced = await patch({ playbooks: { deploy: "", testStaging: "run e2e" } });
-    expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e" });
+    // An unknown step, say from an older or newer client, is dropped rather than stored.
+    const replaced = await patch({
+      playbooks: { deploy: "", testStaging: "run e2e", review: " two approvals ", lint: "x" },
+    });
+    expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e", review: "two approvals" });
   });
 
   it("stores playbooks given when a repo is created, and lists none as an empty set", async () => {
