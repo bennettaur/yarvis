@@ -18,6 +18,9 @@ final class ReviewModel {
     }
     /// The list's last load failure.
     var error: String?
+    /// Registered repos, for resolving a bare `repo#12`. Read once; a failure leaves it empty.
+    private(set) var knownRepos: [KnownRepo] = []
+    private var reposLoaded = false
     private(set) var listLoading = false
     private var listGeneration = 0
 
@@ -83,6 +86,34 @@ final class ReviewModel {
         }
     }
 
+    /// Active workspaces first, most recently opened first; archived ones
+    /// after them when shown.
+    var shownWorkspaces: [ReviewWorkspace] {
+        sortedReviewWorkspaces(workspaces.filter { $0.status != "archived" })
+            + (showArchived ? sortedReviewWorkspaces(archived) : [])
+    }
+
+    func loadRepos() {
+        guard !reposLoaded else { return }
+        reposLoaded = true
+        Task {
+            if let repos = try? await client.repos() {
+                knownRepos = repos.map { KnownRepo(owner: $0.owner, repo: $0.repo) }
+            }
+        }
+    }
+
+    /// Removes the checkouts and puts the workspace under Show archived.
+    func archive(_ id: String) async throws {
+        try await client.archiveReviewWorkspace(id: id)
+        if workspace?.id == id {
+            closeWorkspace(forget: true)
+        } else {
+            ReviewWorkspaceModel.forgetSaved(id: id, server: client.baseURL)
+            await refreshList()
+        }
+    }
+
     // MARK: Selection and routing
 
     /// Shows a workspace, or the list for nil.
@@ -93,9 +124,8 @@ final class ReviewModel {
         workspace = id.map { ReviewWorkspaceModel(page: self, client: client, id: $0) }
     }
 
-    /// Shows the workspace with `prId` brought forward, as the web's
-    /// `handleOpenReview` does for a link, an attention item or a PR's
-    /// "Open in review workspace".
+    /// Shows the workspace with `prId` brought forward, for a link, an
+    /// attention item or a PR's "Open in review workspace".
     func open(_ request: OpenReviewRequest) {
         select(request.workspaceId)
         if let prId = request.prId {
