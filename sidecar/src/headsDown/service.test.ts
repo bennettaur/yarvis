@@ -630,12 +630,49 @@ describe("merge alerts", () => {
     expect(mergeCallTarget("archive_workspace", { pullNumber: 1 })).toBeNull();
   });
 
+  it("counts turning on auto-merge or queueing a PR as a merge, but not undoing either", () => {
+    for (const name of [
+      "enable_pull_request_auto_merge",
+      "enablePullRequestAutoMerge",
+      "enable_automerge",
+      "add_pull_request_to_merge_queue",
+      "enqueue_pull_request",
+      "enqueuePR",
+    ]) {
+      expect(mergeCallTarget(`mcp:gh:${name}`, { pullNumber: 7 })).toEqual({ repo: "", number: 7 });
+    }
+    for (const name of [
+      "disable_pull_request_auto_merge",
+      "remove_from_merge_queue",
+      "dequeue_pull_request",
+      "get_merge_queue",
+      "list_merge_queue_entries",
+      "enqueue_job",
+    ]) {
+      expect(mergeCallTarget(`mcp:gh:${name}`, { pullNumber: 7 })).toBeNull();
+    }
+  });
+
   it("tells an instruction to merge a PR from one about merge conflicts or the base branch", () => {
     expect(isMergeInstruction("Squash-merge the PR now that CI is green")).toBe(true);
     expect(isMergeInstruction("merge #12")).toBe(true);
     expect(isMergeInstruction("Resolve the merge conflicts in the PR and push")).toBe(false);
     expect(isMergeInstruction("merge main into the PR branch and push")).toBe(false);
     expect(isMergeInstruction("fix CI")).toBe(false);
+  });
+
+  it("counts auto-merge, a merge queue and enqueueing a PR as merging", () => {
+    expect(isMergeInstruction("Turn on auto-merge once CI is green")).toBe(true);
+    expect(isMergeInstruction("enable automerge")).toBe(true);
+    expect(isMergeInstruction("Add it to the merge queue")).toBe(true);
+    expect(isMergeInstruction("enqueue PR #12")).toBe(true);
+  });
+
+  it("doesn't count a queue, enqueueing or merge conflicts that aren't about merging the PR", () => {
+    expect(isMergeInstruction("queue the flaky test for a rerun")).toBe(false);
+    expect(isMergeInstruction("enqueue the nightly build")).toBe(false);
+    expect(isMergeInstruction("Resolve the merge conflicts and push")).toBe(false);
+    expect(isMergeInstruction("look at the job queue for PR #12")).toBe(false);
   });
 });
 

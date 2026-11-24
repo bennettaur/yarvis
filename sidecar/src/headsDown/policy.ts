@@ -284,9 +284,16 @@ const PR_NUMBER_ARGS = [
 
 const PR_URL = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
 
-/** Tool names that merge a PR: `merge_pull_request`, `mergePullRequest`, `merge`, … */
+/**
+ * Tool names that merge a PR: `merge_pull_request`, `mergePullRequest`, `merge`, …
+ * Turning on auto-merge or putting a PR in a merge queue merges it later with
+ * nobody asked again, so `enable_auto_merge` and `add_to_merge_queue` count too.
+ */
 const MERGE_TOOL =
-  /^(merge|squash_merge|accept_merge_request|complete_pull_request)|merge_?(pull_?request|pr|merge_?request|mr)$/i;
+  /^(merge|squash_merge|accept_merge_request|complete_pull_request)|merge_?(pull_?request|pr|merge_?request|mr)$|auto_?merge|merge_?queue|enqueue_?(pull_?request|pr)\b/i;
+
+/** Tools that back out of an auto-merge or a queue, which merges nothing. */
+const STOPS_A_MERGE = /^(disable|remove|dequeue|cancel|delete)/i;
 
 /** Tools that only read about merges, like `get_merge_status` or `list_merged_prs`. */
 const READS_ABOUT_MERGES = /^(get|list|search|check|can|is|has)|status|base|mergeab|merged/i;
@@ -310,7 +317,9 @@ export function mergeCallTarget(
 ): { repo: string; number: number } | null {
   if (!tool.startsWith("mcp:")) return null;
   const name = tool.slice(tool.lastIndexOf(":") + 1);
-  if (!MERGE_TOOL.test(name) || READS_ABOUT_MERGES.test(name)) return null;
+  if (!MERGE_TOOL.test(name) || READS_ABOUT_MERGES.test(name) || STOPS_A_MERGE.test(name)) {
+    return null;
+  }
 
   for (const key of ["url", "prUrl", "pr_url", "pullRequestUrl"]) {
     const match = stringArg(args, key)?.match(PR_URL);
@@ -327,6 +336,8 @@ export function mergeCallTarget(
 /**
  * Whether an instruction to a workspace's session asks it to merge a PR.
  * "Resolve the merge conflicts" or "merge main into the branch" doesn't.
+ * Auto-merge and a merge queue count on their own, since a session can only
+ * apply them to its own PR; "enqueue" needs a PR named, like "merge" does.
  */
 export function isMergeInstruction(instruction: string | null): boolean {
   if (!instruction) return false;
@@ -334,7 +345,9 @@ export function isMergeInstruction(instruction: string | null): boolean {
     /merge conflicts?|merge (in )?(the )?(main|master|base|origin)\b/gi,
     "",
   );
-  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
+  if (/\bauto[- ]?merge\b|\bmerge[- ]queue\b/i.test(text)) return true;
+  const namesPr = /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
+  return namesPr && /\b(squash[- ])?merge\b|\benqueue\b/i.test(text);
 }
 
 /**
