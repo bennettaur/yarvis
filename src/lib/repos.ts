@@ -22,7 +22,7 @@ export const PLAYBOOK_FIELDS = [
     hint: "How to handle review comments and change requests.",
   },
   {
-    key: "review",
+    key: "reviewBeforeMerge",
     label: "Review before merge",
     hint: "What must be true of the review before merging: approvals, checks, sign-offs.",
   },
@@ -34,7 +34,7 @@ export const PLAYBOOK_FIELDS = [
   {
     key: "merge",
     label: "Merge",
-    hint: "How and when to merge, e.g. merge queue or squash.",
+    hint: "How to merge, e.g. squash or a merge queue. The merge rules still apply.",
   },
   { key: "deploy", label: "Deploy", hint: "The manual steps to deploy, if it isn't automatic." },
   {

@@ -6,11 +6,12 @@ import { z } from "zod";
  * as the user's own instructions with nobody watching, so text from the repo
  * (a README, a CONTRIBUTING file) must never stand in for them.
  */
+/** In ship-stage order, the order Settings shows them (`PLAYBOOK_FIELDS` in src/lib/repos.ts). */
 export const PLAYBOOK_KEYS = [
   "ci",
   "pickReviewer",
   "feedback",
-  "review",
+  "reviewBeforeMerge",
   "testStaging",
   "merge",
   "deploy",
@@ -36,7 +37,7 @@ export const repoPlaybooksSchema = z.object({
   ci: playbookText,
   pickReviewer: playbookText,
   feedback: playbookText,
-  review: playbookText,
+  reviewBeforeMerge: playbookText,
   testStaging: playbookText,
   merge: playbookText,
   deploy: playbookText,

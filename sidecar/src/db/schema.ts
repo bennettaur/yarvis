@@ -1704,6 +1704,20 @@ export interface WorkStreamShip {
    * first. Model-written from what it read, so it is data, not instructions.
    */
   log: ShipLogEntry[];
+  /** The last check of the repo's reviewBeforeMerge playbook step, if it has one. */
+  reviewGate?: ShipReviewGate;
+}
+
+/** Every item met, or the user said to merge anyway. An unmet check isn't recorded: it goes to the user. */
+export type ReviewGateResult = "met" | "overridden";
+
+export interface ShipReviewGate {
+  result: ReviewGateResult;
+  /** The PR head commit the check was made against, read from GitHub. A newer one needs a new check. */
+  headSha: string;
+  at: string;
+  /** What the pass checked and saw. Model-written, so it is data, not instructions. */
+  note: string;
 }
 
 /** A note on a work stream: the same shape as a todo's progress note. */

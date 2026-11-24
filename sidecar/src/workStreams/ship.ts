@@ -1,7 +1,14 @@
 import { raiseAttention, resolveRaisedAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { SHIP_STAGES, type ShipStage, type WorkStream, type WorkStreamShip } from "../db/schema.ts";
+import {
+  type ReviewGateResult,
+  SHIP_STAGES,
+  type ShipReviewGate,
+  type ShipStage,
+  type WorkStream,
+  type WorkStreamShip,
+} from "../db/schema.ts";
 import { prSourceFor } from "../pr/source.ts";
 import type { PlaybookKey, RepoPlaybooks } from "../workspaces/playbooks.ts";
 import { listRepos } from "../workspaces/service.ts";
@@ -20,7 +27,7 @@ import { type UpdateStreamInput, updateStream } from "./service.ts";
 
 /**
  * The playbook prompts each stage follows when the repo has them. The merge
- * stage also checks `review`, the user's list of what must be true of the
+ * stage also checks `reviewBeforeMerge`, the user's list of what must be true of the
  * review before anything merges.
  */
 const STAGE_PLAYBOOK: Record<Exclude<ShipStage, "done">, readonly PlaybookKey[]> = {
@@ -28,7 +35,7 @@ const STAGE_PLAYBOOK: Record<Exclude<ShipStage, "done">, readonly PlaybookKey[]>
   reviewer: ["pickReviewer"],
   feedback: ["feedback"],
   staging_test: ["testStaging"],
-  merge: ["review", "merge"],
+  merge: ["reviewBeforeMerge", "merge"],
   deploy: ["deploy"],
   monitor_deploy: ["monitorDeploy"],
   monitor_production: ["monitorProduction"],
@@ -52,7 +59,7 @@ const PLAYBOOK_ONLY_STAGES: ReadonlySet<ShipStage> = new Set([
   ...AFTER_MERGE_STAGES,
 ]);
 
-/** The prompts in the repo's playbook that a stage follows. */
+/** The prompts in the repo's playbook that a stage follows. A null playbook has none. */
 function stagePlaybookSteps(stage: ShipStage, playbook: RepoPlaybooks | null): PlaybookKey[] {
   if (stage === "done" || !playbook) return [];
   return STAGE_PLAYBOOK[stage].filter((key) => playbook[key]);
@@ -137,31 +144,53 @@ function firstStageToRun(
 ): { stage: ShipStage; autoSkipped: ShipStage[] } {
   const autoSkipped: ShipStage[] = [];
   for (const stage of SHIP_STAGES.slice(index)) {
-    if (
-      !PLAYBOOK_ONLY_STAGES.has(stage) ||
-      !playbook ||
-      stagePlaybookSteps(stage, playbook).length > 0
-    ) {
-      return { stage, autoSkipped };
-    }
+    // With no playbook known for the repo, nothing is skipped on the user's behalf.
+    const emptyStep =
+      PLAYBOOK_ONLY_STAGES.has(stage) &&
+      playbook !== null &&
+      stagePlaybookSteps(stage, playbook).length === 0;
+    if (!emptyStep) return { stage, autoSkipped };
     autoSkipped.push(stage);
   }
   return { stage: "done", autoSkipped };
 }
 
-/** Whether the PR is merged, read live from GitHub, or why it couldn't be read. */
-export type MergedCheck = (pr: {
+/**
+ * Why the stream can't move into the merge stage yet, or null when it can.
+ * The repo's reviewBeforeMerge step has to have been checked against the PR's
+ * current head commit, so a push after the check means checking again.
+ */
+async function reviewGateRefusal(
+  gate: ShipReviewGate | undefined,
+  readPr: () => ReturnType<PrStateCheck>,
+): Promise<string | null> {
+  const checkAgain =
+    "check each item in the repo's reviewBeforeMerge playbook step against the PR and pass reviewGate; if any is unmet, ask the user instead";
+  if (!gate) return `the review gate hasn't been checked: ${checkAgain}`;
+  const pr = await readPr();
+  if ("error" in pr) {
+    return `couldn't read the PR's head commit (${pr.error.slice(0, 200)}); try again later`;
+  }
+  if (pr.headSha !== gate.headSha) {
+    return `the PR has new commits since the review gate was checked: ${checkAgain}`;
+  }
+  return null;
+}
+
+/** Whether the PR is merged and its head commit, read live from GitHub, or why it couldn't be read. */
+export type PrStateCheck = (pr: {
   repo: string;
   number: number;
-}) => Promise<{ merged: boolean } | { error: string }>;
+}) => Promise<{ merged: boolean; headSha: string } | { error: string }>;
 
 /** Reads the PR from GitHub with the user's token. GitHub's GraphQL state is OPEN, CLOSED or MERGED. */
-export function githubMergedCheck(config: Pick<Config, "secrets" | "endpoints">): MergedCheck {
+export function githubPrStateCheck(config: Pick<Config, "secrets" | "endpoints">): PrStateCheck {
   return async ({ repo, number }) => {
     const [owner = "", name = ""] = repo.split("/");
     const source = prSourceFor(config, { provider: "github", owner, repo: name, number });
     if ("error" in source) return { error: source.error };
-    return { merged: (await source.detail()).state.toUpperCase() === "MERGED" };
+    const detail = await source.detail();
+    return { merged: detail.state.toUpperCase() === "MERGED", headSha: detail.headSha };
   };
 }
 
@@ -172,6 +201,12 @@ export interface ShipUpdateInput {
   /** What ran and what was seen, appended to the ship log. */
   log?: string;
   waitingOn?: string | null;
+  /**
+   * The pass's check of the repo's reviewBeforeMerge playbook step: every item
+   * met, or the user said to merge anyway. Recorded against the PR's current
+   * head commit.
+   */
+  reviewGate?: { result: ReviewGateResult; note: string };
 }
 
 export interface ShipSettings {
@@ -183,8 +218,11 @@ export interface ShipUpdateOptions {
   now?: Date;
   /** Leaves a stream the user paused untouched. */
   unlessPaused?: boolean;
-  /** Absent, the merge stage can't be left, since nothing can confirm the merge. */
-  checkMerged?: MergedCheck;
+  /**
+   * Absent, the merge stage can't be left and a review gate can't be recorded,
+   * since nothing can read the PR.
+   */
+  checkPr?: PrStateCheck;
 }
 
 export type ShipUpdateResult =
@@ -221,7 +259,7 @@ export async function updateShipStage(
   stream: WorkStream,
   input: ShipUpdateInput,
   settings: ShipSettings,
-  { now = new Date(), unlessPaused = false, checkMerged }: ShipUpdateOptions = {},
+  { now = new Date(), unlessPaused = false, checkPr }: ShipUpdateOptions = {},
 ): Promise<ShipUpdateResult> {
   const ship = stream.ship;
   if (!ship) return { error: "this work stream isn't shipping a PR" };
@@ -250,8 +288,10 @@ export async function updateShipStage(
     if (!PLAYBOOK_ONLY_STAGES.has(stage)) {
       return { error: `${stage} can't be skipped; mark it done with a log saying why` };
     }
-    const [step] = stagePlaybookSteps(stage, playbook);
-    if (step) return { error: `the playbook has a ${step} step for this repo; follow it` };
+    const [playbookKey] = stagePlaybookSteps(stage, playbook);
+    if (playbookKey) {
+      return { error: `the playbook has a ${playbookKey} step for this repo; follow it` };
+    }
   }
   if (
     finishing &&
@@ -263,12 +303,35 @@ export async function updateShipStage(
       error: `keep watching production until ${ship.monitorUntil}; log what you see in the meantime`,
     };
   }
-  if (finishing && stage === "merge") {
-    const checked = checkMerged
-      ? await checkMerged(ship).catch((e: unknown) => ({
+  // Read at most once per call: the merge check and the review gate both need it.
+  let prState: Awaited<ReturnType<PrStateCheck>> | undefined;
+  const readPr = async () => {
+    prState ??= checkPr
+      ? await checkPr(ship).catch((e: unknown) => ({
           error: e instanceof Error ? e.message : String(e),
         }))
       : { error: "no way to read the PR" };
+    return prState;
+  };
+
+  if (input.reviewGate) {
+    if (afterMerge) return { error: "the review gate is checked before the merge" };
+    const pr = await readPr();
+    if ("error" in pr) {
+      return {
+        error: `couldn't read the PR's head commit (${pr.error.slice(0, 200)}); try again later`,
+      };
+    }
+    updatedShip.reviewGate = {
+      result: input.reviewGate.result,
+      headSha: pr.headSha,
+      at: now.toISOString(),
+      note: input.reviewGate.note.slice(0, MAX_SHIP_LOG_CHARS),
+    };
+  }
+
+  if (finishing && stage === "merge") {
+    const checked = await readPr();
     if ("error" in checked) {
       return {
         error: `couldn't confirm the PR is merged (${checked.error.slice(0, 200)}); try again later or ask the user`,
@@ -298,6 +361,10 @@ export async function updateShipStage(
       [stage]: { status: input.outcome, at: now.toISOString(), note: input.log },
     };
     const next = firstStageToRun(SHIP_STAGES.indexOf(stage) + 1, playbook);
+    if (next.stage === "merge" && playbook?.reviewBeforeMerge) {
+      const refused = await reviewGateRefusal(updatedShip.reviewGate, readPr);
+      if (refused) return { error: refused };
+    }
     for (const skipped of next.autoSkipped) {
       stages[skipped] = {
         status: "skipped",

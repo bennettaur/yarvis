@@ -467,10 +467,11 @@ The tabs in **Settings**, in order:
    connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
    groups start collapsed.
 4. **Repositories.** The repos workspaces can use, with each repo's setup and
-   run scripts, ticket tracker and playbooks (up to eleven prompts of 4000
-   characters, one per step of shipping a PR from CI and review to deploying,
-   monitoring and reverting; they live with the repo in the database, not in `settings.json`,
-   and agents read them only through the `get_repo_playbook` tool; see
+   run scripts, ticket tracker and playbooks (a prompt of up to 4000
+   characters for each step of shipping a PR, from CI and review to
+   deploying, monitoring and reverting; they live with the repo in the
+   database, not in `settings.json`, and agents read them only through the
+   `get_repo_playbook` tool; see
    [Repo playbooks](features/workspaces.md#repo-playbooks)), the workspace
    agent command, and the terminal cap.
 5. **PR review.** The Needs review search, the Reviewing lookback, the

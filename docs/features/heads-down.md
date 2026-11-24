@@ -303,11 +303,16 @@ stages, one at a time:
    [Open review feedback](#open-review-feedback), along with the repo's
    **Review feedback** step.
 4. **Staging test**: follows the repo's **Test in staging** step.
-5. **Merge**: first checks each item in the repo's **Review before merge**
-   step against the PR. If any is unmet, or it can't tell, it asks you
-   instead of merging. Then it merges the way the **Merge** step says, under
+5. **Merge**: before the stream reaches this stage, it checks each item in
+   the repo's **Review before merge** step against the PR, from GitHub's own
+   reviews and checks rather than anything written in the PR. If any is
+   unmet, or it can't tell, it asks you instead of merging. The stream only
+   moves into the merge stage once that check is recorded for the PR's
+   current commit, or you said to merge anyway, and a push after the check
+   means checking again. Then it merges the way the **Merge** step says, under
    the same rules as any other merge (see [Merging PRs](#merging-prs)):
-   working hours, risk and open feedback. The stage only finishes once GitHub
+   working hours, risk and open feedback. Turning on auto-merge or adding the
+   PR to a merge queue counts as merging. The stage only finishes once GitHub
    shows the PR merged, so it needs a GitHub token.
 6. **Deploy**: runs the repo's **Deploy** step.
 7. **Watch deploy**: follows the **Monitor the deploy** step until the deploy
@@ -323,12 +328,13 @@ so it waits while heads-down mode is off.
 The steps come from the repo's [playbook](workspaces.md#repo-playbooks)
 (Settings → Repositories → Playbooks). Every stage follows its step when
 you wrote one. CI, reviewer, review feedback and merge always run, with or
-without a step. The staging test and the stages after the merge exist only to
-run their step, so one you left empty is skipped and shown as skipped. If the
-repo isn't registered in Yarvis, nothing is skipped for you, and a pass marks
-one of those stages skipped only once you've said to. Whether a stage passed is the pass's
-judgement, apart from the merge. The Heads down page shows each ship stream's
-stages, which one it is at, which were skipped or failed, what it is waiting
+without a step. The staging test is the one stage before the merge that
+exists only to run its step, like the stages after the merge: with no step
+there is nothing to run, so one you left empty is skipped and shown as
+skipped. If the repo isn't registered in Yarvis, nothing is skipped for you,
+and a pass marks one of those stages skipped only once you've said to. Whether a stage passed
+is the pass's judgement, apart from the merge. The Heads down page shows each
+ship stream's stages, which one it is at, which were skipped or failed, what it is waiting
 on, and the last thing it logged.
 
 Anything that reaches production or other people waits for your approval, as

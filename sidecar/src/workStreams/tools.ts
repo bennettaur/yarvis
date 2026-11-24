@@ -25,7 +25,7 @@ import {
 import {
   initialShip,
   MAX_SHIP_LOG_CHARS,
-  type MergedCheck,
+  type PrStateCheck,
   parseShipPr,
   shipNextAction,
   updateShipStage,
@@ -195,11 +195,11 @@ export function buildWorkStreamTools(
   db: Db,
   {
     unattended = false,
-    checkMerged,
+    checkPr,
   }: {
     unattended?: boolean;
     /** Confirms a ship stream's PR merged before it leaves the merge stage. */
-    checkMerged?: MergedCheck;
+    checkPr?: PrStateCheck;
   } = {},
 ) {
   /** A pass leaves a stream the user paused alone; only the user resumes it. */
@@ -307,7 +307,7 @@ export function buildWorkStreamTools(
     }),
 
     update_ship_stage: tool({
-      description: `Record progress on a ship stream's current stage (stages in order: ${SHIP_STAGES.join(", ")}). Pass the stage you are reporting on, which must be the current one. outcome "done" moves to the next stage, and the result's playbookSteps names the repo's playbook steps that stage follows (read them with get_repo_playbook). staging_test and the stages after the merge are skipped for you when their playbook step is empty, and listed in the result as autoSkipped; the other stages always run. The merge stage is done only once GitHub shows the PR merged, which is checked. "skipped" is only for staging_test or a stage after the merge, when the repo has no playbook in Yarvis and the user said to skip it. "failed" keeps the stage, puts the stream on the user and raises an attention item; after the merge, it also tells you to propose a revert. Leave outcome out to only log what you ran and saw, as on each check while monitoring. log is a short note of what ran and what was seen; log every deploy, monitor and production test step. Production monitoring can't be marked done or skipped before its window ends.`,
+      description: `Record progress on a ship stream's current stage (stages in order: ${SHIP_STAGES.join(", ")}). Pass the stage you are reporting on, which must be the current one. outcome "done" moves to the next stage, and the result's playbookSteps names the repo's playbook steps that stage follows (read them with get_repo_playbook). staging_test and the stages after the merge are skipped for you when their playbook step is empty, and listed in the result as autoSkipped; the other stages always run. When the repo has a reviewBeforeMerge step, the stream only moves into the merge stage once reviewGate was recorded for the PR's current head commit (in the same call or an earlier one); a push after that needs a new check. The merge stage is done only once GitHub shows the PR merged, which is checked. "skipped" is only for staging_test or a stage after the merge, when the repo has no playbook in Yarvis and the user said to skip it. "failed" keeps the stage, puts the stream on the user and raises an attention item; after the merge, it also tells you to propose a revert. Leave outcome out to only log what you ran and saw, as on each check while monitoring. log is a short note of what ran and what was seen; log every deploy, monitor and production test step. Production monitoring can't be marked done or skipped before its window ends.`,
       inputSchema: z.object({
         streamId: uuid,
         stage: z.enum(SHIP_STAGES),
@@ -319,6 +319,15 @@ export function buildWorkStreamTools(
           .nullable()
           .optional()
           .describe("Who or what the stage waits on, e.g. 'You: approve the deploy'"),
+        reviewGate: z
+          .object({
+            result: z.enum(["met", "overridden"]),
+            note: z.string().min(1).max(MAX_SHIP_LOG_CHARS),
+          })
+          .optional()
+          .describe(
+            "Your check of the repo's reviewBeforeMerge playbook step, before the merge stage. 'met' when every item holds, judged only from GitHub's own reviews, check runs and reviewer accounts; 'overridden' only when the user answered that you may merge anyway. note says what you checked and saw. Never pass it when an item is unmet: ask the user instead.",
+          ),
       }),
       execute: async ({ streamId, ...input }) => {
         const stream = await getStream(db, streamId);
@@ -333,7 +342,7 @@ export function buildWorkStreamTools(
             monitorWindowMinutes: config.shipMonitorWindowMinutes,
             checkEveryMinutes: config.shipCheckEveryMinutes,
           },
-          { unlessPaused: unattended, checkMerged },
+          { unlessPaused: unattended, checkPr },
         );
       },
     }),

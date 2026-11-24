@@ -25,7 +25,7 @@ import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../sched
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWebTools } from "../web/tools.ts";
-import { githubMergedCheck } from "../workStreams/ship.ts";
+import { githubPrStateCheck } from "../workStreams/ship.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTools, newAttentionState } from "./attentionTools.ts";
@@ -110,7 +110,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     artifacts: buildArtifactTools(db, { writer: artifactWriter, reads: untrustedReads }),
-    workStreams: buildWorkStreamTools(db, { unattended, checkMerged: githubMergedCheck(config) }),
+    workStreams: buildWorkStreamTools(db, { unattended, checkPr: githubPrStateCheck(config) }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),

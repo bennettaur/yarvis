@@ -14,7 +14,9 @@ const db = drizzle(sql, { schema });
 
 const opts = { toolCallId: "test", messages: [] } as never;
 const settings = { monitorWindowMinutes: 60, checkEveryMinutes: 15 };
-const merged = async () => ({ merged: true });
+const merged = async () => ({ merged: true, headSha: "abc123" });
+/** An open PR whose head is `headSha`. */
+const openAt = (headSha: string) => async () => ({ merged: false, headSha });
 const pr = { repo: "acme/api", number: 12, url: "https://github.com/acme/api/pull/12" };
 
 beforeEach(async () => {
@@ -164,7 +166,7 @@ describe("updateShipStage", () => {
       atMerge,
       { stage: "merge", outcome: "done" },
       settings,
-      { now, checkMerged: merged },
+      { now, checkPr: merged },
     );
     expect(afterMerge).toMatchObject({
       stage: "monitor_production",
@@ -178,25 +180,16 @@ describe("updateShipStage", () => {
     expect(after?.wakeAt?.toISOString()).toBe("2026-11-23T15:15:00.000Z");
   });
 
-  it("runs the stages before the merge with an empty playbook step, and names the steps a stage follows", async () => {
-    await registerRepo({
-      review: "Two approvals, one from the payments team",
-      merge: "Use the merge queue",
-      deploy: "Run the deploy workflow",
-    });
+  it("runs the stages before the merge even when their playbook step is empty", async () => {
+    await registerRepo({ deploy: "Run the deploy workflow" });
     const ci = await shipAt("ci");
     expect(await updateShipStage(db, ci, { stage: "ci", outcome: "done" }, settings)).toMatchObject(
       { stage: "reviewer", autoSkipped: [], playbookSteps: [] },
     );
-
-    const feedback = await shipAt("feedback");
+    const reviewer = (await getStream(db, ci.id))!;
     expect(
-      await updateShipStage(db, feedback, { stage: "feedback", outcome: "done" }, settings),
-    ).toMatchObject({
-      stage: "merge",
-      autoSkipped: ["staging_test"],
-      playbookSteps: ["review", "merge"],
-    });
+      await updateShipStage(db, reviewer, { stage: "reviewer", outcome: "done" }, settings),
+    ).toMatchObject({ stage: "feedback", autoSkipped: [] });
 
     const merge = await shipAt("merge");
     expect(
@@ -204,24 +197,54 @@ describe("updateShipStage", () => {
     ).toMatchObject({ error: expect.stringContaining("can't be skipped") });
     expect(
       await updateShipStage(db, merge, { stage: "merge", outcome: "done" }, settings, {
-        checkMerged: merged,
+        checkPr: merged,
       }),
     ).toMatchObject({ stage: "deploy", playbookSteps: ["deploy"] });
+  });
+
+  it("names the playbook steps the next stage follows", async () => {
+    await registerRepo({ reviewBeforeMerge: "Two approvals", merge: "Use the merge queue" });
+    const feedback = await shipAt("feedback");
+    expect(
+      await updateShipStage(
+        db,
+        feedback,
+        {
+          stage: "feedback",
+          outcome: "done",
+          reviewGate: { result: "met", note: "two approvals on GitHub" },
+        },
+        settings,
+        { checkPr: openAt("abc123") },
+      ),
+    ).toMatchObject({
+      stage: "merge",
+      autoSkipped: ["staging_test"],
+      playbookSteps: ["reviewBeforeMerge", "merge"],
+    });
   });
 
   it("skips nothing for a repo that isn't registered", async () => {
     const stream = await shipAt("feedback");
     expect(
       await updateShipStage(db, stream, { stage: "feedback", outcome: "done" }, settings),
-    ).toMatchObject({ stage: "staging_test", autoSkipped: [] });
+    ).toMatchObject({ stage: "staging_test", autoSkipped: [], playbookSteps: [] });
   });
 
   it("won't skip a stage the playbook has a step for, or one with no playbook key", async () => {
-    await registerRepo({ testStaging: "Run the smoke suite against staging" });
+    await registerRepo({
+      testStaging: "Run the smoke suite against staging",
+      deploy: "Run the deploy workflow",
+    });
     const staging = await shipAt("staging_test");
     expect(
       await updateShipStage(db, staging, { stage: "staging_test", outcome: "skipped" }, settings),
     ).toMatchObject({ error: expect.stringContaining("testStaging") });
+
+    const deploy = await shipAt("deploy");
+    expect(
+      await updateShipStage(db, deploy, { stage: "deploy", outcome: "skipped" }, settings),
+    ).toMatchObject({ error: expect.stringContaining("deploy step") });
 
     const ci = await shipAt("ci");
     expect(
@@ -360,6 +383,92 @@ describe("updateShipStage", () => {
   });
 });
 
+describe("the review gate", () => {
+  const met = { result: "met", note: "two approvals from the payments team" } as const;
+
+  it("holds the stream before the merge until the gate is recorded", async () => {
+    await registerRepo({ reviewBeforeMerge: "Two approvals, one from the payments team" });
+    const stream = await shipAt("staging_test");
+    const done = { stage: "staging_test", outcome: "done" } as const;
+
+    expect(
+      await updateShipStage(db, stream, done, settings, { checkPr: openAt("abc123") }),
+    ).toMatchObject({ error: expect.stringContaining("hasn't been checked") });
+    expect((await getStream(db, stream.id))?.ship?.stage).toBe("staging_test");
+
+    expect(
+      await updateShipStage(db, stream, { ...done, reviewGate: met }, settings, {
+        checkPr: openAt("abc123"),
+      }),
+    ).toMatchObject({ stage: "merge" });
+    expect((await getStream(db, stream.id))?.ship?.reviewGate).toMatchObject({
+      result: "met",
+      headSha: "abc123",
+      note: met.note,
+    });
+  });
+
+  it("asks for a new check after a push", async () => {
+    await registerRepo({ reviewBeforeMerge: "Two approvals" });
+    const stream = await shipAt("staging_test");
+    // Recorded on a log-only report, before the push.
+    await updateShipStage(db, stream, { stage: "staging_test", reviewGate: met }, settings, {
+      checkPr: openAt("abc123"),
+    });
+    const checked = (await getStream(db, stream.id))!;
+    const done = { stage: "staging_test", outcome: "done" } as const;
+
+    expect(
+      await updateShipStage(db, checked, done, settings, { checkPr: openAt("def456") }),
+    ).toMatchObject({ error: expect.stringContaining("new commits") });
+    expect(
+      await updateShipStage(db, checked, done, settings, { checkPr: openAt("abc123") }),
+    ).toMatchObject({ stage: "merge" });
+  });
+
+  it("takes the user's go-ahead in place of a met check", async () => {
+    await registerRepo({ reviewBeforeMerge: "Sign-off from security" });
+    const stream = await shipAt("staging_test");
+    expect(
+      await updateShipStage(
+        db,
+        stream,
+        {
+          stage: "staging_test",
+          outcome: "done",
+          reviewGate: { result: "overridden", note: "the user said to merge without security" },
+        },
+        settings,
+        { checkPr: openAt("abc123") },
+      ),
+    ).toMatchObject({ stage: "merge" });
+  });
+
+  it("refuses a gate it can't pin to a commit, and one after the merge", async () => {
+    await registerRepo({ reviewBeforeMerge: "Two approvals" });
+    const staging = await shipAt("staging_test");
+    expect(
+      await updateShipStage(db, staging, { stage: "staging_test", reviewGate: met }, settings),
+    ).toMatchObject({ error: expect.stringContaining("head commit") });
+    expect((await getStream(db, staging.id))?.ship?.reviewGate).toBeUndefined();
+
+    const deploy = await shipAt("deploy");
+    expect(
+      await updateShipStage(db, deploy, { stage: "deploy", reviewGate: met }, settings, {
+        checkPr: merged,
+      }),
+    ).toEqual({ error: "the review gate is checked before the merge" });
+  });
+
+  it("isn't needed when the repo has no reviewBeforeMerge step", async () => {
+    await registerRepo({ merge: "Squash" });
+    const stream = await shipAt("staging_test");
+    expect(
+      await updateShipStage(db, stream, { stage: "staging_test", outcome: "done" }, settings),
+    ).toMatchObject({ stage: "merge" });
+  });
+});
+
 describe("updateShipStage guards", () => {
   it("leaves the merge stage only once GitHub shows the PR merged", async () => {
     const stream = await shipAt("merge");
@@ -369,17 +478,17 @@ describe("updateShipStage guards", () => {
     });
     expect(
       await updateShipStage(db, stream, done, settings, {
-        checkMerged: async () => ({ merged: false }),
+        checkPr: openAt("abc123"),
       }),
     ).toEqual({ error: "the PR isn't merged yet" });
     expect(
       await updateShipStage(db, stream, done, settings, {
-        checkMerged: async () => ({ error: "github token not configured" }),
+        checkPr: async () => ({ error: "github token not configured" }),
       }),
     ).toMatchObject({ error: expect.stringContaining("github token not configured") });
-    expect(
-      await updateShipStage(db, stream, done, settings, { checkMerged: merged }),
-    ).toMatchObject({ stage: "deploy" });
+    expect(await updateShipStage(db, stream, done, settings, { checkPr: merged })).toMatchObject({
+      stage: "deploy",
+    });
   });
 
   it("won't skip production monitoring before its window ends", async () => {

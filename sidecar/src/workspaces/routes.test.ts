@@ -1278,9 +1278,17 @@ describe("repo routes", () => {
 
     // An unknown step, say from an older or newer client, is dropped rather than stored.
     const replaced = await patch({
-      playbooks: { deploy: "", testStaging: "run e2e", review: " two approvals ", lint: "x" },
+      playbooks: {
+        deploy: "",
+        testStaging: "run e2e",
+        reviewBeforeMerge: " two approvals ",
+        lint: "x",
+      },
     });
-    expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e", review: "two approvals" });
+    expect(await playbooks(replaced)).toEqual({
+      testStaging: "run e2e",
+      reviewBeforeMerge: "two approvals",
+    });
   });
 
   it("stores playbooks given when a repo is created, and lists none as an empty set", async () => {

@@ -267,7 +267,7 @@ describe("workspace tools", () => {
       cloneUrl: "https://github.com/acme/widget.git",
       playbooks: {
         deploy: "  Run the deploy workflow.  ",
-        review: "Two approvals.",
+        reviewBeforeMerge: "Two approvals.",
         revert: "",
         pickReviewer: null,
       },
@@ -281,7 +281,7 @@ describe("workspace tools", () => {
 
     expect(byName).toEqual({
       repo: "acme/widget",
-      playbook: { deploy: "Run the deploy workflow.", review: "Two approvals." },
+      playbook: { deploy: "Run the deploy workflow.", reviewBeforeMerge: "Two approvals." },
     });
     expect(byFullName).toEqual(byName);
     expect(empty).toEqual({ repo: "acme/gadget", playbook: {} });
