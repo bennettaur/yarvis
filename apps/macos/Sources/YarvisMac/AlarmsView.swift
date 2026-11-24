@@ -19,7 +19,7 @@ struct AlarmsView: View {
                     Button("Set", action: add)
                         .buttonStyle(.borderedProminent)
                         .disabled(label.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Button("Test in 5s") { Task { await model.test(label: label) } }
+                    Button("Test in 5s") { Task { await model.fireTestAlarm(label: label) } }
                         .help("Fire a test alarm in 5 seconds")
                 }
             }
@@ -32,7 +32,7 @@ struct AlarmsView: View {
                             Circle().fill(.red).frame(width: 8, height: 8)
                             AlarmRowText(alarm: alarm)
                             Spacer()
-                            Button("Snooze 5 min") { Task { await model.snooze(alarm) } }
+                            Button("Snooze \(alarmSnoozeMinutes) min") { Task { await model.snooze(alarm) } }
                             Button("Dismiss") { Task { await model.acknowledge(alarm) } }
                                 .buttonStyle(.borderedProminent)
                         }
@@ -105,9 +105,11 @@ struct AlarmTakeoverView: View {
                     Text("\(remaining) more \(remaining == 1 ? "alarm" : "alarms") waiting behind this one")
                         .foregroundStyle(.secondary)
                 }
-                if let error = model.takeoverError[alarm.id] {
+                if let error = model.takeoverErrors[alarm.id] {
                     Text(error).foregroundStyle(.red).multilineTextAlignment(.center).frame(maxWidth: 520)
                 }
+                // No Return default, and armed after a moment: a key press or
+                // click meant for whatever was in front can't answer it.
                 HStack(spacing: 14) {
                     if let link = alarm.meetLink {
                         Button("Join meeting") {
@@ -117,32 +119,48 @@ struct AlarmTakeoverView: View {
                         .tint(.green)
                     }
                     Button("Acknowledge") { Task { await model.answerTakeover(alarm, snooze: false) } }
-                        .keyboardShortcut(.defaultAction)
-                    Button("Snooze 5 min") { Task { await model.answerTakeover(alarm, snooze: true) } }
+                    Button("Snooze \(alarmSnoozeMinutes) min") { Task { await model.answerTakeover(alarm, snooze: true) } }
                         .buttonStyle(.bordered)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .armedAfterAppearing(id: alarm.id)
             }
             .padding(40)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(escalated ? Color.red.opacity(context.date.timeIntervalSince1970.truncatingRemainder(dividingBy: 2) < 1 ? 0.35 : 0.2)
-                                  : Color(nsColor: .windowBackgroundColor))
-            .background(.ultraThickMaterial)
+            .background(AlarmTakeoverBackground(escalated: escalated, now: context.date))
         }
         .id(alarm.id)
+    }
+}
+
+/// The window colour, or once escalated a red that pulses every second.
+private struct AlarmTakeoverBackground: View {
+    let escalated: Bool
+    let now: Date
+
+    var body: some View {
+        let pulse = now.timeIntervalSince1970.truncatingRemainder(dividingBy: 2) < 1
+        ZStack {
+            Rectangle().fill(.ultraThickMaterial)
+            if escalated {
+                Color.red.opacity(pulse ? 0.35 : 0.2)
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+            }
+        }
     }
 }
 
 /// The bell panel's list of alarms that fired and nobody answered. Shown only
 /// while something rings.
 struct AlarmRingingSection: View {
-    let alarms: AlarmsModel
+    let model: AlarmsModel
     let openAlarms: () -> Void
 
     var body: some View {
         SwiftUI.Section("Ringing") {
-            ForEach(alarms.ringing) { alarm in
+            ForEach(model.ringing) { alarm in
                 HStack(alignment: .top) {
                     Circle().fill(.red).frame(width: 8, height: 8).padding(.top, 5)
                     Button(action: openAlarms) {
@@ -154,10 +172,34 @@ struct AlarmRingingSection: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    Button("Snooze") { Task { await alarms.snooze(alarm) } }
-                    Button("Dismiss") { Task { await alarms.acknowledge(alarm) } }
+                    Button("Snooze") { Task { await model.snooze(alarm) } }
+                    Button("Dismiss") { Task { await model.acknowledge(alarm) } }
                 }
             }
         }
+    }
+}
+
+/// Shown over the vault unlock screen while an alarm rings, since the main
+/// window and its takeover aren't there until the vault opens.
+struct AlarmVaultBanner: View {
+    let model: AlarmsModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ForEach(model.ringing) { alarm in
+                HStack {
+                    Image(systemName: "alarm.fill").foregroundStyle(.red)
+                    Text(alarm.label).bold().lineLimit(1)
+                    Spacer()
+                    Button("Snooze \(alarmSnoozeMinutes) min") { Task { await model.snooze(alarm) } }
+                    Button("Acknowledge") { Task { await model.acknowledge(alarm) } }
+                        .buttonStyle(.borderedProminent)
+                }
+                .armedAfterAppearing(id: alarm.id)
+            }
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.15))
     }
 }

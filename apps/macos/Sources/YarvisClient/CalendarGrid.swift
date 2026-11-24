@@ -144,6 +144,19 @@ public struct CalendarGrid: Sendable {
         return event.startDate.map(startOfDay)
     }
 
+    /// Every day's events in `range`, keyed by `dayKey`, worked out once per
+    /// load rather than on every redraw. Timed events come with their columns.
+    public func buckets(_ events: [CalendarEvent], in range: Range<Date>) -> [String: CalendarDayBucket] {
+        var result: [String: CalendarDayBucket] = [:]
+        var day = startOfDay(range.lowerBound)
+        while day < range.upperBound {
+            let split = eventsForDay(events, day: day)
+            result[dayKey(day)] = CalendarDayBucket(allDay: split.allDay, laid: assignLanes(split.timed))
+            day = addDays(day, 1)
+        }
+        return result
+    }
+
     /// The agenda's sections: events grouped by the day they start, earliest first.
     public func groupByDay(_ events: [CalendarEvent]) -> [(day: Date, events: [CalendarEvent])] {
         var groups: [Date: [CalendarEvent]] = [:]
@@ -154,19 +167,38 @@ public struct CalendarGrid: Sendable {
         return groups.keys.sorted().map { ($0, groups[$0] ?? []) }
     }
 
-    /// Where a timed event sits on `day`'s 24-hour axis, in minutes from
-    /// midnight. Clamped to the day, so one that starts the day before or ends
-    /// the day after still shows the part inside it. An event with no end is
-    /// drawn as 30 minutes.
+    /// Where a timed event sits on `day`'s 24-hour axis, in wall-clock
+    /// minutes from midnight. Wall-clock minutes keep events on the evenly
+    /// spaced hour lines on a day the clocks change. Clamped to the day, so one
+    /// that starts the day before or ends the day after still shows the part
+    /// inside it. An event with no end is drawn as 30 minutes.
     public func placement(_ event: CalendarEvent, day: Date) -> (startMinute: Double, minutes: Double) {
-        let dayStart = startOfDay(day)
-        let length = dayRange(day).upperBound.timeIntervalSince(dayStart) / 60
-        let start = event.startDate ?? dayStart
+        let range = dayRange(day)
+        let start = event.startDate ?? range.lowerBound
         let end = event.endDate ?? start.addingTimeInterval(30 * 60)
-        let startMinute = min(max(start.timeIntervalSince(dayStart) / 60, 0), length)
-        let endMinute = min(max(end.timeIntervalSince(dayStart) / 60, 0), length)
+        let startMinute = wallMinute(start, in: range)
+        let endMinute = wallMinute(end, in: range)
         return (startMinute, max(endMinute - startMinute, Double(Self.minimumMinutes)))
     }
+
+    /// A time's wall-clock minute on the day, 0 before the day and 1440 after it.
+    private func wallMinute(_ date: Date, in range: Range<Date>) -> Double {
+        if date <= range.lowerBound { return 0 }
+        if date >= range.upperBound { return Double(Self.minutesPerDay) }
+        let p = calendar.dateComponents([.hour, .minute, .second], from: date)
+        return Double((p.hour ?? 0) * 60 + (p.minute ?? 0)) + Double(p.second ?? 0) / 60
+    }
+}
+
+/// One day's events, ready to draw.
+public struct CalendarDayBucket: Sendable, Equatable {
+    public var allDay: [CalendarEvent]
+    public var laid: [LaidOutEvent]
+
+    public static let empty = CalendarDayBucket(allDay: [], laid: [])
+
+    /// All-day events first, then timed ones by start, for the month cells.
+    public var all: [CalendarEvent] { allDay + laid.map(\.event) }
 }
 
 /// A timed event and its column among the events it overlaps.

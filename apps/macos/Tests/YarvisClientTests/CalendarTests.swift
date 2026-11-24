@@ -116,10 +116,35 @@ private func timed(_ id: String, _ start: String, _ end: String) -> CalendarEven
         #expect(noEnd.minutes == 30)
         let late = toronto.placement(timed("l", "2026-11-24T23:00:00-05:00", "2026-11-25T02:00:00-05:00"), day: day)
         #expect(late.startMinute == 1380 && late.minutes == 60)
-        // The 25-hour day runs to minute 1500.
+        // The 25-hour day still fills the 24 hour lines, and its events sit
+        // at their wall-clock times.
         let fallDay = local(2026, 11, 1)
         let all = toronto.placement(timed("f", "2026-11-01T00:00:00-04:00", "2026-11-02T00:00:00-05:00"), day: fallDay)
-        #expect(all.minutes == 1500)
+        #expect(all.startMinute == 0 && all.minutes == 1440)
+        let fallNoon = toronto.placement(timed("n", "2026-11-01T12:00:00-05:00", "2026-11-01T13:00:00-05:00"), day: fallDay)
+        #expect(fallNoon.startMinute == 720 && fallNoon.minutes == 60)
+    }
+
+    @Test func theSpringForwardDayKeepsWallClockTimes() {
+        let day = local(2026, 3, 8)
+        let range = toronto.dayRange(day)
+        #expect(range.upperBound.timeIntervalSince(range.lowerBound) == 23 * 3600)
+        // 1:00 EST to 4:00 EDT is two real hours across the skipped hour.
+        let across = toronto.placement(timed("a", "2026-03-08T01:00:00-05:00", "2026-03-08T04:00:00-04:00"), day: day)
+        #expect(across.startMinute == 60 && across.minutes == 180)
+        let evening = toronto.placement(timed("e", "2026-03-08T18:00:00-04:00", "2026-03-08T19:30:00-04:00"), day: day)
+        #expect(evening.startMinute == 1080 && evening.minutes == 90)
+        let split = toronto.eventsForDay([timed("e", "2026-03-08T18:00:00-04:00", "2026-03-08T19:30:00-04:00"),
+                                          timed("next", "2026-03-09T00:00:00-04:00", "2026-03-09T01:00:00-04:00")],
+                                         day: day)
+        #expect(split.timed.map(\.id) == ["e"])
+    }
+
+    @Test func anAllDayEventWithNoEndCoversOnlyItsStart() {
+        let event = CalendarEvent(id: "a", title: "a", start: "2026-11-24", end: "", allDay: true)
+        #expect(CalendarGrid.allDay(event, covers: "2026-11-24"))
+        #expect(!CalendarGrid.allDay(event, covers: "2026-11-25"))
+        #expect(!CalendarGrid.allDay(event, covers: "2026-11-23"))
     }
 
     @Test func overlappingEventsShareColumns() {
@@ -199,5 +224,21 @@ private func client(_ status: Int = 200, _ body: String) -> (YarvisClient, Strin
         let reqs = StubProtocol.recorded(id)
         #expect(reqs.last?.0.httpMethod == "POST")
         #expect(reqs.last?.0.url?.path == "/api/sidecar/api/calendar/disconnect")
+    }
+}
+
+@Suite struct CalendarBucketTests {
+    @Test func bucketsEveryDayOfTheRangeWithColumns() {
+        let range = toronto.weekRange(local(2026, 11, 24))
+        let buckets = toronto.buckets([
+            timed("a", "2026-11-24T09:00:00-05:00", "2026-11-24T10:00:00-05:00"),
+            timed("b", "2026-11-24T09:30:00-05:00", "2026-11-24T10:30:00-05:00"),
+            CalendarEvent(id: "trip", title: "trip", start: "2026-11-25", end: "2026-11-27", allDay: true),
+        ], in: range)
+        #expect(buckets.count == 7)
+        #expect(buckets["2026-11-24"]?.laid.map(\.lanes) == [2, 2])
+        #expect(buckets["2026-11-25"]?.allDay.map(\.id) == ["trip"])
+        #expect(buckets["2026-11-26"]?.all.map(\.id) == ["trip"])
+        #expect(buckets["2026-11-27"]?.all.isEmpty == true)
     }
 }

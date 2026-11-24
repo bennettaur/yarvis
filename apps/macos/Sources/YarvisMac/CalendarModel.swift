@@ -6,7 +6,7 @@ import YarvisClient
 /// the agenda, week, month and day views is showing.
 @MainActor @Observable
 final class CalendarModel {
-    enum View: String, CaseIterable, Identifiable {
+    enum Mode: String, CaseIterable, Identifiable {
         case agenda, week, month, day
         var id: String { rawValue }
         var title: String { rawValue.capitalized }
@@ -27,20 +27,24 @@ final class CalendarModel {
     /// A failed status read or connect.
     var connectError: String?
 
-    var view: View = .agenda {
-        didSet { if view != oldValue { load() } }
+    var mode: Mode = .agenda {
+        didSet { if mode != oldValue { load() } }
     }
     var orientation: Orientation = .vertical
-    /// The week, month or day being shown. Each view keeps its own, as the
-    /// web's do, so switching views starts each on today.
-    var weekAnchor = Date() { didSet { if view == .week { load() } } }
-    var monthAnchor = Date() { didSet { if view == .month { load() } } }
-    var dayAnchor = Date() { didSet { if view == .day { load() } } }
+    /// The week, month or day being shown. Each mode keeps its own, so paging
+    /// through weeks leaves the month view where it was.
+    var weekAnchor = Date() { didSet { if mode == .week { load() } } }
+    var monthAnchor = Date() { didSet { if mode == .month { load() } } }
+    var dayAnchor = Date() { didSet { if mode == .day { load() } } }
 
-    private(set) var upcoming: [CalendarEvent] = []
-    private(set) var rangeEvents: [CalendarEvent] = []
-    /// The range `rangeEvents` holds, so a view never shows another range's events.
-    private(set) var loadedRange: Range<Date>?
+    private(set) var upcoming: [CalendarEvent] = [] {
+        didSet { upcomingByDay = grid.groupByDay(upcoming) }
+    }
+    /// The agenda's sections.
+    private(set) var upcomingByDay: [(day: Date, events: [CalendarEvent])] = []
+    /// The loaded range's events by day, so a view never shows another range's events.
+    private var buckets: [String: CalendarDayBucket] = [:]
+    private var loadedRange: Range<Date>?
     private(set) var loading = false
     var error: String?
     /// Bumped per load, so an older answer that lands last is dropped.
@@ -53,6 +57,7 @@ final class CalendarModel {
 
     func stop() {
         generation += 1
+        loading = false
     }
 
     func handle(_ event: ServerEvent) {
@@ -95,7 +100,7 @@ final class CalendarModel {
         do {
             try await client.disconnectCalendar()
             upcoming = []
-            rangeEvents = []
+            buckets = [:]
             loadedRange = nil
             await loadStatus()
         } catch {
@@ -107,7 +112,7 @@ final class CalendarModel {
 
     /// The range the current grid view needs; nil for the agenda.
     var currentRange: Range<Date>? {
-        switch view {
+        switch mode {
         case .agenda: return nil
         case .week: return grid.weekRange(weekAnchor)
         case .month: return grid.monthRange(monthAnchor)
@@ -126,7 +131,7 @@ final class CalendarModel {
                 if let range {
                     let events = try await client.calendarEvents(from: range.lowerBound, to: range.upperBound)
                     guard generation == self.generation else { return }
-                    rangeEvents = events
+                    buckets = grid.buckets(events, in: range)
                     loadedRange = range
                 } else {
                     let events = try await client.upcomingCalendarEvents()
@@ -142,9 +147,10 @@ final class CalendarModel {
         }
     }
 
-    /// The events loaded for `range`, or none while another range is loading.
-    func events(for range: Range<Date>) -> [CalendarEvent] {
-        loadedRange == range ? rangeEvents : []
+    /// The day's events, or none while a range without it is loading.
+    func bucket(_ day: Date) -> CalendarDayBucket {
+        guard let loadedRange, loadedRange.contains(day) else { return .empty }
+        return buckets[grid.dayKey(day)] ?? .empty
     }
 
     // MARK: Alarms

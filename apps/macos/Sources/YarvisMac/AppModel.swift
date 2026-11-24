@@ -237,6 +237,13 @@ final class AppModel {
         codeRequest = nil
     }
 
+    /// A ringing alarm covers the main window. Sheets wait until it's
+    /// answered, since an overlay can't cover a sheet. Behind a locked vault
+    /// there is no main window, and a banner shows the alarm instead.
+    var alarmTakeoverShowing: Bool {
+        !(alarms?.takeoverQueue.isEmpty ?? true) && settings?.vaultNeedsUnlock != true
+    }
+
     /// Why the last code was refused, shown in the prompt.
     var codeRefusal: String?
 

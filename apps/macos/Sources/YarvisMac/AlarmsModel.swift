@@ -12,20 +12,24 @@ final class AlarmsModel {
     private unowned let app: AppModel
     private let client: YarvisClient
 
+    /// Assigned only when a read or event changed it, so views that read it
+    /// don't redraw on every poll.
     private(set) var book = AlarmBook()
-    var alarms: [Alarm] { book.alarms }
     var ringing: [Alarm] { book.ringing }
     var takeoverQueue: [Alarm] { book.takeoverQueue }
     var scheduled: [Alarm] { book.scheduled }
     /// The page's last failed action.
     var error: String?
-    /// The takeover's last failed action, keyed by alarm id.
-    var takeoverError: [String: String] = [:]
+    /// The takeover's last failed action, by alarm id.
+    var takeoverErrors: [String: String] = [:]
+    private var arming = MeetingArming()
 
     private let ringer = AlarmRinger()
     /// Bumped per list read, so an older answer that lands last is dropped. A
     /// read sent before a dismissal must not put the alarm back on screen.
     private var listGeneration = 0
+    /// Set on sign-out, so nothing still in flight rings or redraws.
+    private var stopped = false
     private var pollTask: Task<Void, Never>?
     private var streamTask: Task<Void, Never>?
 
@@ -43,13 +47,16 @@ final class AlarmsModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: Self.pollInterval)
-                await self?.refresh()
+                guard let self else { return }
+                await self.refresh()
             }
         }
         streamTask = Task { [weak self] in await self?.followChanges() }
     }
 
     func stop() {
+        stopped = true
+        listGeneration += 1
         pollTask?.cancel()
         pollTask = nil
         streamTask?.cancel()
@@ -58,20 +65,24 @@ final class AlarmsModel {
     }
 
     func handle(_ event: ServerEvent) {
+        guard !stopped else { return }
         switch event.kind {
         case "alarm.fire":
-            guard let data = try? JSONEncoder().encode(event.data),
-                  let alarm = try? JSONDecoder().decode(Alarm.self, from: data) else {
-                resync()
-                return
+            switch AlarmFire(event) {
+            case .alarm(let alarm):
+                ringer.fired(alarm.id)
+                update { $0.fired(alarm) }
+            case .id(let id):
+                ringer.fired(id)
+                update { $0.fired(id: id) }
+            case .unreadable:
+                break
             }
-            book.fired(alarm)
-            syncRinger()
             resync()
         case "alarm.release":
             // Dealt with on another device. Stop the sound now; the list
-            // read below drops it from the takeover.
-            if let id = event.data["id"]?.stringValue { ringer.stop(id: id) }
+            // read drops it from the takeover.
+            if let id = releasedAlarmId(event) { ringer.answer(id) }
             resync()
         default:
             break
@@ -84,10 +95,16 @@ final class AlarmsModel {
 
     /// Reads the list. A failure keeps the last list; the next poll retries.
     func refresh() async {
+        guard !stopped else { return }
         listGeneration += 1
         let generation = listGeneration
-        guard let list = try? await client.alarms(), generation == listGeneration else { return }
-        book.load(list)
+        guard let list = try? await client.alarms(), generation == listGeneration, !stopped else { return }
+        update { $0.load(list) }
+    }
+
+    private func update(_ change: (inout AlarmBook) -> Bool) {
+        var next = book
+        if change(&next) { book = next }
         syncRinger()
     }
 
@@ -110,6 +127,7 @@ final class AlarmsModel {
     }
 
     private func syncRinger() {
+        guard !stopped else { return }
         ringer.sync(queue: book.takeoverQueue)
     }
 
@@ -125,8 +143,8 @@ final class AlarmsModel {
         return true
     }
 
-    /// Rings in five seconds, to check sound and notifications work.
-    func test(label: String) async {
+    /// Rings in five seconds, to check the sound and the takeover work.
+    func fireTestAlarm(label: String) async {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         await run { [client] in
             try await client.createAlarm(label: trimmed.isEmpty ? "Test alarm" : trimmed,
@@ -139,26 +157,28 @@ final class AlarmsModel {
     }
 
     func acknowledge(_ alarm: Alarm) async {
+        ringer.answer(alarm.id)
         await run { [client] in try await client.acknowledgeAlarm(id: alarm.id) }
     }
 
-    func snooze(_ alarm: Alarm, minutes: Int = 5) async {
-        await run { [client] in try await client.snoozeAlarm(id: alarm.id, minutes: minutes) }
+    func snooze(_ alarm: Alarm) async {
+        ringer.answer(alarm.id)
+        await run { [client] in try await client.snoozeAlarm(id: alarm.id, minutes: alarmSnoozeMinutes) }
     }
 
     /// The takeover's actions. The sound stops at once, even when the sidecar
     /// can't be reached; the error says the choice wasn't recorded.
     func answerTakeover(_ alarm: Alarm, snooze: Bool) async {
-        ringer.stop(id: alarm.id)
-        takeoverError[alarm.id] = nil
+        ringer.answer(alarm.id)
+        takeoverErrors[alarm.id] = nil
         do {
             if snooze {
-                try await client.snoozeAlarm(id: alarm.id, minutes: 5)
+                try await client.snoozeAlarm(id: alarm.id, minutes: alarmSnoozeMinutes)
             } else {
                 try await client.acknowledgeAlarm(id: alarm.id)
             }
         } catch {
-            takeoverError[alarm.id] = "Couldn't reach Yarvis to record that (\(error.localizedDescription)). Try again."
+            takeoverErrors[alarm.id] = "Couldn't reach Yarvis to record that (\(error.localizedDescription)). Try again."
         }
         await refresh()
     }
@@ -178,70 +198,92 @@ final class AlarmsModel {
 
     // MARK: Meeting alarms
 
+    /// Set, or being set.
     func isArmed(_ event: CalendarEvent) -> Bool {
-        MeetingAlarm.existing(for: event, in: book.alarms) != nil
+        book.meetingAlarms.existing(for: event) != nil || arming.isPending(event)
     }
 
-    /// Sets the alarm for a meeting, unless it has started or one is set.
+    /// Sets the alarm for a meeting, unless it has started or one is set or
+    /// being set.
     func arm(_ event: CalendarEvent) async {
-        guard MeetingAlarm.isArmable(event), !isArmed(event), let fireAt = MeetingAlarm.fireAt(event) else { return }
+        guard MeetingAlarm.isArmable(event), !isArmed(event), let fireAt = MeetingAlarm.fireAt(event),
+              arming.begin(event) else { return }
         await run { [client] in
             try await client.createAlarm(label: MeetingAlarm.label(event), fireAt: fireAt, meetLink: event.meetLink)
         }
+        arming.end(event)
     }
 }
 
-/// Makes a ringing alarm noticeable when Yarvis isn't the app in front: a
-/// looping sound, a notification, and a Dock icon that bounces until the user
-/// comes back. It doesn't pull the window forward: macOS 14 refuses focus
-/// stealing, and a window that jumps forward while the user types can catch
-/// keystrokes meant for another app.
+/// Sounds the alarms in the takeover queue, in front or not, and makes them
+/// noticeable from the background with a notification and a Dock icon that
+/// bounces until the user comes back. It doesn't pull the window forward:
+/// macOS 14 refuses focus stealing, and a window that jumps forward while the
+/// user types can catch keystrokes meant for another app.
 @MainActor
 final class AlarmRinger {
-    private var ringingIds: Set<String> = []
-    private var sounds: [String: NSSound] = [:]
-    /// Ids the user already answered here, so a list read that still says
-    /// `fired` doesn't start the sound again.
-    private var silenced: Set<String> = []
+    private var state = AlarmRingState()
+    /// When each sounding alarm was due, for when to escalate.
+    private var dueAt: [String: Date] = [:]
+    private var chimeTask: Task<Void, Never>?
     private var attentionRequest: Int?
 
     func sync(queue: [Alarm]) {
-        let ids = Set(queue.map(\.id))
-        for id in ringingIds where !ids.contains(id) { stop(id: id) }
-        silenced.formIntersection(ids)
-        for alarm in queue where !ringingIds.contains(alarm.id) && !silenced.contains(alarm.id) {
-            ring(alarm)
-        }
-        if queue.isEmpty { endAttention() }
+        let (start, stop) = state.sync(queue: queue)
+        for id in stop { quiet(id) }
+        for alarm in start { ring(alarm) }
+        if state.sounding.isEmpty { endAttention() }
+    }
+
+    func fired(_ id: String) { state.fired(id) }
+
+    func answer(_ id: String) {
+        if state.answer(id) { quiet(id) }
+        if state.sounding.isEmpty { endAttention() }
+    }
+
+    func stopAll() {
+        for id in state.sounding { quiet(id) }
+        state.reset()
+        endAttention()
     }
 
     private func ring(_ alarm: Alarm) {
-        ringingIds.insert(alarm.id)
-        if alarm.sound, let sound = NSSound(named: "Sosumi")?.copy() as? NSSound {
-            sound.loops = true
-            sound.play()
-            sounds[alarm.id] = sound
-        }
+        if alarm.sound { dueAt[alarm.id] = alarm.fireAt }
         Notifier.post(id: Self.notificationId(alarm.id), title: "Alarm", body: alarm.label)
         if !NSApp.isActive, attentionRequest == nil {
             attentionRequest = NSApp.requestUserAttention(.criticalRequest)
         }
+        startChiming()
     }
 
-    func stop(id: String) {
-        silenced.insert(id)
-        ringingIds.remove(id)
-        sounds.removeValue(forKey: id)?.stop()
+    private func quiet(_ id: String) {
+        dueAt[id] = nil
+        if dueAt.isEmpty {
+            chimeTask?.cancel()
+            chimeTask = nil
+        }
         if Notifier.available {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.notificationId(id)])
         }
-        if ringingIds.isEmpty { endAttention() }
     }
 
-    func stopAll() {
-        for id in ringingIds { stop(id: id) }
-        silenced = []
-        endAttention()
+    /// One chime at a time for every sounding alarm, escalating with the
+    /// longest overdue of them.
+    private func startChiming() {
+        guard chimeTask == nil, !dueAt.isEmpty else { return }
+        chimeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, let oldest = self.dueAt.values.min() else { return }
+                let overdue = max(0, Int(Date().timeIntervalSince(oldest)))
+                let chime = AlarmChime.at(secondsOverdue: overdue)
+                if let sound = NSSound(named: chime.sound)?.copy() as? NSSound {
+                    sound.volume = chime.volume
+                    sound.play()
+                }
+                try? await Task.sleep(for: .seconds(chime.gap))
+            }
+        }
     }
 
     private func endAttention() {

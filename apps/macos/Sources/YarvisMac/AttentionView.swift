@@ -8,7 +8,7 @@ struct AttentionView: View {
     var body: some View {
         List {
             if let alarms = app.alarms, !alarms.ringing.isEmpty {
-                AlarmRingingSection(alarms: alarms) {
+                AlarmRingingSection(model: alarms) {
                     app.section = .alarms
                     app.attentionOpen = false
                 }
@@ -55,7 +55,8 @@ struct AttentionView: View {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
             }
         }
-        .sheet(item: $model.answering) { item in
+        .sheet(item: Binding(get: { app.alarmTakeoverShowing ? nil : model.answering },
+                             set: { if !app.alarmTakeoverShowing { model.answering = $0 } })) { item in
             AnswerSheet(model: model, item: item)
         }
     }

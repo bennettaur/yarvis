@@ -76,12 +76,16 @@ struct RootView: View {
                 SignInView()
             } else if let settings = app.settings, settings.vaultNeedsUnlock {
                 VaultUnlockView(model: settings)
+                    .safeAreaInset(edge: .top) {
+                        if let alarms = app.alarms, !alarms.ringing.isEmpty { AlarmVaultBanner(model: alarms) }
+                    }
             } else {
                 MainView()
             }
         }
         .onChange(of: app.webUIRequests) { openWindow(id: "web") }
-        .sheet(isPresented: Binding(get: { app.codeRequest != nil }, set: { if !$0 { app.answerCode(nil) } })) {
+        .sheet(isPresented: Binding(get: { app.codeRequest != nil && !app.alarmTakeoverShowing },
+                                    set: { if !$0 && !app.alarmTakeoverShowing { app.answerCode(nil) } })) {
             CodePromptView()
         }
     }
