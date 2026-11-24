@@ -1228,6 +1228,8 @@ export const attentionItems = pgTable(
     body: text("body"),
     status: attentionStatus("status").notNull().default("pending"),
     navTarget: jsonb("nav_target").$type<AttentionNavTarget>(),
+    // A prepared PR's verification risk level, which the stream colours the item by.
+    risk: text("risk").$type<RiskLevel>(),
     // Raw producer payload (e.g. the Claude hook stdin) kept for debugging + future use.
     payload: jsonb("payload"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -2278,11 +2280,13 @@ export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
 
 export const REVIEW_PREP_STATES = [
+  "waiting",
   "queued",
   "verifying",
   "ready",
   "failed",
   "needs-go-ahead",
+  "released",
   "done",
 ] as const;
 export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
@@ -2290,11 +2294,19 @@ export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
 export const REVIEW_PREP_VERDICTS = ["changes-needed", "review-deeper", "no-problems"] as const;
 export type ReviewPrepVerdict = (typeof REVIEW_PREP_VERDICTS)[number];
 
+/** The verification report's `risk.level`. */
+export const RISK_LEVELS = ["low", "medium", "high"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
 /**
  * A pull request review prep got ready for the user: the review workspace it
  * went into, how its verification ended, and the attention item it raised.
- * One row per PR; preparing the same PR again reuses it. `done` means its
- * workspace is gone (archived, or closed before it ran) and its items resolved.
+ * One row per PR; preparing the same PR again reuses it. `waiting` means it
+ * is in the queue for a slot (`reviewPrep.maxReady`) and has no workspace yet.
+ * `released` means the user is done with it (reviewed it, or dismissed its
+ * item) while its workspace stays open, so it no longer holds a slot. `done`
+ * means its workspace is gone (archived, or closed before it ran) and its
+ * items resolved.
  */
 export const reviewPreps = pgTable(
   "review_preps",
@@ -2311,6 +2323,10 @@ export const reviewPreps = pgTable(
     /** The head commit verification last ran against. */
     headSha: text("head_sha"),
     verdict: text("verdict").$type<ReviewPrepVerdict>(),
+    /** The verification report's risk level; null when no report finished. */
+    risk: text("risk").$type<RiskLevel>(),
+    /** When it joined the queue; the queue starts the oldest first. */
+    queuedAt: timestamp("queued_at", { withTimezone: true }),
     /** Why it failed or waits for the user, in Yarvis's words. */
     note: text("note"),
     /** The attention item's dedupe key, raised with source `system`. */
@@ -2323,6 +2339,7 @@ export const reviewPreps = pgTable(
   (t) => [
     uniqueIndex("review_preps_ref_key_idx").on(t.refKey),
     index("review_preps_workspace_idx").on(t.workspaceId),
+    index("review_preps_state_idx").on(t.state),
   ],
 );
 

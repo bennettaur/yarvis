@@ -899,6 +899,49 @@ describe("github client", () => {
     expect(await new GitHubClient("t", failing).lookupInvolvement([], "me")).toEqual([]);
   });
 
+  it("looks PRs up as review candidates, with their review decision", async () => {
+    let query = "";
+    const answering = (async (_url: string, init?: RequestInit) => {
+      query = JSON.parse(String(init?.body)).query;
+      return new Response(
+        JSON.stringify({
+          data: {
+            pr0: {
+              pullRequest: {
+                number: 7,
+                title: "Approved",
+                url: "https://github.com/o/r/pull/7",
+                state: "OPEN",
+                createdAt: "2026-07-01",
+                updatedAt: "2026-07-01",
+                author: { login: "them" },
+                repository: { name: "r", owner: { login: "o" } },
+                reviews: { nodes: [{ state: "COMMENTED" }] },
+                additions: 3,
+                deletions: 2,
+                changedFiles: 1,
+                reviewDecision: "APPROVED",
+                latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }] },
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const [pr] = await new GitHubClient("t", answering).lookupReviewCandidates(
+      [{ owner: "o", repo: "r", number: 7 }],
+      "me",
+    );
+    expect(query).toContain("reviewDecision");
+    expect(pr).toMatchObject({
+      reviewDecision: "approved",
+      approvals: 1,
+      changedLines: 5,
+      myReviewStates: ["commented"],
+    });
+  });
+
   it("disables auto-merge by node id", async () => {
     const bodies: Array<Record<string, any>> = [];
     const capturing = (async (_url: string, init?: RequestInit) => {

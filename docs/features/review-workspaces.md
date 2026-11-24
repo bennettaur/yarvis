@@ -862,6 +862,35 @@ The [review-prep routine](heads-down.md#routines) runs it for the PRs the
 `review-scout` specialist picks, and the assistant runs it when you ask it to
 get a PR ready.
 
+**The review stream.** Review prep keeps at most five PRs ready for you, or
+being prepared, at once, so you get a steady stream rather than a pile. The
+number is `maxReady` in the `reviewPrep` section of `~/.yarvis/settings.json`.
+Further PRs go into a queue, oldest first, and get no workspace until their
+turn. The queue is kept in the database, so it survives a restart.
+
+- A PR holds its place from when its prep starts until you're done with it:
+  you approve it, it merges or closes, you dismiss its item, or its workspace
+  is archived. A PR waiting for your go-ahead holds its place too. One whose
+  prep failed doesn't.
+- A stack is prepared whole, every open layer at once, even past the limit.
+  Each layer counts, so with three PRs ready and a four-layer stack next, all
+  four layers are prepared (seven of five) and nothing else starts until you
+  are below five again.
+- When a place frees up, the oldest queued PR starts straight away: as soon as
+  you dismiss an item or a prep fails, or on the next 15-minute check for a
+  PR you approved or that merged or closed.
+- A queued PR that merged, closed, was approved or that you already reviewed
+  leaves the queue instead of starting.
+- The **Review stream** box on the [Heads down](heads-down.md) page shows how
+  many PRs are ready, each one's state and risk, and the queue in the order
+  it will start.
+
+Each **Ready for review** item carries the risk the verification report
+assessed, **High**, **Medium** or **Low**, as a coloured badge, and high-risk
+PRs come first in the bell's Review category (see
+[the attention bell](workspaces.md#categories)). A re-run of the prep updates
+the badge.
+
 **Archiving.** A workspace that review prep opened archives itself once
 every PR in it is approved by you (your latest review on GitHub is an
 approval), merged or closed. Only workspaces holding GitHub PRs alone are

@@ -164,8 +164,9 @@ Yarvis ships with three:
   are open in repos, by people or for teams you watch), and
   [prepares each one](review-workspaces.md#review-prep): a review workspace, a
   verification report, and then an item in the attention stream. It prepares
-  at most five per run and never comments on, approves or requests anything
-  on a PR. Preparing spends a verification report on each PR, within your
+  at most five per run, keeps at most five PRs ready for you at once and
+  [queues the rest](review-workspaces.md#review-prep), and never comments
+  on, approves or requests anything on a PR. Preparing spends a verification report on each PR, within your
   report budget. A large or over-budget PR is checked out but waits for you
   to run the checks; a PR in a repo you haven't registered is skipped.
 

@@ -1,5 +1,10 @@
 import type { Db } from "../db/client.ts";
-import type { AttentionCategory, AttentionItemRow, AttentionNavTarget } from "../db/schema.ts";
+import type {
+  AttentionCategory,
+  AttentionItemRow,
+  AttentionNavTarget,
+  RiskLevel,
+} from "../db/schema.ts";
 import { publish } from "./hub.ts";
 import { type AttentionSource, clearAttentionScope, createAttention } from "./service.ts";
 
@@ -29,6 +34,8 @@ export interface RaiseAttentionInput {
    * instead of adding a second.
    */
   dedupeKey?: string | null;
+  /** A prepared PR's verification risk level, which the stream colours the item by. */
+  risk?: RiskLevel | null;
   /** Defaults to `system`; the assistant's tool passes `chat-agent`. */
   source?: AttentionSource;
 }
@@ -38,7 +45,7 @@ export interface RaiseAttentionInput {
  * Keyed by source too, so an agent re-raising a key can't rewrite an item the
  * app itself raised.
  */
-function sessionKeyFor(source: AttentionSource, dedupeKey: string): string {
+export function raisedSessionKey(dedupeKey: string, source: AttentionSource = "system"): string {
   return `raise:${source}:${dedupeKey}`;
 }
 
@@ -50,12 +57,13 @@ export async function raiseAttention(
   const source = input.source ?? "system";
   const item = await createAttention(db, {
     source,
-    sessionKey: input.dedupeKey ? sessionKeyFor(source, input.dedupeKey) : null,
+    sessionKey: input.dedupeKey ? raisedSessionKey(input.dedupeKey, source) : null,
     kind: input.kind,
     category: input.category,
     title: input.title,
     body: input.body ?? null,
     navTarget: input.navTarget ?? null,
+    risk: input.risk ?? null,
   });
   publish(item);
   return item;
@@ -72,7 +80,7 @@ export async function resolveRaisedAttention(
 ): Promise<void> {
   const rows = await clearAttentionScope(
     db,
-    { sessionKey: sessionKeyFor(source, dedupeKey) },
+    { sessionKey: raisedSessionKey(dedupeKey, source) },
     "resolved",
   );
   for (const row of rows) publish(row);

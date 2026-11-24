@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { raiseAttention, resolveRaisedAttention } from "../attention/raise.ts";
+import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { raiseAttention, raisedSessionKey, resolveRaisedAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
   agentRuns,
+  attentionItems,
   mutationRuns,
   type ReviewWorkspacePr,
   reviewPreps,
@@ -27,11 +28,16 @@ import {
 import { VERIFICATION_RUN_TIMEOUT_MS } from "../reviewWorkspaces/verification.ts";
 import {
   defaultPrepDeps,
+  dropFromQueue,
   enqueuePrep,
   IN_FLIGHT_STATES,
   inFlightPreps,
   isPrepInFlight,
+  queuedPreps,
+  RELEASABLE_STATES,
   type ReviewPrepDeps,
+  releasePrep,
+  startQueuedPreps,
   whileNoPrepPlaces,
 } from "./service.ts";
 
@@ -46,6 +52,10 @@ import {
  * - Resolves a prepared PR's attention item once its workspace is archived,
  *   by this job or by the user.
  * - Requeues a prep a restart left mid-way.
+ * - Frees the slot of a prepared PR the user is done with: one they approved,
+ *   that merged or closed, or whose item they dismissed.
+ * - Drops queued PRs that no longer need the user's review, and starts
+ *   queued PRs while slots are free.
  */
 
 export interface ReviewPrepUpkeepDeps {
@@ -100,6 +110,12 @@ export interface UpkeepResult {
   /** Workspaces the user was asked about instead. */
   asked: string[];
   resolved: number;
+  /** Prepared PRs whose slot was freed. */
+  released: number;
+  /** PRs taken out of the queue. */
+  dropped: number;
+  /** Queued PRs started. */
+  started: number;
 }
 
 export async function runReviewPrepUpkeep(
@@ -111,7 +127,73 @@ export async function runReviewPrepUpkeep(
   const requeued = await requeueStalled(db, config, deps, now);
   const { archived, asked } = await archiveDone(db, config, deps, now);
   const resolved = await resolveClosed(db);
-  return { requeued, archived, asked, resolved };
+  const released = await releaseFinished(db, deps);
+  const dropped = await pruneQueue(db, deps.prep);
+  const started = await startQueuedPreps(db, config, deps.prep);
+  return { requeued, archived, asked, resolved, released, dropped, started };
+}
+
+/** Frees the slots of prepared PRs the user is done with but whose workspace is still open. */
+async function releaseFinished(db: Db, deps: ReviewPrepUpkeepDeps): Promise<number> {
+  let released = 0;
+  // A dismissal another instance saw, or one made while this one was down.
+  const dismissed = await db
+    .select({ id: reviewPreps.id })
+    .from(reviewPreps)
+    .where(
+      and(
+        inArray(reviewPreps.state, RELEASABLE_STATES),
+        sql`(select ${attentionItems.status} from ${attentionItems}
+             where ${attentionItems.sessionKey} = ${raisedSessionKey("")} || ${reviewPreps.attentionKey}
+             order by ${attentionItems.seq} desc limit 1) = 'dismissed'`,
+      ),
+    );
+  for (const row of dismissed) {
+    if (await releasePrep(db, row.id, "You dismissed it.", { resolveItem: false })) released++;
+  }
+
+  const held = (
+    await db.select().from(reviewPreps).where(inArray(reviewPreps.state, RELEASABLE_STATES))
+  ).filter((row) => row.ref.provider === "github");
+  if (held.length === 0) return released;
+  let done: Set<string> | null;
+  try {
+    done = await deps.donePrs(held.map((row) => row.ref));
+  } catch (e) {
+    console.error("[review-prep] could not read the prepared PRs' state:", describeError(e));
+    return released;
+  }
+  for (const row of held) {
+    if (!done?.has(row.refKey)) continue;
+    const note = "You approved it, or it merged or closed.";
+    if (await releasePrep(db, row.id, note, { resolveItem: true })) released++;
+  }
+  return released;
+}
+
+/** Most queued PRs asked about in one provider call. */
+const QUEUE_LOOKUP_BATCH = 25;
+
+/** Takes the queued PRs that no longer need the user's review out of the queue. */
+async function pruneQueue(db: Db, deps: ReviewPrepDeps): Promise<number> {
+  if (!deps.noLongerNeeded) return 0;
+  const queue = await queuedPreps(db);
+  let dropped = 0;
+  for (let i = 0; i < queue.length; i += QUEUE_LOOKUP_BATCH) {
+    const batch = queue.slice(i, i + QUEUE_LOOKUP_BATCH);
+    let gone: Set<string> | null;
+    try {
+      gone = await deps.noLongerNeeded(batch.map((row) => row.ref));
+    } catch (e) {
+      console.error("[review-prep] could not read the queued PRs' state:", describeError(e));
+      return dropped;
+    }
+    for (const row of batch) {
+      if (!gone?.has(row.refKey)) continue;
+      if (await dropFromQueue(db, row.id, "It no longer needed your review.")) dropped++;
+    }
+  }
+  return dropped;
 }
 
 async function requeueStalled(
@@ -294,8 +376,7 @@ async function resolveClosed(db: Db): Promise<number> {
     .leftJoin(reviewWorkspaces, eq(reviewWorkspaces.id, reviewPreps.workspaceId))
     .where(
       and(
-        ne(reviewPreps.state, "done"),
-        notInArray(reviewPreps.state, IN_FLIGHT_STATES),
+        notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "waiting", "done"]),
         or(isNull(reviewPreps.workspaceId), eq(reviewWorkspaces.status, "archived")),
       ),
     );
@@ -312,7 +393,7 @@ async function resolveClosed(db: Db): Promise<number> {
           row.workspaceId
             ? eq(reviewPreps.workspaceId, row.workspaceId)
             : isNull(reviewPreps.workspaceId),
-          notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "done"]),
+          notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "waiting", "done"]),
         ),
       )
       .returning({ id: reviewPreps.id });
@@ -327,15 +408,21 @@ async function resolveClosed(db: Db): Promise<number> {
 export const reviewPrepJob: JobDefinition = {
   name: "review-prep",
   description:
-    "Every 15 minutes, archive the review workspaces that review prep opened once you're done with their PRs, and pick up a prep a restart interrupted.",
+    "Every 15 minutes, archive the review workspaces that review prep opened once you're done with their PRs, pick up a prep a restart interrupted, and start queued PRs as slots free up.",
   schedule: { kind: "interval", everyMs: 15 * 60 * 1000 },
   run: async ({ db, config }) => {
     const result = await runReviewPrepUpkeep(db, config, defaultUpkeepDeps(db, config));
     const changed =
-      result.requeued + result.archived.length + result.asked.length + result.resolved;
+      result.requeued +
+      result.archived.length +
+      result.asked.length +
+      result.resolved +
+      result.released +
+      result.dropped +
+      result.started;
     return {
       skipped: changed === 0,
-      detail: `archived ${result.archived.length}, asked about ${result.asked.length}, resolved ${result.resolved}, requeued ${result.requeued}`,
+      detail: `archived ${result.archived.length}, asked about ${result.asked.length}, resolved ${result.resolved}, requeued ${result.requeued}, released ${result.released}, dropped from the queue ${result.dropped}, started from the queue ${result.started}`,
     };
   },
 };

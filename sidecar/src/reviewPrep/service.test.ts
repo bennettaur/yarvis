@@ -7,6 +7,8 @@ import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude } from "../agentRuns/testSupport.ts";
+import { publish } from "../attention/hub.ts";
+import { updateAttentionStatus } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, reviewPreps, reviewWorkspaces } from "../db/schema.ts";
@@ -22,7 +24,15 @@ import {
 import type { PrMeta, ReviewDeps } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
 import { DEFAULT_SECTIONS, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
-import { prepReview, prepsSettled, type ReviewPrepDeps } from "./service.ts";
+import {
+  prepReview,
+  prepsSettled,
+  type ReviewPrepDeps,
+  releasePrep,
+  slotsInUse,
+  startQueuedPreps,
+  watchPrepDismissals,
+} from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -47,6 +57,8 @@ const config: Config = {
 const ref: PrRef = { provider: "github", owner: "o", repo: "r", number: 1 };
 /** Has no branch on the test remote, so its checkout fails. */
 const ref2: PrRef = { ...ref, number: 2 };
+/** Also has no branch. */
+const ref3: PrRef = { ...ref, number: 3 };
 const pass = { status: "pass", findings: [] };
 const report = {
   summary: "A small change.",
@@ -89,6 +101,7 @@ let kickoff: KickoffDeps;
 let prepDeps: ReviewPrepDeps;
 let stack: PrRef[];
 let maxConcurrent: number;
+let maxReady: number;
 
 async function until(check: () => Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -166,10 +179,17 @@ exit 1`,
   };
   stack = [];
   maxConcurrent = 2;
+  maxReady = 5;
   prepDeps = {
     kickoff,
-    loadStack: async () => stack,
-    prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent }),
+    loadStack: async (r) =>
+      stack.some(
+        (layer) =>
+          layer.provider === "github" && r.provider === "github" && layer.number === r.number,
+      )
+        ? stack
+        : [r],
+    prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent, maxReady }),
   };
 });
 
@@ -234,7 +254,7 @@ describe("prepReview", () => {
     release();
     await prepsSettled();
     const prep = await prepOf(ref);
-    expect(prep).toMatchObject({ state: "ready", verdict: "review-deeper" });
+    expect(prep).toMatchObject({ state: "ready", verdict: "review-deeper", risk: "low" });
     expect(prep?.headSha).toBeTruthy();
     const items = await prepItems();
     expect(items).toHaveLength(1);
@@ -242,6 +262,7 @@ describe("prepReview", () => {
       kind: "action",
       category: "review",
       title: "Ready for review",
+      risk: "low",
     });
     const body = items[0]?.body ?? "";
     expect(body).toStartWith("r#1: Feature work\nVerdict: Review deeper first (1 medium finding).");
@@ -302,12 +323,15 @@ describe("prepReview", () => {
     expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
   });
 
-  it("puts a stack's layers in the workspace it opened for the stack", async () => {
+  it("prepares a whole stack, in the workspace it opened for the stack", async () => {
     stack = [ref, ref2];
-    await prepReview(db, config, ref, prepDeps);
-    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({
       status: "queued",
-      createdWorkspace: false,
+      createdWorkspace: true,
+      stack: ["r#2"],
+    });
+    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+      status: expect.stringMatching(/^already-/),
     });
     await prepsSettled();
     const workspaces = await db.select().from(reviewWorkspaces);
@@ -371,5 +395,102 @@ describe("the attention item", () => {
     });
     await prepsSettled();
     expect(await attention()).toHaveLength(1);
+  });
+});
+
+describe("the review stream", () => {
+  /** PR 1 ends needing a go-ahead (a large PR), which holds its slot. */
+  async function oneSlotHeld(): Promise<void> {
+    maxReady = 1;
+    await prepReview(db, config, ref, prepDeps);
+    await prepsSettled();
+    expect((await prepOf(ref))?.state).toBe("needs-go-ahead");
+  }
+
+  it("queues PRs past the limit without opening a workspace for them", async () => {
+    await oneSlotHeld();
+    expect(await prepReview(db, config, ref2, prepDeps)).toEqual({
+      status: "waiting",
+      pr: "r#2",
+      position: 1,
+    });
+    expect(await prepReview(db, config, ref3, prepDeps)).toMatchObject({ position: 2 });
+    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+      status: "waiting",
+      position: 1,
+    });
+    expect(await prepOf(ref2)).toMatchObject({ state: "waiting", workspaceId: null });
+    expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
+    expect(await startQueuedPreps(db, config, prepDeps)).toBe(0);
+  });
+
+  it("starts the oldest queued PR once the user dismisses a prepared one", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    await prepReview(db, config, ref3, prepDeps);
+    const stop = watchPrepDismissals(db, config, () => prepDeps);
+    try {
+      const [item] = await prepItems();
+      const row = await updateAttentionStatus(db, item?.id ?? "", "dismissed");
+      if (row) publish(row);
+      await until(async () => (await prepOf(ref2))?.state !== "waiting", "PR 2 to start");
+    } finally {
+      stop();
+    }
+    await prepsSettled();
+    expect(await prepOf(ref)).toMatchObject({ state: "released", note: "You dismissed it." });
+    // PR 2's checkout fails, which frees its slot for PR 3.
+    expect((await prepOf(ref2))?.state).toBe("failed");
+    expect((await prepOf(ref3))?.state).toBe("failed");
+  });
+
+  it("doesn't count a failed prep against the limit", async () => {
+    maxReady = 1;
+    await prepReview(db, config, ref2, prepDeps);
+    await prepsSettled();
+    expect((await prepOf(ref2))?.state).toBe("failed");
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({ status: "queued" });
+    await prepsSettled();
+  });
+
+  it("lets a stack go past the limit, each layer holding a slot", async () => {
+    maxReady = 2;
+    stack = [ref, ref2, ref3];
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({
+      status: "queued",
+      stack: ["r#2", "r#3"],
+    });
+    expect(await slotsInUse(db)).toBe(3);
+    await prepsSettled();
+  });
+
+  it("starts a queued stack whole, taking its other queued layers with it", async () => {
+    await oneSlotHeld();
+    stack = [ref2, ref3];
+    await prepReview(db, config, ref3, prepDeps);
+    await prepReview(db, config, ref2, prepDeps);
+    const held = await prepOf(ref);
+    await releasePrep(db, held?.id ?? "", "Done.", { resolveItem: false });
+
+    expect(await startQueuedPreps(db, config, prepDeps)).toBe(1);
+    expect((await prepOf(ref3))?.state).not.toBe("waiting");
+    expect((await prepOf(ref2))?.state).not.toBe("waiting");
+    await prepsSettled();
+    const [two, three] = [await prepOf(ref2), await prepOf(ref3)];
+    expect(two?.workspaceId).toBe(three?.workspaceId ?? "");
+  });
+
+  it("drops a queued PR that no longer needs the user's review", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    await releasePrep(db, (await prepOf(ref))?.id ?? "", "Done.", { resolveItem: false });
+    prepDeps.noLongerNeeded = async () => new Set(["gh:o/r/2"]);
+
+    expect(await startQueuedPreps(db, config, prepDeps)).toBe(0);
+    expect(await prepOf(ref2)).toMatchObject({
+      state: "done",
+      note: "It no longer needed your review.",
+    });
+    expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
   });
 });

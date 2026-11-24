@@ -7,21 +7,38 @@ export interface ReviewPrepConfig {
    * Claude Code runs, so this stays small; the rest wait their turn.
    */
   maxConcurrentVerifications: number;
+  /**
+   * How many PRs may be prepared or being prepared at once, so the user gets
+   * a steady stream of reviews rather than a pile. Further PRs wait in a
+   * queue. A stack is started whole even past this.
+   */
+  maxReady: number;
 }
 
-export const DEFAULT_REVIEW_PREP_CONFIG: ReviewPrepConfig = { maxConcurrentVerifications: 2 };
+export const DEFAULT_REVIEW_PREP_CONFIG: ReviewPrepConfig = {
+  maxConcurrentVerifications: 2,
+  maxReady: 5,
+};
 
-/** A hand-edited value outside this range is clamped rather than refused. */
+/** Hand-edited values outside these ranges are clamped rather than refused. */
 const MAX_CONCURRENT = 5;
+const MAX_READY = 50;
 
 const SETTINGS_KEY = "reviewPrep";
 
+function clamped(raw: unknown, fallback: number, max: number): number {
+  const value = typeof raw === "number" && Number.isFinite(raw) ? Math.round(raw) : fallback;
+  return Math.min(max, Math.max(1, value));
+}
+
 export async function getReviewPrepConfig(): Promise<ReviewPrepConfig> {
   const stored = await readSection<Partial<ReviewPrepConfig>>(SETTINGS_KEY).catch(() => undefined);
-  const raw = stored?.maxConcurrentVerifications;
-  const value =
-    typeof raw === "number" && Number.isFinite(raw)
-      ? Math.round(raw)
-      : DEFAULT_REVIEW_PREP_CONFIG.maxConcurrentVerifications;
-  return { maxConcurrentVerifications: Math.min(MAX_CONCURRENT, Math.max(1, value)) };
+  return {
+    maxConcurrentVerifications: clamped(
+      stored?.maxConcurrentVerifications,
+      DEFAULT_REVIEW_PREP_CONFIG.maxConcurrentVerifications,
+      MAX_CONCURRENT,
+    ),
+    maxReady: clamped(stored?.maxReady, DEFAULT_REVIEW_PREP_CONFIG.maxReady, MAX_READY),
+  };
 }

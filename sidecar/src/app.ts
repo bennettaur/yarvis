@@ -43,6 +43,7 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createReviewPrepRoutes } from "./reviewPrep/routes.ts";
 import { createMutationTestingConfigRoutes } from "./reviewWorkspaces/mutationConfig.ts";
 import { createReviewWorkspaceRoutes } from "./reviewWorkspaces/routes.ts";
 import { createTaskRoutes } from "./tasks/routes.ts";
@@ -206,6 +207,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/repos", createRepoRoutes(config));
   app.route("/api/workspaces", createWorkspaceRoutes(config));
   app.route("/api/review-workspaces", createReviewWorkspaceRoutes(config));
+  app.route("/api/review-prep", createReviewPrepRoutes(config));
   app.route("/api/mutation-testing-config", createMutationTestingConfigRoutes());
 
   return app;

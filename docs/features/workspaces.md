@@ -979,6 +979,12 @@ or **All**, to see everything. Untick **Group** for one list, newest first.
 Yarvis remembers the **Group** choice in this browser between sessions. The
 filter resets when the app reloads, so a category can't stay hidden.
 
+A PR that [review prep](review-workspaces.md#review-prep) got ready carries
+the risk its verification report assessed: a **High risk** badge and a red
+edge, **Medium risk** in amber, or **Low risk** in green. Within **Review**,
+high-risk PRs come first, then medium, then the rest newest first. A PR whose
+report didn't finish has no badge.
+
 ### Messages from Yarvis
 
 Yarvis can leave you a note in the bell, for example to say a check you asked
