@@ -622,8 +622,7 @@ final class WorkspaceDetailModel {
     func copyCommentsForClaude() -> Bool {
         let text = formatReviewComments(comments, repoName: repoNames)
         guard !text.isEmpty else { return false }
-        NSPasteboard.general.clearContents()
-        return NSPasteboard.general.setString(text, forType: .string)
+        return copyToPasteboard(text)
     }
 }
 

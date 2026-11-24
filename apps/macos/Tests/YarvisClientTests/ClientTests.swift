@@ -580,14 +580,7 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
 }
 
 @Suite struct SessionIdTests {
-    @Test func paneIdsHaveAKnownShape() {
-        #expect(isTerminalPaneId("tab:terminal/t1/p1", workspaceIds: []))
-        #expect(isTerminalPaneId("ws:w1/t1/p1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("ws:w2/t1/p1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("ws-claude:w1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("tab:terminal/t1", workspaceIds: []))
-        #expect(!isTerminalPaneId("tab:terminal//p1", workspaceIds: []))
-        #expect(!isTerminalPaneId("review-claude:x/y/z", workspaceIds: []))
+    @Test func agentSessionIdsArePrefixed() {
         #expect(WorkspaceSummary.agentSessionId(workspaceId: "w1") == "ws-claude:w1")
     }
 }
@@ -650,23 +643,5 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         await #expect(throws: YarvisError.http(status: 403, error: "missing scope", detail: nil)) {
             try await YarvisClient(baseURL: base, token: "t", session: session).ptySessions()
         }
-    }
-
-    @Test func titlesNameTheWorkspaceOrFolderAndAnExit() {
-        let names = ["w1": "api"]
-        #expect(terminalTitle(PtySession(id: "ws-claude:w1", kind: "agent", workspaceId: "w1", running: true),
-                              workspaceNames: names) == "api")
-        #expect(terminalTitle(PtySession(id: "ws:w1/t/p", kind: "shell", workspaceId: "w1", cwd: "/srv/w1/repo",
-                                         running: true), workspaceNames: names) == "api · repo")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", running: false, exitCode: 2),
-                              workspaceNames: names) == "Terminal (exited 2)")
-        #expect(terminalTitle(PtySession(id: "review-claude:r1", kind: "review", workspaceId: "r1", running: true),
-                              workspaceNames: [:]) == "Review: r1")
-        #expect(terminalTitle(PtySession(id: "ws-claude:w9", kind: "agent", workspaceId: "w9", running: false),
-                              workspaceNames: names) == "Agent (exited)")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "/srv/repo", running: true),
-                              workspaceNames: names) == "repo")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "", running: true),
-                              workspaceNames: names) == "Terminal")
     }
 }

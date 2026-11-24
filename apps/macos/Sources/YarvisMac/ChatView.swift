@@ -283,8 +283,7 @@ private struct ErrorNotice: View {
                     }
                     .frame(maxHeight: 140)
                     Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString("\(error.message)\n\(detail)", forType: .string)
+                        copyToPasteboard("\(error.message)\n\(detail)")
                     } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(.borderless).help("Copy")
                 }

@@ -385,26 +385,6 @@ public struct PtySession: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
-/// A session's name in a list: the workspace for an agent or one of its
-/// panes, the folder for a shell, and whether it has exited.
-public func terminalTitle(_ s: PtySession, workspaceNames: [String: String]) -> String {
-    let workspace = s.workspaceId.flatMap { workspaceNames[$0] }
-    var title: String
-    switch s.kind {
-    case "agent": title = workspace ?? "Agent"
-    case "review": title = "Review: \(workspace ?? s.workspaceId ?? s.id)"
-    default:
-        // An empty path would resolve against this process's own folder.
-        let folder = s.cwd.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).lastPathComponent }
-        title = [workspace, folder].compactMap { $0 }.joined(separator: " · ")
-        if title.isEmpty { title = "Terminal" }
-    }
-    if !s.running {
-        title += s.exitCode.map { " (exited \($0))" } ?? " (exited)"
-    }
-    return title
-}
-
 // MARK: - Workspaces
 
 public let agentSessionPrefix = "ws-claude:"
@@ -415,15 +395,6 @@ public let reviewSessionPrefix = "review-claude:"
 /// shell under its id, so a terminal reconnects to it only while it runs.
 public func isServerStartedSession(_ id: String) -> Bool {
     id.hasPrefix(agentSessionPrefix) || id.hasPrefix(reviewSessionPrefix)
-}
-
-/// True for a terminal pane's PTY id: `tab:terminal/<tab>/<pane>` (the
-/// Terminal tab's), or `ws:<workspace>/<tab>/<pane>` for one of `workspaceIds`.
-public func isTerminalPaneId(_ id: String, workspaceIds: [String]) -> Bool {
-    let parts = id.split(separator: "/", omittingEmptySubsequences: false)
-    guard parts.count == 3, !parts[1].isEmpty, !parts[2].isEmpty else { return false }
-    if parts[0] == "tab:terminal" { return true }
-    return workspaceIds.contains { parts[0] == "ws:\($0)" }
 }
 
 public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hashable {
@@ -443,8 +414,6 @@ public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hash
     /// When the workspace was last opened or its agent last did something;
     /// null once archived.
     public var lastActiveAt: String?
-
-    public var agentSessionId: String { Self.agentSessionId(workspaceId: id) }
 
     /// The PTY id of a workspace's agent session.
     public static func agentSessionId(workspaceId: String) -> String { "\(agentSessionPrefix)\(workspaceId)" }

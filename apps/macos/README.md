@@ -70,8 +70,8 @@ check), and `YARVIS_E2E_PASSPHRASE` with `YARVIS_E2E_TOTP_SECRET` (the
 base32 secret setup showed) to test signing in. They cover sign-in,
 `/api/devices/me`, signing out with `DELETE /api/devices/me`, the events
 socket, a shell over `/api/pty/{id}` and its row in `GET /api/pty`, and the
-4401 and 4403 closes. Chat and attention need the sidecar and Postgres, so
-they're tested only against stubs.
+4401 and 4403 closes. Chat, workspaces and attention need the sidecar and
+Postgres, so they're tested only against stubs.
 
 ## Signing in
 
@@ -97,7 +97,7 @@ socket closed with `4401`, signs the app out.
 
 The sidebar lists the pages in the web UI's order, with Settings at the
 bottom. Cmd-1 to Cmd-3 open Chat, Terminal and Workspaces, Cmd-, opens
-Settings, and Cmd-Shift-] / Cmd-Shift-[ step through them. Page state (open
+Settings, and Cmd-Shift-] / Cmd-Shift-[ step through all four pages. Page state (open
 chat tabs, terminal layouts, the sidebar) is kept on this Mac.
 
 Native:
@@ -105,15 +105,17 @@ Native:
 - **Chat.** Threads open in tabs, and each tab runs its own turn, so a reply
   keeps streaming while you work in another. The Chats sidebar collapses.
   Return sends and Shift-Return adds a line; a message sent during a reply
-  is queued, and the queue waits after a turn fails or is stopped. Thinking
+  is queued, and the queue waits after a turn fails or is stopped. Stop
+  (Cmd-.) ends the turn, and a model picker sits by the composer. Thinking
   sends `reasoning` and shows the model's reasoning for the live turn. Tool
   calls are cards folded under a summary line. A sent message can be edited
   and resent, and a failed turn retried. The approval bar answers with A
   and D, and offers Always allow for MCP tools. Replies render as markdown
   with lists, tables and quotes; http(s) links open in the browser, and
   `yarvis://` links and workspace ids open the place they name. Artifacts
-  open in a side pane (Excalidraw ones in the web UI), and links in an
-  untrusted artifact stay inert. An MCP bar offers sign-in or reconnect for
+  open in a side pane (Excalidraw ones in the web UI). In an untrusted
+  artifact, `yarvis://` links stay inert; web links still open in the
+  browser. An MCP bar offers sign-in or reconnect for
   servers that aren't usable.
 - **Terminal.** Tabs with split panes, as in the web UI: Cmd-T opens a tab,
   Cmd-W closes one (asking first if something is running), Cmd-D splits
@@ -133,8 +135,8 @@ Native:
   It shows the provisioning log, with retry and ignore. The side panel has
   changed files, all files, review comments with Copy for Claude, and PR
   checks; files open as a diff (click a line number, then shift-click
-  another, to comment on a range) or in an editor that won't overwrite a
-  change made since it loaded. New workspaces are created with repos and
+  another, to comment on a range) or in an editor (Cmd-S saves) that won't
+  overwrite a change made since it loaded. New workspaces are created with repos and
   branches. Lists are polled only while the page is on screen.
 - **Settings.** Connection (this device, Sign Out), approvals, devices
   (revoke, pair a device with a token) and the account (passphrase, a new

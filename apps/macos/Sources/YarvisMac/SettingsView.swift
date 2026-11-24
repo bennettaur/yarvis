@@ -149,7 +149,7 @@ private struct PairDeviceForm: View {
                 Text("Copy this token now. It won't be shown again.")
                 Text(token).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 HStack {
-                    Button("Copy") { copyToPasteboard(token) }
+                    Button("Copy") { copyToPasteboard(token, secret: true) }
                     Button("Done") { model.dismissToken() }
                 }
             } else {
@@ -250,7 +250,7 @@ private struct AccountSection: View {
                 Text(codes.joined(separator: "\n"))
                     .font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 HStack {
-                    Button("Copy") { copyToPasteboard(codes.joined(separator: "\n")) }
+                    Button("Copy") { copyToPasteboard(codes.joined(separator: "\n"), secret: true) }
                     Button("Done") { model.dismissBackupCodes() }
                 }
             } else {

@@ -84,17 +84,6 @@ func checksColor(_ rollup: String?) -> Color {
     }
 }
 
-func copyToPasteboard(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-}
-
-/// Opens a provider link in the browser. Only http(s) links open.
-func openExternal(_ link: String?) {
-    guard let link, let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
-    NSWorkspace.shared.open(url)
-}
-
 /// A small copy button that says "Copied" for a moment.
 struct CopyButton: View {
     let text: String

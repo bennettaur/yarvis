@@ -116,7 +116,13 @@ final class AttentionModel {
         case "chat":
             if let id = target?["sessionId"]?.stringValue { app.openChat(sessionId: id) } else { app.section = .chat }
         case "workspace-claude", "workspace":
-            if let ws = target?["workspaceId"]?.stringValue { app.openWorkspace(id: ws) } else { app.section = .workspaces }
+            guard let ws = target?["workspaceId"]?.stringValue else {
+                app.section = .workspaces
+                break
+            }
+            // An item from the workspace's agent opens on the agent's tab.
+            let agent = target?["type"]?.stringValue == "workspace-claude"
+            app.openWorkspace(id: ws, focusSessionKey: agent ? WorkspaceSummary.agentSessionId(workspaceId: ws) : nil)
         case "terminal":
             let key = target?["sessionKey"]?.stringValue
             if let key, app.openTerminalSession(key) { break }
