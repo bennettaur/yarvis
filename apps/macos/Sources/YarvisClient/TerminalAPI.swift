@@ -23,22 +23,6 @@ public enum TerminalFontSize {
     }
 }
 
-/// `get_agent_config`: the agent command and the harnesses a session can
-/// start with.
-public struct AgentConfig: Codable, Sendable, Equatable {
-    public struct Harness: Codable, Sendable, Equatable, Identifiable {
-        public var id: String
-        public var name: String
-        public var kind: String?
-        public var command: String?
-    }
-
-    public var name: String
-    public var command: String
-    public var harnesses: [Harness]
-    public var defaultHarness: String?
-}
-
 extension YarvisClient {
     /// True while something other than the shell runs in the foreground.
     /// Errors count as idle, as the web treats them, so a close isn't blocked
@@ -46,14 +30,6 @@ extension YarvisClient {
     public func ptyIsBusy(_ id: String) async -> Bool {
         guard let data = try? await core("pty_is_busy", ["id": .string(id)]) else { return false }
         return (try? Self.decode(Bool.self, data)) ?? false
-    }
-
-    public func ptySessionHarness(_ id: String) async throws -> PtySession.Harness? {
-        try Self.decode(PtySession.Harness?.self, await core("pty_session_harness", ["id": .string(id)]))
-    }
-
-    public func agentConfig() async throws -> AgentConfig {
-        try Self.decode(AgentConfig.self, await core("get_agent_config"))
     }
 
     /// The saved terminal font size, clamped, from `get_settings`.

@@ -266,11 +266,6 @@ private struct AccountSection: View {
     }
 }
 
-private func copyToPasteboard(_ text: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(text, forType: .string)
-}
-
 /// Shown instead of the app while the server's vault is locked.
 struct VaultUnlockView: View {
     @Bindable var model: SettingsModel
