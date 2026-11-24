@@ -840,9 +840,10 @@ An approver can also allow signing for a while, up to an hour
 (`allowForSecs` on the answer), as 1Password's agent does. Until it ends,
 signatures are made without asking, for any process that can reach the
 socket, and each one appends `ssh_agent.signed`; one that can't be recorded is
-refused. `ssh_agent.grant_started` is recorded before the grant can be used;
-if it can't be, there is no grant, though the signature that was approved
-still goes ahead. A grant ends by whichever of the wall clock and a monotonic
+refused. A grant whose `ssh_agent.grant_started` can't be recorded is
+dropped, though the signature that was approved still goes ahead; a
+signature made in the moment between appends its own `ssh_agent.signed`,
+which can land just before the grant's start. A grant ends by whichever of the wall clock and a monotonic
 clock runs out first, so a Mac that sleeps through it wakes with it ended,
 and setting the clock back can't stretch it. Of two grants, the one that ends
 later is kept. The grant is kept only in memory, so locking the vault, the

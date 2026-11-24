@@ -249,6 +249,13 @@ impl Approvals {
         .rows_affected()
             == 1;
         if !won {
+            // Still open, so the duration guard is what stopped it: say that,
+            // not that someone answered first.
+            if allow_for.is_some() && self.still_pending(id).await? {
+                return Ok(Answer::GrantRefused(
+                    "this approval can't cover later requests for that long".into(),
+                ));
+            }
             return Ok(match self.settled(id).await? {
                 Some(decision) => Answer::AlreadySettled(decision),
                 None => Answer::NotFound,
@@ -275,6 +282,17 @@ impl Approvals {
             let _ = waiter.send(decision.clone());
         }
         Ok(Answer::Answered(decision))
+    }
+
+    async fn still_pending(&self, id: &str) -> Result<bool, StoreError> {
+        let pending: Option<bool> = sqlx::query_scalar(
+            "SELECT status = 'pending' AND expires_at > $2 FROM approvals WHERE id = $1",
+        )
+        .bind(id)
+        .bind(now_ms())
+        .fetch_optional(self.store.db()?)
+        .await?;
+        Ok(pending == Some(true))
     }
 
     /// Approvals still waiting for an answer, oldest first.

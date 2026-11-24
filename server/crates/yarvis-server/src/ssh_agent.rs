@@ -311,38 +311,45 @@ impl VaultAgent {
     /// Starts a grant, unless the agent stopped while the approval was out.
     /// The signature that was approved goes ahead either way: the approver
     /// said yes to it, whatever happens to the grant.
+    ///
+    /// Installed before it is recorded, so nothing that lands during the
+    /// record (a Stop, a lock) can be undone by it, and the event's refetch
+    /// finds it. A signature made meanwhile is recorded on its own.
     async fn start_grant(&self, allow_for: Duration, by: &str) {
-        if *self.shared.stopped.borrow() {
-            return;
-        }
         let new = Grant::new(allow_for, by);
-        // Recorded before it can be used, so no signature made under it can
-        // reach the log ahead of it. A grant nobody can see on the log isn't
-        // one to keep.
+        let (id, expires_at_ms) = (new.id, new.expires_at_ms);
+        {
+            let mut grant = lock(&self.shared.grant);
+            // Checked under the grant lock, which `stop` takes after setting
+            // `stopped`, so a grant can't land on a stopped agent.
+            if *self.shared.stopped.borrow() {
+                return;
+            }
+            // Two approvals answered together keep the longer grant.
+            if grant
+                .as_ref()
+                .is_some_and(|g| !g.has_run_out() && g.expires_at_ms >= expires_at_ms)
+            {
+                return;
+            }
+            *grant = Some(new);
+        }
         let recorded = self
             .events
             .append(
                 Some(by),
                 "ssh_agent.grant_started",
-                json!({ "expiresAt": new.expires_at_ms, "keyFingerprint": self.fingerprint() }),
+                json!({ "expiresAt": expires_at_ms, "keyFingerprint": self.fingerprint() }),
             )
             .await;
         if let Err(e) = recorded {
-            tracing::error!("couldn't record a signing grant, so it wasn't started: {e}");
-            return;
-        }
-        let mut grant = lock(&self.shared.grant);
-        // Checked under the grant lock, which `stop` takes after setting
-        // `stopped`, so a grant can't land on a stopped agent.
-        if *self.shared.stopped.borrow() {
-            return;
-        }
-        // Two approvals answered together keep the longer grant.
-        let keep_current = grant
-            .as_ref()
-            .is_some_and(|g| !g.has_run_out() && g.expires_at_ms >= new.expires_at_ms);
-        if !keep_current {
-            *grant = Some(new);
+            // A grant nobody can see on the log isn't one to keep. Only this
+            // one: another may have replaced it meanwhile.
+            let mut grant = lock(&self.shared.grant);
+            if grant.as_ref().is_some_and(|g| g.id == id) {
+                grant.take();
+            }
+            tracing::error!("couldn't record a signing grant, so it was dropped: {e}");
         }
     }
 
