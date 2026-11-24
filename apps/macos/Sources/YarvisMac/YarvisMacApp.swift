@@ -40,10 +40,11 @@ struct YarvisMacApp: App {
             // The web UI's page shortcuts: Cmd-1… for the pages in nav order,
             // and Cmd-Shift-] / Cmd-Shift-[ to cycle through all of them.
             CommandMenu("Go") {
-                ForEach(Array(Section.top.enumerated()), id: \.element) { index, page in
+                ForEach(Array(Section.top.filter(\.takesDigit).enumerated()), id: \.element) { index, page in
                     Button(page.title) { app.section = page }
                         .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                 }
+                Button(Section.review.title) { app.section = .review }
                 Divider()
                 Button("Next Page") { app.cycleSection(by: 1) }
                     .keyboardShortcut("]", modifiers: [.command, .shift])
@@ -134,6 +135,7 @@ struct MainView: View {
         case .chat: if let chat = app.chat { ChatView(chat: chat) }
         case .terminal: if let terminals = app.terminals { TerminalsView(model: terminals) }
         case .workspaces: if let workspaces = app.workspaces { WorkspacesView(model: workspaces) }
+        case .review: if let review = app.review { ReviewView(model: review) }
         case .calendar: if let calendar = app.calendar { CalendarView(model: calendar) }
         case .alarms: if let alarms = app.alarms { AlarmsView(model: alarms) }
         case .settings: if let settings = app.settings { SettingsView(model: settings) }
