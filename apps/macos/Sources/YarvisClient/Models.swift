@@ -399,6 +399,14 @@ public func terminalTitle(_ s: PtySession, workspaceNames: [String: String]) -> 
 // MARK: - Workspaces
 
 public let agentSessionPrefix = "ws-claude:"
+public let reviewSessionPrefix = "review-claude:"
+
+/// True for a session the server starts itself (a workspace agent or a
+/// review session). Attaching to one with nothing running would spawn a plain
+/// shell under its id, so a terminal reconnects to it only while it runs.
+public func isServerStartedSession(_ id: String) -> Bool {
+    id.hasPrefix(agentSessionPrefix) || id.hasPrefix(reviewSessionPrefix)
+}
 
 /// True for a terminal pane's PTY id: `tab:terminal/<tab>/<pane>` (the
 /// Terminal tab's), or `ws:<workspace>/<tab>/<pane>` for one of `workspaceIds`.
