@@ -4,18 +4,18 @@
  * `.claude/`, read from git objects at the base branch's tip and written into
  * the run's context folder as plain files.
  *
- * They come from the base so that a PR can't rewrite the instructions that
- * review it, and only when the base is the repo's default branch: a PR stacked
- * on its author's own branch has a base that author wrote. They are never
- * loaded as Claude Code project settings, which would also load the
- * checkout's hooks and permissions.
+ * They come from the default branch's tip whatever the PR's base, so a PR
+ * can't rewrite the instructions that review it, and neither can a lower
+ * layer of its stack, whose branch its author wrote. They are never loaded as
+ * Claude Code project settings, which would also load the checkout's hooks
+ * and permissions.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { git, splitNulFields } from "../workspaces/git.ts";
+import { git, NETWORK_TIMEOUT_MS, remoteRef, splitNulFields } from "../workspaces/git.ts";
 import { readFileAt } from "./git.ts";
-import type { ReadyPr } from "./service.ts";
+import { type ReadyPr, withCloneLock } from "./service.ts";
 
 /** Folder under the context directory the files are written to, mirroring their repo paths. */
 export const REPO_INSTRUCTIONS_DIR = "repo";
@@ -29,7 +29,7 @@ const MAX_FILE_BYTES = 64 * 1024;
 const MAX_TOTAL_BYTES = 512 * 1024;
 
 export interface RepoInstructions {
-  /** The base branch the files were read from. */
+  /** The default branch the files were read from. */
   branch: string;
   /** The commit they were read at. */
   commit: string;
@@ -67,19 +67,52 @@ async function cloneDefaultBranch(ready: Pick<ReadyPr, "runners" | "clonePath">)
 }
 
 /**
+ * The default branch's tip. A PR into it already has that commit, fetched with
+ * the PR; a stacked layer's base is another branch, so the default branch is
+ * fetched for it.
+ */
+async function defaultBranchTip(
+  ready: Pick<ReadyPr, "runners" | "clonePath" | "pr">,
+  branch: string,
+): Promise<string> {
+  const { baseRef, baseSha } = ready.pr;
+  if (baseRef === branch && baseSha) return baseSha;
+  const valid = await ready.runners.local(["check-ref-format", "--branch", branch], {
+    cwd: ready.clonePath,
+  });
+  if (valid.exitCode !== 0 || branch.startsWith("-")) {
+    throw new RepoInstructionsError(
+      `the default branch name ${JSON.stringify(branch)} isn't valid`,
+    );
+  }
+  const ref = remoteRef(branch);
+  await withCloneLock(ready.clonePath, () =>
+    git(
+      ready.runners.network,
+      ["fetch", "--no-tags", "origin", `+refs/heads/${branch}:${ref}`],
+      ready.clonePath,
+      NETWORK_TIMEOUT_MS,
+    ),
+  );
+  return (
+    await git(
+      ready.runners.local,
+      ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+      ready.clonePath,
+    )
+  ).trim();
+}
+
+/**
  * Writes the instructions under `<contextDir>/repo/`. Throws a
- * {@link RepoInstructionsError} the user can act on when the PR's base isn't
- * the repo's default branch, or the default branch isn't known.
+ * {@link RepoInstructionsError} the user can act on when the default branch
+ * isn't known, or its registration and the remote disagree on it.
  */
 export async function writeRepoInstructions(
   ready: Pick<ReadyPr, "runners" | "clonePath" | "pr">,
   registeredDefaultBranch: string | null,
   contextDir: string,
 ): Promise<RepoInstructions> {
-  const { baseRef, baseSha } = ready.pr;
-  if (!baseRef || !baseSha) {
-    throw new RepoInstructionsError("the PR's base branch isn't known yet");
-  }
   const cloned = await cloneDefaultBranch(ready);
   const defaultBranch = registeredDefaultBranch ?? cloned;
   if (!defaultBranch) {
@@ -92,18 +125,10 @@ export async function writeRepoInstructions(
       `the repo's registered default branch ${defaultBranch} doesn't match its remote's ${cloned}`,
     );
   }
-  if (baseRef !== defaultBranch) {
-    throw new RepoInstructionsError(
-      `the PR's base is ${baseRef}, not the default branch ${defaultBranch}, so its author may have written the repo's instructions there`,
-    );
-  }
+  const commit = await defaultBranchTip(ready, defaultBranch);
 
   const paths = splitNulFields(
-    await git(
-      ready.runners.local,
-      ["ls-tree", "-r", "-z", "--name-only", baseSha],
-      ready.clonePath,
-    ),
+    await git(ready.runners.local, ["ls-tree", "-r", "-z", "--name-only", commit], ready.clonePath),
   )
     .filter(isInstructionFile)
     .sort(readingOrder);
@@ -115,7 +140,7 @@ export async function writeRepoInstructions(
       omitted++;
       continue;
     }
-    const file = await readFileAt(ready.runners, ready.clonePath, baseSha, path, MAX_FILE_BYTES);
+    const file = await readFileAt(ready.runners, ready.clonePath, commit, path, MAX_FILE_BYTES);
     if (!file || file.binary || file.tooLarge || total + file.size > MAX_TOTAL_BYTES) {
       omitted++;
       continue;
@@ -126,5 +151,5 @@ export async function writeRepoInstructions(
     files.push(path);
     total += file.size;
   }
-  return { branch: baseRef, commit: baseSha, files, omitted };
+  return { branch: defaultBranch, commit, files, omitted };
 }

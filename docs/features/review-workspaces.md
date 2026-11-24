@@ -498,11 +498,13 @@ Two checks follow instructions written for the repo rather than Yarvis's own:
   itself: its `AGENTS.md`, `CLAUDE.md`, and the skills, agents and commands
   under `.claude/` (a `verify-pr` skill, say). The agent reads them, does each
   step it can by reading the PR's code, and reports where the PR breaks the
-  repo's own rules. The files are read from the base branch's tip, not from
-  the PR, so a PR can't rewrite the instructions that review it, and only
-  when the base is the repo's default branch: a PR stacked on another
-  branch is refused, since that branch's author could have written them. The
-  report names the branch, the commit and the files it read. It is off for
+  repo's own rules. The files are read from the default branch's tip, not from
+  the PR or its base, so neither a PR nor a lower layer of its stack can
+  rewrite the instructions that review it. A stacked layer is checked like
+  any other PR, against the default branch's instructions. If the repo's
+  registered default branch no longer matches its remote's, the check
+  refuses to start. The report names the branch, the commit and the files it
+  read. It is off for
   every repo until you tick it under **Settings → Repositories →
   Verification checks**; until then it refuses to start.
 - **Playbook verification** checks the PR against your **Verify a PR**
