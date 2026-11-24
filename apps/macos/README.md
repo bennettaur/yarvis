@@ -96,8 +96,8 @@ socket closed with `4401`, signs the app out.
 ## What's native and what's web
 
 The sidebar lists the pages in the web UI's order, with Settings at the
-bottom. Cmd-1 to Cmd-3 open Chat, Terminal and Workspaces, Cmd-, opens
-Settings, and Cmd-Shift-] / Cmd-Shift-[ step through all four pages. Open chat tabs,
+bottom. Cmd-1 to Cmd-4 open Chat, Terminal, Workspaces and Heads down,
+Cmd-, opens Settings, and Cmd-Shift-] / Cmd-Shift-[ step through every page. Open chat tabs,
 the model pick, terminal layouts and the selected workspace are saved on
 this Mac per server, since they hold that server's ids; signing in to
 another server shows that server's own. The last page and display
@@ -142,6 +142,15 @@ Native:
   another, to comment on a range) or in an editor (Cmd-S saves) that won't
   overwrite a change made since it loaded. New workspaces are created with repos and
   branches. Lists are polled only while the page is on screen.
+- **Heads down.** Start a run with a focus and an optional stop time, then
+  pause, resume, stop, change the stop time or clear old work. Needs you
+  lists the pass's questions (answer from the options or in your own words)
+  and approvals (approve, deny, or always allow an MCP tool in heads-down
+  mode). Below that: what was approved on its own, the work streams (pause,
+  done, drop), the live pass as it runs and past passes with their
+  transcripts. The right column has messages to the agent, routines and the
+  heads-down settings. A held merge, a merge it made, and a heads-down
+  question from the bell pop up as a sheet over whatever page is open.
 - **Settings.** Connection (this device, Sign Out), approvals, devices
   (revoke, pair a device with a token) and the account (passphrase, a new
   authenticator, backup codes, sign out other devices). While the server's
@@ -160,8 +169,8 @@ chat.
 
 Web (Show Web UI, Shift-Cmd-U, or the globe button):
 
-- Everything else: PRs, tasks, memory, the rest of Settings, heads-down
-  questions, first-run setup.
+- Everything else: PRs, tasks, memory, the rest of Settings, first-run
+  setup.
 - The web view signs in on its own, with the same passphrase and a code. The
   app doesn't hand its token to the page, since the page's localStorage would
   then hold a second copy of it. Links off the server's origin open in your
