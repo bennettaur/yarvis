@@ -33,26 +33,32 @@ struct WorkspaceDiffView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(model.lines) { line in
-                            DiffRow(line: line, selected: line.newLine.map { model.selection?.contains($0) ?? false } ?? false,
-                                    commentable: model.commentable) {
-                                guard let n = line.newLine else { return }
-                                model.select(line: n, extend: NSEvent.modifierFlags.contains(.shift))
-                            }
-                            if let n = line.newLine {
-                                if model.selection?.upperBound == n { CommentComposer(model: model) }
-                                ForEach(byEndLine[n] ?? []) { comment in
-                                    ReviewCommentCard(model: detail, comment: comment, showsLocation: false)
-                                        .padding(.leading, 90)
-                                        .padding(.vertical, 2)
-                                        .frame(maxWidth: 700, alignment: .leading)
+                // A two-way ScrollView centres content smaller than itself, so
+                // the rows are held at least as wide, and the stack as tall, as
+                // the viewport: the diff then starts top-left and fills the tab.
+                GeometryReader { viewport in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(model.lines) { line in
+                                DiffRow(line: line, selected: line.newLine.map { model.selection?.contains($0) ?? false } ?? false,
+                                        commentable: model.commentable, minWidth: viewport.size.width) {
+                                    guard let n = line.newLine else { return }
+                                    model.select(line: n, extend: NSEvent.modifierFlags.contains(.shift))
+                                }
+                                if let n = line.newLine {
+                                    if model.selection?.upperBound == n { CommentComposer(model: model) }
+                                    ForEach(byEndLine[n] ?? []) { comment in
+                                        ReviewCommentCard(model: detail, comment: comment, showsLocation: false)
+                                            .padding(.leading, 90)
+                                            .padding(.vertical, 2)
+                                            .frame(maxWidth: 700, alignment: .leading)
+                                    }
                                 }
                             }
                         }
+                        .padding(.vertical, 4)
+                        .frame(minHeight: viewport.size.height, alignment: .top)
                     }
-                    .padding(.vertical, 4)
                 }
             }
         }
@@ -63,6 +69,7 @@ private struct DiffRow: View {
     let line: DiffLine
     let selected: Bool
     let commentable: Bool
+    let minWidth: CGFloat
     let onGutterClick: () -> Void
 
     var body: some View {
@@ -86,6 +93,7 @@ private struct DiffRow: View {
         }
         .font(.system(.caption, design: .monospaced))
         .padding(.vertical, 0.5)
+        .frame(minWidth: minWidth, alignment: .leading)
         .background(selected ? Color.accentColor.opacity(0.25) : background)
     }
 
