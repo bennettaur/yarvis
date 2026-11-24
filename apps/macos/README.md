@@ -96,8 +96,8 @@ socket closed with `4401`, signs the app out.
 ## What's native and what's web
 
 The sidebar lists the pages in the web UI's order, with Settings at the
-bottom. Cmd-1 to Cmd-4 open Chat, Terminal, Workspaces and Heads down,
-Cmd-, opens Settings, and Cmd-Shift-] / Cmd-Shift-[ step through every page. Open chat tabs,
+bottom. Cmd-1 to Cmd-6 open Chat, Terminal, Workspaces, Calendar, Alarms
+and Heads down, Cmd-, opens Settings, and Cmd-Shift-] / Cmd-Shift-[ step through every page. Open chat tabs,
 the model pick, terminal layouts and the selected workspace are saved on
 this Mac per server, since they hold that server's ids; signing in to
 another server shows that server's own. The last page and display
@@ -142,6 +142,18 @@ Native:
   another, to comment on a range) or in an editor (Cmd-S saves) that won't
   overwrite a change made since it loaded. New workspaces are created with repos and
   branches. Lists are polled only while the page is on screen.
+- **Calendar.** Agenda, week, month and day views of the connected Google
+  calendar, with overlapping meetings side by side. Each meeting has an
+  alarm button, which knows the alarms the agent already set. Connecting
+  Google has to happen in a browser on the server's machine, since Google
+  sends you back to a loopback address there.
+- **Alarms.** Set, test, snooze, dismiss and cancel alarms. A ringing alarm
+  covers the window on whatever page is open, one at a time, if it fired
+  while the app was running; one left ringing from before shows under
+  Alarms and in the bell. In the background the app plays a looping sound,
+  posts a notification and bounces its Dock icon until you come back. It
+  doesn't take focus, so a window can't jump in front of what you're
+  typing. Answering here, or on another device, stops the sound.
 - **Heads down.** Start a run with a focus and an optional stop time, then
   pause, resume, stop, change the stop time or clear old work. Needs you
   lists the pass's questions (answer from the options or in your own words)

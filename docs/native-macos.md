@@ -15,7 +15,7 @@ natively, and lists what in the API gets in its way.
 - `YarvisMac`: the SwiftUI app.
 
 The app is laid out like the web UI: a sidebar with the Chat, Terminal,
-Workspaces and Heads down pages in the web's order and Settings at the bottom, and the
+Workspaces, Calendar, Alarms and Heads down pages in the web's order and Settings at the bottom, and the
 attention bell as a panel. `AppModel` routes between pages as the web's
 `App.tsx` does: an attention item, a `yarvis://` link or a workspace mention
 opens the chat thread, workspace or terminal pane it names, and a PTY id is
@@ -29,7 +29,9 @@ artifacts, the MCP connection bar), terminals (tabs and split panes in
 SwiftTerm, a layout kept per surface in the web's shape), workspaces (the
 list, the detail page with its agent and terminals, provisioning, new
 workspaces, archiving, changed and all files, diffs with review comments,
-the editor), heads-down mode (the run, questions and approvals, work
+the editor), the calendar (agenda, week, month and day views, meeting
+alarms), alarms (the list, and a takeover driven by `alarm.fire` and
+`alarm.release` events and the `/api/alarms/stream` SSE), heads-down mode (the run, questions and approvals, work
 streams, the live pass from `/api/heads-down/stream`, which only sends
 what happens after it connects, so the lists are read again on each
 connect; messages, routines, settings, and the merge pop-ups), Settings (devices, pairing tokens, the account) and attention
