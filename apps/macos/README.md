@@ -97,8 +97,11 @@ socket closed with `4401`, signs the app out.
 
 The sidebar lists the pages in the web UI's order, with Settings at the
 bottom. Cmd-1 to Cmd-3 open Chat, Terminal and Workspaces, Cmd-, opens
-Settings, and Cmd-Shift-] / Cmd-Shift-[ step through all four pages. Page state (open
-chat tabs, terminal layouts, the sidebar) is kept on this Mac.
+Settings, and Cmd-Shift-] / Cmd-Shift-[ step through all four pages. Open chat tabs,
+the model pick, terminal layouts and the selected workspace are saved on
+this Mac per server, since they hold that server's ids; signing in to
+another server shows that server's own. The last page and display
+choices (the Chats sidebar, Thinking, Show archived) are shared.
 
 Native:
 

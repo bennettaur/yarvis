@@ -645,3 +645,12 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         }
     }
 }
+
+@Suite struct ServerScopedKeyTests {
+    @Test func eachServerGetsItsOwnKey() {
+        let a = URL(string: "https://a.example.ts.net")!
+        let b = URL(string: "https://b.example.ts.net")!
+        #expect(serverScopedKey("yarvis.chat.tabs", server: a) != serverScopedKey("yarvis.chat.tabs", server: b))
+        #expect(serverScopedKey("yarvis.chat.tabs", server: a) == serverScopedKey("yarvis.chat.tabs", server: a))
+    }
+}

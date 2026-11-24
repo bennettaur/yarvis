@@ -51,7 +51,7 @@ final class TerminalSurfaceModel {
     var onClosePinned: ((PinnedTerminalTab) -> Void)?
     private(set) var state: TerminalSurfaceState {
         didSet {
-            if state != oldValue { UserDefaults.standard.set(state.encoded(), forKey: defaultsKey) }
+            if state != oldValue { serverDefaults.set(state.encoded(), defaultsKey) }
         }
     }
 
@@ -60,6 +60,7 @@ final class TerminalSurfaceModel {
     /// One per pane opened, so switching tabs keeps scrollback and the socket.
     @ObservationIgnored private var controllers: [String: TerminalController] = [:]
     @ObservationIgnored private var keyMonitor: Any?
+    private let serverDefaults: ServerDefaults
     private var defaultsKey: String { Self.defaultsKey(storageKey) }
 
     static func defaultsKey(_ storageKey: String) -> String { "yarvis.terminalTabs.\(storageKey)" }
@@ -73,7 +74,8 @@ final class TerminalSurfaceModel {
         self.storageKey = storageKey
         self.cwd = cwd
         self.opensShellTab = opensShellTab
-        state = TerminalSurfaceState.load(UserDefaults.standard.data(forKey: Self.defaultsKey(storageKey)),
+        serverDefaults = ServerDefaults(server: client.baseURL)
+        state = TerminalSurfaceState.load(serverDefaults.data(Self.defaultsKey(storageKey)),
                                           opensShellTab: opensShellTab)
         TerminalFont.shared.load(client: client)
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in

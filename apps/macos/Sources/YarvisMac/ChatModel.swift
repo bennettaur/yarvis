@@ -15,7 +15,7 @@ final class ChatModel {
     var providersError: String?
     private(set) var providers: [ProviderInfo] = []
     private(set) var tabs: ChatTabsState {
-        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(tabs), forKey: Self.tabsKey) }
+        didSet { serverDefaults.set(try? JSONEncoder().encode(tabs), Self.tabsKey) }
     }
     private(set) var threads: [String: ChatThread] = [:]
     var historyOpen: Bool {
@@ -29,6 +29,7 @@ final class ChatModel {
     private(set) var artifact: ChatArtifactModel?
     let mcp: McpConnectionModel
 
+    private let serverDefaults: ServerDefaults
     private static let tabsKey = "yarvis.chat.tabs"
     private static let historyKey = "yarvis.chat.historyOpen"
     private static let reasoningKey = "yarvis.chat.reasoning"
@@ -38,8 +39,9 @@ final class ChatModel {
     init(app: AppModel, client: YarvisClient) {
         self.app = app
         self.client = client
+        serverDefaults = ServerDefaults(server: client.baseURL)
         let defaults = UserDefaults.standard
-        tabs = ChatTabsState.restore(defaults.data(forKey: Self.tabsKey)) ?? .single(UUID().uuidString)
+        tabs = ChatTabsState.restore(serverDefaults.data(Self.tabsKey)) ?? .single(UUID().uuidString)
         historyOpen = defaults.object(forKey: Self.historyKey) as? Bool ?? true
         reasoningOn = defaults.bool(forKey: Self.reasoningKey)
         mcp = McpConnectionModel(client: client)
@@ -162,14 +164,14 @@ final class ChatModel {
     }
 
     private var defaultPick: (provider: String, model: String)? {
-        defaultChatModel(providers, savedProvider: UserDefaults.standard.string(forKey: Self.providerKey),
-                         savedModel: UserDefaults.standard.string(forKey: Self.modelKey))
+        defaultChatModel(providers, savedProvider: serverDefaults.string(Self.providerKey),
+                         savedModel: serverDefaults.string(Self.modelKey))
     }
 
     /// Each tab keeps its own model, and a new tab starts from the last pick.
     func remember(provider: String, model: String) {
-        UserDefaults.standard.set(provider, forKey: Self.providerKey)
-        UserDefaults.standard.set(model, forKey: Self.modelKey)
+        serverDefaults.set(provider, Self.providerKey)
+        serverDefaults.set(model, Self.modelKey)
     }
 
     /// The page came back into view or the window regained focus.

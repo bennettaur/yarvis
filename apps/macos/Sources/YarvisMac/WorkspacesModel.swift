@@ -10,9 +10,9 @@ final class WorkspacesModel {
     private let client: YarvisClient
 
     var workspaces: [WorkspaceSummary] = []
-    var selectedId: String? = UserDefaults.standard.string(forKey: "workspaces.selectedId") {
+    var selectedId: String? {
         didSet {
-            UserDefaults.standard.set(selectedId, forKey: "workspaces.selectedId")
+            serverDefaults.set(selectedId, Self.selectedKey)
             if selectedId != oldValue {
                 newWorkspace?.stop()
                 newWorkspace = nil
@@ -27,6 +27,8 @@ final class WorkspacesModel {
     private var listLoadsInFlight = 0
     /// Bumped per list read, so an older answer that lands last is dropped.
     private var listGeneration = 0
+    private let serverDefaults: ServerDefaults
+    private static let selectedKey = "workspaces.selectedId"
     var showArchived = UserDefaults.standard.bool(forKey: "workspaces.showArchived") {
         didSet { UserDefaults.standard.set(showArchived, forKey: "workspaces.showArchived") }
     }
@@ -47,6 +49,8 @@ final class WorkspacesModel {
     init(app: AppModel, client: YarvisClient) {
         self.app = app
         self.client = client
+        serverDefaults = ServerDefaults(server: client.baseURL)
+        selectedId = serverDefaults.string(Self.selectedKey)
         mountDetail()
         resync()
         startPolling()
