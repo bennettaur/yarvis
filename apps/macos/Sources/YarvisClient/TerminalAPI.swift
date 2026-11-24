@@ -1,6 +1,8 @@
 import Foundation
 
-/// The size every terminal shares, as the web's `terminalFont.ts` keeps it.
+/// The size every terminal shares. It's one server setting
+/// (`terminalFontSize`) for this app and the web UI, so the limits match the
+/// web's `terminalFont.ts`.
 public enum TerminalFontSize {
     public static let defaultSize = 16
     public static let range = 10...32
@@ -25,7 +27,7 @@ public enum TerminalFontSize {
 
 extension YarvisClient {
     /// True while something other than the shell runs in the foreground.
-    /// Errors count as idle, as the web treats them, so a close isn't blocked
+    /// Errors count as idle, so a close isn't blocked
     /// by a session the server no longer has.
     public func ptyIsBusy(_ id: String) async -> Bool {
         guard let data = try? await core("pty_is_busy", ["id": .string(id)]) else { return false }

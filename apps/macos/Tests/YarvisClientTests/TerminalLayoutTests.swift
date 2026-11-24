@@ -39,7 +39,7 @@ private func minter() -> TerminalUidMinter {
                                   second: .split(.horizontal, first: .leaf("b"), second: .leaf("c"), ratio: 0.7),
                                   ratio: nil))
         #expect(tree.settingRatio(at: [.first], 0.7) == tree)
-        if case .split(_, _, _, let ratio) = tree.settingRatio(at: [], 5) { #expect(ratio == 0.95) }
+        if case .split(_, _, _, let ratio) = tree.settingRatio(at: [], 5) { #expect(ratio == 0.9) }
     }
 
     @Test func encodesInTheWebShape() throws {
@@ -262,5 +262,81 @@ private func minter() -> TerminalUidMinter {
         let config = try await YarvisClient(baseURL: base, token: "t", session: session).agentConfig()
         #expect(config.harnesses.map(\.id) == ["h1"])
         #expect(config.defaultHarness == "h1")
+    }
+}
+
+@Suite struct TerminalDragTests {
+    func state(_ ids: [String]) -> TerminalSurfaceState {
+        TerminalSurfaceState(tabs: ids.map { TerminalTab(id: $0, title: $0, root: .leaf("p\($0)")) },
+                             activeTabId: ids[0], focused: [:])
+    }
+
+    @Test func draggingForwardLandsAfterTheTarget() {
+        var s = state(["a", "b", "c", "d"])
+        s.dropTab("a", onto: "c")
+        #expect(s.tabs.map(\.id) == ["b", "c", "a", "d"])
+    }
+
+    @Test func draggingBackLandsBeforeTheTarget() {
+        var s = state(["a", "b", "c", "d"])
+        s.dropTab("d", onto: "b")
+        #expect(s.tabs.map(\.id) == ["a", "d", "b", "c"])
+    }
+
+    @Test func droppingOnItselfOrAnUnknownTabChangesNothing() {
+        var s = state(["a", "b"])
+        s.dropTab("a", onto: "a")
+        s.dropTab("a", onto: "missing")
+        s.dropTab("missing", onto: "a")
+        #expect(s.tabs.map(\.id) == ["a", "b"])
+    }
+
+    @Test func theRatioClampIsTheDividerRange() {
+        let tree = TerminalPane.split(.vertical, first: .leaf("a"), second: .leaf("b"), ratio: nil)
+        #expect(tree.settingRatio(at: [], 0) == .split(.vertical, first: .leaf("a"), second: .leaf("b"),
+                                                       ratio: TerminalPane.ratioRange.lowerBound))
+        #expect(tree.settingRatio(at: [], 1) == .split(.vertical, first: .leaf("a"), second: .leaf("b"),
+                                                       ratio: TerminalPane.ratioRange.upperBound))
+    }
+}
+
+@Suite struct TerminalKeyTests {
+    func action(_ modifiers: TerminalKeyModifiers, _ chars: String?, key keyCode: UInt16 = 0,
+                pinned: Bool = false) -> TerminalKeyAction? {
+        terminalKeyAction(keyCode: keyCode, modifiers: modifiers, characters: chars, pinnedActive: pinned)
+    }
+
+    @Test func shiftReturnSendsEscapeReturn() {
+        #expect(action(.shift, "\r", key: 36) == .send("\u{1b}\r"))
+        #expect(action(.shift, "\u{3}", key: 76) == .send("\u{1b}\r"))
+        #expect(action([], "\r", key: 36) == nil)
+        #expect(action([.shift, .option], "\r", key: 36) == nil)
+    }
+
+    @Test func commandChordsRunSurfaceActions() {
+        #expect(action(.command, "t") == .newTab)
+        #expect(action(.command, "w") == .closeTab)
+        #expect(action(.command, "d") == .split(.vertical))
+        #expect(action([.command, .shift], "D") == .split(.horizontal))
+        #expect(action(.command, "=") == .fontSize(step: 1))
+        #expect(action([.command, .shift], "+") == .fontSize(step: 1))
+        #expect(action(.command, "-") == .fontSize(step: -1))
+        #expect(action(.command, "0") == .fontSize(step: nil))
+    }
+
+    @Test func otherKeysReachTheShell() {
+        #expect(action(.control, "d") == nil)
+        #expect(action(.control, "w") == nil)
+        #expect(action([.command, .control], "t") == nil)
+        #expect(action([.command, .option], "d") == nil)
+        #expect(action([.command, .shift], "T") == nil)
+        #expect(action(.command, "k") == nil)
+        #expect(action([], "d") == nil)
+    }
+
+    @Test func aPinnedTabIgnoresCloseAndSplit() {
+        #expect(action(.command, "w", pinned: true) == .ignore)
+        #expect(action(.command, "d", pinned: true) == .ignore)
+        #expect(action(.command, "t", pinned: true) == .newTab)
     }
 }

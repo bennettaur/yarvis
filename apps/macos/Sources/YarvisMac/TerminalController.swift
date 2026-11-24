@@ -18,7 +18,10 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     private var snapshotNext = false
     /// True while SwiftTerm's replies to a replayed snapshot are still queued.
     private var replaying = false
-    /// The same 80 ms the web waits, so a window drag sends one resize, not dozens.
+    /// True once the connection has stopped for good (exit, a refusal, or a
+    /// server-started session that ended). It never attaches again.
+    private(set) var ended = false
+    /// Long enough that a window drag sends one resize, not dozens.
     private static let resizeDebounce = Duration.milliseconds(80)
 
     /// `cwd` is where the shell starts if this attach spawns one.
@@ -44,6 +47,7 @@ final class TerminalController: NSObject, TerminalViewDelegate {
             for await update in pty.updates {
                 self?.apply(update)
             }
+            self?.ended = true
         }
     }
 
@@ -134,10 +138,10 @@ final class TerminalController: NSObject, TerminalViewDelegate {
     /// prints, could put a command on the clipboard for the next paste.
     nonisolated func clipboardCopy(source: TerminalView, content: Data) {}
 
-    /// Only web links open: terminal output can come from anywhere.
+    /// Terminal output can come from anywhere, so only web links open.
     nonisolated func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        guard let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
-        Task { @MainActor in NSWorkspace.shared.open(url) }
+        guard let url = URL(string: link) else { return }
+        Task { @MainActor in openWebLink(url) }
     }
 
     /// Takes over the PTY size when the user clicks into this terminal.

@@ -16,9 +16,9 @@ struct PinnedTerminalTab: Equatable, Identifiable {
     var id: String { key }
 }
 
-/// A set of terminal tabs with split panes, like the web's `TerminalTabs`.
-/// The Terminal page has one (`tab:terminal`), and each workspace has its own
-/// (`ws:<workspaceId>`). Pane PTY ids are `<storageKey>/<tabId>/<paneId>`, so
+/// A set of terminal tabs with split panes. The Terminal page has one
+/// (`tab:terminal`), and each workspace has its own (`ws:<workspaceId>`).
+/// Pane PTY ids are `<storageKey>/<tabId>/<paneId>`, so
 /// attention items can name the exact pane.
 ///
 /// Shortcuts, only while a terminal of this surface has keyboard focus:
@@ -36,8 +36,17 @@ final class TerminalSurfaceModel {
             let keys = pinned.map(\.key)
             let previous = oldValue.map(\.key)
             if keys != previous { state.reconcilePinned(keys: keys, previous: previous) }
+            refreshPinnedSessions(dropping: Set(oldValue.map(\.sessionId)).subtracting(pinned.map(\.sessionId)))
         }
     }
+    /// Why a pinned tab has no terminal yet. A pinned tab with neither this
+    /// nor a controller hasn't been looked at.
+    enum PinnedAttach: Equatable {
+        /// `pty_exists` hasn't answered.
+        case checking
+        case notRunning
+    }
+    private(set) var pinnedAttach: [String: PinnedAttach] = [:]
     /// Called when the user closes a pinned tab.
     var onClosePinned: ((PinnedTerminalTab) -> Void)?
     private(set) var state: TerminalSurfaceState {
@@ -119,9 +128,50 @@ final class TerminalSurfaceModel {
         controller(for: sessionId(tab: tab, pane: pane), cwd: cwd)
     }
 
-    /// A pinned session already runs, so its attach never needs a folder.
-    func controller(for pinned: PinnedTerminalTab) -> TerminalController {
-        controller(for: pinned.sessionId, cwd: nil)
+    /// The pinned tab's terminal, once `pty_exists` has said its session runs.
+    func controller(for pinned: PinnedTerminalTab) -> TerminalController? {
+        controllers[pinned.sessionId]
+    }
+
+    /// Attaches a pinned tab only to a session that's running: attaching to
+    /// an id with nothing behind it spawns a plain shell there, which must
+    /// not happen under an agent's id. A terminal whose connection ended is
+    /// replaced, so a restarted session attaches again.
+    func attach(_ pinned: PinnedTerminalTab) {
+        let id = pinned.sessionId
+        if let existing = controllers[id] {
+            guard existing.ended else { return }
+            existing.stop()
+            controllers[id] = nil
+        }
+        guard pinnedAttach[id] != .checking else { return }
+        pinnedAttach[id] = .checking
+        Task {
+            let running = (try? await client.ptyExists(id)) ?? false
+            // The tab may have gone while the check ran.
+            guard pinnedAttach[id] == .checking, self.pinned.contains(where: { $0.sessionId == id }) else { return }
+            if running {
+                // A pinned session already runs, so its attach never needs a folder.
+                _ = controller(for: id, cwd: nil)
+                pinnedAttach[id] = nil
+                focusActivePane()
+            } else {
+                pinnedAttach[id] = .notRunning
+            }
+        }
+    }
+
+    /// Stops the terminals of sessions no longer pinned, and attaches the
+    /// selected pinned tab again when its terminal ended or wasn't running.
+    private func refreshPinnedSessions(dropping removed: Set<String>) {
+        for id in removed {
+            controllers.removeValue(forKey: id)?.stop()
+            pinnedAttach[id] = nil
+        }
+        for tab in pinned where pinnedAttach[tab.sessionId] == .notRunning {
+            pinnedAttach[tab.sessionId] = nil
+        }
+        if let active = activePinned { attach(active) }
     }
 
     private func controller(for sessionId: String, cwd: String?) -> TerminalController {
@@ -140,6 +190,7 @@ final class TerminalSurfaceModel {
 
     func select(_ tab: PinnedTerminalTab) {
         state.activeTabId = TerminalSurfaceState.pinnedTabId(tab.key)
+        attach(tab)
         focusActivePane()
     }
 
@@ -149,9 +200,7 @@ final class TerminalSurfaceModel {
     }
 
     func moveTab(_ dragId: String, onto targetId: String) {
-        guard let from = state.tabs.firstIndex(where: { $0.id == dragId }),
-              let to = state.tabs.firstIndex(where: { $0.id == targetId }) else { return }
-        state.moveTab(dragId, nextTo: targetId, after: from < to)
+        state.dropTab(dragId, onto: targetId)
     }
 
     /// Asks first when a pane runs something, then kills every pane's session.
@@ -248,8 +297,7 @@ final class TerminalSurfaceModel {
         }
     }
 
-    /// Errors are ignored, as the web does: a session already gone is the
-    /// outcome the close wants.
+    /// Errors are ignored: a session already gone is the outcome the close wants.
     private func kill(_ ids: [String]) async {
         for id in ids { controllers.removeValue(forKey: id)?.stop() }
         await withTaskGroup(of: Void.self) { group in
@@ -267,36 +315,26 @@ final class TerminalSurfaceModel {
 
     // MARK: Keys
 
-    private static let returnKeys: Set<UInt16> = [36, 76]
-
     /// True when the key was this surface's to handle.
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let responder = event.window?.firstResponder as? TerminalView,
               let controller = controllers.values.first(where: { $0.view === responder }) else { return false }
-        let flags = event.modifierFlags.intersection([.shift, .control, .option, .command])
-        if flags == .shift, Self.returnKeys.contains(event.keyCode) {
-            // What Claude Code reads as a newline rather than submit.
-            controller.sendRaw("\u{1b}\r")
-            return true
-        }
-        // Command only: Ctrl+D, T and W belong to the shell.
-        guard flags.contains(.command), !flags.contains(.control), !flags.contains(.option) else { return false }
-        let shift = flags.contains(.shift)
-        switch event.charactersIgnoringModifiers?.lowercased() {
-        case "t" where !shift:
-            newTab()
-        case "w" where !shift:
-            if let tab = activeTab, activePinned == nil { close(tab) }
-        case "d":
-            if activePinned == nil { split(shift ? .horizontal : .vertical) }
-        case "=", "+":
-            TerminalFont.shared.step(1, app: app, client: client)
-        case "-":
-            TerminalFont.shared.step(-1, app: app, client: client)
-        case "0":
-            TerminalFont.shared.step(nil, app: app, client: client)
-        default:
-            return false
+        let flags = event.modifierFlags
+        var modifiers: TerminalKeyModifiers = []
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.option) { modifiers.insert(.option) }
+        if flags.contains(.command) { modifiers.insert(.command) }
+        guard let action = terminalKeyAction(keyCode: event.keyCode, modifiers: modifiers,
+                                             characters: event.charactersIgnoringModifiers,
+                                             pinnedActive: activePinned != nil) else { return false }
+        switch action {
+        case .send(let text): controller.sendRaw(text)
+        case .newTab: newTab()
+        case .closeTab: if let tab = activeTab { close(tab) }
+        case .split(let direction): split(direction)
+        case .fontSize(let step): TerminalFont.shared.step(step, app: app, client: client)
+        case .ignore: break
         }
         return true
     }
@@ -317,7 +355,19 @@ struct TerminalSurfaceView: View {
 
     @ViewBuilder private var content: some View {
         if let pinned = model.activePinned {
-            TerminalHost(controller: model.controller(for: pinned)).id(pinned.sessionId)
+            if let controller = model.controller(for: pinned) {
+                // Keyed on the controller, so a replaced one gets a fresh host.
+                TerminalHost(controller: controller).id(ObjectIdentifier(controller))
+            } else if model.pinnedAttach[pinned.sessionId] == .notRunning {
+                VStack(spacing: 10) {
+                    Text("\(pinned.title) isn't running.").foregroundStyle(.secondary)
+                    Button("Check again") { model.attach(pinned) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onAppear { model.attach(pinned) }
+            }
         } else if let tab = model.activeTab {
             TerminalPaneTree(model: model, tabId: tab.id, pane: tab.root, path: [], inSplit: tab.root.leafIds.count > 1)
                 .id(tab.id)
@@ -503,7 +553,8 @@ private struct TerminalSplit: View {
                                 DragGesture(coordinateSpace: .named("split"))
                                     .onChanged { drag in
                                         let at = vertical ? drag.location.x : drag.location.y
-                                        dragRatio = min(max(at / total, 0.1), 0.9)
+                                        let range = TerminalPane.ratioRange
+                                        dragRatio = min(max(at / total, range.lowerBound), range.upperBound)
                                     }
                                     .onEnded { _ in
                                         if let dragRatio { onRatio(dragRatio) }

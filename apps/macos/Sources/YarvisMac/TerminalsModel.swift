@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import YarvisClient
 
-/// The Terminal page: one surface of shell tabs, like the web's Terminal tab.
+/// The Terminal page: one surface of shell tabs.
 /// Workspace agents and review sessions live on the Workspaces page instead.
 @MainActor @Observable
 final class TerminalsModel {

@@ -2,8 +2,8 @@ import AppKit
 import SwiftTerm
 import YarvisClient
 
-/// The one font size every terminal in the app uses, like the web's
-/// `terminalFont.ts`. Saved on the server, so the web UI shares it.
+/// The one font size every terminal in the app uses. Saved on the server,
+/// so the web UI shares it.
 @MainActor
 final class TerminalFont {
     static let shared = TerminalFont()

@@ -65,12 +65,17 @@ public indirect enum TerminalPane: Equatable, Sendable {
         }
     }
 
+    /// The shares a split's first pane may take, so neither pane can be
+    /// dragged too small to grab the divider again.
+    public static let ratioRange = 0.1...0.9
+
     /// Sets the ratio of the split at `path`. Unchanged when the path doesn't
     /// end on a split, such as a stale one after the layout changed.
     public func settingRatio(at path: [PaneStep], _ ratio: Double) -> TerminalPane {
         guard case .split(let d, let first, let second, let old) = self else { return self }
         guard let step = path.first else {
-            return .split(d, first: first, second: second, ratio: min(max(ratio, 0.05), 0.95))
+            let clamped = min(max(ratio, Self.ratioRange.lowerBound), Self.ratioRange.upperBound)
+            return .split(d, first: first, second: second, ratio: clamped)
         }
         let rest = Array(path.dropFirst())
         switch step {
@@ -131,7 +136,7 @@ public struct TerminalTab: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// Makes tab and pane uids like the web's: `t` or `p`, the time in base 36,
+/// Makes tab and pane uids: `t` or `p`, the time in base 36,
 /// then a counter in base 36, so two minted in the same millisecond differ.
 public final class TerminalUidMinter: @unchecked Sendable {
     public static let shared = TerminalUidMinter()
@@ -325,6 +330,14 @@ public struct TerminalSurfaceState: Codable, Equatable, Sendable {
         tabs.insert(tab, at: after ? anchor + 1 : anchor)
     }
 
+    /// Drops tab `dragId` on tab `targetId`. It takes the target's place:
+    /// after it when dragged forward, before it when dragged back.
+    public mutating func dropTab(_ dragId: String, onto targetId: String) {
+        guard let from = tabs.firstIndex(where: { $0.id == dragId }),
+              let to = tabs.firstIndex(where: { $0.id == targetId }) else { return }
+        moveTab(dragId, nextTo: targetId, after: from < to)
+    }
+
     /// Follows the owner's pinned tabs: selects one that just appeared, and
     /// moves off a selected one that went away.
     public mutating func reconcilePinned(keys: [String], previous: [String]) {
@@ -334,5 +347,59 @@ public struct TerminalSurfaceState: Codable, Equatable, Sendable {
         if let appeared = keys.first(where: { !previous.contains($0) }) {
             activeTabId = Self.pinnedTabId(appeared)
         }
+    }
+}
+
+// MARK: - Keys
+
+/// The modifier keys a terminal shortcut depends on.
+public struct TerminalKeyModifiers: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let shift = TerminalKeyModifiers(rawValue: 1)
+    public static let control = TerminalKeyModifiers(rawValue: 2)
+    public static let option = TerminalKeyModifiers(rawValue: 4)
+    public static let command = TerminalKeyModifiers(rawValue: 8)
+}
+
+/// What a key press in a focused terminal does instead of reaching the shell.
+public enum TerminalKeyAction: Equatable, Sendable {
+    /// Bytes for the PTY that skip the terminal's own key encoding.
+    case send(String)
+    case newTab
+    case closeTab
+    case split(SplitDirection)
+    /// Steps the font size; nil goes back to the default.
+    case fontSize(step: Int?)
+    /// A surface shortcut that does nothing here, kept from the app menu
+    /// so Cmd+W on a pinned tab doesn't close the window.
+    case ignore
+}
+
+/// Return and the keypad's Enter.
+private let returnKeyCodes: Set<UInt16> = [36, 76]
+
+/// The surface shortcut for a key press, or nil when the key belongs to the
+/// shell. `characters` is the key without modifiers, as AppKit reports it.
+public func terminalKeyAction(keyCode: UInt16, modifiers: TerminalKeyModifiers, characters: String?,
+                              pinnedActive: Bool) -> TerminalKeyAction? {
+    if modifiers == .shift, returnKeyCodes.contains(keyCode) {
+        // What Claude Code reads as a newline rather than submit.
+        return .send("\u{1b}\r")
+    }
+    // Command only: Ctrl+D, T and W belong to the shell.
+    guard modifiers.contains(.command), !modifiers.contains(.control), !modifiers.contains(.option) else { return nil }
+    let shift = modifiers.contains(.shift)
+    switch characters?.lowercased() {
+    case "t" where !shift: return .newTab
+    // A pinned tab's owner decides what closing it does, so the shortcut leaves it alone.
+    case "w" where !shift: return pinnedActive ? .ignore : .closeTab
+    // A pinned tab is a single session, with no panes to split.
+    case "d": return pinnedActive ? .ignore : .split(shift ? .horizontal : .vertical)
+    case "=", "+": return .fontSize(step: 1)
+    case "-": return .fontSize(step: -1)
+    case "0": return .fontSize(step: nil)
+    default: return nil
     }
 }
