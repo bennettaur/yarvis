@@ -5,8 +5,8 @@ extension YarvisClient {
         sidecar("/api/workspaces/\(encodePathSegment(id))\(rest)")
     }
 
-    private static func repoPath(_ id: String, _ wrId: String, _ rest: String) -> String {
-        workspacePath(id, "/repos/\(encodePathSegment(wrId))\(rest)")
+    private static func repoPath(_ id: String, _ workspaceRepoId: String, _ rest: String) -> String {
+        workspacePath(id, "/repos/\(encodePathSegment(workspaceRepoId))\(rest)")
     }
 
     /// `?worktree=` for a non-primary worktree; nothing for the primary one.
@@ -110,28 +110,28 @@ extension YarvisClient {
         try await get([WorktreeListing].self, Self.workspacePath(id, "/worktrees"))
     }
 
-    public func workspaceFiles(id: String, repo wrId: String, worktree: String? = nil) async throws -> [String] {
-        try await get([String].self, Self.repoPath(id, wrId, "/files\(Self.worktreeQuery(worktree))"))
+    public func workspaceFiles(id: String, repo workspaceRepoId: String, worktree: String? = nil) async throws -> [String] {
+        try await get([String].self, Self.repoPath(id, workspaceRepoId, "/files\(Self.worktreeQuery(worktree))"))
     }
 
-    public func workspaceChanges(id: String, repo wrId: String, worktree: String? = nil) async throws -> [ChangedFile] {
-        try await get([ChangedFile].self, Self.repoPath(id, wrId, "/changes\(Self.worktreeQuery(worktree))"))
+    public func workspaceChanges(id: String, repo workspaceRepoId: String, worktree: String? = nil) async throws -> [ChangedFile] {
+        try await get([ChangedFile].self, Self.repoPath(id, workspaceRepoId, "/changes\(Self.worktreeQuery(worktree))"))
     }
 
-    public func workspaceDiff(id: String, repo wrId: String, path: String, worktree: String? = nil) async throws -> FileDiff {
+    public func workspaceDiff(id: String, repo workspaceRepoId: String, path: String, worktree: String? = nil) async throws -> FileDiff {
         try await get(FileDiff.self, Self.repoPath(
-            id, wrId, "/diff?path=\(encodeQueryValue(path))\(Self.worktreeQuery(worktree, joiner: "&"))"))
+            id, workspaceRepoId, "/diff?path=\(encodeQueryValue(path))\(Self.worktreeQuery(worktree, joiner: "&"))"))
     }
 
-    public func readWorkspaceFile(id: String, repo wrId: String, path: String,
+    public func readWorkspaceFile(id: String, repo workspaceRepoId: String, path: String,
                                   worktree: String? = nil) async throws -> WorkspaceFile {
         try await get(WorkspaceFile.self, Self.repoPath(
-            id, wrId, "/file?path=\(encodeQueryValue(path))\(Self.worktreeQuery(worktree, joiner: "&"))"))
+            id, workspaceRepoId, "/file?path=\(encodeQueryValue(path))\(Self.worktreeQuery(worktree, joiner: "&"))"))
     }
 
     /// Saves a file if it still has `expectedHash` on disk. Returns the new
     /// hash, or nil when the file changed since it was read (409).
-    public func saveWorkspaceFile(id: String, repo wrId: String, path: String, content: String,
+    public func saveWorkspaceFile(id: String, repo workspaceRepoId: String, path: String, content: String,
                                   expectedHash: String, worktree: String? = nil) async throws -> String? {
         struct Saved: Decodable { var hash: String }
         var body: [String: JSONValue] = [
@@ -139,15 +139,15 @@ extension YarvisClient {
         ]
         if let worktree { body["worktree"] = .string(worktree) }
         do {
-            return try Self.decode(Saved.self, await send("PUT", Self.repoPath(id, wrId, "/file"), body: .object(body))).hash
+            return try Self.decode(Saved.self, await send("PUT", Self.repoPath(id, workspaceRepoId, "/file"), body: .object(body))).hash
         } catch YarvisError.http(status: 409, _, _) {
             return nil
         }
     }
 
     /// Runs a git fetch on the server, so it is slow; poll it gently.
-    public func workspaceSync(id: String, repo wrId: String) async throws -> SyncStatus {
-        try await get(SyncStatus.self, Self.repoPath(id, wrId, "/sync"))
+    public func workspaceSync(id: String, repo workspaceRepoId: String) async throws -> SyncStatus {
+        try await get(SyncStatus.self, Self.repoPath(id, workspaceRepoId, "/sync"))
     }
 
     // MARK: PRs
@@ -156,12 +156,12 @@ extension YarvisClient {
         try await post(DetectedPrs.self, Self.workspacePath(id, "/prs/detect"))
     }
 
-    public func linkWorkspacePr(id: String, repo wrId: String, number: Int) async throws {
-        try await send("POST", Self.repoPath(id, wrId, "/prs"), body: .object(["number": .number(Double(number))]))
+    public func linkWorkspacePr(id: String, repo workspaceRepoId: String, number: Int) async throws {
+        try await send("POST", Self.repoPath(id, workspaceRepoId, "/prs"), body: .object(["number": .number(Double(number))]))
     }
 
-    public func unlinkWorkspacePr(id: String, repo wrId: String, number: Int) async throws {
-        try await send("DELETE", Self.repoPath(id, wrId, "/prs/\(number)"))
+    public func unlinkWorkspacePr(id: String, repo workspaceRepoId: String, number: Int) async throws {
+        try await send("DELETE", Self.repoPath(id, workspaceRepoId, "/prs/\(number)"))
     }
 
     // MARK: Review comments
@@ -170,10 +170,10 @@ extension YarvisClient {
         try await get([ReviewComment].self, Self.workspacePath(workspaceId, "/review-comments"))
     }
 
-    public func createReviewComment(workspaceId: String, repo wrId: String, path: String, startLine: Int,
+    public func createReviewComment(workspaceId: String, repo workspaceRepoId: String, path: String, startLine: Int,
                                     endLine: Int, body: String) async throws -> ReviewComment {
         try await post(ReviewComment.self, Self.workspacePath(workspaceId, "/review-comments"), body: .object([
-            "workspaceRepoId": .string(wrId),
+            "workspaceRepoId": .string(workspaceRepoId),
             "path": .string(path),
             "startLine": .number(Double(startLine)),
             "endLine": .number(Double(endLine)),

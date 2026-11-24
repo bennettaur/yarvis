@@ -163,7 +163,7 @@ struct WorkspaceEditorView: View {
                 Text(model.path).font(.callout.monospaced()).lineLimit(1).truncationMode(.head)
                 if model.dirty { Text("●").foregroundStyle(.orange) }
                 Spacer()
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                if let error = model.buffer.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
                 Button(model.dirty ? "Revert" : "Reload", action: model.revert).controlSize(.small)
                 Button("Save", action: model.save)
                     .controlSize(.small)
@@ -171,7 +171,7 @@ struct WorkspaceEditorView: View {
                     .disabled(!model.dirty || model.saving)
             }
             .padding(8)
-            if model.conflict {
+            if model.buffer.conflict {
                 HStack {
                     Text("This file changed on disk after you opened it — most likely the agent working in this worktree. Your edits are still here.")
                         .font(.caption)
@@ -184,13 +184,13 @@ struct WorkspaceEditorView: View {
             }
             Divider()
             if let message = model.unreadableMessage {
-                Text("\(message) (\(model.size) bytes)")
+                Text("\(message) (\(model.buffer.size) bytes)")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if !model.loaded {
+            } else if !model.buffer.loaded {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                TextEditor(text: $model.text)
+                TextEditor(text: $model.buffer.text)
                     .font(.system(.callout, design: .monospaced))
                     .autocorrectionDisabled()
             }

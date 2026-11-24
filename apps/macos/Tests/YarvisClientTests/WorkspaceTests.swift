@@ -22,6 +22,14 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
                   body: body, source: source, resolvedAt: resolved ? "2026-11-01T00:00:00Z" : nil)
 }
 
+/// A request's query items by name, decoded.
+private func query(_ req: URLRequest) -> [String: String] {
+    let items = req.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems } ?? []
+    return Dictionary(items.map { ($0.name, $0.value ?? "") }, uniquingKeysWith: { a, _ in a })
+}
+
+private let fileJSON = #"{"path":"a.ts","content":"one","unreadable":null,"hash":"h1","size":3}"#
+
 @Suite struct WorkspaceDecodingTests {
     @Test func aListRowReadsItsPrsAndIgnoresUnknownKeys() throws {
         let rows = try JSONDecoder().decode([WorkspaceSummary].self, from: json(#"""
@@ -243,6 +251,11 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
         """)
     }
 
+    @Test func aCommitShaCannotBreakTheLine() {
+        let text = formatReviewComments([comment("1", body: "x", sha: "ab\ncd123456")], repoName: { _ in nil })
+        #expect(text.contains("1. src/a.ts:3 (at abcd12)"))
+    }
+
     @Test func onlyFindingsSayPleaseCheck() {
         let text = formatReviewComments([comment("1", body: "x", source: "verification")], repoName: { _ in nil },
                                         nonce: "n")
@@ -300,9 +313,10 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
         let (c, id) = client(200, "[]")
         _ = try await c.workspaceList(badges: true)
         _ = try await c.workspaceList(badges: false)
-        let urls = StubProtocol.recorded(id).map { $0.0.url?.absoluteString }
-        #expect(urls == ["https://yarvis.example.ts.net/api/sidecar/api/workspaces?badges=1",
-                         "https://yarvis.example.ts.net/api/sidecar/api/workspaces"])
+        let reqs = StubProtocol.recorded(id).map(\.0)
+        #expect(reqs.map { $0.url?.path } == ["/api/sidecar/api/workspaces", "/api/sidecar/api/workspaces"])
+        #expect(query(reqs[0]) == ["badges": "1"])
+        #expect(query(reqs[1]).isEmpty)
     }
 
     @Test func createSendsOnlyPickedBranches() async throws {
@@ -329,8 +343,11 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
     @Test func pathsAndWorktreesAreFullyEncodedInTheQuery() async throws {
         let (c, id) = client(200, #"{"path":"a b/c&d.ts","patch":""}"#)
         _ = try await c.workspaceDiff(id: "w", repo: "wr", path: "a b/c&d.ts", worktree: "/x/y z")
-        #expect(StubProtocol.recorded(id).first?.0.url?.absoluteString
-            == "https://yarvis.example.ts.net/api/sidecar/api/workspaces/w/repos/wr/diff?path=a%20b%2Fc%26d%2Ets&worktree=%2Fx%2Fy%20z")
+        let req = try #require(StubProtocol.recorded(id).first?.0)
+        #expect(req.url?.path == "/api/sidecar/api/workspaces/w/repos/wr/diff")
+        #expect(query(req) == ["path": "a b/c&d.ts", "worktree": "/x/y z"])
+        // Fully encoded, so neither value can add a query item of its own.
+        #expect(req.url?.query?.contains("&d.ts") == false)
     }
 
     @Test func unlinkingAnIssuePutsItsKeysInTheQuery() async throws {
@@ -339,7 +356,8 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
                                                              externalId: "12"))
         let req = try #require(StubProtocol.recorded(id).first?.0)
         #expect(req.httpMethod == "DELETE")
-        #expect(req.url?.query == "provider=github&sourceKey=o%2Fr&externalId=12")
+        #expect(req.url?.path == "/api/sidecar/api/workspaces/w/issues")
+        #expect(query(req) == ["provider": "github", "sourceKey": "o/r", "externalId": "12"])
     }
 
     @Test func aSaveConflictIsNilNotAnError() async throws {
@@ -388,5 +406,256 @@ private func comment(_ id: String, path: String = "src/a.ts", start: Int = 3, en
         await #expect(throws: YarvisError.http(status: 404, error: "not found", detail: nil)) {
             try await c.workspace(id: "gone", viewing: false)
         }
+    }
+}
+
+@Suite struct WorkspacesAPIShapeTests {
+    private func client(_ status: Int = 200, _ body: String) -> (YarvisClient, String) {
+        let (session, id) = StubProtocol.session { _, _ in (status, json(body)) }
+        return (YarvisClient(baseURL: base, token: "tok", session: session), id)
+    }
+
+    private func only(_ id: String) throws -> (URLRequest, JSONValue?) {
+        let (req, body) = try #require(StubProtocol.recorded(id).first)
+        return (req, bodyJSON(body))
+    }
+
+    @Test func saveSendsTheHashAndOnlyANamedWorktree() async throws {
+        let hash = String(repeating: "a", count: 64)
+        let (c, id) = client(200, #"{"hash":"h2","size":3}"#)
+        #expect(try await c.saveWorkspaceFile(id: "w", repo: "wr", path: "src/a.ts", content: "new",
+                                              expectedHash: hash) == "h2")
+        _ = try await c.saveWorkspaceFile(id: "w", repo: "wr", path: "src/a.ts", content: "new",
+                                          expectedHash: hash, worktree: "/x/y")
+        let reqs = StubProtocol.recorded(id)
+        #expect(reqs.map { $0.0.httpMethod } == ["PUT", "PUT"])
+        #expect(reqs[0].0.url?.path == "/api/sidecar/api/workspaces/w/repos/wr/file")
+        #expect(bodyJSON(reqs[0].1) == .object([
+            "path": .string("src/a.ts"), "content": .string("new"), "expectedHash": .string(hash),
+        ]))
+        #expect(bodyJSON(reqs[1].1)?["worktree"] == .string("/x/y"))
+    }
+
+    @Test func otherSaveFailuresStillThrow() async throws {
+        for status in [403, 500] {
+            let (c, _) = client(status, #"{"error":"no"}"#)
+            await #expect(throws: YarvisError.self) {
+                _ = try await c.saveWorkspaceFile(id: "w", repo: "wr", path: "a", content: "x", expectedHash: "h")
+            }
+        }
+    }
+
+    @Test func readingAFileNamesItInTheQuery() async throws {
+        let (c, id) = client(200, fileJSON)
+        let file = try await c.readWorkspaceFile(id: "w", repo: "wr", path: "src/a b.ts")
+        #expect(file.hash == "h1" && file.content == "one")
+        let (req, _) = try only(id)
+        #expect(req.httpMethod == "GET")
+        #expect(req.url?.path == "/api/sidecar/api/workspaces/w/repos/wr/file")
+        #expect(query(req) == ["path": "src/a b.ts"])
+    }
+
+    @Test func reviewCommentCalls() async throws {
+        let row = #"{"id":"c1","workspaceRepoId":"wr","path":"a.ts","startLine":2,"endLine":4,"commitSha":null,"body":"b","source":"user","resolvedAt":null,"createdAt":"x"}"#
+        let (c, id) = client(200, row)
+        let created = try await c.createReviewComment(workspaceId: "w", repo: "wr", path: "a.ts", startLine: 2,
+                                                      endLine: 4, body: "b")
+        #expect(created.id == "c1")
+        _ = try await c.setReviewCommentResolved(workspaceId: "w", commentId: "c1", resolved: true)
+        try await c.deleteReviewComment(workspaceId: "w", commentId: "c1")
+        let reqs = StubProtocol.recorded(id)
+        #expect(reqs.map { $0.0.httpMethod } == ["POST", "PATCH", "DELETE"])
+        #expect(reqs.map { $0.0.url?.path } == [
+            "/api/sidecar/api/workspaces/w/review-comments",
+            "/api/sidecar/api/workspaces/w/review-comments/c1",
+            "/api/sidecar/api/workspaces/w/review-comments/c1",
+        ])
+        #expect(bodyJSON(reqs[0].1) == .object([
+            "workspaceRepoId": .string("wr"), "path": .string("a.ts"), "startLine": .number(2),
+            "endLine": .number(4), "body": .string("b"),
+        ]))
+        #expect(bodyJSON(reqs[1].1) == .object(["resolved": .bool(true)]))
+    }
+
+    @Test func renameAndStopAgent() async throws {
+        let (c, id) = client(200, #"{"ok":true}"#)
+        try await c.renameWorkspace(id: "w", name: "New name")
+        try await c.stopWorkspaceAgent(id: "w")
+        let reqs = StubProtocol.recorded(id)
+        #expect(reqs[0].0.httpMethod == "PATCH")
+        #expect(reqs[0].0.url?.path == "/api/sidecar/api/workspaces/w")
+        #expect(bodyJSON(reqs[0].1) == .object(["name": .string("New name")]))
+        #expect(reqs[1].0.httpMethod == "POST")
+        #expect(reqs[1].0.url?.path == "/api/sidecar/api/workspaces/w/agent/stop")
+    }
+
+    @Test func startingWithTheDefaultHarnessLeavesTheKeyOut() async throws {
+        let (c, id) = client(204, "")
+        try await c.startAgentSession(workspace: WorkspaceSummary(id: "w", name: "W", status: "active",
+                                                                  rootPath: "/w"), harness: nil)
+        let (_, body) = try only(id)
+        #expect(body?["harness"] == nil)
+        #expect(body?["workspaceId"] == .string("w"))
+    }
+
+    @Test func unlinkCallsNameWhatTheyUnlink() async throws {
+        let (c, id) = client(200, #"{"ok":true}"#)
+        try await c.unlinkWorkspacePr(id: "w", repo: "wr", number: 12)
+        try await c.unlinkWorkspaceTask(id: "w", taskId: "t1")
+        let reqs = StubProtocol.recorded(id).map(\.0)
+        #expect(reqs.map(\.httpMethod) == ["DELETE", "DELETE"])
+        #expect(reqs.map { $0.url?.path } == ["/api/sidecar/api/workspaces/w/repos/wr/prs/12",
+                                               "/api/sidecar/api/workspaces/w/tasks/t1"])
+    }
+
+    @Test func otherReadsUseTheirRoutes() async throws {
+        let (c, id) = client(200, "[]")
+        _ = try await c.workspaceFiles(id: "w", repo: "wr", worktree: "/x")
+        _ = try await c.workspaceChanges(id: "w", repo: "wr")
+        _ = try await c.workspaceWorktrees(id: "w")
+        _ = try await c.reviewComments(workspaceId: "w")
+        _ = try await c.repoBranches(repoId: "r1")
+        _ = try await c.openTasks()
+        let reqs = StubProtocol.recorded(id).map(\.0)
+        #expect(reqs.map { $0.url?.path } == [
+            "/api/sidecar/api/workspaces/w/repos/wr/files", "/api/sidecar/api/workspaces/w/repos/wr/changes",
+            "/api/sidecar/api/workspaces/w/worktrees", "/api/sidecar/api/workspaces/w/review-comments",
+            "/api/sidecar/api/repos/r1/branches", "/api/sidecar/api/tasks",
+        ])
+        #expect(query(reqs[0]) == ["worktree": "/x"])
+        #expect(query(reqs[1]).isEmpty)
+        #expect(query(reqs[5]) == ["status": "open"])
+    }
+
+    @Test func viewingIsSentOnlyWhenTold() async throws {
+        let (c, id) = client(200, #"{"id":"w","name":"W","status":"active","rootPath":"/w"}"#)
+        _ = try await c.workspace(id: "w", viewing: true)
+        #expect(query(try only(id).0) == ["viewing": "1"])
+    }
+}
+
+private struct Boom: LocalizedError {
+    var errorDescription: String? { "offline" }
+}
+
+private func file(_ content: String?, hash: String? = "h1", unreadable: String? = nil) -> WorkspaceFile {
+    WorkspaceFile(path: "a.ts", content: content, unreadable: unreadable, hash: hash, size: content?.count ?? 0)
+}
+
+@Suite struct EditorBufferTests {
+    @Test func editsAreDirtyUntilSaved() {
+        var b = EditorBuffer()
+        b.read(.success(file("one")), keepText: false)
+        #expect(!b.dirty && b.pendingSave == nil)
+        b.text = "two"
+        #expect(b.dirty)
+        #expect(b.pendingSave?.expectedHash == "h1")
+        b.saved(.success("h2"), content: "two")
+        #expect(!b.dirty && b.hash == "h2")
+    }
+
+    @Test func aConflictKeepsTheEdits() {
+        var b = EditorBuffer()
+        b.read(.success(file("one")), keepText: false)
+        b.text = "mine"
+        b.saved(.success(nil), content: "mine")
+        #expect(b.conflict)
+        #expect(b.text == "mine" && b.dirty)
+        #expect(b.hash == "h1")
+    }
+
+    @Test func overwritingTakesTheFreshHashAndKeepsTheEdits() {
+        var b = EditorBuffer()
+        b.read(.success(file("one")), keepText: false)
+        b.text = "mine"
+        b.saved(.success(nil), content: "mine")
+        b.read(.success(file("theirs", hash: "h9")), keepText: true)
+        #expect(b.text == "mine" && !b.conflict)
+        #expect(b.pendingSave?.expectedHash == "h9")
+    }
+
+    @Test func aFailedReadLeavesTheEditsAlone() {
+        var b = EditorBuffer()
+        b.read(.success(file("one")), keepText: false)
+        b.text = "mine"
+        b.read(.failure(Boom()), keepText: false)
+        #expect(b.text == "mine" && b.hash == "h1")
+        #expect(b.error == "offline")
+        b.saved(.failure(Boom()), content: "mine")
+        #expect(b.dirty && !b.conflict)
+    }
+
+    @Test func anUnreadableFileIsNeverDirty() {
+        var b = EditorBuffer()
+        b.read(.success(file(nil, hash: nil, unreadable: "binary")), keepText: false)
+        b.text = "typed anyway"
+        #expect(!b.dirty && b.pendingSave == nil)
+    }
+
+    @Test func nothingIsDirtyBeforeTheFirstRead() {
+        var b = EditorBuffer()
+        b.text = "early"
+        #expect(!b.dirty)
+    }
+}
+
+@Suite struct SideSelectionTests {
+    @Test func roundTripsThroughOneString() {
+        let own = SideSelection(workspaceRepoId: "wr")
+        #expect(own.value == "wr|")
+        #expect(SideSelection(value: "wr|") == own)
+        let other = SideSelection(workspaceRepoId: "wr", worktree: "/w/x|y")
+        #expect(SideSelection(value: other.value) == other)
+        #expect(SideSelection(value: "") == nil)
+        #expect(SideSelection(value: "|/w") == nil)
+    }
+
+    @Test func aVanishedWorktreeFallsBackToTheWorkspacesOwn() {
+        let listing = [WorktreeListing(workspaceRepoId: "wr", worktrees: [
+            .init(path: "/w/main", branch: "feature", primary: true), .init(path: "/w/other", branch: "b", primary: false),
+        ], error: nil)]
+        let picked = SideSelection(workspaceRepoId: "wr", worktree: "/w/other")
+        #expect(picked.keepingListed(listing) == picked)
+        let gone = SideSelection(workspaceRepoId: "wr", worktree: "/w/gone")
+        #expect(gone.keepingListed(listing) == SideSelection(workspaceRepoId: "wr"))
+        #expect(SideSelection(workspaceRepoId: "wr").keepingListed([]) == SideSelection(workspaceRepoId: "wr"))
+    }
+}
+
+@Suite struct WorkspaceAgentStateTests {
+    @Test func theTabWaitsForALiveSession() {
+        var a = WorkspaceAgentState()
+        #expect(!a.showsTab)
+        #expect(!a.shouldAutoStart(workspaceStatus: "active"))
+        a.probed(active: false)
+        #expect(!a.showsTab)
+        #expect(a.shouldAutoStart(workspaceStatus: "active"))
+        a.started()
+        #expect(!a.shouldAutoStart(workspaceStatus: "active"))
+        a.probed(active: true)
+        #expect(a.showsTab)
+    }
+
+    @Test func closingTheTabHidesItAndOffersStartAgain() {
+        var a = WorkspaceAgentState()
+        a.probed(active: true)
+        #expect(!a.showsStartButton(workspaceStatus: "active"))
+        a.dismiss()
+        #expect(!a.showsTab)
+        #expect(a.showsStartButton(workspaceStatus: "active"))
+        #expect(!a.shouldAutoStart(workspaceStatus: "active"))
+        a.started()
+        #expect(a.showsTab)
+        #expect(!a.showsStartButton(workspaceStatus: "creating"))
+    }
+}
+
+@Suite struct ISODateTests {
+    @Test func readsDatesWithAndWithoutFractionalSeconds() {
+        let whole = parseISODate("2026-11-23T12:00:00Z")
+        #expect(whole != nil)
+        #expect(parseISODate("2026-11-23T12:00:00.250Z").map { $0.timeIntervalSince(whole!) } == 0.25)
+        #expect(parseISODate("2026-11-23T07:00:00-05:00") == whole)
+        #expect(parseISODate("yesterday") == nil)
     }
 }

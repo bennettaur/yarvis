@@ -86,13 +86,19 @@ func checksColor(_ rollup: String?) -> Color {
 
 /// A small copy button that says "Copied" for a moment.
 struct CopyButton: View {
-    let text: String
-    var help = "Copy"
+    /// Read only when clicked, so a long list's joined paths aren't built on every render.
+    let text: () -> String
+    var help: String
     @State private var copied = false
+
+    init(text: @autoclosure @escaping () -> String, help: String = "Copy") {
+        self.text = text
+        self.help = help
+    }
 
     var body: some View {
         Button {
-            copyToPasteboard(clipboardSafeText(text))
+            copyToPasteboard(clipboardSafeText(text()))
             copied = true
             Task {
                 try? await Task.sleep(for: .seconds(1.5))

@@ -65,7 +65,7 @@ private struct WorkspaceHeader: View {
                     Button(model.startButtonLabel, action: model.startAgent)
                         .disabled(model.startingAgent)
                 }
-                if detail.status != "archived" {
+                if !detail.isArchived {
                     let label = archiveButtonLabel(detail)
                     Button(label) { model.showArchive = true }
                         .disabled(label == "Archiving…")
@@ -81,7 +81,7 @@ private struct WorkspaceHeader: View {
                     }
                 }
             }
-            if detail.status == "active", detail.repos.contains(where: { $0.status == "ready" }) {
+            if detail.isActive, !detail.readyRepos.isEmpty {
                 PrBlock(model: model, detail: detail)
             }
             LinkedWorkRows(model: model, detail: detail)
@@ -184,7 +184,7 @@ private struct PrBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(detail.repos.filter { $0.status == "ready" }) { repo in
+            ForEach(detail.readyRepos) { repo in
                 RepoPrStatus(model: model, repo: repo, showName: detail.repos.count > 1)
             }
             HStack(spacing: 8) {
@@ -221,7 +221,7 @@ private struct RepoPrStatus: View {
                         Chip(text: chip.text, color: chip.isPull ? .orange : .secondary)
                     }
                 }
-                LinkPrControl(model: model, repoId: repo.id)
+                LinkPrControl(model: model, workspaceRepoId: repo.id)
                 if let error = model.prErrors[repo.id] {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
@@ -264,7 +264,7 @@ private struct PrRow: View {
 
 private struct LinkPrControl: View {
     let model: WorkspaceDetailModel
-    let repoId: String
+    let workspaceRepoId: String
     @State private var open = false
     @State private var input = ""
     @State private var error: String?
@@ -298,7 +298,7 @@ private struct LinkPrControl: View {
         busy = true
         Task {
             defer { busy = false }
-            if let failure = await model.linkPr(repo: repoId, input: input) {
+            if let failure = await model.linkPr(repo: workspaceRepoId, input: input) {
                 error = failure
             } else {
                 close()
@@ -312,7 +312,7 @@ private struct LinkedWorkRows: View {
     let detail: WorkspaceDetail
 
     var body: some View {
-        let archived = detail.status == "archived"
+        let archived = detail.isArchived
         if !detail.tasks.isEmpty {
             HStack(spacing: 8) {
                 ForEach(detail.tasks) { task in
@@ -404,14 +404,14 @@ private struct WorkspaceBody: View {
     var body: some View {
         if let log = model.provisionLog {
             LogPane(text: log)
-        } else if detail.status == "archived" {
+        } else if detail.isArchived {
             ArchivedView(detail: detail)
         } else {
             HSplitView {
                 WorkspaceMainTabs(model: model)
                     .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 Group {
-                    if detail.status == "archiving" && detail.error == nil {
+                    if detail.isTearingDown {
                         Text("Removing worktrees…")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -459,7 +459,7 @@ private struct WorkspaceMainTabs: View {
                 HStack(spacing: 2) {
                     ForEach(model.tabs) { tab in
                         HStack(spacing: 4) {
-                            Button(model.tabTitle(tab)) { model.selectedTab = tab }
+                            Button(model.tabTitle(tab)) { model.select(tab) }
                                 .buttonStyle(.borderless)
                                 .fontWeight(model.selectedTab == tab ? .semibold : .regular)
                             if tab != .terminals {

@@ -1,9 +1,9 @@
 import Foundation
 
-// The Workspaces page's rules, ported from the web client
+// The Workspaces page's rules. They match the web client's
 // (`WorkspacesPanel.tsx`, `src/lib/workspaces.ts`, `prGlance.ts`,
-// `workspaceReview.ts` and `components/workspaces/`) so both clients read a
-// workspace the same way.
+// `workspaceReview.ts`, `components/workspaces/`), since both clients show
+// the same workspaces and a user can switch between them.
 
 // MARK: - The list
 
@@ -24,7 +24,7 @@ public func groupWorkspaces(_ list: [WorkspaceSummary]) -> [WorkspaceGroup] {
         if names.count <= 1 {
             single[names.first ?? "Scratch", default: []].append(ws)
         } else {
-            // Sorted by code point, as the web's default sort does.
+            // By code point, so the label doesn't change with the locale.
             let label = names.sorted { $0.unicodeScalars.lexicographicallyPrecedes($1.unicodeScalars) }
                 .joined(separator: " + ")
             multi[label, default: []].append(ws)
@@ -323,7 +323,8 @@ public func formatReviewComments(_ comments: [ReviewComment], repoName: (String)
     var lines: [String] = []
     var n = 0
     func entry(_ c: ReviewComment, _ body: [String]) {
-        let at = c.commitSha.map { " (at \($0.prefix(7)))" } ?? ""
+        // The sha comes from the sidecar's git, but it lands in a prompt, so it is cleaned like the path.
+        let at = c.commitSha.map { " (at \(clipboardSafeText(String($0.prefix(7)))))" } ?? ""
         n += 1
         lines.append("\(n). \(formatCommentLocation(c, repoName: repoName))\(at)")
         lines.append(contentsOf: body.map { "   \($0)" })
@@ -463,4 +464,162 @@ public func buildFileTree(_ paths: [String]) -> [FileTreeNode] {
         return folders + files
     }
     return nodes(root, "")
+}
+
+// MARK: - Status helpers
+
+extension WorkspaceSummary {
+    public var isActive: Bool { status == "active" }
+    public var isArchived: Bool { status == "archived" }
+    /// An archive that is still removing worktrees, with nothing stopping it yet.
+    public var isTearingDown: Bool { status == "archiving" && error == nil }
+}
+
+extension WorkspaceDetail {
+    public var isActive: Bool { status == "active" }
+    public var isArchived: Bool { status == "archived" }
+    /// An archive that is still removing worktrees, with nothing stopping it yet.
+    public var isTearingDown: Bool { status == "archiving" && error == nil }
+    public var readyRepos: [WorkspaceRepoDetail] { repos.filter(\.isReady) }
+}
+
+extension WorkspaceRepoDetail {
+    public var isReady: Bool { status == "ready" }
+}
+
+// MARK: - The side panel's worktree
+
+/// Which repo and worktree the side panel reads. A nil `worktree` is the
+/// workspace's own; anything else is another worktree's absolute path.
+public struct SideSelection: Sendable, Equatable, Hashable {
+    public var workspaceRepoId: String
+    public var worktree: String?
+
+    public init(workspaceRepoId: String, worktree: String? = nil) {
+        self.workspaceRepoId = workspaceRepoId
+        self.worktree = worktree
+    }
+
+    /// One string for a picker tag and a cache key: `<repo id>|<path>`, with
+    /// an empty path for the workspace's own worktree. Repo ids are UUIDs, so
+    /// the first `|` always ends the id.
+    public var value: String { "\(workspaceRepoId)|\(worktree ?? "")" }
+
+    public init?(value: String) {
+        let parts = value.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let id = parts.first, !id.isEmpty else { return nil }
+        workspaceRepoId = String(id)
+        worktree = parts.count > 1 && !parts[1].isEmpty ? String(parts[1]) : nil
+    }
+
+    /// The same repo's own worktree when the picked one is no longer listed.
+    public func keepingListed(_ listed: [WorktreeListing]) -> SideSelection {
+        guard let worktree else { return self }
+        let paths = listed.first { $0.workspaceRepoId == workspaceRepoId }?.worktrees.map(\.path) ?? []
+        return paths.contains(worktree) ? self : SideSelection(workspaceRepoId: workspaceRepoId)
+    }
+}
+
+// MARK: - The file editor
+
+/// An editor tab's text against what is on disk. A save carries the hash
+/// the file was read with, so it can't overwrite a change made since, such
+/// as the agent's.
+public struct EditorBuffer: Sendable, Equatable {
+    public var text = ""
+    public private(set) var savedText = ""
+    public private(set) var hash: String?
+    /// `binary`, `too-large` or `encoding` for a file that can't be edited.
+    public private(set) var unreadable: String?
+    public private(set) var size = 0
+    public private(set) var loaded = false
+    /// The file changed on disk since it was read; the edits are kept.
+    public private(set) var conflict = false
+    public private(set) var error: String?
+
+    public init() {}
+
+    public var dirty: Bool { loaded && unreadable == nil && text != savedText }
+
+    /// What a save sends, or nil when there is nothing to save.
+    public var pendingSave: (content: String, expectedHash: String)? {
+        guard dirty, let hash else { return nil }
+        return (text, hash)
+    }
+
+    /// A read finished. `keepText` keeps the edits and takes only the fresh
+    /// hash, for saving over a conflict. A failed read changes nothing but
+    /// the error, so a bad reload can't wipe the edits.
+    public mutating func read(_ result: Result<WorkspaceFile, Error>, keepText: Bool) {
+        switch result {
+        case .success(let file):
+            hash = file.hash
+            unreadable = file.unreadable
+            size = file.size
+            savedText = file.content ?? ""
+            if !keepText { text = savedText }
+            loaded = true
+            conflict = false
+            error = nil
+        case .failure(let failure):
+            error = failure.localizedDescription
+        }
+    }
+
+    /// A save of `content` finished: the new hash, nil for a conflict, or an error.
+    public mutating func saved(_ result: Result<String?, Error>, content: String) {
+        switch result {
+        case .success(let newHash?):
+            hash = newHash
+            savedText = content
+            conflict = false
+            error = nil
+        case .success(nil):
+            conflict = true
+        case .failure(let failure):
+            error = failure.localizedDescription
+        }
+    }
+}
+
+// MARK: - The agent tab
+
+/// What one open workspace knows about its agent session. Made fresh each
+/// time the workspace is opened, so a closed tab or an auto-start already
+/// done applies only to that visit.
+public struct WorkspaceAgentState: Sendable, Equatable {
+    public private(set) var active = false
+    /// False until the first liveness answer.
+    public private(set) var probed = false
+    /// The user closed the agent's tab during this visit.
+    public private(set) var dismissed = false
+    public private(set) var startedHere = false
+
+    public init() {}
+
+    public mutating func probed(active: Bool) {
+        self.active = active
+        probed = true
+    }
+
+    public mutating func dismiss() { dismissed = true }
+
+    public mutating func started() {
+        dismissed = false
+        startedHere = true
+    }
+
+    /// Whether the agent's tab shows. Only a running session is pinned: the
+    /// surface attaches as soon as the tab shows, and attaching to an id with
+    /// no session would start a plain shell under the agent's id.
+    public var showsTab: Bool { probed && active && !dismissed }
+
+    public func shouldAutoStart(workspaceStatus: String) -> Bool {
+        shouldAutoStartAgent(dismissed: dismissed, workspaceStatus: workspaceStatus, probed: probed,
+                             agentActive: active, alreadyStarted: startedHere)
+    }
+
+    public func showsStartButton(workspaceStatus: String) -> Bool {
+        workspaceStatus == "active" && (!active || dismissed)
+    }
 }

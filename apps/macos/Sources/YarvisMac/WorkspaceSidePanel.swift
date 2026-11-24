@@ -5,7 +5,7 @@ struct WorkspaceSidePanel: View {
     @Bindable var model: WorkspaceDetailModel
 
     var body: some View {
-        let ready = model.detail?.repos.filter { $0.status == "ready" } ?? []
+        let ready = model.detail?.readyRepos ?? []
         VStack(alignment: .leading, spacing: 6) {
             WorktreePicker(model: model, ready: ready)
             Picker("View", selection: $model.sideTab) {
@@ -136,7 +136,8 @@ private struct ChangesView: View {
     let repo: WorkspaceRepoDetail
 
     var body: some View {
-        let changes = model.sideKey.flatMap { model.changes[$0] }
+        let key = model.side?.value
+        let changes = key.flatMap { model.changes[$0] }
         let byPath = Dictionary((changes ?? []).map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
         VStack(alignment: .leading, spacing: 4) {
             if let changes {
@@ -148,7 +149,7 @@ private struct ChangesView: View {
                     Text("No changes on this branch.").font(.caption).foregroundStyle(.secondary)
                 }
                 List {
-                    FileTree(nodes: buildFileTree(changes.map(\.path)), expandedByDefault: true) { node in
+                    FileTree(nodes: key.flatMap { model.changeTrees[$0] } ?? [], expandedByDefault: true) { node in
                         if let change = byPath[node.path] {
                             ChangeRow(model: model, repo: repo, change: change, name: node.name)
                         }
@@ -200,14 +201,15 @@ private struct FilesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let files = model.sideKey.flatMap({ model.files[$0] }) {
+            let key = model.side?.value
+            if let files = key.flatMap({ model.files[$0] }) {
                 HStack {
                     Text("\(files.count) file\(files.count == 1 ? "" : "s")").font(.caption)
                     CopyButton(text: files.joined(separator: "\n"), help: "Copy every path")
                 }
                 if files.isEmpty { Text("No files.").font(.caption).foregroundStyle(.secondary) }
                 List {
-                    FileTree(nodes: buildFileTree(files), expandedByDefault: false) { node in
+                    FileTree(nodes: key.flatMap { model.fileTrees[$0] } ?? [], expandedByDefault: false) { node in
                         FileRow(model: model, repo: repo, node: node)
                     }
                 }

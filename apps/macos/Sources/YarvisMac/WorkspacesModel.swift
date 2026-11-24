@@ -14,6 +14,7 @@ final class WorkspacesModel {
         didSet {
             UserDefaults.standard.set(selectedId, forKey: "workspaces.selectedId")
             if selectedId != oldValue {
+                newWorkspace?.stop()
                 newWorkspace = nil
                 mountDetail()
             }
@@ -22,7 +23,10 @@ final class WorkspacesModel {
     /// The list's last load failure. A failed background poll doesn't set
     /// it; the last list stays on screen.
     var error: String?
-    private(set) var refreshing = false
+    var refreshing: Bool { listLoadsInFlight > 0 }
+    private var listLoadsInFlight = 0
+    /// Bumped per list read, so an older answer that lands last is dropped.
+    private var listGeneration = 0
     var showArchived = UserDefaults.standard.bool(forKey: "workspaces.showArchived") {
         didSet { UserDefaults.standard.set(showArchived, forKey: "workspaces.showArchived") }
     }
@@ -34,6 +38,7 @@ final class WorkspacesModel {
     /// so switching workspaces keeps each one's scrollback.
     private var surfaces: [String: TerminalSurfaceModel] = [:]
     private var pollTask: Task<Void, Never>?
+    private var activationTask: Task<Void, Never>?
     /// Selected ids already checked against the server, so a missing one is
     /// looked up once rather than on every poll.
     private var verified: Set<String> = []
@@ -45,11 +50,14 @@ final class WorkspacesModel {
         mountDetail()
         resync()
         startPolling()
+        watchActivation()
     }
 
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        activationTask?.cancel()
+        activationTask = nil
         detail?.stop()
         detail = nil
         newWorkspace?.stop()
@@ -78,11 +86,28 @@ final class WorkspacesModel {
 
     // MARK: Visibility
 
-    /// Polls are skipped while the page isn't on screen.
-    var pageVisible: Bool { app.section == .workspaces && !NSApp.isHidden }
-    /// The user is looking at the page right now, which asks the sidecar to
-    /// keep PRs fresher.
-    var userIsLooking: Bool { pageVisible && NSApp.isActive }
+    /// Polls run only while the user can see the page: the app is in front,
+    /// its window isn't covered, and the Workspaces page is the one showing.
+    var pageVisible: Bool {
+        guard app.section == .workspaces, NSApp.isActive,
+              let window = NSApp.mainWindow ?? NSApp.keyWindow else { return false }
+        return window.occlusionState.contains(.visible)
+    }
+
+    /// Sent as `badges=1` and `viewing=1`, which ask the sidecar to keep PRs
+    /// fresher while the user is looking.
+    var userIsLooking: Bool { pageVisible }
+
+    /// Polls skip ticks while the app is in the background, so coming back
+    /// reads at once rather than up to a poll interval later.
+    private func watchActivation() {
+        activationTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
+                guard let self else { return }
+                if self.app.section == .workspaces { self.appeared() }
+            }
+        }
+    }
 
     /// The page came on screen: read the list now rather than at the next tick.
     func appeared() {
@@ -96,24 +121,45 @@ final class WorkspacesModel {
         Set(app.attention?.items.compactMap(\.workspaceId) ?? [])
     }
 
-    var archivedCount: Int { workspaces.filter { $0.status == "archived" }.count }
+    var archivedCount: Int { workspaces.filter(\.isArchived).count }
 
     var shownGroups: [WorkspaceGroup] {
-        groupWorkspaces(showArchived ? workspaces : workspaces.filter { $0.status != "archived" })
+        groupWorkspaces(showArchived ? workspaces : workspaces.filter { !$0.isArchived })
     }
 
     /// Reads the list. A background poll that fails keeps the last list and
     /// shows nothing; a load the user is waiting on shows the error.
     func refresh(background: Bool) async {
-        refreshing = true
-        defer { refreshing = false }
+        listGeneration += 1
+        let generation = listGeneration
+        listLoadsInFlight += 1
+        defer { listLoadsInFlight -= 1 }
         do {
-            workspaces = try await client.workspaceList(badges: userIsLooking)
+            let fresh = try await client.workspaceList(badges: userIsLooking)
+            guard generation == listGeneration else { return }
+            apply(fresh)
             error = nil
             loaded = true
             await verifySelection()
         } catch {
+            guard generation == listGeneration else { return }
             if !background || !loaded { self.error = error.localizedDescription }
+        }
+    }
+
+    private func apply(_ fresh: [WorkspaceSummary]) {
+        if fresh != workspaces { workspaces = fresh }
+        dropUnusedSurfaces()
+    }
+
+    /// A workspace that is archived, or gone from the list, has no terminals
+    /// left to show, so its surface and sockets go. The selected one is kept
+    /// while it may just not be listed yet.
+    private func dropUnusedSurfaces() {
+        let live = Set(workspaces.filter { !$0.isArchived }.map(\.id))
+        let listed = Set(workspaces.map(\.id))
+        for id in surfaces.keys where !live.contains(id) && (listed.contains(id) || id != selectedId) {
+            surfaces.removeValue(forKey: id)?.stop()
         }
     }
 
@@ -121,7 +167,7 @@ final class WorkspacesModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 // Faster while a teardown runs, so its rows settle promptly.
-                let tearingDown = self?.workspaces.contains { $0.status == "archiving" && $0.error == nil } ?? false
+                let tearingDown = self?.workspaces.contains(where: \.isTearingDown) ?? false
                 try? await Task.sleep(for: .seconds(tearingDown ? 2 : 20))
                 guard let self, !Task.isCancelled else { return }
                 if self.pageVisible { await self.refresh(background: true) }
@@ -136,7 +182,10 @@ final class WorkspacesModel {
         verified.insert(id)
         do {
             _ = try await client.workspace(id: id, viewing: false)
-            workspaces = try await client.workspaceList(badges: userIsLooking)
+            listGeneration += 1
+            let generation = listGeneration
+            let fresh = try await client.workspaceList(badges: userIsLooking)
+            if generation == listGeneration { apply(fresh) }
         } catch YarvisError.http(status: 404, _, _) {
             if selectedId == id { selectedId = nil }
         } catch {}

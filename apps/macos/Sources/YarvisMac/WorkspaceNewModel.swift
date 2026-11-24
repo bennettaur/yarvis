@@ -34,6 +34,8 @@ final class NewWorkspaceModel {
     private(set) var provisioningName: String?
     private(set) var log = ""
     private var stream: Task<Void, Never>?
+    /// The form closed; a create still in flight doesn't start following it.
+    private var stopped = false
 
     init(app: AppModel, client: YarvisClient, name: String, taskId: String?, startWork: Bool?,
          onCreated: @escaping @MainActor (String) async -> Void) {
@@ -47,6 +49,7 @@ final class NewWorkspaceModel {
     }
 
     func stop() {
+        stopped = true
         stream?.cancel()
     }
 
@@ -109,6 +112,7 @@ final class NewWorkspaceModel {
     /// Follows the provision. A failure of the whole run stays on the log;
     /// anything else opens the workspace, which shows a failed repo's log.
     private func provision(_ ws: WorkspaceSummary) {
+        guard !stopped else { return }
         provisioningName = ws.name
         log = ""
         stream = Task {
@@ -118,11 +122,12 @@ final class NewWorkspaceModel {
                     if let text = provisionLogText(event) { log += text }
                     if case .error(let message) = event { failure = message }
                 }
-            } catch is CancellationError {
-                return
             } catch {
                 failure = error.localizedDescription
             }
+            // A cancel (the form closed) ends the loop without throwing, and
+            // must not open the workspace over whatever the user went to.
+            guard !Task.isCancelled else { return }
             if let failure {
                 self.error = failure
             } else {
