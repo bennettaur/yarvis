@@ -131,9 +131,14 @@ const viewedSchema = z.object({
 });
 
 // The merge / auto-merge body carries the chosen strategy. GitHub defaults to a
-// merge commit when omitted, so `method` is optional.
+// merge commit when omitted, so `method` is optional. `headSha` is the commit
+// the user reviewed: GitHub refuses the merge if the branch has moved since.
 const mergeSchema = z.object({
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
+  headSha: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/, "expected a commit sha")
+    .optional(),
 });
 
 /**
@@ -381,6 +386,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.repo,
         params.number,
         parsed.data.method ?? "MERGE",
+        parsed.data.headSha,
       );
       await retireGuide(db(), { provider: "github", ...params });
       void emitEvent(db(), {
@@ -411,6 +417,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.repo,
         params.number,
         parsed.data.method ?? "MERGE",
+        parsed.data.headSha,
       );
       return c.json({ ok: true });
     } catch (e) {

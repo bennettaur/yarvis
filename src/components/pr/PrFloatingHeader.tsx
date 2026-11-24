@@ -361,8 +361,10 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
     setMergePending(true);
     setError(null);
     try {
-      if (op === "merge") await mergePr(prRef, method);
-      else await enableAutoMerge(prRef, method);
+      // Pinned to the head on screen, so a push since can't merge unseen.
+      const headSha = seen?.headSha ?? undefined;
+      if (op === "merge") await mergePr(prRef, method, headSha);
+      else await enableAutoMerge(prRef, method, headSha);
       invalidatePr(prRef);
       setMergeMenu(null);
     } catch (e) {

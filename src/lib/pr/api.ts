@@ -179,14 +179,22 @@ function requireGithub(ref: PrRef): void {
   }
 }
 
-export function mergePr(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+export function mergePr(
+  ref: PrRef,
+  method: MergeMethod,
+  headSha?: string,
+): Promise<{ ok: boolean }> {
   requireGithub(ref);
-  return ghMergePr(ref, method);
+  return ghMergePr(ref, method, headSha);
 }
 
-export function enableAutoMerge(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+export function enableAutoMerge(
+  ref: PrRef,
+  method: MergeMethod,
+  headSha?: string,
+): Promise<{ ok: boolean }> {
   requireGithub(ref);
-  return ghEnableAutoMerge(ref, method);
+  return ghEnableAutoMerge(ref, method, headSha);
 }
 
 export function disableAutoMerge(ref: PrRef): Promise<{ ok: boolean }> {

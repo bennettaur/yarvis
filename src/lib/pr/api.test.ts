@@ -57,3 +57,21 @@ describe("merge dispatch rejects non-github refs", () => {
     expect(() => disableAutoMerge(azureRef)).toThrow(/only supported for GitHub/);
   });
 });
+
+describe("merge on GitHub", () => {
+  const githubRef: PrRef = { provider: "github", owner: "octo", repo: "web", number: 9 };
+
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  it("sends the reviewed head with a merge and an auto-merge", async () => {
+    const headSha = "d".repeat(40);
+    await mergePr(githubRef, "SQUASH", headSha);
+    await enableAutoMerge(githubRef, "MERGE", headSha);
+    expect(sent.map((s) => s.body)).toEqual([
+      { method: "SQUASH", headSha },
+      { method: "MERGE", headSha },
+    ]);
+  });
+});

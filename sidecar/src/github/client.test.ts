@@ -770,6 +770,36 @@ describe("github client", () => {
     expect(bodies[1]!.variables).toEqual({ id: "PR_node1", method: "SQUASH" });
   });
 
+  it("pins a merge to the reviewed head when given one", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const capturing = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node3" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", capturing);
+    const head = "a".repeat(40);
+    await gh.mergePullRequest("o", "r", 5, "REBASE", head);
+    expect(bodies[1]!.query).toContain("expectedHeadOid:$head");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node3", method: "REBASE", head });
+  });
+
+  it("sends no head variable for an unpinned merge", async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const capturing = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node4" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const gh = new GitHubClient("t", capturing);
+    await gh.mergePullRequest("o", "r", 6, "MERGE");
+    expect(Object.keys(bodies[1]!.variables)).toEqual(["id", "method"]);
+  });
+
   it("enables auto-merge with the chosen method", async () => {
     const bodies: Array<Record<string, any>> = [];
     const capturing = (async (_url: string, init?: RequestInit) => {
