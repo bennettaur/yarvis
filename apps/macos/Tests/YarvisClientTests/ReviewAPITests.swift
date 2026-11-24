@@ -180,10 +180,10 @@ private let workspaceJSON = #"""
         var (req, body) = try only(id)
         #expect(path(req) == "/api/sidecar/api/github/pr/o/api/12/merge")
         #expect(body == .object(["method": .string("SQUASH"), "headSha": .string(sha)]))
-        try await c.enableAutoMerge(gh, method: .merge, headSha: "short")
+        try await c.enableAutoMerge(gh, method: .merge, headSha: sha)
         (req, body) = try only(id)
         #expect(path(req) == "/api/sidecar/api/github/pr/o/api/12/auto-merge")
-        #expect(body == .object(["method": .string("MERGE")]))
+        #expect(body == .object(["method": .string("MERGE"), "headSha": .string(sha)]))
     }
 
     @Test func anAzureReplyNamesANumericParent() async throws {

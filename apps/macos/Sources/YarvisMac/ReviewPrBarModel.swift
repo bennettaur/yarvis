@@ -122,13 +122,24 @@ final class ReviewPrBarModel {
     }
 
     func merge(_ method: MergeMethod) {
-        run({ client, ref, seen in try await client.mergePr(ref, method: method, headSha: seen.headSha) },
-            afterReview: false)
+        guard let head = reviewedHead() else { return }
+        run({ client, ref, _ in try await client.mergePr(ref, method: method, headSha: head) }, afterReview: false)
     }
 
     func enableAutoMerge(_ method: MergeMethod) {
-        run({ client, ref, seen in try await client.enableAutoMerge(ref, method: method, headSha: seen.headSha) },
+        guard let head = reviewedHead() else { return }
+        run({ client, ref, _ in try await client.enableAutoMerge(ref, method: method, headSha: head) },
             afterReview: false)
+    }
+
+    /// The checkout's commit, which a merge is pinned to so a push since can't
+    /// merge unseen. Nil, with an error shown, while there is none to pin to.
+    private func reviewedHead() -> String? {
+        guard let head = pr?.pr.seen.headSha, isFullSha(head) else {
+            actionError = "There's no reviewed commit to merge yet."
+            return nil
+        }
+        return head
     }
 
     func disableAutoMerge() {
