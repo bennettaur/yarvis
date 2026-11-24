@@ -287,6 +287,11 @@ approve each signature from any device, your phone included.
 
 Every signature then waits for an approval, which any device with the
 `approve` scope can give. The Android app shows these under **Attention**.
+An unanswered approval times out after 60 seconds and the commit fails.
+
+The server's agent only signs commits. It refuses SSH logins, so `git push`
+over SSH can't use it. Push over HTTPS instead: `gh auth setup-git` makes git
+use your `gh` sign-in for that.
 
 ## Reach it from other devices
 
@@ -485,6 +490,73 @@ account is set up. For the desktop app's server, set up the account as in
 Each sign-in adds a device to **Settings → Devices** on the server, named
 after the phone. Revoke it there if you lose the phone. **Sign out** in the
 app revokes it too.
+
+## Example: a personal Mac you check on from work
+
+The setup: Yarvis runs on your personal Mac, which stays logged in. When you
+are at it you use the desktop app or a browser. During the day you are on a
+work laptop and check on it from a browser there, where you can't unlock
+1Password on the personal Mac.
+
+That rules out 1Password for both secrets and signing, since nobody is there
+to unlock it. The Keychain would do for secrets on a Mac that stays logged
+in, but it leaves signing to macOS's own agent, which signs silently for any
+process running as you, agent sessions included. The server's own agent asks
+you first, from whichever browser you have open, so this example uses it. It
+needs the vault backend, so your secrets live in the vault rather than the
+Keychain.
+
+1. **Build the server** as in step 1 of
+   [Run the server on its own](#run-the-server-on-its-own).
+2. **Write `~/.yarvis/server.toml`** with the vault and the agent on:
+
+   ```toml
+   [server]
+   bind = "127.0.0.1:7878"
+   data_dir = "/Users/me/.yarvis/server"
+   web_dir = "/Users/me/yarvis/dist"
+   path = "/Users/me/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+   [auth]
+   origins = ["http://localhost:7878"]
+
+   [secrets]
+   backend = "vault"
+
+   [ssh_agent]
+   enabled = true
+   ```
+
+   Leave out `upstream_socket`: the server refuses it while its own agent is
+   on.
+3. **Create the vault** in your own terminal with
+   `server/target/release/yarvis-server vault init`. Pick a vault passphrase
+   that differs from your sign-in passphrase, and write down the recovery key.
+   Add the public key it prints to GitHub as a **signing key**.
+4. **Point git at that key.** In `~/.gitconfig`, remove any
+   `gpg.ssh.program` line that names 1Password's `op-ssh-sign`, then add the
+   lines from step 3 of
+   [Home server](#home-server-sign-with-the-servers-own-agent). Run
+   `gh auth setup-git` so pushes go over HTTPS.
+5. **Set up the account.** Start the server in a terminal, open
+   `http://localhost:7878`, and follow steps 4 and 5 of
+   [Run the server on its own](#run-the-server-on-its-own). Unlock the vault,
+   then enter your provider keys again in **Settings → Credentials**. A new
+   vault starts empty, so nothing comes over from the Keychain on its own.
+6. **Keep it running** with the LaunchAgent from step 6. After each restart
+   the server waits, locked, until you unlock the vault from a browser.
+7. **Publish it on Tailscale** as in
+   [Reach it over Tailscale](#reach-it-over-tailscale), and add the
+   `ts.net` address to `auth.origins`. Caddy only reaches your home network,
+   so it doesn't help from work.
+8. **Point the desktop app at it** as in step 7, so the app doesn't start a
+   second server on the same database.
+
+From the work laptop, open the `ts.net` address in a browser and sign in with
+your passphrase and an authenticator code. Approve commits there, or in the
+Android app on your phone. The work laptop has to be signed in to your
+personal tailnet for this, so check your company allows that. If it doesn't,
+use the Android app over Tailscale instead.
 
 ## Troubleshooting
 
