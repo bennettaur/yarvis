@@ -8,15 +8,23 @@
 //! socket) when it locks. It signs
 //! only SSHSIG blobs in the `git` namespace, so the key can't log in to a
 //! host, and every signature waits for an answer on the approvals route.
+//!
+//! An approver can also allow signing for a while ([`MAX_GRANT`] at most), as
+//! 1Password's agent does. Until then every signature is made without asking,
+//! for any process that can reach the socket, and each one is recorded on the
+//! event log. The grant lives only in memory: locking the vault, stopping the
+//! agent or restarting the server ends it, and so does `DELETE
+//! /api/vault/ssh-agent/grant`.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{delete, get};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::json;
@@ -32,17 +40,24 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::AppState;
-use crate::approvals::Approvals;
-use crate::auth::{Authed, Read};
+use crate::approvals::{Approvals, Decision};
+use crate::auth::{Approve, Authed, Read};
 use crate::config::Config;
 use crate::error::{ApiError, ApiResult};
+use crate::events::EventLog;
 use crate::socket_dir;
+use crate::store::now_ms;
 
 /// The approval kind a signature request is filed under.
 pub const APPROVAL_KIND: &str = "git.sign";
 
 /// How long a signature waits for an answer. `git commit` blocks meanwhile.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The longest an approver can allow signing without asking. Long enough for
+/// a rebase or a working session, short enough that a forgotten grant ends
+/// the same hour.
+pub const MAX_GRANT: Duration = Duration::from_secs(60 * 60);
 
 const SOCKET_NAME: &str = "ssh-agent.sock";
 const KEY_COMMENT: &str = "yarvis-server";
@@ -83,6 +98,22 @@ impl SshAgent {
     pub fn public_key(&self) -> Option<String> {
         lock(&self.0).as_ref().map(|r| r.public_key.clone())
     }
+
+    /// When the current grant ends, in milliseconds since the epoch, while
+    /// one is active.
+    pub fn grant_expires_at(&self) -> Option<i64> {
+        lock(&self.0)
+            .as_ref()
+            .and_then(|r| r.shared.active_grant())
+            .map(|g| g.expires_at)
+    }
+
+    /// Ends the grant early. Returns whether one was active.
+    pub fn end_grant(&self) -> bool {
+        lock(&self.0)
+            .as_ref()
+            .is_some_and(|r| r.shared.end_grant().is_some())
+    }
 }
 
 /// Nothing panics while holding these locks, so a poisoned one is still usable.
@@ -106,7 +137,12 @@ pub fn start(state: &AppState) -> Result<(), String> {
         .vault
         .signing_seed()
         .map_err(|e| format!("couldn't read the signing key: {e}"))?;
-    let agent = VaultAgent::new(&seed, state.approvals.clone(), APPROVAL_TIMEOUT);
+    let agent = VaultAgent::new(
+        &seed,
+        state.approvals.clone(),
+        state.events.clone(),
+        APPROVAL_TIMEOUT,
+    );
     socket_dir::prepare(&state.config.server, &socket)?;
     *running = Some(spawn(agent, socket).map_err(|e| format!("couldn't open the socket: {e}"))?);
     tracing::info!("ssh-agent listening");
@@ -138,32 +174,60 @@ pub struct VaultAgent {
     shared: Arc<Shared>,
     public: Ed25519PublicKey,
     approvals: Approvals,
+    events: EventLog,
     timeout: Duration,
 }
 
 struct Shared {
     key: Mutex<Option<Ed25519Keypair>>,
+    grant: Mutex<Option<Grant>>,
     stopped: watch::Sender<bool>,
 }
 
+/// Signing allowed without asking until `until`.
+#[derive(Clone)]
+struct Grant {
+    until: Instant,
+    /// `until` as milliseconds since the epoch, for clients to show.
+    expires_at: i64,
+    /// The device that allowed it.
+    by: String,
+}
+
 impl Shared {
-    /// Drops the key, which zeroizes it, and wakes every waiting signature.
+    /// Drops the key, which zeroizes it, ends any grant, and wakes every
+    /// waiting signature.
     fn stop(&self) {
         lock(&self.key).take();
+        lock(&self.grant).take();
         self.stopped.send_replace(true);
+    }
+
+    fn active_grant(&self) -> Option<Grant> {
+        let mut grant = lock(&self.grant);
+        if grant.as_ref().is_some_and(|g| g.until <= Instant::now()) {
+            grant.take();
+        }
+        grant.clone()
+    }
+
+    fn end_grant(&self) -> Option<Grant> {
+        lock(&self.grant).take()
     }
 }
 
 impl VaultAgent {
-    pub fn new(seed: &[u8; 32], approvals: Approvals, timeout: Duration) -> Self {
+    pub fn new(seed: &[u8; 32], approvals: Approvals, events: EventLog, timeout: Duration) -> Self {
         let key = Ed25519Keypair::from_seed(seed);
         Self {
             public: key.public,
             shared: Arc::new(Shared {
                 key: Mutex::new(Some(key)),
+                grant: Mutex::new(None),
                 stopped: watch::channel(false).0,
             }),
             approvals,
+            events,
             timeout,
         }
     }
@@ -172,10 +236,14 @@ impl VaultAgent {
         PublicKey::new(KeyData::Ed25519(self.public), KEY_COMMENT)
     }
 
+    fn fingerprint(&self) -> String {
+        self.public_key().fingerprint(HashAlg::Sha256).to_string()
+    }
+
     /// Asks the approvals route. A denial, a timeout, a failure to ask, or the
     /// agent stopping meanwhile is a refusal.
-    async fn approve(&self, hash_alg: &str) -> bool {
-        let fingerprint = self.public_key().fingerprint(HashAlg::Sha256).to_string();
+    async fn approve(&self, hash_alg: &str) -> Decision {
+        let fingerprint = self.fingerprint();
         // SSHSIG carries only a hash of the commit, so the key is all there
         // is to show.
         let summary = format!("Sign a git commit or tag with {fingerprint}");
@@ -185,20 +253,69 @@ impl VaultAgent {
             "hashAlgorithm": hash_alg,
         });
         let mut stopped = self.shared.stopped.subscribe();
+        let request = self.approvals.request_allowing_grant(
+            APPROVAL_KIND,
+            &summary,
+            detail,
+            self.timeout,
+            MAX_GRANT,
+        );
         // Dropping the request when the agent stops settles the approval as
         // abandoned, so a late "yes" can't land.
         tokio::select! {
-            decision = self.approvals.request(APPROVAL_KIND, &summary, detail, self.timeout) => {
-                match decision {
-                    Ok(decision) => decision.approved(),
-                    Err(e) => {
-                        tracing::error!("couldn't ask for a signature approval: {e}");
-                        false
-                    }
-                }
+            decision = request => {
+                decision.unwrap_or_else(|e| {
+                    tracing::error!("couldn't ask for a signature approval: {e}");
+                    Decision::Unanswered
+                })
             }
-            _ = stopped.wait_for(|stopped| *stopped) => false,
+            _ = stopped.wait_for(|stopped| *stopped) => Decision::Unanswered,
         }
+    }
+
+    /// Starts a grant, unless the agent stopped while the approval was out.
+    async fn start_grant(&self, allow_for: Duration, by: &str) -> Result<(), AgentError> {
+        let grant = Grant {
+            until: Instant::now() + allow_for,
+            expires_at: now_ms() + allow_for.as_millis() as i64,
+            by: by.to_string(),
+        };
+        if *self.shared.stopped.borrow() {
+            return Err(refuse("the vault is locked"));
+        }
+        *lock(&self.shared.grant) = Some(grant.clone());
+        self.events
+            .append(
+                Some(by),
+                "ssh_agent.grant_started",
+                json!({ "expiresAt": grant.expires_at, "keyFingerprint": self.fingerprint() }),
+            )
+            .await
+            .map_err(|e| {
+                // A grant nobody can see on the event log isn't one to keep.
+                self.shared.end_grant();
+                refuse(&format!("couldn't record the grant: {e}"))
+            })?;
+        Ok(())
+    }
+
+    /// Records a signature made under a grant. Without the record there is no
+    /// trace of it, so a failure refuses the signature.
+    async fn record_unasked(&self, grant: &Grant, hash_alg: &str) -> Result<(), AgentError> {
+        self.events
+            .append(
+                None,
+                "ssh_agent.signed",
+                json!({
+                    "keyFingerprint": self.fingerprint(),
+                    "hashAlgorithm": hash_alg,
+                    "grantedBy": grant.by,
+                    "grantExpiresAt": grant.expires_at,
+                }),
+            )
+            .await
+            .map(|_| ())
+            .map_err(|e| refuse(&format!("couldn't record the signature: {e}")))
     }
 }
 
@@ -260,8 +377,17 @@ impl Session for VaultAgent {
             Some(b"sha512") => "sha512",
             _ => return Err(refuse("unknown SSHSIG hash algorithm")),
         };
-        if !self.approve(hash_alg).await {
-            return Err(refuse("signature denied"));
+        if let Some(grant) = self.shared.active_grant() {
+            self.record_unasked(&grant, hash_alg).await?;
+        } else {
+            match self.approve(hash_alg).await {
+                Decision::Approved { by, allow_for } => {
+                    if let Some(allow_for) = allow_for {
+                        self.start_grant(allow_for.min(MAX_GRANT), &by).await?;
+                    }
+                }
+                _ => return Err(refuse("signature denied")),
+            }
         }
         let key = lock(&self.shared.key);
         let key = key.as_ref().ok_or_else(|| refuse("the vault is locked"))?;
@@ -316,10 +442,12 @@ pub fn spawn(agent: VaultAgent, socket: PathBuf) -> std::io::Result<RunningAgent
 
 // ---- routes ----
 
-/// `GET /api/vault/ssh-agent`, which answers 404 when the agent is off.
+/// `GET /api/vault/ssh-agent` and `DELETE /api/vault/ssh-agent/grant`, which
+/// answer 404 when the agent is off.
 pub fn router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/vault/ssh-agent", get(status))
+        .route("/api/vault/ssh-agent/grant", delete(end_grant))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             only_when_enabled,
@@ -345,6 +473,10 @@ struct Status {
     public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     socket_path: Option<String>,
+    /// While signing is allowed without asking, when that ends, in
+    /// milliseconds since the epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grant_expires_at: Option<i64>,
 }
 
 async fn status(State(state): State<AppState>, _: Authed<Read>) -> ApiResult<Json<Status>> {
@@ -355,7 +487,27 @@ async fn status(State(state): State<AppState>, _: Authed<Read>) -> ApiResult<Jso
         socket_path: socket_path(&state)
             .filter(|_| running)
             .map(|p| p.display().to_string()),
+        grant_expires_at: state.ssh_agent.grant_expires_at(),
     }))
+}
+
+/// Goes back to asking for every signature. Answers 204 whether or not a
+/// grant was active, so a second press doesn't read as a failure.
+async fn end_grant(
+    State(state): State<AppState>,
+    Authed { device, .. }: Authed<Approve>,
+) -> ApiResult<StatusCode> {
+    if state.ssh_agent.end_grant() {
+        state
+            .events
+            .append(
+                Some(&device.device_id),
+                "ssh_agent.grant_ended",
+                json!({ "reason": "stopped" }),
+            )
+            .await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
@@ -379,7 +531,12 @@ mod tests {
     }
 
     fn agent(approvals: &Approvals, timeout: Duration) -> VaultAgent {
-        VaultAgent::new(&[3u8; 32], approvals.clone(), timeout)
+        VaultAgent::new(
+            &[3u8; 32],
+            approvals.clone(),
+            approvals.events().clone(),
+            timeout,
+        )
     }
 
     fn request(agent: &VaultAgent, data: Vec<u8>) -> SignRequest {
@@ -407,12 +564,33 @@ mod tests {
     }
 
     async fn answer_next(approvals: &Approvals, approve: bool) -> crate::approvals::Pending {
+        answer_next_allowing(approvals, approve, None).await
+    }
+
+    async fn answer_next_allowing(
+        approvals: &Approvals,
+        approve: bool,
+        allow_for: Option<Duration>,
+    ) -> crate::approvals::Pending {
         let pending = next_pending(approvals).await;
         approvals
-            .answer(&pending.id, "device", approve)
+            .answer(&pending.id, "device", approve, allow_for)
             .await
             .unwrap();
         pending
+    }
+
+    /// The events of one kind, oldest first.
+    async fn events_of(approvals: &Approvals, kind: &str) -> Vec<serde_json::Value> {
+        approvals
+            .events()
+            .since(0)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == kind)
+            .map(|e| e.data)
+            .collect()
     }
 
     #[test]
@@ -512,6 +690,110 @@ mod tests {
         assert!(agent.request_identities().await.unwrap().is_empty());
         let after = request(&agent, sshsig_blob("git"));
         assert!(agent.sign(after).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_grant_signs_later_requests_without_asking_and_records_each() {
+        let approvals = approvals().await;
+        let mut agent = agent(&approvals, Duration::from_secs(5));
+        let answer = tokio::spawn({
+            let approvals = approvals.clone();
+            async move { answer_next_allowing(&approvals, true, Some(Duration::from_secs(300))).await }
+        });
+        agent
+            .sign(request(&agent, sshsig_blob("git")))
+            .await
+            .unwrap();
+        let pending = answer.await.unwrap();
+        assert_eq!(pending.max_allow_for_secs, Some(MAX_GRANT.as_secs() as u32));
+        assert!(agent.shared.active_grant().is_some());
+
+        for _ in 0..3 {
+            agent
+                .sign(request(&agent, sshsig_blob("git")))
+                .await
+                .unwrap();
+        }
+        assert!(approvals.pending().await.unwrap().is_empty());
+        let started = events_of(&approvals, "ssh_agent.grant_started").await;
+        assert_eq!(started.len(), 1);
+        let signed = events_of(&approvals, "ssh_agent.signed").await;
+        assert_eq!(signed.len(), 3, "each unasked signature is recorded");
+        assert_eq!(signed[0]["grantedBy"], "device");
+    }
+
+    #[tokio::test]
+    async fn a_grant_never_lets_through_what_asking_would_refuse() {
+        let approvals = approvals().await;
+        let mut agent = agent(&approvals, Duration::from_secs(5));
+        *lock(&agent.shared.grant) = Some(Grant {
+            until: Instant::now() + Duration::from_secs(300),
+            expires_at: now_ms() + 300_000,
+            by: "device".into(),
+        });
+        let login = request(&agent, b"session-id-and-userauth".to_vec());
+        assert!(agent.sign(login).await.is_err());
+        assert!(
+            agent
+                .sign(request(&agent, sshsig_blob("file")))
+                .await
+                .is_err()
+        );
+        assert!(events_of(&approvals, "ssh_agent.signed").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_expired_grant_asks_again() {
+        let approvals = approvals().await;
+        let mut agent = agent(&approvals, Duration::from_millis(50));
+        *lock(&agent.shared.grant) = Some(Grant {
+            until: Instant::now() - Duration::from_secs(1),
+            expires_at: now_ms() - 1_000,
+            by: "device".into(),
+        });
+        // Nobody answers, so asking is what refuses it.
+        assert!(
+            agent
+                .sign(request(&agent, sshsig_blob("git")))
+                .await
+                .is_err()
+        );
+        assert!(agent.shared.active_grant().is_none());
+        assert!(events_of(&approvals, "ssh_agent.signed").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stopping_or_ending_the_grant_goes_back_to_asking() {
+        let approvals = approvals().await;
+        let agent = agent(&approvals, Duration::from_secs(5));
+        let grant = || Grant {
+            until: Instant::now() + Duration::from_secs(300),
+            expires_at: now_ms() + 300_000,
+            by: "device".into(),
+        };
+        *lock(&agent.shared.grant) = Some(grant());
+        assert!(agent.shared.end_grant().is_some());
+        assert!(agent.shared.active_grant().is_none());
+
+        *lock(&agent.shared.grant) = Some(grant());
+        agent.shared.stop();
+        assert!(agent.shared.active_grant().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_approval_without_a_duration_starts_no_grant() {
+        let approvals = approvals().await;
+        let mut agent = agent(&approvals, Duration::from_secs(5));
+        let answer = tokio::spawn({
+            let approvals = approvals.clone();
+            async move { answer_next(&approvals, true).await }
+        });
+        agent
+            .sign(request(&agent, sshsig_blob("git")))
+            .await
+            .unwrap();
+        answer.await.unwrap();
+        assert!(agent.shared.active_grant().is_none());
     }
 
     #[test]

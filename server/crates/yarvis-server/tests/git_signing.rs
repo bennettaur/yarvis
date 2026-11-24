@@ -194,3 +194,74 @@ async fn locking_while_a_signature_waits_refuses_it() {
     assert_eq!(answered[0].data["approve"], false);
     assert_eq!(answered[0].data["reason"], "abandoned");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowing_signing_for_a_while_signs_later_commits_until_it_is_ended() {
+    let s = signer().await;
+    let commit = |message: &'static str| {
+        let repo = s.repo.clone();
+        tokio::spawn(async move {
+            repo.git(&["commit", "-q", "--allow-empty", "-S", "-m", message])
+                .await
+        })
+    };
+
+    let first = commit("first");
+    let pending = s.pending_signature().await;
+    assert_eq!(
+        pending["maxAllowForSecs"].as_u64(),
+        Some(ssh_agent::MAX_GRANT.as_secs())
+    );
+    let (status, body) = s
+        .harness
+        .call(
+            "POST",
+            &format!("/api/approvals/{}", pending["id"].as_str().unwrap()),
+            Some(&s.token),
+            Some(json!({ "approve": true, "allowForSecs": 900 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(first.await.unwrap().status.success());
+
+    let (_, agent) = s
+        .harness
+        .call("GET", "/api/vault/ssh-agent", Some(&s.token), None)
+        .await;
+    assert!(agent["grantExpiresAt"].as_i64().is_some(), "{agent}");
+
+    // Signed without asking: nothing answers, and it still succeeds.
+    let out = commit("second").await.unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = s.repo.git(&["verify-commit", "HEAD"]).await;
+    assert!(out.status.success());
+    assert_eq!(s.harness.events("ssh_agent.signed").await.len(), 1);
+
+    let (status, _) = s
+        .harness
+        .call("DELETE", "/api/vault/ssh-agent/grant", Some(&s.token), None)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(s.harness.events("ssh_agent.grant_ended").await.len(), 1);
+
+    // Asking again once it's ended.
+    let third = commit("third");
+    let pending = s.pending_signature().await;
+    s.answer(pending["id"].as_str().unwrap(), false).await;
+    assert!(!third.await.unwrap().status.success());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ending_a_grant_needs_the_approve_scope() {
+    let s = signer().await;
+    let (_, reader) = s.harness.mint(&s.token, "watch", json!(["read"])).await;
+    let (status, _) = s
+        .harness
+        .call("DELETE", "/api/vault/ssh-agent/grant", Some(&reader), None)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

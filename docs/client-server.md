@@ -616,16 +616,26 @@ Events and approvals:
     `vault.recovery_key_rotated` follow those changes.
   - `pty.started`: `{ id, kind, workspaceId }`, as in `GET /api/pty`.
   - `pty.exited`: `{ id, code }`.
+  - `ssh_agent.grant_started` (`{ expiresAt, keyFingerprint }`, from the
+    device that allowed it), `ssh_agent.grant_ended` (`{ reason: "stopped" }`)
+    and `ssh_agent.signed` (`{ keyFingerprint, hashAlgorithm, grantedBy,
+    grantExpiresAt }`, one per signature made without asking). See the
+    ssh-agent below.
 - `GET  /api/approvals` (`read`) → the pending ones, oldest first:
-  `[{ id, kind, summary, data, createdAt, expiresAt }]`. `kind` names the
-  requester (`git.sign`), `summary` is the line to show, `data` is the
-  requester's own details (for `git.sign`, `keyFingerprint` and
+  `[{ id, kind, summary, data, createdAt, expiresAt, maxAllowForSecs? }]`.
+  `kind` names the requester (`git.sign`), `summary` is the line to show,
+  `data` is the requester's own details (for `git.sign`, `keyFingerprint` and
   `hashAlgorithm`), and times are milliseconds since the epoch.
-- `POST /api/approvals/{id}` `{ approve: bool }` (`approve`). The first answer
-  wins. Later answers get `409`, and so does an answer after the approval
-  timed out. No answer in time, a restart, or a requester that stops waiting
-  all count as a denial; `approval.answered` then has `deviceId: null` and a
-  `reason`.
+  `maxAllowForSecs` is set when approving may also cover later requests, and
+  is the longest it may.
+- `POST /api/approvals/{id}` `{ approve: bool, allowForSecs? }` (`approve`).
+  The first answer wins. Later answers get `409`, and so does an answer after
+  the approval timed out. No answer in time, a restart, or a requester that
+  stops waiting all count as a denial; `approval.answered` then has
+  `deviceId: null` and a `reason`. `allowForSecs` lets an approval cover later
+  requests for that long; it is `400` on a denial, on an approval without
+  `maxAllowForSecs`, or past it, and nothing is recorded then.
+  `approval.answered` carries it as `allowForSecs`.
 
 Core (what `invoke` did; one route per command, JSON body = the command's
 arguments with the same camelCase keys the frontend passes to `invoke` today,
@@ -808,9 +818,12 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   working. It needs the same proof as a passphrase change: otherwise a stolen
   fresh device could rotate the key, then use the new key to replace the
   passphrase.
-- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
-  with the key and socket only while the agent runs; 404 when
+- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath?,
+  grantExpiresAt? }`, with the key and socket only while the agent runs and
+  `grantExpiresAt` only while signing is allowed without asking; 404 when
   `ssh_agent.enabled = false`.
+- `DELETE /api/vault/ssh-agent/grant` (`approve`) → `204`. Goes back to
+  asking before every signature. Also `204` when no grant was active.
 
 The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir (or the
 folder above, for a long data dir or a `socket_dir`) while the
@@ -820,6 +833,15 @@ refusing anything else before asking anyone. Each signature is an approval of ki
 fingerprint in the summary; SSHSIG carries only a hash of the commit, so there
 is no repo or message to show. No answer in 60 seconds, a denial, or a lock
 while it waits refuses the signature and fails `git commit`.
+
+An approver can also allow signing for a while, up to an hour
+(`allowForSecs` on the answer), as 1Password's agent does. Until it ends,
+signatures are made without asking, for any process that can reach the
+socket, and each one appends `ssh_agent.signed`; one that can't be recorded is
+refused. The grant is kept only in memory, so locking the vault, the agent
+stopping or a restart ends it, as does `DELETE /api/vault/ssh-agent/grant`.
+It never widens what is signed: the namespace and hash checks still come
+first.
 
 Pairing a device that can't sign in itself:
 

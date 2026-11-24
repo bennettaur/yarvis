@@ -9,6 +9,11 @@
 //! First-wins is one conditional `UPDATE ... WHERE status = 'pending'`. Of
 //! two devices answering at once, the second waits on the first's row lock,
 //! then re-checks the status and updates nothing.
+//!
+//! A requester can also let an approval cover later requests for a while
+//! ([`Approvals::request_allowing_grant`]). The answer then names how long, up
+//! to the requester's limit, and the requester decides what that covers. The
+//! approvals here only record and pass it on.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -31,6 +36,9 @@ use crate::store::{Store, StoreError, now_ms};
 pub enum Decision {
     Approved {
         by: String,
+        /// How long the approver let this cover later requests, when the
+        /// request allowed that and they chose to.
+        allow_for: Option<Duration>,
     },
     Denied {
         by: String,
@@ -56,6 +64,10 @@ pub struct Pending {
     pub data: Value,
     pub created_at: i64,
     pub expires_at: i64,
+    /// The longest an approval may cover later requests, in seconds. Absent
+    /// when it covers only this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_allow_for_secs: Option<u32>,
 }
 
 pub enum Answer {
@@ -63,6 +75,9 @@ pub enum Answer {
     /// Someone answered first, or it ended unanswered. Carries what it ended as.
     AlreadySettled(Decision),
     NotFound,
+    /// The answer asked to cover later requests in a way this approval
+    /// doesn't allow. Nothing was recorded.
+    GrantRefused(String),
 }
 
 type Waiters = Arc<Mutex<HashMap<String, oneshot::Sender<Decision>>>>;
@@ -83,6 +98,11 @@ impl Approvals {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn events(&self) -> &EventLog {
+        &self.events
+    }
+
     /// Asks every device with the `approve` scope and waits for the first
     /// answer, or `timeout`. `summary` is the one line a device shows; `data`
     /// is whatever detail the kind defines.
@@ -93,6 +113,32 @@ impl Approvals {
         data: Value,
         timeout: Duration,
     ) -> Result<Decision, StoreError> {
+        self.ask(kind, summary, data, timeout, None).await
+    }
+
+    /// [`request`](Self::request), but the approver may also let it cover
+    /// later requests for up to `max_grant`. The decision carries what they
+    /// chose.
+    pub async fn request_allowing_grant(
+        &self,
+        kind: &str,
+        summary: &str,
+        data: Value,
+        timeout: Duration,
+        max_grant: Duration,
+    ) -> Result<Decision, StoreError> {
+        let max_secs = u32::try_from(max_grant.as_secs()).unwrap_or(u32::MAX);
+        self.ask(kind, summary, data, timeout, Some(max_secs)).await
+    }
+
+    async fn ask(
+        &self,
+        kind: &str,
+        summary: &str,
+        data: Value,
+        timeout: Duration,
+        max_allow_for_secs: Option<u32>,
+    ) -> Result<Decision, StoreError> {
         let created_at = now_ms();
         let pending = Pending {
             id: new_id(),
@@ -101,6 +147,7 @@ impl Approvals {
             data,
             created_at,
             expires_at: created_at + timeout.as_millis() as i64,
+            max_allow_for_secs,
         };
         // Registered before the row exists, since `pending()` lists the row at
         // once and an answer that arrives first must still find its waiter.
@@ -134,8 +181,9 @@ impl Approvals {
 
     async fn insert(&self, row: &Pending) -> Result<(), StoreError> {
         sqlx::query(
-            "INSERT INTO approvals (id, kind, summary, data, created_at, expires_at, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'pending')",
+            "INSERT INTO approvals
+                 (id, kind, summary, data, created_at, expires_at, status, max_allow_for_secs)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)",
         )
         .bind(&row.id)
         .bind(&row.kind)
@@ -143,28 +191,47 @@ impl Approvals {
         .bind(row.data.to_string())
         .bind(row.created_at)
         .bind(row.expires_at)
+        .bind(row.max_allow_for_secs.map(secs_to_db))
         .execute(self.store.db()?)
         .await?;
         Ok(())
     }
 
-    /// Records a device's answer. Only the first one counts.
+    /// Records a device's answer. Only the first one counts. `allow_for` lets
+    /// an approval cover later requests, if the request allowed it.
     pub async fn answer(
         &self,
         id: &str,
         device_id: &str,
         approve: bool,
+        allow_for: Option<Duration>,
     ) -> Result<Answer, StoreError> {
+        if let Some(allow_for) = allow_for {
+            let max: Option<Option<i32>> =
+                sqlx::query_scalar("SELECT max_allow_for_secs FROM approvals WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(self.store.db()?)
+                    .await?;
+            let Some(max) = max else {
+                return Ok(Answer::NotFound);
+            };
+            if let Some(refusal) = grant_refusal(approve, allow_for, max) {
+                return Ok(Answer::GrantRefused(refusal));
+            }
+        }
+        let allow_for_secs = allow_for.map(|d| secs_to_db(d.as_secs() as u32));
         let status = if approve { "approved" } else { "denied" };
         let won = sqlx::query(
             "UPDATE approvals
-             SET status = $1, outcome = 'answered', answered_by = $2, answered_at = $3
+             SET status = $1, outcome = 'answered', answered_by = $2, answered_at = $3,
+                 allow_for_secs = $5
              WHERE id = $4 AND status = 'pending' AND expires_at > $3",
         )
         .bind(status)
         .bind(device_id)
         .bind(now_ms())
         .bind(id)
+        .bind(allow_for_secs)
         .execute(self.store.db()?)
         .await?
         .rows_affected()
@@ -178,18 +245,19 @@ impl Approvals {
         let decision = if approve {
             Decision::Approved {
                 by: device_id.to_string(),
+                allow_for,
             }
         } else {
             Decision::Denied {
                 by: device_id.to_string(),
             }
         };
+        let mut event = json!({ "id": id, "approve": approve });
+        if let Some(allow_for) = allow_for {
+            event["allowForSecs"] = json!(allow_for.as_secs());
+        }
         self.events
-            .append(
-                Some(device_id),
-                "approval.answered",
-                json!({ "id": id, "approve": approve }),
-            )
+            .append(Some(device_id), "approval.answered", event)
             .await?;
         if let Some(waiter) = lock(&self.waiters).remove(id) {
             let _ = waiter.send(decision.clone());
@@ -199,8 +267,10 @@ impl Approvals {
 
     /// Approvals still waiting for an answer, oldest first.
     pub async fn pending(&self) -> Result<Vec<Pending>, StoreError> {
-        let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT id, kind, summary, data, created_at, expires_at FROM approvals
+        type Row = (String, String, String, String, i64, i64, Option<i32>);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, kind, summary, data, created_at, expires_at, max_allow_for_secs
+             FROM approvals
              WHERE status = 'pending' AND expires_at > $1 ORDER BY created_at",
         )
         .bind(now_ms())
@@ -209,13 +279,14 @@ impl Approvals {
         Ok(rows
             .into_iter()
             .map(
-                |(id, kind, summary, data, created_at, expires_at)| Pending {
+                |(id, kind, summary, data, created_at, expires_at, max)| Pending {
                     id,
                     kind,
                     summary,
                     data: serde_json::from_str(&data).unwrap_or(Value::Null),
                     created_at,
                     expires_at,
+                    max_allow_for_secs: max.and_then(|s| u32::try_from(s).ok()),
                 },
             )
             .collect())
@@ -275,19 +346,53 @@ impl Approvals {
     /// What an approval ended as. A pending row past its expiry counts as
     /// unanswered; `None` means there is no such approval.
     async fn settled(&self, id: &str) -> Result<Option<Decision>, StoreError> {
-        let row: Option<(String, Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT status, outcome, answered_by FROM approvals WHERE id = $1")
-                .bind(id)
-                .fetch_optional(self.store.db()?)
-                .await?;
-        Ok(row.map(
-            |(status, outcome, by)| match (status.as_str(), outcome.as_deref(), by) {
-                ("approved", _, Some(by)) => Decision::Approved { by },
+        type Row = (String, Option<String>, Option<String>, Option<i32>);
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT status, outcome, answered_by, allow_for_secs FROM approvals WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(self.store.db()?)
+        .await?;
+        Ok(row.map(|(status, outcome, by, allow_for)| {
+            match (status.as_str(), outcome.as_deref(), by) {
+                ("approved", _, Some(by)) => Decision::Approved {
+                    by,
+                    allow_for: allow_for
+                        .and_then(|s| u64::try_from(s).ok())
+                        .map(Duration::from_secs),
+                },
                 ("denied", Some("answered"), Some(by)) => Decision::Denied { by },
                 _ => Decision::Unanswered,
-            },
-        ))
+            }
+        }))
     }
+}
+
+/// Why an answer can't cover later requests, or `None` when it can.
+/// `max_secs` is the requester's limit; NULL means it covers this one only.
+fn grant_refusal(approve: bool, allow_for: Duration, max_secs: Option<i32>) -> Option<String> {
+    if !approve {
+        return Some("only an approval can cover later requests".into());
+    }
+    let Some(max_secs) = max_secs else {
+        return Some("this approval covers only itself".into());
+    };
+    let secs = allow_for.as_secs();
+    if secs == 0 {
+        return Some("allowForSecs must be at least 1".into());
+    }
+    if secs > u64::try_from(max_secs).unwrap_or(0) {
+        return Some(format!(
+            "this approval can cover later requests for at most {max_secs} seconds"
+        ));
+    }
+    None
+}
+
+/// Seconds as the `INTEGER` columns store them. Every value here is capped by
+/// a requester's limit, which is far below `i32::MAX`.
+fn secs_to_db(secs: u32) -> i32 {
+    i32::try_from(secs).unwrap_or(i32::MAX)
 }
 
 /// Denies the approval if the requester stops waiting (its task was
@@ -331,8 +436,12 @@ async fn list(State(state): State<AppState>, _: Authed<Read>) -> ApiResult<Json<
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AnswerBody {
     approve: bool,
+    /// Let this approval cover later requests for this many seconds.
+    #[serde(default)]
+    allow_for_secs: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -351,7 +460,12 @@ async fn answer(
 ) -> ApiResult<Json<Answered>> {
     match state
         .approvals
-        .answer(&id, &device.device_id, body.approve)
+        .answer(
+            &id,
+            &device.device_id,
+            body.approve,
+            body.allow_for_secs.map(|s| Duration::from_secs(s.into())),
+        )
         .await?
     {
         Answer::Answered(_) => Ok(Json(Answered {
@@ -361,12 +475,13 @@ async fn answer(
         })),
         Answer::AlreadySettled(decision) => {
             let detail = match decision {
-                Decision::Approved { by } => format!("approved by device {by}"),
+                Decision::Approved { by, .. } => format!("approved by device {by}"),
                 Decision::Denied { by } => format!("denied by device {by}"),
                 Decision::Unanswered => "nobody answered in time, so it was denied".into(),
             };
             Err(ApiError::conflict("already answered").with_detail(detail))
         }
         Answer::NotFound => Err(ApiError::not_found()),
+        Answer::GrantRefused(why) => Err(ApiError::bad_request(why)),
     }
 }
