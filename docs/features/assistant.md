@@ -524,7 +524,10 @@ Always available:
 - **Delegation.** List specialists and delegate to one. With **Pick
   specialists for delegated work** on, it can leave the name out and have one
   picked.
-- **Attention.** Raise a notification when it needs you.
+- **Attention.** Call you back to the chat (`request_attention`), or put an
+  item in the [attention bell](workspaces.md#the-attention-bell)
+  (`raise_attention`): something you need to do, or a note for you to read. A
+  [heads-down](heads-down.md) pass uses the bell the same way.
 - **Scheduled tasks.** Schedule, list and cancel a prompt it runs later in the
   same chat.
 - **Questions.** Ask you something and wait for the answer (`ask_user`,

@@ -298,6 +298,11 @@ Questions and approvals show under **Needs you** on the Heads down page and in
 the attention bell. Nothing waits on them: the stream they belong to waits,
 and the rest carry on. Your answer reaches the next pass.
 
+In the bell they're filed under the category of the stream they belong to
+(review, build, slack or general), which the assistant sets when it tracks the
+stream, and under **General** otherwise. See
+[Categories](workspaces.md#categories).
+
 Opening one from the bell answers it in a window over the page you're on,
 rather than taking you to the Heads down page. The window then shows the next
 open question or approval, until none are left. **Open Heads down** goes to the

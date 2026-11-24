@@ -107,6 +107,11 @@ export async function deleteGuide(db: Db, ref: PrRef): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Whether the reviewer has read to the last step. */
+export function isGuideFinished(guide: PrGuideRow): boolean {
+  return guide.currentStep >= guide.steps.length - 1;
+}
+
 /** Every guide, newest activity first. Backs the assistant's "what am I reviewing". */
 export function listGuides(db: Db, limit = 50): Promise<PrGuideRow[]> {
   return db.select().from(prGuides).orderBy(desc(prGuides.updatedAt)).limit(limit);

@@ -458,6 +458,7 @@ function notify(
     source: "system",
     sessionKey: sessionKeyFor(pr),
     kind,
+    category: "review",
     title,
     body: detail ? `${prName(pr)}: ${detail}` : prName(pr),
     navTarget: {

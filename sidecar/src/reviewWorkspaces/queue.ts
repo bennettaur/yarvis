@@ -271,6 +271,7 @@ function notifyQueueDone(db: Db, queue: VerificationQueue) {
     source: "system",
     sessionKey: `pr-verification-queue:${queue.id}`,
     kind,
+    category: "review",
     title: `Verification queue ${queue.cancelled ? "cancelled" : "finished"}: ${count("done")} of ${queue.items.length} checked`,
     body: lines.join("\n"),
   });

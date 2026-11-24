@@ -252,6 +252,7 @@ async function notifyFinished(
     source: "chat-agent",
     sessionKey: `claude-task:${runId}`,
     kind: succeeded ? "info" : "error",
+    category: "build",
     title: succeeded
       ? `Claude Code finished: ${meta.title}`
       : `Claude Code task failed: ${meta.title}`,

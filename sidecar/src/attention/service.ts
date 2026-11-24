@@ -1,6 +1,11 @@
 import { and, desc, eq, inArray, ne, or, type SQL, sql } from "drizzle-orm";
 import type { Db } from "../db/client.ts";
-import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "../db/schema.ts";
+import {
+  type AttentionCategory,
+  type AttentionItemRow,
+  type AttentionNavTarget,
+  attentionItems,
+} from "../db/schema.ts";
 
 /**
  * The attention stream service. Producers (a Claude Code hook via the ingest
@@ -10,7 +15,15 @@ import { type AttentionItemRow, type AttentionNavTarget, attentionItems } from "
  */
 
 export type AttentionSource = "claude-hook" | "chat-agent" | "system";
-export type AttentionKind = "permission" | "idle" | "completed" | "error" | "info" | "question";
+export type AttentionKind =
+  | "permission"
+  | "idle"
+  | "completed"
+  | "error"
+  | "info"
+  | "question"
+  | "action"
+  | "message";
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
 export interface CreateAttentionInput {
@@ -19,6 +32,7 @@ export interface CreateAttentionInput {
   sessionKey?: string | null;
   workspaceId?: string | null;
   kind: AttentionKind;
+  category: AttentionCategory;
   title: string;
   body?: string | null;
   navTarget?: AttentionNavTarget | null;
@@ -61,6 +75,7 @@ export async function createAttention(
         sessionKey,
         workspaceId: input.workspaceId ?? null,
         kind: input.kind,
+        category: input.category,
         title: input.title,
         body: input.body ?? null,
         navTarget: input.navTarget ?? null,
@@ -73,6 +88,7 @@ export async function createAttention(
         target: [attentionItems.sessionKey, attentionItems.kind],
         targetWhere: sql`${attentionItems.status} = 'pending'`,
         set: {
+          category: input.category,
           title: input.title,
           body: input.body ?? null,
           navTarget: input.navTarget ?? null,

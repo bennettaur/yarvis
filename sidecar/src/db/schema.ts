@@ -1135,8 +1135,9 @@ export const attentionSource = pgEnum("attention_source", ["claude-hook", "chat-
  * The nature of the signal. `permission`/`idle` mean a session is *blocked* and
  * cannot proceed without the user; `question` is a session blocked on an
  * `ask_user` call the user can answer from the attention panel; `completed`
- * means it finished; `error` a failure; `info` a generic nudge (the chat agent's
- * request_attention).
+ * means it finished; `error` a failure; `info` a generic nudge. `action` and
+ * `message` come from `raiseAttention`: something for the user to do, or a
+ * note Yarvis left them that reading clears.
  */
 export const attentionKind = pgEnum("attention_kind", [
   "permission",
@@ -1145,7 +1146,18 @@ export const attentionKind = pgEnum("attention_kind", [
   "error",
   "info",
   "question",
+  "action",
+  "message",
 ]);
+
+/**
+ * The kind of work an attention item is about, so the stream can be grouped.
+ * `review` is other people's PRs, `build` is the user's own work (their PRs,
+ * workspaces, CI, deploys), `slack` is chat messages, `general` everything else.
+ */
+export const ATTENTION_CATEGORIES = ["review", "build", "slack", "general"] as const;
+export type AttentionCategory = (typeof ATTENTION_CATEGORIES)[number];
+export const attentionCategory = pgEnum("attention_category", ATTENTION_CATEGORIES);
 
 /**
  * Lifecycle of an attention item. `pending` is unread/unactioned (drives the
@@ -1211,6 +1223,7 @@ export const attentionItems = pgTable(
     sessionKey: text("session_key"),
     workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
     kind: attentionKind("kind").notNull(),
+    category: attentionCategory("category").notNull().default("general"),
     title: text("title").notNull(),
     body: text("body"),
     status: attentionStatus("status").notNull().default("pending"),
@@ -1309,6 +1322,8 @@ export type AgentQuestionRow = typeof agentQuestions.$inferSelect;
 export interface WipSourcesConfig {
   myPrs: boolean;
   starredPrs: boolean;
+  /** Guided reviews the user has open and not yet read to the end. */
+  reviews: boolean;
   issues: boolean;
   tasks: boolean;
   workspaces: boolean;
@@ -1609,6 +1624,12 @@ export const workStreams = pgTable(
     status: workStreamStatus("status").notNull().default("active"),
     priority: projectItemPriority("priority").notNull().default("medium"),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
+    /**
+     * What kind of work the stream is, which its sessions' and questions'
+     * attention items take on. Null when none was set; those items then use
+     * their producer's default.
+     */
+    category: attentionCategory("category"),
     /** The next step the assistant means to take. */
     nextAction: text("next_action"),
     /** Who or what the stream is waiting on, when it is waiting. */

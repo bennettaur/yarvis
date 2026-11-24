@@ -15,6 +15,7 @@ import {
   sessionTokenMatches,
 } from "../workspaces/agentSessions.ts";
 import { PERMISSION_HOOK_TIMEOUT_S } from "../workspaces/claudeSettings.ts";
+import { workspaceCategory } from "./category.ts";
 import { type AttentionStreamEvent, publish, subscribe } from "./hub.ts";
 import { navTargetFor } from "./navTarget.ts";
 import {
@@ -164,16 +165,20 @@ export function createAttentionIngestRoutes(config: Config): Hono {
    */
   const raisePermissionItem = (info: PermissionRequestInfo): Promise<void> => {
     const summary = summarizePermission(info.toolName, info.toolInput);
-    return createAttention(db(), {
-      source: "claude-hook",
-      sessionKey: info.sessionKey,
-      workspaceId: info.workspaceId,
-      kind: "permission",
-      title: info.workspaceName ?? "Claude session",
-      body: summary,
-      navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
-      payload: { requestId: info.id, toolName: info.toolName },
-    })
+    return workspaceCategory(db(), info.workspaceId)
+      .then((category) =>
+        createAttention(db(), {
+          source: "claude-hook",
+          sessionKey: info.sessionKey,
+          workspaceId: info.workspaceId,
+          kind: "permission",
+          category,
+          title: info.workspaceName ?? "Claude session",
+          body: summary,
+          navTarget: navTargetFor(info.sessionKey, info.workspaceId ?? undefined),
+          payload: { requestId: info.id, toolName: info.toolName },
+        }),
+      )
       .then(publish)
       .catch((e) => {
         console.error("[attention] could not raise a permission item:", e?.message ?? e);
@@ -215,6 +220,7 @@ export function createAttentionIngestRoutes(config: Config): Hono {
       sessionKey,
       workspaceId: workspaceId ?? null,
       kind,
+      category: await workspaceCategory(db(), workspaceId),
       title: ws?.name ?? "Claude session",
       body: defaultBody(kind),
       navTarget: navTargetFor(sessionKey, workspaceId),

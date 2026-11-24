@@ -9,6 +9,7 @@ function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): 
     sessionKey: "ws-claude:w1",
     workspaceId: "w1",
     kind: "idle",
+    category: "general",
     title: "Fix API",
     body: "Waiting for your input",
     status: "pending",

@@ -64,6 +64,7 @@ const item = (id: string, seq: number): AttentionItem => ({
   sessionKey: null,
   workspaceId: `ws-${id}`,
   kind: "permission",
+  category: "general",
   title: "Permission needed",
   body: null,
   status: "pending",

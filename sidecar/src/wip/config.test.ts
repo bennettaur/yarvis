@@ -28,7 +28,14 @@ describe("wip config", () => {
 
   it("saves and reads back the config", async () => {
     const saved = await saveWipConfig({
-      sources: { myPrs: false, starredPrs: true, issues: true, tasks: false, workspaces: true },
+      sources: {
+        myPrs: false,
+        starredPrs: true,
+        reviews: true,
+        issues: true,
+        tasks: false,
+        workspaces: true,
+      },
       issueLabels: ["in-progress", "doing"],
     });
     expect(saved.sources.myPrs).toBe(false);

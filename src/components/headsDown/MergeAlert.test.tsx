@@ -11,6 +11,7 @@ const MERGE: AttentionItem = {
   sessionKey: "heads-down-merge:acme/infra#7",
   workspaceId: null,
   kind: "info",
+  category: "general",
   title: "Heads down is merging acme/infra#7",
   body: "Bump the load balancer timeout",
   status: "pending",

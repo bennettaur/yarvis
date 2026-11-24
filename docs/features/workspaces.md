@@ -944,17 +944,52 @@ every workspace. Opening more fails until you close one. See
 
 ## The attention bell
 
-The bell in the top bar collects everything waiting on you. Mostly that is a
-Claude Code session blocked on a permission prompt or sitting idle waiting for
-input. The hooks Yarvis writes into each workspace's `.claude/settings.json`
-raise these.
+The bell in the top bar collects everything waiting on you, and only that.
+Mostly that is a Claude Code session blocked on a permission prompt or sitting
+idle waiting for input. The hooks Yarvis writes into each workspace's
+`.claude/settings.json` raise these. Questions from Yarvis, heads-down mode and
+coding agents, verification reports that are ready, things Yarvis flagged for
+you to do, and notes it left you are in the bell too. Work that is only in
+progress, such as a guided review you're partway through, is in the panel's
+**In progress** list instead.
 
 Items are tied to the exact terminal that raised them, so a Claude run you
 started by hand in one of a workspace's shell tabs flags *that tab*, not the
 whole workspace. [Terminals](terminals.md#attention-and-yarvis-memory) lists
 the environment variables that make this work.
 
-How the bell behaves:
+### Categories
+
+Every item has a category, so you can see what kind of work is waiting:
+
+| Category | What it holds |
+| --- | --- |
+| **Review** | Other people's pull requests, such as verification reports and guided reviews |
+| **Build** | Your own work, such as workspace sessions, your PRs and merges |
+| **Slack** | Chat messages waiting for an answer |
+| **General** | Everything else, such as scheduled tasks and heads-down questions |
+
+A Claude session takes the category of the [work stream](heads-down.md) its
+workspace belongs to, and **Build** when it has none. A heads-down question
+takes its stream's category, and **General** when it has none.
+
+The panel groups **Needs you now** by category, with **Review** first and a
+count on each. The bar above the list filters to one category; press it again,
+or **All**, to see everything. Untick **Group** for one list, newest first.
+Yarvis remembers the **Group** choice in this browser between sessions. The
+filter resets when the app reloads, so a category can't stay hidden.
+
+### Messages from Yarvis
+
+Yarvis can leave you a note in the bell, for example to say a check you asked
+it to watch finished. A note is titled **Note from Yarvis**, and something it
+wants you to do is titled **Yarvis flagged something for you**, so neither can
+pass for an alert from the app itself; what it wrote is underneath. A note
+shows in full in the panel and needs no answer.
+**Mark read** clears it, and so does clicking it, which also opens what it
+points at, if anything.
+
+### How the bell behaves
 
 - **Hard to miss.** While anything is pending, an amber band sweeps across the
   top bar towards the bell and the bell rings, every few seconds. A new item

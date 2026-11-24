@@ -85,8 +85,12 @@ describe("kickOffGuide", () => {
     });
     const [item] = await listAttention(db, {});
     // The PR's title is the author's text, so it stays out of the bell's title.
-    expect(item).toMatchObject({ title: "PR review in progress", kind: "info" });
-    expect(item?.body).toStartWith("Feature work: Step 1 of 2");
+    expect(item).toMatchObject({
+      title: "Guided review ready",
+      kind: "completed",
+      category: "review",
+    });
+    expect(item?.body).toBe("Feature work: 2 steps");
   });
 
   it("keeps an existing guide unless asked to regenerate it", async () => {
@@ -154,11 +158,11 @@ describe("kickOffGuide", () => {
     );
     await until(async () => (await getGuide(db, ref)) !== null, "the guide");
     await until(
-      async () => (await listAttention(db, {})).some((a) => a.kind === "info"),
+      async () => (await listAttention(db, {})).some((a) => a.kind === "completed"),
       "the guide's bell item",
     );
     const pending = (await listAttention(db, {})).filter((a) => a.status === "pending");
-    expect(pending.map((a) => a.title)).toEqual(["PR review in progress"]);
+    expect(pending.map((a) => a.title)).toEqual(["Guided review ready"]);
   });
 
   it("refuses without provider credentials before reading anything", async () => {

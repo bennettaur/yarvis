@@ -6,6 +6,11 @@ import LoadingIndicator from "./LoadingIndicator";
 const SOURCE_FIELDS: { key: keyof WipSourcesConfig; label: string; hint: string }[] = [
   { key: "myPrs", label: "My open PRs", hint: "Every open PR you authored (can be noisy)" },
   { key: "starredPrs", label: "Starred PRs", hint: "PRs you've starred" },
+  {
+    key: "reviews",
+    label: "Guided reviews",
+    hint: "Guided reviews you haven't read to the end",
+  },
   { key: "issues", label: "Issues", hint: "Issues you've started work on, plus starred issues" },
   { key: "tasks", label: "Today's tasks", hint: "Open tasks due today" },
   { key: "workspaces", label: "Active workspaces", hint: "Workspaces currently in use" },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildAttentionTool, newAttentionState } from "./attentionTools.ts";
+import { buildAttentionTools, newAttentionState } from "./attentionTools.ts";
 
 // The AI SDK passes a second options argument to execute; tests don't need it.
 const opts = { toolCallId: "test", messages: [] } as never;
@@ -13,7 +13,7 @@ describe("attention tool", () => {
 
   it("records the reason when the model requests attention", async () => {
     const state = newAttentionState();
-    const tools = buildAttentionTool(state);
+    const tools = buildAttentionTools(state, undefined as never);
 
     const result = await tools.request_attention.execute!({ reason: "PR comment posted" }, opts);
 

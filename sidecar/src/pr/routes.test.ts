@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { Hono } from "hono";
 import postgres from "postgres";
 import { createApp } from "../app.ts";
-import { listAttention } from "../attention/service.ts";
+import { createAttention, listAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { listEvents } from "../events/service.ts";
 import { createRepo } from "../workspaces/service.ts";
-import { claimGuide } from "./guideRun.ts";
+import { claimGuide, guideSessionKey } from "./guideRun.ts";
 import { saveGuide } from "./guides.ts";
 import { saveInsight } from "./insights.ts";
 import { savePrModelConfig } from "./models.ts";
@@ -145,45 +145,25 @@ describe("PATCH /api/pr/guide/progress", () => {
     expect(res.status).toBe(404);
   });
 
-  // An in-progress review is high signal about what the user is working on.
-  it("raises an attention item naming the current step", async () => {
+  // A review the user is partway through is work in progress, which belongs on
+  // the WIP stream; the bell only told them the guide was ready.
+  it("resolves the guide's ready item once the user reads it", async () => {
+    await createAttention(db, {
+      source: "system",
+      sessionKey: guideSessionKey(ref),
+      kind: "completed",
+      category: "review",
+      title: "Guided review ready",
+    });
     await app.request("/api/pr/guide/progress", {
       method: "PATCH",
       headers: jsonAuth,
       body: JSON.stringify({ ref, step: 0 }),
-    });
-    const items = await listAttention(db, { status: "pending" });
-    expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({
-      title: "PR review in progress",
-      body: "Add ordering: Step 1 of 2 · src/api.ts",
-      navTarget: { type: "pr", owner: "o", repo: "r", number: 1 },
-    });
-  });
-
-  // Reaching the end means the review is no longer in progress; leaving the
-  // item pending would show finished work as outstanding.
-  it("resolves the attention item at the last step", async () => {
-    await app.request("/api/pr/guide/progress", {
-      method: "PATCH",
-      headers: jsonAuth,
-      body: JSON.stringify({ ref, step: 0 }),
-    });
-    await app.request("/api/pr/guide/progress", {
-      method: "PATCH",
-      headers: jsonAuth,
-      body: JSON.stringify({ ref, step: 1 }),
     });
     expect(await listAttention(db, { status: "pending" })).toHaveLength(0);
   });
 
-  // Advancing repeatedly must update the one live item, not stack a new one.
-  it("keeps a single item as the reviewer moves through the guide", async () => {
-    const longer = [
-      ...steps,
-      { path: "src/z.ts", startLine: null, endLine: null, explanation: "x" },
-    ];
-    await saveGuide(db, { ref, headSha: "a".repeat(40), steps: longer, title: "Add ordering" });
+  it("raises nothing while the user reads", async () => {
     for (const step of [0, 1]) {
       await app.request("/api/pr/guide/progress", {
         method: "PATCH",
@@ -191,19 +171,19 @@ describe("PATCH /api/pr/guide/progress", () => {
         body: JSON.stringify({ ref, step }),
       });
     }
-    const items = await listAttention(db, { status: "pending" });
-    expect(items).toHaveLength(1);
-    expect(items[0]!.body).toBe("Add ordering: Step 2 of 3 · src/db.ts");
+    expect(await listAttention(db, {})).toHaveLength(0);
   });
 });
 
 describe("DELETE /api/pr/guide", () => {
   it("removes the guide and clears its attention item", async () => {
     await saveGuide(db, { ref, headSha: "a".repeat(40), steps, title: "t" });
-    await app.request("/api/pr/guide/progress", {
-      method: "PATCH",
-      headers: jsonAuth,
-      body: JSON.stringify({ ref, step: 0 }),
+    await createAttention(db, {
+      source: "system",
+      sessionKey: guideSessionKey(ref),
+      kind: "completed",
+      category: "review",
+      title: "Guided review ready",
     });
     const res = await app.request(`/api/pr/guide?${refQuery}`, { method: "DELETE", headers: auth });
     expect(await res.json()).toEqual({ deleted: true });

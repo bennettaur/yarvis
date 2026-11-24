@@ -9,6 +9,7 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
     sessionKey: "heads-down:q1",
     workspaceId: null,
     kind: "info",
+    category: "general",
     title: "Heads down has a question",
     body: "Which PR first?",
     status: "pending",

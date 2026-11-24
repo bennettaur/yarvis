@@ -210,6 +210,8 @@ const ATTENTION_KIND_MEANING: Record<AttentionKind, string> = {
   error: "something failed",
   info: "a notice",
   question: "the session asked the user a question and is waiting for the answer",
+  action: "something Yarvis flagged for the user to do",
+  message: "a note Yarvis left for the user",
 };
 
 /**

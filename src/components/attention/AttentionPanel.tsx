@@ -1,19 +1,26 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { acknowledgeAlarm, snoozeAlarm, useRingingAlarms } from "../../lib/alarmStore";
 import type { Alarm } from "../../lib/alarms";
-import type { AttentionItem, AttentionKind } from "../../lib/attention";
-import type { AttentionGroup } from "../../lib/attentionGroups";
+import {
+  ATTENTION_CATEGORIES,
+  type AttentionCategory,
+  type AttentionItem,
+  type AttentionKind,
+} from "../../lib/attention";
+import { type AttentionGroup, arrangeAttention, countByCategory } from "../../lib/attentionGroups";
 import { markAttention, markAttentionScope, useAttentionGroups } from "../../lib/attentionStore";
 import { formatRelativeTime } from "../../lib/time";
+import { useGroupByCategory } from "../../lib/useGroupByCategory";
 import type { WipItem, WipSource } from "../../lib/wip";
 import LoadingIndicator from "../LoadingIndicator";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
 
 /**
  * A right slide-out panel with three streams: "Ringing" (alarms that have fired
- * and nobody dismissed), "Needs you now" (pending attention items — Claude
- * sessions blocked on the user, or the chat agent asking for a decision) and
- * "In progress" (the ambient WIP roll-up). Modeled on the Omni Chat overlay: a
+ * and nobody dismissed), "Needs you now" (pending attention items: Claude
+ * sessions blocked on the user, questions, things Yarvis flagged for the user
+ * to do and notes it left them, grouped by category) and "In progress" (the
+ * ambient WIP roll-up). Modeled on the Omni Chat overlay: a
  * fixed, z-50 layer that stays mounted while hidden so the store subscription
  * persists, with a click-away backdrop and Esc-to-close.
  *
@@ -30,6 +37,8 @@ const KIND_DOT: Record<AttentionKind, string> = {
   completed: "bg-emerald-500",
   info: "bg-indigo-400",
   question: "bg-sky-400",
+  action: "bg-orange-400",
+  message: "bg-zinc-400",
 };
 
 /** Tooltip for the kind dot, which carries its meaning by colour alone. */
@@ -40,11 +49,21 @@ const KIND_HINT: Record<AttentionKind, string> = {
   completed: "Finished and ready for you",
   info: "Wants your attention",
   question: "Has a question for you",
+  action: "Something for you to do",
+  message: "A note for you to read",
+};
+
+const CATEGORY_LABEL: Record<AttentionCategory, string> = {
+  review: "Review",
+  build: "Build",
+  slack: "Slack",
+  general: "General",
 };
 
 const WIP_HINT: Record<WipSource, string> = {
   pr: "One of your open pull requests",
   "starred-pr": "A pull request you starred",
+  review: "A guided review you haven't read to the end",
   issue: "An issue you are working on, labelled for you, or starred",
   task: "One of today's open tasks",
   workspace: "A workspace currently in use",
@@ -53,6 +72,7 @@ const WIP_HINT: Record<WipSource, string> = {
 const WIP_LABEL: Record<WipSource, string> = {
   pr: "PR",
   "starred-pr": "★ PR",
+  review: "Review",
   issue: "Issue",
   task: "Task",
   workspace: "Workspace",
@@ -85,7 +105,14 @@ function AttentionGroupRow({
 }) {
   const { lead, items } = group;
   const tabs = tabSummary(group.sessionKeys);
-  const dismiss = () => {
+  // A note is shown whole and needs no answer, so reading it is what clears it.
+  // A note grouped with other items from the same origin is dismissed with them.
+  const isMessage = lead.kind === "message" && items.length === 1;
+  const clear = () => {
+    if (isMessage) {
+      void markAttention(lead.id, "read");
+      return;
+    }
     // A sourceless nudge has no scope to clear, so it goes item by item.
     if (group.scope.workspaceId || group.scope.sessionKey) {
       void markAttentionScope(group.scope, "dismissed");
@@ -113,17 +140,37 @@ function AttentionGroupRow({
           )}
         </div>
         {tabs && <div className="truncate text-xs text-zinc-500">{tabs}</div>}
-        {lead.body && <div className="truncate text-xs text-zinc-400">{lead.body}</div>}
+        {lead.body && (
+          <div
+            className={
+              isMessage
+                ? "whitespace-pre-wrap break-words text-xs text-zinc-300"
+                : "truncate text-xs text-zinc-400"
+            }
+          >
+            {lead.body}
+          </div>
+        )}
         <div className="mt-0.5 text-[11px] text-zinc-500">{formatRelativeTime(lead.createdAt)}</div>
       </button>
-      <button
-        type="button"
-        aria-label={items.length > 1 ? `Dismiss ${items.length} items` : "Dismiss"}
-        onClick={dismiss}
-        className="shrink-0 rounded px-1 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-300 group-hover:opacity-100"
-      >
-        ✕
-      </button>
+      {isMessage ? (
+        <button
+          type="button"
+          onClick={clear}
+          className="shrink-0 rounded px-1 text-xs text-zinc-400 hover:text-zinc-100"
+        >
+          Mark read
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label={items.length > 1 ? `Dismiss ${items.length} items` : "Dismiss"}
+          onClick={clear}
+          className="shrink-0 rounded px-1 text-zinc-600 opacity-0 transition-opacity hover:text-zinc-300 group-hover:opacity-100"
+        >
+          ✕
+        </button>
+      )}
     </li>
   );
 }
@@ -186,6 +233,63 @@ function WipRow({ item, onOpen }: { item: WipItem; onOpen: (item: WipItem) => vo
   );
 }
 
+/**
+ * Narrows the stream to one category and switches category grouping on or
+ * off. A category with nothing pending is still offered, so the bar doesn't
+ * jump as items come and go.
+ */
+function AttentionFilterBar({
+  groups,
+  categoryFilter,
+  onCategoryFilterChange,
+  groupByCategory,
+  onGroupByCategoryChange,
+}: {
+  groups: AttentionGroup[];
+  categoryFilter: AttentionCategory | null;
+  onCategoryFilterChange: (category: AttentionCategory | null) => void;
+  groupByCategory: boolean;
+  onGroupByCategoryChange: (value: boolean) => void;
+}) {
+  const counts = countByCategory(groups);
+  const chip = (active: boolean) =>
+    `rounded px-1.5 py-0.5 text-[11px] ${
+      active ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-200"
+    }`;
+  return (
+    <div className="flex flex-wrap items-center gap-1 border-b border-zinc-800 px-4 py-1.5">
+      <button
+        type="button"
+        aria-pressed={categoryFilter === null}
+        onClick={() => onCategoryFilterChange(null)}
+        className={chip(categoryFilter === null)}
+      >
+        All
+      </button>
+      {ATTENTION_CATEGORIES.map((category) => (
+        <button
+          key={category}
+          type="button"
+          aria-pressed={categoryFilter === category}
+          onClick={() => onCategoryFilterChange(categoryFilter === category ? null : category)}
+          className={chip(categoryFilter === category)}
+        >
+          {CATEGORY_LABEL[category]} {counts[category]}
+        </button>
+      ))}
+      <label className="ml-auto flex cursor-pointer items-center gap-1 text-[11px] text-zinc-500">
+        <input
+          type="checkbox"
+          checked={groupByCategory}
+          onChange={(e) => onGroupByCategoryChange(e.target.checked)}
+          className="h-3 w-3 accent-indigo-500"
+        />
+        Group
+      </label>
+    </div>
+  );
+}
+
 function SectionHeader({ label, count }: { label: string; count: number }) {
   return (
     <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
@@ -214,6 +318,9 @@ export default function AttentionPanel({
 }) {
   const groups = useAttentionGroups();
   const ringing = useRingingAlarms();
+  const [groupByCategory, setGroupByCategory] = useGroupByCategory();
+  const [categoryFilter, setCategoryFilter] = useState<AttentionCategory | null>(null);
+  const sections = arrangeAttention(groups, { groupByCategory, categoryFilter });
 
   useEffect(() => {
     if (!open) return;
@@ -263,14 +370,37 @@ export default function AttentionPanel({
           )}
 
           <SectionHeader label="Needs you now" count={groups.length} />
-          {groups.length === 0 ? (
-            <p className="px-4 py-4 text-xs text-zinc-500">Nothing needs you right now.</p>
+          <AttentionFilterBar
+            groups={groups}
+            categoryFilter={categoryFilter}
+            onCategoryFilterChange={setCategoryFilter}
+            groupByCategory={groupByCategory}
+            onGroupByCategoryChange={setGroupByCategory}
+          />
+          {sections.length === 0 ? (
+            <p className="px-4 py-4 text-xs text-zinc-500">
+              {categoryFilter
+                ? `Nothing in ${CATEGORY_LABEL[categoryFilter]} needs you right now.`
+                : "Nothing needs you right now."}
+            </p>
           ) : (
-            <ul className="divide-y divide-zinc-800">
-              {groups.map((group) => (
-                <AttentionGroupRow key={group.key} group={group} onOpen={onOpenAttention} />
-              ))}
-            </ul>
+            sections.map((section) => (
+              <section key={section.category ?? "all"}>
+                {section.category && (
+                  <div className="flex items-center justify-between bg-zinc-900/80 px-4 pt-2 pb-1">
+                    <span className="text-[11px] font-medium text-zinc-400">
+                      {CATEGORY_LABEL[section.category]}
+                    </span>
+                    <span className="text-[11px] text-zinc-600">{section.groups.length}</span>
+                  </div>
+                )}
+                <ul className="divide-y divide-zinc-800">
+                  {section.groups.map((group) => (
+                    <AttentionGroupRow key={group.key} group={group} onOpen={onOpenAttention} />
+                  ))}
+                </ul>
+              </section>
+            ))
           )}
 
           <SectionHeader label="In progress" count={wip.length} />

@@ -130,6 +130,7 @@ describe("workspaceAgentBusyReason", () => {
       sessionKey: `ws-claude:${workspaceId}`,
       workspaceId,
       kind,
+      category: "build",
       title: kind,
     });
 

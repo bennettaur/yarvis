@@ -27,7 +27,7 @@ import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWebTools } from "../web/tools.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
-import { type AttentionState, buildAttentionTool, newAttentionState } from "./attentionTools.ts";
+import { type AttentionState, buildAttentionTools, newAttentionState } from "./attentionTools.ts";
 import { newUntrustedReads, type UntrustedReads } from "./destructiveTools.ts";
 import { buildTaskTools } from "./tools.ts";
 
@@ -103,7 +103,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
   return {
     tasks: buildTaskTools(db, sessionId),
     memory: buildMemoryTools(memory, sessionId),
-    attention: buildAttentionTool(attention),
+    attention: buildAttentionTools(attention, db),
     scheduledTasks: buildScheduledTaskTools(db, sessionId, scheduledTask),
     questions: atTheApp ? buildQuestionTools(db, sessionId) : {},
     projects: buildProjectTools(db),
