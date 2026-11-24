@@ -130,7 +130,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .enum(PRESET_NAMES)
           .optional()
           .describe(
-            "quick: summary, change map and risk. security: claims, risk, malicious intent and tests. standard (the default): every check but the flow diagram. full: everything.",
+            "quick: summary, change map and risk. security: claims, risk, malicious intent and tests. standard (the default): every check but the flow diagram and the repo's own checks. full: everything, the repo's own checks included where the repo allows them (reported as failed to start where it doesn't).",
           ),
         sections: z
           .array(z.enum(REPORT_SECTIONS))

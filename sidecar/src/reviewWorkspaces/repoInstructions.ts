@@ -41,7 +41,7 @@ export interface RepoInstructions {
 
 export class RepoInstructionsError extends Error {}
 
-function wanted(path: string): boolean {
+function isInstructionFile(path: string): boolean {
   return ROOT_FILES.includes(path) || CLAUDE_FOLDERS.some((folder) => path.startsWith(folder));
 }
 
@@ -80,9 +80,17 @@ export async function writeRepoInstructions(
   if (!baseRef || !baseSha) {
     throw new RepoInstructionsError("the PR's base branch isn't known yet");
   }
-  const defaultBranch = registeredDefaultBranch ?? (await cloneDefaultBranch(ready));
+  const cloned = await cloneDefaultBranch(ready);
+  const defaultBranch = registeredDefaultBranch ?? cloned;
   if (!defaultBranch) {
     throw new RepoInstructionsError("the repo's default branch isn't known");
+  }
+  // A registration from before the repo changed its default branch would
+  // trust a branch that may no longer be protected.
+  if (cloned && cloned !== defaultBranch) {
+    throw new RepoInstructionsError(
+      `the repo's registered default branch ${defaultBranch} doesn't match its remote's ${cloned}`,
+    );
   }
   if (baseRef !== defaultBranch) {
     throw new RepoInstructionsError(
@@ -97,7 +105,7 @@ export async function writeRepoInstructions(
       ready.clonePath,
     ),
   )
-    .filter(wanted)
+    .filter(isInstructionFile)
     .sort(readingOrder);
   const files: string[] = [];
   let total = 0;

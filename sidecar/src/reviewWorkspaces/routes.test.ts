@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -32,6 +33,7 @@ import { printAgentAnswer, writeAgentAnswers } from "./fakeAgents.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import { patchIndex, readingGroups, writePatchFiles } from "./patchFiles.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
+import { runRepoCommands } from "./repoCommands.ts";
 import { reviewSinceReview, reviewSinceSources } from "./reviewMarks.ts";
 import { createReviewWorkspaceRoutes } from "./routes.ts";
 import {
@@ -852,6 +854,9 @@ describe("verification report", () => {
   let repoSettings: RepoVerificationSettings;
   /** The commands the fake sandbox was asked to run, as argv. */
   let sandboxed: string[][];
+  /** How every command the fake sandbox runs ends, and what it waits on first. */
+  let sandboxAnswer: { exitCode: number; output: string };
+  let sandboxHold: Promise<void>;
   // Makes startClaudeRun throw before it records a run: it reads `program` first.
   let startFails: boolean;
   // The tickets each run that read them was given by name.
@@ -965,12 +970,12 @@ ${printAgentAnswer(fakeDir)}`,
             executor: {
               runner: async (command) => {
                 sandboxed.push(command.argv);
+                await sandboxHold;
                 return {
-                  exitCode: 1,
                   timedOut: false,
                   aborted: false,
                   durationMs: 40,
-                  output: "src/a.test.ts:\n(fail) a > is two\n 3 pass\n 1 fail",
+                  ...sandboxAnswer,
                 };
               },
               checkSandbox: async () => {},
@@ -1077,6 +1082,8 @@ ${printAgentAnswer(fakeDir)}`,
     harnessesAsked = [];
     repoSettings = repoVerificationSettingsOf(null);
     sandboxed = [];
+    sandboxAnswer = { exitCode: 1, output: "src/a.test.ts:\n(fail) a > is two\n 3 pass\n 1 fail" };
+    sandboxHold = Promise.resolve();
     setUpFake();
   });
 
@@ -1183,15 +1190,14 @@ ${printAgentAnswer(fakeDir)}`,
     const commandsOf = async (wsId: string, prId: string) =>
       ((await checklist(wsId, prId)).report as { repoVerify?: { commands?: CommandResult[] } })
         ?.repoVerify?.commands ?? [];
-    const settled = async (wsId: string, prId: string) => {
-      await until(
-        async () => !!item(await checklist(wsId, prId), "repoVerify")?.result,
-        "the result",
-      );
-      await until(
-        async () => (await commandsOf(wsId, prId)).every((c) => c.status !== "pending"),
-        "the commands",
-      );
+    const settled = (wsId: string, prId: string) =>
+      until(async () => !!item(await checklist(wsId, prId), "repoVerify")?.result, "the result");
+    const consent = async (prId: string) => {
+      const { headSha } = await prRow(prId);
+      await db
+        .update(reviewWorkspacePrs)
+        .set({ setupConsent: "granted", setupHeadSha: headSha, setupStatus: "succeeded" })
+        .where(eq(reviewWorkspacePrs.id, prId));
     };
 
     it("doesn't run the commands it names until the user agreed to run the PR's code", async () => {
@@ -1214,13 +1220,19 @@ ${printAgentAnswer(fakeDir)}`,
     it("runs the commands in the sandbox once agreed, refusing what isn't a test runner", async () => {
       repoSettings = enabled();
       const { wsId, prId } = await readyWorkspace();
-      const { headSha } = await prRow(prId);
-      await db
-        .update(reviewWorkspacePrs)
-        .set({ setupConsent: "granted", setupHeadSha: headSha, setupStatus: "succeeded" })
-        .where(eq(reviewWorkspacePrs.id, prId));
+      await consent(prId);
+      let letCommandsEnd = () => {};
+      sandboxHold = new Promise((resolve) => {
+        letCommandsEnd = resolve;
+      });
       expect((await verify("POST", wsId, prId, ["repoVerify"])).status).toBe(202);
       release();
+      await until(async () => sandboxed.length > 0, "the commands to start");
+      // The check is still running while its commands are, so nothing reads it as done.
+      const during = item(await checklist(wsId, prId), "repoVerify");
+      expect(during?.latest?.status).toBe("running");
+      expect(during?.result).toBeNull();
+      letCommandsEnd();
       await settled(wsId, prId);
 
       expect(sandboxed).toEqual([["bun", "test"]]);
@@ -1242,6 +1254,7 @@ ${printAgentAnswer(fakeDir)}`,
         "Breaks the repo's export rule",
         "`bun test` failed",
       ]);
+      expect(report.repoVerify).toMatchObject({ status: "issues" });
       // The copy the commands ran in is gone.
       const copies = readdirSync(dirname((await prRow(prId)).worktreePath)).filter((name) =>
         name.includes("-mutants-"),
@@ -1249,13 +1262,81 @@ ${printAgentAnswer(fakeDir)}`,
       expect(copies).toEqual([]);
     });
 
-    it("won't take instructions from a base that isn't the default branch", async () => {
+    it("passes a command on exit code 0, unless it ran no tests", async () => {
+      repoSettings = enabled();
+      const { wsId, prId } = await readyWorkspace();
+      await consent(prId);
+      sandboxAnswer = { exitCode: 0, output: " 4 pass\n 0 fail" };
+      expect((await verify("POST", wsId, prId, ["repoVerify"])).status).toBe(202);
+      release();
+      await settled(wsId, prId);
+      expect((await commandsOf(wsId, prId))[0]).toMatchObject({ status: "passed", reason: null });
+      const report = (await checklist(wsId, prId)).report as {
+        repoVerify: { findings: { title: string }[] };
+      };
+      expect(report.repoVerify.findings.map((f) => f.title)).toEqual([
+        "Breaks the repo's export rule",
+      ]);
+
+      // A script the PR emptied exits 0 having run nothing.
+      const { headSha } = await prRow(prId);
+      const [empty] = await runRepoCommands(
+        db,
+        config,
+        { id: randomUUID(), workspaceId: wsId, prId, headSha: headSha as string },
+        [{ argv: ["bun", "test"], why: "tests" }],
+        new AbortController().signal,
+        {
+          sandboxAvailable: () => {},
+          executor: {
+            runner: async () => ({
+              exitCode: 0,
+              timedOut: false,
+              aborted: false,
+              durationMs: 10,
+              output: " 0 pass\n 0 fail\nRan 0 tests across 1 file.",
+            }),
+            checkSandbox: async () => {},
+            killStrays: async () => [],
+          },
+        },
+      );
+      expect(empty).toMatchObject({ status: "failed", reason: "it ran no tests" });
+    });
+
+    it("runs nothing on a head other than the one the check read", async () => {
+      const { wsId, prId } = await readyWorkspace();
+      await consent(prId);
+      const results = await runRepoCommands(
+        db,
+        config,
+        { id: randomUUID(), workspaceId: wsId, prId, headSha: "0".repeat(40) },
+        [{ argv: ["bun", "test"], why: "tests" }],
+        new AbortController().signal,
+        {
+          sandboxAvailable: () => {},
+          executor: {
+            runner: async () => {
+              throw new Error("nothing should run");
+            },
+          },
+        },
+      );
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "not-run",
+          reason: "the PR has moved to a new commit since the check read it",
+        }),
+      ]);
+    });
+
+    it("won't trust a registered default branch the remote no longer has as its default", async () => {
       repoSettings = enabled({ defaultBranch: "develop" });
       const { wsId, prId } = await readyWorkspace();
       const res = await verify("POST", wsId, prId, ["repoVerify"]);
       expect(res.status).toBe(409);
       expect(((await res.json()) as { error: string }).error).toContain(
-        "the PR's base is main, not the default branch develop",
+        "the repo's registered default branch develop doesn't match its remote's main",
       );
     });
 

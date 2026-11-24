@@ -11,10 +11,8 @@
  * those limits is recorded as not run, with the reason.
  */
 
-import { eq } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { agentRuns } from "../db/schema.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { createMutantCopy, type MutantCopyDeps, removeMutantCopy } from "./mutantCopy.ts";
 import type { MutationPlan } from "./mutants.ts";
@@ -38,8 +36,7 @@ export interface RequestedCommand {
 }
 
 export interface RepoCommandResult extends RequestedCommand {
-  /** `pending` until the sidecar has run it or decided it can't. */
-  status: "pending" | "passed" | "failed" | "not-run";
+  status: "passed" | "failed" | "not-run";
   exitCode: number | null;
   /** Why it failed or didn't run, in Yarvis's words. */
   reason: string | null;
@@ -47,27 +44,40 @@ export interface RepoCommandResult extends RequestedCommand {
   output: string;
 }
 
-export const pendingCommands = (requested: readonly RequestedCommand[]): RepoCommandResult[] =>
-  requested.map((c) => ({ ...c, status: "pending", exitCode: null, reason: null, output: "" }));
+const notRunCommand = (command: RequestedCommand, reason: string): RepoCommandResult => ({
+  ...command,
+  status: "not-run",
+  exitCode: null,
+  reason,
+  output: "",
+});
 
 const notRun = (requested: readonly RequestedCommand[], reason: string): RepoCommandResult[] =>
-  requested.map((c) => ({ ...c, status: "not-run", exitCode: null, reason, output: "" }));
+  requested.map((c) => notRunCommand(c, reason));
+
+/** The executor's baseline id for the command at `index`, which pairs its result back. */
+const commandId = (index: number) => `c${index + 1}`;
 
 /**
  * A baseline run's result as a command's. A repo's command passes on exit
- * code 0, whether or not it printed test counts; one the executor refused
- * never started.
+ * code 0 whether or not it printed test counts, unless its output says it ran
+ * no tests: a PR can empty the script a runner like `npm test` starts. One
+ * the executor refused never started.
  */
 function fromBaseline(
   command: RequestedCommand,
   run: BaselineResult | undefined,
 ): RepoCommandResult {
-  if (!run) return notRun([command], "the run stopped before it")[0] as RepoCommandResult;
+  if (!run) return notRunCommand(command, "the run stopped before it");
   const output = redactSecrets(run.excerpt);
   const result = { ...command, exitCode: run.exitCode, output };
-  if (run.exitCode === 0) return { ...result, status: "passed", reason: null };
   if (run.exitCode === null && run.durationMs === 0) {
     return { ...result, status: "not-run", reason: run.problem ?? "it couldn't start" };
+  }
+  if (run.exitCode === 0) {
+    return run.testCount === 0 || run.problem === "it ran no tests"
+      ? { ...result, status: "failed", reason: "it ran no tests" }
+      : { ...result, status: "passed", reason: null };
   }
   const reason =
     run.exitCode === null
@@ -84,25 +94,21 @@ export interface RepoCommandDeps {
 }
 
 /**
- * Runs what the repo verification at `runId` asked for, against the commit it
- * read, and writes each command's result onto the run's stored answer. Never
- * throws: a failure is recorded as the commands not running.
+ * Runs what a repo verification asked for, against the commit it read. Never
+ * throws: a failure comes back as the commands not running.
  */
 export async function runRepoCommands(
   db: Db,
   config: Config,
   run: { id: string; workspaceId: string; prId: string; headSha: string },
   requested: readonly RequestedCommand[],
+  signal: AbortSignal,
   deps: RepoCommandDeps = {},
 ): Promise<RepoCommandResult[]> {
-  const results = await execute(db, config, run, requested, deps).catch((e) => {
+  return execute(db, config, run, requested, signal, deps).catch((e) => {
     console.error(`[verification] repo commands for run ${run.id} failed:`, describeError(e));
     return notRun(requested, "running them failed; see Settings → Diagnostics");
   });
-  await recordCommands(db, run.id, results).catch((e) =>
-    console.error(`[verification] could not record the repo commands of ${run.id}:`, e),
-  );
-  return results;
 }
 
 async function execute(
@@ -110,6 +116,7 @@ async function execute(
   config: Config,
   run: { id: string; workspaceId: string; prId: string; headSha: string },
   requested: readonly RequestedCommand[],
+  signal: AbortSignal,
   deps: RepoCommandDeps,
 ): Promise<RepoCommandResult[]> {
   const pr = await getReviewPr(db, run.workspaceId, run.prId);
@@ -130,7 +137,7 @@ async function execute(
   try {
     copyPath = (await createMutantCopy(config, pr, run.id, run.headSha, deps.copy)).path;
     const plan: MutationPlan = {
-      testCommands: requested.map((c, i) => ({ id: `c${i + 1}`, argv: c.argv, testFiles: [] })),
+      testCommands: requested.map((c, i) => ({ id: commandId(i), argv: c.argv, testFiles: [] })),
       positiveControls: [],
       mutants: [],
       notes: "",
@@ -142,7 +149,7 @@ async function execute(
         changedPaths: new Set(),
         maxMutants: 0,
         timeoutCapMs: settings.testTimeoutCapSeconds * 1000,
-        signal: AbortSignal.timeout(COMMANDS_TIMEOUT_MS),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(COMMANDS_TIMEOUT_MS)]),
         sandbox: {
           workspacesRoot: config.workspacesRoot,
           extraBlockedPorts: localServicePorts(config),
@@ -155,7 +162,7 @@ async function execute(
     return requested.map((c, i) =>
       fromBaseline(
         c,
-        execution.baselines.find((b) => b.id === `c${i + 1}`),
+        execution.baselines.find((b) => b.id === commandId(i)),
       ),
     );
   } catch (e) {
@@ -171,44 +178,27 @@ async function execute(
   }
 }
 
-/** A failed command is the server's finding, not the agent's: the exit code says so. */
-function commandFinding(result: RepoCommandResult) {
-  return {
-    title: `\`${result.argv.join(" ")}\` failed`.slice(0, 100),
-    detail: (result.reason ?? `It exited with code ${result.exitCode}.`).slice(0, 280),
-    severity: "medium" as const,
-  };
-}
+const SEVERITY_RANK = { high: 0, medium: 1, low: 2 } as const;
 
-type StoredCheck = { status: string; findings: unknown[]; commands?: RepoCommandResult[] };
+type Finding = { severity: keyof typeof SEVERITY_RANK; title: string; detail: string };
 
-/** Writes the results onto the run's stored `repoVerify`, adding a finding per failed command. */
-async function recordCommands(db: Db, runId: string, results: RepoCommandResult[]): Promise<void> {
-  await db.transaction(async (tx) => {
-    const [row] = await tx
-      .select({ result: agentRuns.result })
-      .from(agentRuns)
-      .where(eq(agentRuns.id, runId))
-      .for("update");
-    const stored = row?.result as { repoVerify?: StoredCheck } | null | undefined;
-    if (!stored?.repoVerify) return;
-    const findings = [
-      ...stored.repoVerify.findings,
-      ...results.filter((r) => r.status === "failed").map(commandFinding),
-    ];
-    await tx
-      .update(agentRuns)
-      .set({
-        result: {
-          ...stored,
-          repoVerify: {
-            ...stored.repoVerify,
-            status: findings.length > 0 ? "issues" : "pass",
-            findings,
-            commands: results,
-          },
-        },
-      })
-      .where(eq(agentRuns.id, runId));
-  });
+/**
+ * The repo check with its commands' results, and a finding for each failed
+ * one. That finding is the server's, not the agent's: the exit code says so.
+ */
+export function withCommandResults<C extends { findings: Finding[] }>(
+  check: C,
+  results: RepoCommandResult[],
+): C & { status: "pass" | "issues"; commands: RepoCommandResult[] } {
+  const failed: Finding[] = results
+    .filter((r) => r.status === "failed")
+    .map((r) => ({
+      title: `\`${r.argv.join(" ")}\` failed`.slice(0, 100),
+      detail: (r.reason ?? `It exited with code ${r.exitCode}.`).slice(0, 280),
+      severity: "medium",
+    }));
+  const findings = [...check.findings, ...failed].sort(
+    (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+  );
+  return { ...check, findings, status: findings.length > 0 ? "issues" : "pass", commands: results };
 }

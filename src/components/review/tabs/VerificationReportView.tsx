@@ -425,17 +425,16 @@ function Tripwires({
   );
 }
 
-/**
- * Under a repo or playbook check: which commit the repo's instructions came
- * from, and the steps they asked for that a read-only run couldn't take.
- */
 const COMMAND_STATUS: Record<RepoCommand["status"], string> = {
-  pending: "Running",
   passed: "Passed",
   failed: "Failed",
   "not-run": "Not run",
 };
 
+/**
+ * Under a repo or playbook check: which commit the repo's instructions came
+ * from, how the commands they asked for ran, and the steps nobody could take.
+ */
 function InstructedNote({
   check,
   instructions,

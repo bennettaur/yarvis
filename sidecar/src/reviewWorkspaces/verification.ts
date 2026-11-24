@@ -89,11 +89,11 @@ import {
 } from "./patchFiles.ts";
 import {
   MAX_REPO_COMMANDS,
-  pendingCommands,
   type RepoCommandDeps,
   type RepoCommandResult,
   type RequestedCommand,
   runRepoCommands,
+  withCommandResults,
 } from "./repoCommands.ts";
 import {
   REPO_INSTRUCTIONS_DIR,
@@ -160,6 +160,8 @@ interface Check {
   instructions?: RepoInstructions;
   /** The repo check's only: the commands its instructions asked for, and how each ran. */
   commands?: RepoCommandResult[];
+  /** The repo check's answer only, until its commands run: what the agent asked to run. */
+  requested?: RequestedCommand[];
 }
 
 /** The findings decide the status: `issues` with none has nothing to show, `pass` with some would hide them. */
@@ -193,32 +195,28 @@ type SkippedStep = z.output<typeof skippedStepSchema>;
  * steps a read-only run can't take (run the tests, post a comment). Those are
  * listed rather than dropped, so the reviewer knows what is left to do.
  */
-const instructedCheckSchema = z
-  .object({
-    status: z.enum(["pass", "issues"]),
-    findings: boundedList(findingSchema, MAX_FINDINGS),
-    skipped: boundedList(skippedStepSchema, MAX_SKIPPED)
-      .nullish()
-      .transform((steps) => steps ?? []),
-  })
-  .transform(({ findings, skipped }) => ({
-    ...checkFrom(
-      [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
-    ),
-    skipped,
-  }));
+const instructedCheckFields = z.object({
+  status: z.enum(["pass", "issues"]),
+  findings: boundedList(findingSchema, MAX_FINDINGS),
+  skipped: boundedList(skippedStepSchema, MAX_SKIPPED)
+    .nullish()
+    .transform((steps) => steps ?? []),
+});
+
+const bySeverity = (findings: Finding[]) =>
+  [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+
+const instructedCheckSchema = instructedCheckFields.transform(({ findings, skipped }) => ({
+  ...checkFrom(bySeverity(findings)),
+  skipped,
+}));
 
 /**
  * The repo check's answer: an instructed check, plus the commands the repo's
- * instructions want run, which the sidecar runs itself afterwards.
+ * instructions want run, which the sidecar runs itself before the run ends.
  */
-const repoCheckSchema = z
-  .object({
-    status: z.enum(["pass", "issues"]),
-    findings: boundedList(findingSchema, MAX_FINDINGS),
-    skipped: boundedList(skippedStepSchema, MAX_SKIPPED)
-      .nullish()
-      .transform((steps) => steps ?? []),
+const repoCheckSchema = instructedCheckFields
+  .extend({
     commands: boundedList(
       z.object({
         argv: z.array(z.string().max(300)).min(1).max(40),
@@ -229,13 +227,13 @@ const repoCheckSchema = z
       .nullish()
       .transform((commands) => commands ?? []),
   })
-  .transform(({ findings, skipped, commands }) => ({
-    ...checkFrom(
-      [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
-    ),
-    skipped,
-    requested: commands as RequestedCommand[],
-  }));
+  .transform(
+    ({ findings, skipped, commands }): Check => ({
+      ...checkFrom(bySeverity(findings)),
+      skipped,
+      requested: commands,
+    }),
+  );
 
 const concernSchema = z.object({
   title: boundedText(TITLE_CHARS),
@@ -1982,6 +1980,7 @@ async function writeInstructions(
     task: [
       `REPO_INSTRUCTIONS=${join(contextDir, REPO_INSTRUCTIONS_DIR)}`,
       `REPO_INSTRUCTION_FILES=${instructions.files.length}`,
+      `REPO_INSTRUCTIONS_OMITTED=${instructions.omitted}`,
       `RUNNABLE_COMMANDS=${TEST_RUNNER_PREFIXES.join(", ")}`,
       `MAX_COMMANDS=${MAX_REPO_COMMANDS}`,
     ].join("\n"),
@@ -2076,15 +2075,9 @@ async function startSectionRun(
           // Which commit the instructions came from is the server's record, not the agent's.
           let repoVerify: Check | undefined;
           if (report.repoVerify && followed?.instructions) {
-            const { requested: asked, ...check } = report.repoVerify as Check & {
-              requested?: RequestedCommand[];
-            };
+            const { requested: asked, ...check } = report.repoVerify;
             requested = asked ?? [];
-            repoVerify = {
-              ...check,
-              instructions: followed.instructions,
-              commands: pendingCommands(requested),
-            };
+            repoVerify = { ...check, instructions: followed.instructions };
           }
           return {
             ...report,
@@ -2093,6 +2086,19 @@ async function startSectionRun(
             ...(repoVerify && { repoVerify }),
             coverage: counted.coverage,
           };
+        },
+        // The commands run inside the run, so it ends only once they have.
+        afterAnswer: async (report, signal) => {
+          if (!report.repoVerify || requested.length === 0) return report;
+          const results = await runRepoCommands(
+            db,
+            inputs.config,
+            { id: handle.id, workspaceId: pr.workspaceId, prId: pr.id, headSha },
+            requested,
+            signal,
+            deps.repoCommands,
+          );
+          return { ...report, repoVerify: withCommandResults(report.repoVerify, results) };
         },
         plugins: ["yarvis-review"],
         backend: harness.kind,
@@ -2142,15 +2148,6 @@ async function startSectionRun(
         }
         await recordReadVolumes(db, handle.id, volumes);
         await recordAudit(db, handle.id, audit);
-        if (outcome.status === "succeeded" && requested.length > 0) {
-          await runRepoCommands(
-            db,
-            inputs.config,
-            { id: handle.id, workspaceId: pr.workspaceId, prId: pr.id, headSha },
-            requested,
-            deps.repoCommands,
-          );
-        }
       })
       .catch((e) => console.error("[verification] could not record the audit:", e))
       .finally(removeContext);

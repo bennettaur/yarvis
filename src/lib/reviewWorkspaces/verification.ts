@@ -40,7 +40,7 @@ export interface InstructedCheck extends VerificationCheck {
 export interface RepoCommand {
   argv: string[];
   why: string;
-  status: "pending" | "passed" | "failed" | "not-run";
+  status: "passed" | "failed" | "not-run";
   exitCode: number | null;
   reason: string | null;
   /** Written by the PR's code: shown as text, never as markup. */

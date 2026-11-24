@@ -609,6 +609,13 @@ export type FanOutRunOptions<T, R = T> = Omit<
      * Pi's system prompt; its effort goes in the model's `:thinking` suffix.
      */
     backend?: FanOutBackend;
+    /**
+     * Work the server does on a succeeded run's answer before the run ends,
+     * such as running commands the answer named. The run stays `running`
+     * until it settles, so a viewer, a cancel and the startup sweep all see
+     * it as part of the run. Throwing fails the run.
+     */
+    afterAnswer?: (output: R, signal: AbortSignal) => Promise<R>;
   };
 
 /** The CLIs a fan-out run's parts can run on. */
@@ -822,8 +829,18 @@ export async function startClaudeFanOutRun<T, R = T>(
     }
   };
 
+  const settle = async (outcome: AgentRunOutcome<R>): Promise<AgentRunOutcome<R>> => {
+    if (outcome.status !== "succeeded" || outcome.output === null || !options.afterAnswer) {
+      return outcome;
+    }
+    const output = await options.afterAnswer(outcome.output, cancelled);
+    if (cancelled.aborted) return { ...outcome, output: null, status: "cancelled", error: null };
+    return { ...outcome, output, durationMs: Date.now() - startedAt };
+  };
+
   const done = Promise.all(options.parts.map(runPart))
     .then(finish)
+    .then(settle)
     .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
     .then((outcome) => finishRun(db, registry, id, outcome))
     .finally(() => {

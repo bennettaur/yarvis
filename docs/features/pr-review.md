@@ -197,7 +197,9 @@ the background, and the attention bell tells you when they're done.
 - **Verification report**: the report needs a local checkout, so the assistant
   uses the [review workspace](review-workspaces.md) already holding the PR,
   or creates one named after it. It waits for the clone, then starts the
-  report's checks, the defaults unless you name others, each as its own run.
+  report's checks, the repo's default checks (see
+  [Repo and playbook verification](review-workspaces.md#repo-and-playbook-verification))
+  unless you name others, each as its own run.
   The setup script never runs: that still needs your answer in the review
   workspace. A check that already has a result for the PR's current commit,
   or is already running, isn't started again unless you ask for a fresh one.
@@ -213,7 +215,8 @@ the background, and the attention bell tells you when they're done.
   ended, so a dozen agent runs per PR don't all start at once. You can name a
   preset: **quick** (summary, change map and risk), **security** (claims,
   risk, malicious intent and tests), **standard** (the default: every check
-  but the flow diagram) or **full** (everything), and a model or effort that
+  but the flow diagram and the repo's own checks) or **full** (everything,
+  the repo's own checks included where the repo's settings allow them), and a model or effort that
   every check in the queue runs on. The bell rings once when the
   queue finishes, naming each PR and how it went, and you can ask the
   assistant how the queue is going, or to stop it, in the meantime. One queue

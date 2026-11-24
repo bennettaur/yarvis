@@ -455,9 +455,9 @@ function ScriptEditor({
 }
 
 /**
- * Which verification checks this repo's PRs run when none are picked: by the
- * review prep and by a run started without a list. Repo verification follows
- * instructions from the repo itself, so it runs only once ticked here.
+ * The checks a PR in this repo runs when a run names none, review prep's
+ * included. Repo verification follows the repo's own instructions, so it runs
+ * only once ticked here.
  */
 function VerificationChecks({
   picked,

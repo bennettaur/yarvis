@@ -20,7 +20,7 @@ import {
   kickOffVerification,
 } from "../reviewWorkspaces/kickoff.ts";
 import type { PrMeta, ReviewDeps } from "../reviewWorkspaces/service.ts";
-import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
+import { createTestRemote, sh, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
 import {
   DEFAULT_SECTIONS,
   REPORT_SECTIONS,
@@ -188,7 +188,7 @@ exit 1`,
     prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent }),
     tier: {
       sizeTiers: async () => sizeTiers,
-      startStory: async (r) => {
+      kickOffStory: async (r) => {
         storiesStarted.push(r);
         return { status: "started" };
       },
@@ -370,19 +370,28 @@ describe("sizing a prep", () => {
   const runSections = async () =>
     (await db.select().from(agentRuns)).flatMap((r) => (r.meta as { sections: string[] }).sections);
 
-  it("runs only the summary and risk on a small PR, and says so", async () => {
+  it("runs only the summary, risk and malicious-intent checks on a small PR, and says so", async () => {
     sizeTiers = { ...EVERY_PR_NORMAL, smallMaxLines: 1_000_000, smallMaxFiles: 1_000 };
-    await heldChecks(["summary", "risk"]);
+    // The test PR's binary file would make it normal, so the PR drops it.
+    sh(remote.work, "checkout", "-q", "feature");
+    sh(remote.work, "rm", "-q", "image.bin");
+    sh(remote.work, "commit", "-q", "-m", "no binary");
+    sh(remote.work, "push", "-q", remote.bare, "feature:refs/pull/1/head", "--force");
+    sh(remote.work, "checkout", "-q", "main");
+    await heldChecks(["summary", "risk", "malice"]);
     await prepReview(db, config, ref, prepDeps);
     await until(async () => (await prepOf(ref))?.state === "verifying", "the prep to join");
     release();
     await prepsSettled();
 
     expect(await prepOf(ref)).toMatchObject({ state: "ready" });
-    expect((await runSections()).sort()).toEqual(["risk", "summary"]);
+    expect((await runSections()).sort()).toEqual(["malice", "risk", "summary"]);
     const body = (await prepItems())[0]?.body ?? "";
     expect(body).toMatch(/Small PR \(\d+ changed lines in \d+ files, generated files left out\)/);
     // The checks it skipped on purpose aren't counted against the verdict.
+    expect(body).toContain(
+      "only the summary, risk, malicious-intent and the repo's own checks ran",
+    );
     expect(body).not.toContain("without a result");
     expect(storiesStarted).toEqual([]);
   });

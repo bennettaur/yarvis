@@ -1,7 +1,7 @@
 /**
  * Which checks review prep runs, from the PR's size. A small PR is quicker to
- * read than to wait for a dozen checks on, so it gets only the summary and
- * risk. A big one also gets the flow diagram and the Story walkthrough, so
+ * read than to wait for a dozen checks on, so it gets only the summary, risk
+ * and malicious-intent checks, plus the repo's own. A big one also gets the flow diagram and the Story walkthrough, so
  * they are ready when the user opens it. Everything else runs the repo's
  * default checks.
  */
@@ -14,8 +14,14 @@ import { getGuide } from "../pr/guides.ts";
 import type { PrRef } from "../pr/types.ts";
 import { CHECKOUT_WAIT_MS, type KickoffDeps } from "../reviewWorkspaces/kickoff.ts";
 import { PATCH_LIMITS } from "../reviewWorkspaces/patchFiles.ts";
-import { type BulkClass, getReviewPr, reviewDiffFacts } from "../reviewWorkspaces/service.ts";
 import {
+  type BulkClass,
+  getReviewPr,
+  resumeIfStalled,
+  reviewDiffFacts,
+} from "../reviewWorkspaces/service.ts";
+import {
+  isRepoSection,
   normalizeSections,
   type ReportSection,
   repoVerificationSettings,
@@ -41,11 +47,14 @@ export const DEFAULT_SIZE_TIERS: SizeTierThresholds = {
   bigMinFiles: 10,
 };
 
-/** What a small PR runs: what it does, and how risky it is. */
-export const SMALL_SECTIONS: readonly ReportSection[] = ["summary", "risk"];
+/**
+ * What a small PR runs: what it does, how risky it is, and the
+ * malicious-intent check, since a backdoor or a CI change fits in a few lines.
+ */
+export const SMALL_SECTIONS: readonly ReportSection[] = ["summary", "risk", "malice"];
 
 /** A count a hand-edited setting may hold; anything else falls back to the default. */
-function count(value: unknown, fallback: number): number {
+function settingCount(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.round(value)
     : fallback;
@@ -57,10 +66,10 @@ export async function getSizeTierConfig(): Promise<SizeTierThresholds> {
   }>("reviewPrep").catch(() => undefined);
   const raw = stored?.sizeTiers ?? {};
   return {
-    smallMaxLines: count(raw.smallMaxLines, DEFAULT_SIZE_TIERS.smallMaxLines),
-    smallMaxFiles: count(raw.smallMaxFiles, DEFAULT_SIZE_TIERS.smallMaxFiles),
-    bigMinLines: count(raw.bigMinLines, DEFAULT_SIZE_TIERS.bigMinLines),
-    bigMinFiles: count(raw.bigMinFiles, DEFAULT_SIZE_TIERS.bigMinFiles),
+    smallMaxLines: settingCount(raw.smallMaxLines, DEFAULT_SIZE_TIERS.smallMaxLines),
+    smallMaxFiles: settingCount(raw.smallMaxFiles, DEFAULT_SIZE_TIERS.smallMaxFiles),
+    bigMinLines: settingCount(raw.bigMinLines, DEFAULT_SIZE_TIERS.bigMinLines),
+    bigMinFiles: settingCount(raw.bigMinFiles, DEFAULT_SIZE_TIERS.bigMinFiles),
   };
 }
 
@@ -79,6 +88,8 @@ export function isGenerated(path: string, bulk?: BulkClass): boolean {
 export interface PrepSize {
   files: number;
   changedLines: number;
+  /** Changed files with no text diff, which count no lines however big they are. */
+  binary: number;
 }
 
 interface SizedFile {
@@ -96,6 +107,7 @@ export function measure(
   const sum = (list: readonly SizedFile[]): PrepSize => ({
     files: list.length,
     changedLines: list.reduce((n, f) => n + (f.binary ? 0 : f.additions + f.deletions), 0),
+    binary: list.filter((f) => f.binary).length,
   });
   return {
     counted: sum(files.filter((f) => !isGenerated(f.path, bulk.get(f.path)))),
@@ -107,26 +119,37 @@ export function measure(
  * Big goes by the written files alone, so a lockfile's churn doesn't make a
  * PR big. Small goes by every file: generated files don't count toward size,
  * but a PR can't hide its change in a file named like one to skip the checks.
+ * A binary change is never small, since its size isn't in the line count.
  */
 export function pickTier(
   size: { counted: PrepSize; total: PrepSize },
-  t: SizeTierThresholds,
+  thresholds: SizeTierThresholds,
 ): PrepTier {
-  if (size.counted.changedLines >= t.bigMinLines || size.counted.files >= t.bigMinFiles) {
+  const { counted, total } = size;
+  if (counted.changedLines >= thresholds.bigMinLines || counted.files >= thresholds.bigMinFiles) {
     return "big";
   }
-  if (size.total.changedLines <= t.smallMaxLines && size.total.files <= t.smallMaxFiles) {
+  if (
+    total.binary === 0 &&
+    total.changedLines <= thresholds.smallMaxLines &&
+    total.files <= thresholds.smallMaxFiles
+  ) {
     return "small";
   }
   return "normal";
 }
 
-/** The sections a tier runs, given the repo's defaults. */
+/**
+ * The sections a tier runs, given the repo's defaults. A small PR still runs
+ * the repo's own checks the user turned on for it.
+ */
 export function tierSections(
   tier: PrepTier,
   repoDefaults: readonly ReportSection[],
 ): ReportSection[] {
-  if (tier === "small") return [...SMALL_SECTIONS];
+  if (tier === "small") {
+    return normalizeSections([...SMALL_SECTIONS, ...repoDefaults.filter(isRepoSection)]);
+  }
   if (tier === "big") return normalizeSections([...repoDefaults, "flow"]);
   return [...repoDefaults];
 }
@@ -141,7 +164,7 @@ export interface TierChoice {
 export interface PrepTierDeps {
   sizeTiers?: () => Promise<SizeTierThresholds>;
   /** Starts the Story walkthrough; tests swap it out. */
-  startStory?: (ref: PrRef) => Promise<GuideKickoff>;
+  kickOffStory?: (ref: PrRef) => Promise<GuideKickoff>;
   pollMs?: number;
   waitMs?: number;
 }
@@ -168,9 +191,12 @@ export async function choosePrepTier(
     size: null,
   };
   const deadline = Date.now() + (deps.waitMs ?? CHECKOUT_WAIT_MS);
+  // A prep requeued after a restart finds its clone stopped; nothing else restarts it.
+  await resumeIfStalled(db, config, pr, kickoff.review);
   let current = pr;
   while (current.status !== "ready") {
-    if (current.status === "error" || Date.now() > deadline) return normal;
+    if (current.status === "error" || current.worktreeStatus === "error") return normal;
+    if (Date.now() > deadline) return normal;
     await Bun.sleep(deps.pollMs ?? POLL_MS);
     current = await getReviewPr(db, where.workspaceId, where.prId);
   }
@@ -202,29 +228,30 @@ export async function startStory(
   config: Config,
   ref: PrRef,
   deps: PrepTierDeps = {},
-): Promise<GuideKickoff["status"]> {
+): Promise<GuideKickoff> {
   try {
     const started = await (
-      deps.startStory ?? ((r) => kickOffGuide(db, config, r, { quiet: true }))
+      deps.kickOffStory ?? ((r) => kickOffGuide(db, config, r, { quiet: true }))
     )(ref);
     if (started.status === "error") {
       console.error("[review-prep] could not start the Story walkthrough:", started.error);
     }
-    return started.status;
+    return started;
   } catch (e) {
     console.error("[review-prep] could not start the Story walkthrough:", describeError(e));
-    return "error";
+    return { status: "error", error: describeError(e) };
   }
 }
 
 /** What the prep's item says about the Story walkthrough, once the checks have ended. */
-export async function storyNote(
-  db: Db,
-  ref: PrRef,
-  status: GuideKickoff["status"],
-): Promise<string> {
-  if (status === "error")
+export async function storyNote(db: Db, ref: PrRef, story: GuideKickoff): Promise<string> {
+  if (story.status === "error") {
     return "The Story walkthrough couldn't start; see Settings → Diagnostics.";
+  }
+  // A guide written for an earlier commit is kept, with the reader's place in it.
+  if (story.status === "exists" && story.stale) {
+    return "Its Story walkthrough is from an earlier commit; regenerate it from the PR.";
+  }
   return (await getGuide(db, ref))
     ? "The Story walkthrough is ready."
     : "The Story walkthrough is still being written.";
@@ -239,7 +266,7 @@ export function tierLine(choice: TierChoice, story: string | null): string {
     : "size unknown";
   switch (choice.tier) {
     case "small":
-      return `Small PR (${size}): only the summary and risk checks ran, since reading it is quicker.`;
+      return `Small PR (${size}): only the summary, risk, malicious-intent and the repo's own checks ran, since reading it is quicker.`;
     case "big":
       return `Big PR (${size}): the flow diagram ran too.${story ? ` ${story}` : ""}`;
     default:

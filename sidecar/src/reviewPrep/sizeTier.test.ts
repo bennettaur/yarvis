@@ -33,8 +33,8 @@ describe("measuring a PR for its tier", () => {
     ];
     const bulk = new Map([["bun.lock", skim("lockfile")]]);
     expect(measure(files, bulk)).toEqual({
-      counted: { files: 2, changedLines: 10 },
-      total: { files: 6, changedLines: 5217 },
+      counted: { files: 2, changedLines: 10, binary: 1 },
+      total: { files: 6, changedLines: 5217, binary: 1 },
     });
   });
 
@@ -46,9 +46,9 @@ describe("measuring a PR for its tier", () => {
 });
 
 describe("picking a tier", () => {
-  const size = (counted: [number, number], total: [number, number]) => ({
-    counted: { files: counted[0], changedLines: counted[1] },
-    total: { files: total[0], changedLines: total[1] },
+  const size = (counted: [number, number], total: [number, number], binary = 0) => ({
+    counted: { files: counted[0], changedLines: counted[1], binary },
+    total: { files: total[0], changedLines: total[1], binary },
   });
 
   it("is small at or under both small limits, counting every file", () => {
@@ -56,6 +56,8 @@ describe("picking a tier", () => {
     // A two-line change beside a lockfile bump isn't small.
     expect(pickTier(size([1, 2], [2, 400]), DEFAULT_SIZE_TIERS)).toBe("normal");
     expect(pickTier(size([3, 3], [3, 3]), DEFAULT_SIZE_TIERS)).toBe("normal");
+    // A binary's size isn't in the line count, so it can't make a PR small.
+    expect(pickTier(size([1, 0], [1, 0], 1), DEFAULT_SIZE_TIERS)).toBe("normal");
   });
 
   it("is big at either big limit, counting only written files", () => {
@@ -64,9 +66,9 @@ describe("picking a tier", () => {
     expect(pickTier(size([2, 40], [3, 9000]), DEFAULT_SIZE_TIERS)).toBe("normal");
   });
 
-  it("runs the summary and risk when small, the repo's set when normal, and adds the diagram when big", () => {
+  it("runs summary, risk, malice and the repo's own checks when small, the repo's set when normal, and adds the diagram when big", () => {
     const repo = ["summary", "tests", "repoVerify"] as const;
-    expect(tierSections("small", repo)).toEqual(["summary", "risk"]);
+    expect(tierSections("small", repo)).toEqual(["summary", "risk", "malice", "repoVerify"]);
     expect(tierSections("normal", repo)).toEqual([...repo]);
     expect(tierSections("big", repo)).toEqual(["summary", "tests", "repoVerify", "flow"]);
     expect(tierSections("big", [...DEFAULT_SECTIONS, "flow"])).toEqual([
@@ -76,9 +78,9 @@ describe("picking a tier", () => {
   });
 
   it("says which tier ran", () => {
-    const sized = { sections: [], size: { files: 1, changedLines: 1 } };
+    const sized = { sections: [], size: { files: 1, changedLines: 1, binary: 0 } };
     expect(tierLine({ ...sized, tier: "small" }, null)).toBe(
-      "Small PR (1 changed line in 1 file, generated files left out): only the summary and risk checks ran, since reading it is quicker.",
+      "Small PR (1 changed line in 1 file, generated files left out): only the summary, risk, malicious-intent and the repo's own checks ran, since reading it is quicker.",
     );
     expect(tierLine({ tier: "normal", sections: [], size: null }, null)).toBe(
       "Normal PR (size unknown): the repo's default checks ran.",

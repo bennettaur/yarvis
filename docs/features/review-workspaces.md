@@ -516,13 +516,20 @@ on.
 
 When the repo's instructions ask for its tests to be run, the repo
 verification agent names the commands, and Yarvis runs them itself once the
-agent is done, the way [mutation testing](#mutation-testing) runs tests: only
-after you agreed to run the PR's code (its setup ran with your consent on
-this commit), in a scratch copy of the checkout, inside the same sandbox with
-no network, and only as one of the test runners mutation testing allows
-(`bun test`, `npm test`, `pytest`, `go test` and the like). Each command is
-listed with whether it passed, failed or didn't run and why, and the end of
-its output. A failed command adds a finding of its own. Anything else the
+agent is done, the way [mutation testing](#mutation-testing) runs tests:
+
+- only after you agreed to run the PR's code: its setup ran with your consent
+  on this commit. A repo with no setup script never gets that consent here,
+  so its commands don't run;
+- in a scratch copy of the checkout, inside the same sandbox, with no network;
+- only as one of the test runners mutation testing allows (`bun test`,
+  `npm test`, `pytest`, `go test` and the like).
+
+The check counts as running until its commands have finished. Each command
+is listed with whether it passed, failed or didn't run and why, and the end
+of its output. A command passes on exit code 0, unless its output says it ran
+no tests: `npm test` and the like run the PR's own script, which the PR can
+change. A failed command adds a finding of its own. Anything else the
 instructions ask for (another script, anything needing the network or
 credentials, posting a report) isn't done: the check lists it under **steps
 left for you**. Playbook verification only reads, and lists any step that
@@ -882,8 +889,10 @@ PR, it:
    PRs at a time; the rest wait their turn. The number is
    `maxConcurrentVerifications` in the `reviewPrep` section of
    `~/.yarvis/settings.json` (see [Configuration](../configuration.md)).
-   - A **small** PR (20 changed lines or fewer in at most 2 files) gets only
-     the summary and risk, since reading it is quicker than waiting for more.
+   - A **small** PR (20 changed lines or fewer in at most 2 files, and no
+     binary files) gets only the summary, risk and malicious-intent checks,
+     plus the repo's own checks if you turned them on for it, since reading it
+     is quicker than waiting for more.
    - A **big** PR (500 changed lines or more, or 10 files or more) gets the
      repo's default checks plus the flow diagram, and its Story walkthrough
      is written at the same time, so both are ready when you open it.

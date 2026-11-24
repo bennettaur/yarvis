@@ -341,7 +341,7 @@ async function finishPrep(
   outcome: VerifyOutcome,
   deps: ReviewPrepDeps,
   tier: TierChoice,
-  story: GuideKickoff["status"] | null,
+  story: GuideKickoff | null,
 ): Promise<void> {
   const name = shortPrName(row.ref);
   const found = await findReviewWorkspacePr(db, row.ref);
