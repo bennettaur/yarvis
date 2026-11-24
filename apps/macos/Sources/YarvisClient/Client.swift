@@ -1,0 +1,282 @@
+import Foundation
+
+public enum YarvisError: Error, Equatable, LocalizedError {
+    /// 401: the token is unknown, revoked or expired. Sign in again.
+    case unauthorized
+    /// 403 `reauth_required`: the route wants a code check from the last 10 minutes.
+    case reauthRequired
+    case http(status: Int, error: String, detail: String?)
+    case badResponse
+    /// A path that doesn't make a valid URL on the server's origin.
+    case invalidURL
+
+    public var errorDescription: String? {
+        switch self {
+        case .unauthorized: return "Signed out. Sign in again."
+        case .reauthRequired: return "This needs a fresh authenticator code."
+        case .http(_, let error, let detail):
+            return detail.map { "\(error): \($0)" } ?? error
+        case .badResponse: return "The server sent something this app can't read."
+        case .invalidURL: return "Couldn't build a request URL for that server."
+        }
+    }
+}
+
+/// A sign-in, before there is a token.
+public struct SignInRequest: Sendable {
+    public var passphrase: String
+    /// A six-digit authenticator code, or a backup code.
+    public var code: String
+    public var isBackupCode: Bool
+    public var deviceName: String
+
+    public init(passphrase: String, code: String, isBackupCode: Bool = false, deviceName: String) {
+        self.passphrase = passphrase
+        self.code = code
+        self.isBackupCode = isBackupCode
+        self.deviceName = deviceName
+    }
+}
+
+/// The HTTP side of the server API. Every call carries the device token as a
+/// bearer header. WebSockets live in `EventStream` and `PtyConnection`.
+public final class YarvisClient: Sendable {
+    public let baseURL: URL
+    public let token: String
+    let session: URLSession
+    /// Called on any 401, so the app can drop the token and show sign-in.
+    let onUnauthorized: @Sendable () -> Void
+
+    public init(baseURL: URL, token: String, session: URLSession = .shared,
+                onUnauthorized: @escaping @Sendable () -> Void = {}) {
+        self.baseURL = baseURL
+        self.token = token
+        self.session = session
+        self.onUnauthorized = onUnauthorized
+    }
+
+    // MARK: Sign-in (no token)
+
+    public static func status(baseURL: URL, session: URLSession = .shared) async throws -> AuthStatus {
+        var req = URLRequest(url: try url(baseURL, "/api/auth/status"))
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
+        try check(data, res)
+        return try decode(AuthStatus.self, data)
+    }
+
+    /// Signs in with the passphrase and an authenticator or backup code, and
+    /// creates a device for this app.
+    public static func signIn(baseURL: URL, _ r: SignInRequest,
+                              session: URLSession = .shared) async throws -> SignedIn {
+        var body: [String: JSONValue] = [
+            "passphrase": .string(r.passphrase),
+            "deviceName": .string(r.deviceName),
+        ]
+        body[r.isBackupCode ? "backupCode" : "code"] = .string(r.code)
+        var req = URLRequest(url: try url(baseURL, "/api/auth/login"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(JSONValue.object(body))
+        let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
+        // A 401 here is a wrong passphrase or code, not a lost device.
+        try check(data, res)
+        return try decode(SignedIn.self, data)
+    }
+
+    // MARK: Requests
+
+    /// Refuses a redirect off the server's origin, which would carry the
+    /// bearer header, or a sign-in's passphrase, somewhere else.
+    final class SameOriginRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+        let origin: URL
+
+        init(origin: URL) {
+            self.origin = origin
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                        newRequest request: URLRequest) async -> URLRequest? {
+            guard let target = request.url, target.scheme == origin.scheme, target.host == origin.host,
+                  target.port == origin.port else { return nil }
+            return request
+        }
+    }
+
+    func request(_ method: String, _ path: String, body: JSONValue? = nil) throws -> URLRequest {
+        var req = URLRequest(url: try Self.url(baseURL, path))
+        req.httpMethod = method
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONEncoder().encode(body)
+        }
+        return req
+    }
+
+    /// Sends a request and returns the body of a 2xx answer.
+    @discardableResult
+    func send(_ method: String, _ path: String, body: JSONValue? = nil) async throws -> Data {
+        let (data, res) = try await session.data(for: request(method, path, body: body),
+                                                 delegate: SameOriginRedirects(origin: baseURL))
+        try checkAuthed(data, res)
+        return data
+    }
+
+    func get<T: Decodable>(_ type: T.Type, _ path: String) async throws -> T {
+        try Self.decode(type, await send("GET", path))
+    }
+
+    func post<T: Decodable>(_ type: T.Type, _ path: String, body: JSONValue? = nil) async throws -> T {
+        try Self.decode(type, await send("POST", path, body: body ?? .object([:])))
+    }
+
+    func checkAuthed(_ data: Data, _ res: URLResponse) throws {
+        do {
+            try Self.check(data, res)
+        } catch YarvisError.unauthorized {
+            onUnauthorized()
+            throw YarvisError.unauthorized
+        }
+    }
+
+    static func url(_ base: URL, _ path: String) throws -> URL {
+        guard let url = base.appendingAPIPath(path) else { throw YarvisError.invalidURL }
+        return url
+    }
+
+    static func check(_ data: Data, _ res: URLResponse) throws {
+        guard let http = res as? HTTPURLResponse else { throw YarvisError.badResponse }
+        if (200..<300).contains(http.statusCode) { return }
+        let body = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+        if http.statusCode == 401 { throw YarvisError.unauthorized }
+        if http.statusCode == 403, body?.error == "reauth_required" { throw YarvisError.reauthRequired }
+        throw YarvisError.http(status: http.statusCode,
+                               error: body?.error ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
+                               detail: body?.detail)
+    }
+
+    static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw YarvisError.badResponse
+        }
+    }
+
+    // MARK: Auth with a token
+
+    public func me() async throws -> Device {
+        try await get(Device.self, "/api/devices/me")
+    }
+
+    /// Signs this device out on the server (`DELETE /api/devices/me`). A 401
+    /// means it was already gone, which is what was asked for, so it doesn't
+    /// count as losing the token.
+    ///
+    /// Gives up with `URLError(.timedOut)` after `timeout` seconds in all: the
+    /// user is waiting on Sign Out, and the app deletes the token either way.
+    public func revokeThisDevice(timeout: TimeInterval = 10) async throws {
+        let req = try request("DELETE", "/api/devices/me")
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { [session, baseURL] in
+                let (data, res) = try await session.data(for: req, delegate: SameOriginRedirects(origin: baseURL))
+                do {
+                    try Self.check(data, res)
+                } catch YarvisError.unauthorized {
+                    return
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(timeout))
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            try await group.next()
+        }
+    }
+
+    /// Makes this device fresh for 10 minutes with an authenticator code.
+    public func reverify(code: String) async throws {
+        try await send("POST", "/api/auth/reverify", body: .object(["code": .string(code)]))
+    }
+
+    /// Runs `action`. If the server answers `reauth_required`, asks `code`
+    /// for an authenticator code, reverifies and runs `action` once more. A
+    /// wrong code asks again, passing the server's words for the refusal.
+    /// A nil code cancels and rethrows the refusal.
+    public func withFreshCode<T: Sendable>(
+        _ code: @Sendable (_ refusal: String?) async -> String?,
+        _ action: @Sendable () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await action()
+        } catch YarvisError.reauthRequired {
+            var refusal: String?
+            while true {
+                guard let entered = await code(refusal) else { throw YarvisError.reauthRequired }
+                do {
+                    try await reverify(code: entered)
+                    break
+                } catch let YarvisError.http(403, error, detail) where error == "wrong code" {
+                    refusal = detail.map { "\(error): \($0)" } ?? error
+                }
+            }
+            return try await action()
+        }
+    }
+
+    // MARK: Approvals
+
+    public func approvals() async throws -> [Approval] {
+        try await get([Approval].self, "/api/approvals")
+    }
+
+    /// A 409 means another device answered first, or it timed out.
+    public func answerApproval(id: String, approve: Bool) async throws {
+        try await send("POST", "/api/approvals/\(encodePathSegment(id))",
+                       body: .object(["approve": .bool(approve)]))
+    }
+
+    // MARK: Core commands
+
+    /// `POST /api/core/{command}`, with the frontend's camelCase arguments.
+    func core(_ command: String, _ args: [String: JSONValue] = [:]) async throws -> Data {
+        try await send("POST", "/api/core/\(encodePathSegment(command))", body: .object(args))
+    }
+
+    /// Every PTY session on the server, oldest first. Needs `terminal`.
+    public func ptySessions() async throws -> [PtySession] {
+        struct List: Decodable { var sessions: [PtySession] }
+        return try await get(List.self, "/api/pty").sessions
+    }
+
+    /// True while a shell runs in session `id`, without spawning one.
+    public func ptyExists(_ id: String) async throws -> Bool {
+        try Self.decode(Bool.self, await core("pty_exists", ["id": .string(id)]))
+    }
+
+    public func ptyKill(_ id: String) async throws {
+        _ = try await core("pty_kill", ["id": .string(id)])
+    }
+
+    /// Starts the agent session `ws-claude:<workspaceId>` in the workspace's folder.
+    public func startAgentSession(workspace: WorkspaceSummary) async throws {
+        _ = try await core("pty_start_claude", [
+            "workspaceId": .string(workspace.id),
+            "cwd": .string(workspace.rootPath),
+            "name": .string(workspace.name),
+            "remoteControl": .bool(false),
+        ])
+    }
+
+    // MARK: Sidecar
+
+    /// A sidecar path such as `/api/chat` reached through the server's proxy.
+    static func sidecar(_ path: String) -> String { "/api/sidecar\(path)" }
+
+    public func workspaces() async throws -> [WorkspaceSummary] {
+        try await get([WorkspaceSummary].self, Self.sidecar("/api/workspaces"))
+    }
+}

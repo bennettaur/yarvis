@@ -1,5 +1,5 @@
 {
-  "id": "4459a0fa-f08a-4b17-98bb-0782882723e4",
+  "id": "97fff628-6baf-46c6-a140-5904a4888715",
   "prevId": "6763aa9e-6b6a-4541-8b06-ca6436cb5ceb",
   "version": "7",
   "dialect": "postgresql",
@@ -1197,6 +1197,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "wakes_pass": {
+          "name": "wakes_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "due_at": {
           "name": "due_at",
@@ -4060,155 +4067,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.revert_investigations": {
-      "name": "revert_investigations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "repo_id": {
-          "name": "repo_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original_number": {
-          "name": "original_number",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original_title": {
-          "name": "original_title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "original_url": {
-          "name": "original_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revert_kind": {
-          "name": "revert_kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revert_ref": {
-          "name": "revert_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revert_title": {
-          "name": "revert_title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revert_url": {
-          "name": "revert_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'detected'"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "detected_at": {
-          "name": "detected_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ready_at": {
-          "name": "ready_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "revert_investigations_original_idx": {
-          "name": "revert_investigations_original_idx",
-          "columns": [
-            {
-              "expression": "repo_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "original_number",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "revert_investigations_repo_id_repos_id_fk": {
-          "name": "revert_investigations_repo_id_repos_id_fk",
-          "tableFrom": "revert_investigations",
-          "tableTo": "repos",
-          "columnsFrom": [
-            "repo_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "revert_investigations_workspace_id_workspaces_id_fk": {
-          "name": "revert_investigations_workspace_id_workspaces_id_fk",
-          "tableFrom": "revert_investigations",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
