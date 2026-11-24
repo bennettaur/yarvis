@@ -433,9 +433,45 @@ public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hash
     public var status: String
     public var rootPath: String
     public var repoNames: [String]?
+    public var slug: String?
+    public var summary: String?
+    public var mergedPrUrl: String?
+    public var error: String?
+    public var archivedAt: String?
+    /// One per linked PR, the main one first. Absent on a create's answer.
+    public var prs: [WorkspaceSummaryPr]?
+    /// When the workspace was last opened or its agent last did something;
+    /// null once archived.
+    public var lastActiveAt: String?
 
     public var agentSessionId: String { Self.agentSessionId(workspaceId: id) }
 
     /// The PTY id of a workspace's agent session.
     public static func agentSessionId(workspaceId: String) -> String { "\(agentSessionPrefix)\(workspaceId)" }
+}
+
+/// A PR as the workspace list shows it: enough for one glyph.
+public struct WorkspaceSummaryPr: Codable, Sendable, Equatable, Hashable {
+    public var repoName: String
+    public var prNumber: Int
+    /// Free-form from the provider: `open`, `closed`, `merged`, or nil.
+    public var prState: String?
+    public var isDraft: Bool?
+    /// Free-form: `clean`, `dirty`, `conflicting`, `blocked`, and so on.
+    public var mergeable: String?
+    /// `success`, `failure`, `pending` or `none`.
+    public var checkRollup: String?
+    /// `approved`, `changes_requested`, `review_required` or nil.
+    public var reviewDecision: String?
+
+    public init(repoName: String, prNumber: Int, prState: String? = nil, isDraft: Bool? = nil,
+                mergeable: String? = nil, checkRollup: String? = nil, reviewDecision: String? = nil) {
+        self.repoName = repoName
+        self.prNumber = prNumber
+        self.prState = prState
+        self.isDraft = isDraft
+        self.mergeable = mergeable
+        self.checkRollup = checkRollup
+        self.reviewDecision = reviewDecision
+    }
 }
