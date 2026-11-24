@@ -3,9 +3,16 @@ import YarvisClient
 
 struct AttentionView: View {
     @Bindable var model: AttentionModel
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         List {
+            if let alarms = app.alarms, !alarms.ringing.isEmpty {
+                AlarmRingingSection(alarms: alarms) {
+                    app.section = .alarms
+                    app.attentionOpen = false
+                }
+            }
             if !model.approvals.isEmpty {
                 SwiftUI.Section("Approvals") {
                     ForEach(model.approvals) { a in

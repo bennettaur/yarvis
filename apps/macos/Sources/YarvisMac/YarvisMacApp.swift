@@ -110,6 +110,11 @@ struct MainView: View {
                     }
                 }
         }
+        .overlay {
+            if let alarms = app.alarms, let ringing = alarms.takeoverQueue.first {
+                AlarmTakeoverView(model: alarms, alarm: ringing, remaining: alarms.takeoverQueue.count - 1)
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { app.showWebUI() } label: { Label("Web UI", systemImage: "globe") }
@@ -125,6 +130,8 @@ struct MainView: View {
         case .chat: if let chat = app.chat { ChatView(chat: chat) }
         case .terminal: if let terminals = app.terminals { TerminalsView(model: terminals) }
         case .workspaces: if let workspaces = app.workspaces { WorkspacesView(model: workspaces) }
+        case .calendar: if let calendar = app.calendar { CalendarView(model: calendar) }
+        case .alarms: if let alarms = app.alarms { AlarmsView(model: alarms) }
         case .settings: if let settings = app.settings { SettingsView(model: settings) }
         case .headsDown: if let headsDown = app.headsDown { HeadsDownView(model: headsDown) }
         }
@@ -159,7 +166,7 @@ struct AttentionBell: View {
     @Environment(AppModel.self) private var app
 
     var body: some View {
-        let count = app.attention?.count ?? 0
+        let count = (app.attention?.count ?? 0) + (app.alarms?.ringing.count ?? 0)
         Button { app.attentionOpen.toggle() } label: {
             Label("Attention", systemImage: count > 0 ? "bell.badge.fill" : "bell")
                 .foregroundStyle(count > 0 ? .orange : .primary)

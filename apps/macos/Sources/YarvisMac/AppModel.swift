@@ -6,17 +6,19 @@ import YarvisClient
 /// The pages in the sidebar, in the web UI's nav order. Settings is pinned
 /// to the bottom, as in the web UI's rail.
 enum Section: String, Hashable, CaseIterable {
-    case chat, terminal, workspaces
+    case chat, terminal, workspaces, calendar, alarms
     case headsDown = "heads-down"
     case settings
 
-    static let top: [Section] = [.chat, .terminal, .workspaces, .headsDown]
+    static let top: [Section] = [.chat, .terminal, .workspaces, .calendar, .alarms, .headsDown]
 
     var title: String {
         switch self {
         case .chat: return "Chat"
         case .terminal: return "Terminal"
         case .workspaces: return "Workspaces"
+        case .calendar: return "Calendar"
+        case .alarms: return "Alarms"
         case .headsDown: return "Heads down"
         case .settings: return "Settings"
         }
@@ -27,6 +29,8 @@ enum Section: String, Hashable, CaseIterable {
         case .chat: return "bubble.left.and.bubble.right"
         case .terminal: return "terminal"
         case .workspaces: return "square.stack.3d.up"
+        case .calendar: return "calendar"
+        case .alarms: return "alarm"
         case .headsDown: return "scope"
         case .settings: return "gearshape"
         }
@@ -54,6 +58,8 @@ final class AppModel {
     private(set) var terminals: TerminalsModel?
     private(set) var workspaces: WorkspacesModel?
     private(set) var settings: SettingsModel?
+    private(set) var calendar: CalendarModel?
+    private(set) var alarms: AlarmsModel?
     private(set) var headsDown: HeadsDownModel?
     private var events: EventStream?
     private var eventsTask: Task<Void, Never>?
@@ -98,8 +104,11 @@ final class AppModel {
         terminals = TerminalsModel(app: self, client: client)
         workspaces = WorkspacesModel(app: self, client: client)
         settings = SettingsModel(app: self, client: client)
+        calendar = CalendarModel(app: self, client: client)
+        alarms = AlarmsModel(app: self, client: client)
         headsDown = HeadsDownModel(app: self, client: client)
         attention?.start()
+        alarms?.start()
         startEvents(server: server, token: token, connection: connection)
         if device == nil {
             Task { self.device = try? await client.me() }
@@ -136,6 +145,8 @@ final class AppModel {
         terminals?.handle(event)
         workspaces?.handle(event)
         settings?.handle(event)
+        calendar?.handle(event)
+        alarms?.handle(event)
         headsDown?.handle(event)
     }
 
@@ -147,6 +158,8 @@ final class AppModel {
         terminals?.resync()
         workspaces?.resync()
         settings?.resync()
+        calendar?.resync()
+        alarms?.resync()
         headsDown?.resync()
     }
 
@@ -195,6 +208,8 @@ final class AppModel {
         terminals?.stop()
         workspaces?.stop()
         settings?.stop()
+        calendar?.stop()
+        alarms?.stop()
         headsDown?.stop()
     }
 
@@ -213,6 +228,8 @@ final class AppModel {
         terminals = nil
         workspaces = nil
         settings = nil
+        calendar = nil
+        alarms = nil
         headsDown = nil
         self.server = nil
         signOutReason = reason
