@@ -1,0 +1,1 @@
+ALTER TABLE "repos" ADD COLUMN "verification_checks" jsonb;

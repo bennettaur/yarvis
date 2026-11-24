@@ -627,6 +627,8 @@ export const repos = pgTable(
     tracker: jsonb("tracker").$type<RepoTracker>(),
     // The user's prompts for shipping a PR in this repo; only keys with text are stored.
     playbooks: jsonb("playbooks").$type<RepoPlaybooks>().notNull().default({}),
+    // The verification report sections its PRs run when none are picked; null for the app's defaults.
+    verificationChecks: jsonb("verification_checks").$type<string[]>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

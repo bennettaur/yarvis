@@ -56,6 +56,7 @@ import {
   scoreImpact,
 } from "../verify/impact.ts";
 import { BUILTIN_HARNESS_ID } from "../workspaces/harnesses.ts";
+import { findRepoForPr } from "../workspaces/service.ts";
 import {
   boundedList,
   boundedText,
@@ -87,13 +88,30 @@ import {
   writePatchFiles,
 } from "./patchFiles.ts";
 import {
+  MAX_REPO_COMMANDS,
+  pendingCommands,
+  type RepoCommandDeps,
+  type RepoCommandResult,
+  type RequestedCommand,
+  runRepoCommands,
+} from "./repoCommands.ts";
+import {
+  REPO_INSTRUCTIONS_DIR,
+  type RepoInstructions,
+  RepoInstructionsError,
+  writeRepoInstructions,
+} from "./repoInstructions.ts";
+import {
   assertWorktreeInWorkspace,
   type BulkClass,
   getReviewPr,
+  locatorFor,
   type ReviewDeps,
   ReviewWorkspaceError,
+  readyFrom,
   reviewPatchSources,
 } from "./service.ts";
+import { TEST_RUNNER_PREFIXES } from "./testCommands.ts";
 import { type Tripwire, tripwireCollector, tripwiresFile } from "./tripwires.ts";
 
 export const VERIFICATION_RUN_KIND = "verification-report";
@@ -136,6 +154,12 @@ interface Check {
   /** The malicious-intent check's only: what the server's fixed rules found, which the model can't drop. */
   tripwires?: Tripwire[];
   tripwiresOmitted?: number;
+  /** The repo and playbook checks': steps their instructions gave that a read-only run couldn't do. */
+  skipped?: SkippedStep[];
+  /** The repo check's only: where its instructions came from, as the server read them. */
+  instructions?: RepoInstructions;
+  /** The repo check's only: the commands its instructions asked for, and how each ran. */
+  commands?: RepoCommandResult[];
 }
 
 /** The findings decide the status: `issues` with none has nothing to show, `pass` with some would hide them. */
@@ -153,6 +177,65 @@ const checkSchema = z
       [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
     ),
   );
+
+/** Most steps a repo or playbook check lists as not done. */
+const MAX_SKIPPED = 5;
+
+const skippedStepSchema = z.object({
+  step: boundedText(160),
+  reason: boundedText(160),
+});
+
+type SkippedStep = z.output<typeof skippedStepSchema>;
+
+/**
+ * A check run from instructions the repo or the user wrote, which may ask for
+ * steps a read-only run can't take (run the tests, post a comment). Those are
+ * listed rather than dropped, so the reviewer knows what is left to do.
+ */
+const instructedCheckSchema = z
+  .object({
+    status: z.enum(["pass", "issues"]),
+    findings: boundedList(findingSchema, MAX_FINDINGS),
+    skipped: boundedList(skippedStepSchema, MAX_SKIPPED)
+      .nullish()
+      .transform((steps) => steps ?? []),
+  })
+  .transform(({ findings, skipped }) => ({
+    ...checkFrom(
+      [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
+    ),
+    skipped,
+  }));
+
+/**
+ * The repo check's answer: an instructed check, plus the commands the repo's
+ * instructions want run, which the sidecar runs itself afterwards.
+ */
+const repoCheckSchema = z
+  .object({
+    status: z.enum(["pass", "issues"]),
+    findings: boundedList(findingSchema, MAX_FINDINGS),
+    skipped: boundedList(skippedStepSchema, MAX_SKIPPED)
+      .nullish()
+      .transform((steps) => steps ?? []),
+    commands: boundedList(
+      z.object({
+        argv: z.array(z.string().max(300)).min(1).max(40),
+        why: boundedText(160),
+      }),
+      MAX_REPO_COMMANDS,
+    )
+      .nullish()
+      .transform((commands) => commands ?? []),
+  })
+  .transform(({ findings, skipped, commands }) => ({
+    ...checkFrom(
+      [...findings].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
+    ),
+    skipped,
+    requested: commands as RequestedCommand[],
+  }));
 
 const concernSchema = z.object({
   title: boundedText(TITLE_CHARS),
@@ -453,9 +536,26 @@ export const CHECK_SECTIONS = [
   "comments",
   "observability",
   "quality",
+  "repoVerify",
+  "playbookVerify",
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
+
+/**
+ * The checks that follow instructions written for this repo: its own (from the
+ * base branch) and the user's `verify` playbook. Neither runs unless the repo's
+ * settings allow it, so neither is in {@link DEFAULT_SECTIONS}.
+ */
+export const REPO_SECTIONS = [
+  "repoVerify",
+  "playbookVerify",
+] as const satisfies readonly CheckSection[];
+export type RepoSection = (typeof REPO_SECTIONS)[number];
+
+export function isRepoSection(section: ReportSection): section is RepoSection {
+  return (REPO_SECTIONS as readonly string[]).includes(section);
+}
 
 /**
  * The sections a reviewer can pick, each run on its own. `summary` writes the
@@ -472,9 +572,13 @@ export const REPORT_SECTIONS = [
 ] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** A run that doesn't say: every section but the diagram, which costs more and isn't always wanted. */
+/**
+ * A run that doesn't say, for a repo with no checks of its own picked: every
+ * section but the diagram, which costs more and isn't always wanted, and the
+ * repo's own checks, which its settings turn on.
+ */
 export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow",
+  (s) => s !== "flow" && !isRepoSection(s),
 );
 
 /** The agent that writes each section, for following its reads. */
@@ -492,6 +596,8 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   quality: "yarvis-review:quality-reviewer",
   approach: "yarvis-review:approach-reviewer",
   flow: "yarvis-review:flow-diagram",
+  repoVerify: "yarvis-review:repo-verifier",
+  playbookVerify: "yarvis-review:playbook-verifier",
 };
 
 /**
@@ -514,6 +620,8 @@ export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = 
   quality: { model: "sonnet", effort: "medium" },
   approach: { model: "sonnet", effort: "medium" },
   flow: { model: "sonnet", effort: "medium" },
+  repoVerify: { model: "sonnet", effort: "medium" },
+  playbookVerify: { model: "sonnet", effort: "medium" },
 };
 
 /**
@@ -543,9 +651,62 @@ function withoutStory(sections: readonly ReportSection[]): boolean {
 }
 
 /** The picked sections in report order, without repeats; the default when none are given. */
-export function normalizeSections(picked?: readonly ReportSection[]): ReportSection[] {
-  if (!picked || picked.length === 0) return [...DEFAULT_SECTIONS];
+export function normalizeSections(
+  picked?: readonly ReportSection[],
+  defaults: readonly ReportSection[] = DEFAULT_SECTIONS,
+): ReportSection[] {
+  if (!picked || picked.length === 0) return [...defaults];
   return REPORT_SECTIONS.filter((s) => picked.includes(s));
+}
+
+/** What a PR's registered repo says about verifying it. */
+export interface RepoVerificationSettings {
+  /** The sections a run that names none starts, in report order. */
+  defaultSections: ReportSection[];
+  /** Whether the user turned on the repo's own verification for it. */
+  repoVerify: boolean;
+  /** The user's `verify` playbook for the repo; null without one. */
+  verifyPlaybook: string | null;
+  /** The repo's default branch as registration detected it; null until known. */
+  defaultBranch: string | null;
+}
+
+/** A PR's repo settings from its stored checks, or the app's own for an unregistered repo. */
+export function repoVerificationSettingsOf(
+  repo: {
+    verificationChecks: string[] | null;
+    playbooks: { verify?: string };
+    defaultBranch: string | null;
+  } | null,
+): RepoVerificationSettings {
+  const stored = repo?.verificationChecks;
+  const verifyPlaybook = repo?.playbooks.verify?.trim() || null;
+  const picked = stored ? REPORT_SECTIONS.filter((s) => stored.includes(s)) : [...DEFAULT_SECTIONS];
+  return {
+    // A playbook check with no playbook would only fail.
+    defaultSections: picked.filter((s) => s !== "playbookVerify" || verifyPlaybook !== null),
+    repoVerify: stored?.includes("repoVerify") ?? false,
+    verifyPlaybook,
+    defaultBranch: repo?.defaultBranch ?? null,
+  };
+}
+
+export async function repoVerificationSettings(
+  db: Db,
+  ref: PrRef,
+): Promise<RepoVerificationSettings> {
+  return repoVerificationSettingsOf(await findRepoForPr(db, locatorFor(ref)));
+}
+
+/** Why a repo's settings don't let `section` run, or null when they do. */
+function repoSectionRefusal(section: ReportSection, repo: RepoVerificationSettings): string | null {
+  if (section === "repoVerify" && !repo.repoVerify) {
+    return "repo verification is off for this repo; turn it on under Settings → Repositories";
+  }
+  if (section === "playbookVerify" && !repo.verifyPlaybook) {
+    return "this repo has no Verify a PR playbook; write one under Settings → Repositories";
+  }
+  return null;
 }
 
 /** How far apart two findings' lines can be and still be the same finding. */
@@ -734,6 +895,8 @@ function answerSchemas(limits: ReportLimits, audit: ReportAudit) {
     comments: checkSchema,
     observability: checkSchema,
     quality: checkSchema,
+    repoVerify: repoCheckSchema,
+    playbookVerify: instructedCheckSchema,
     approach: approachSchema,
     flow: flowSchema,
   };
@@ -774,8 +937,15 @@ export function sectionAnswerSchema(section: ReportSection, limits: ReportLimits
   return sectionSchemas[section];
 }
 
-/** The sections that run one process per reading group; the rest run one for the whole PR. */
-const GROUPED_SECTIONS: ReadonlySet<ReportSection> = new Set(["risk", ...CHECK_SECTIONS]);
+/**
+ * The sections that run one process per reading group; the rest run one for
+ * the whole PR. A repo or playbook check follows its instructions over the
+ * whole change, so it isn't split.
+ */
+const GROUPED_SECTIONS: ReadonlySet<ReportSection> = new Set([
+  "risk",
+  ...CHECK_SECTIONS.filter((s) => !isRepoSection(s)),
+]);
 
 const CHECK_FAILED = {
   title: "Check did not complete",
@@ -831,7 +1001,7 @@ export function combineSectionAnswers(
   // Each answer already parsed against `sectionAnswerSchema`, so its shape holds.
   if (section === "summary") return answers[0] as Record<string, unknown>;
   if (section === "risk") return { risk: combineRisk(answers as RawRisk[], fellBack) };
-  if (!(CHECK_SECTIONS as readonly string[]).includes(section)) return { [section]: answers[0] };
+  if (!GROUPED_SECTIONS.has(section)) return { [section]: answers[0] };
   const { answered, gap } = splitFallbacks(answers as RawCheck[], fellBack, (a) => a.findings);
   const findings = answered
     .flatMap((a) => a.findings)
@@ -1398,6 +1568,10 @@ export interface VerificationDeps {
   run?: ClaudeRunDeps;
   /** A saved harness's program and environment, from the core; tests swap it out. */
   loadHarnessRunEnv?: (harness: string) => Promise<HarnessRunEnv>;
+  /** The PR's repo settings; defaults to its registered repo's row. */
+  repoSettings?: (db: Db, ref: PrRef) => Promise<RepoVerificationSettings>;
+  /** How the repo check's commands are run; tests swap in a fake sandbox. */
+  repoCommands?: RepoCommandDeps;
 }
 
 export function defaultVerificationDeps(config: Config): VerificationDeps {
@@ -1568,6 +1742,10 @@ interface RunInputs {
   /** The tickets the reviewer named, kept on the run so the tab can offer them again. */
   namedTickets: readonly string[];
   settings: VerificationRunConfig;
+  repo: RepoVerificationSettings;
+  /** For reading the repo's own instructions from the review clone. */
+  config: Config;
+  reviewDeps: ReviewDeps;
 }
 
 export interface StartVerificationOptions {
@@ -1600,10 +1778,11 @@ export async function startVerification(
   deps: VerificationDeps,
   { sections: picked, namedTickets = [], override = {}, harness }: StartVerificationOptions = {},
 ): Promise<StartedVerification> {
-  const sections = normalizeSections(picked);
   // Read once for the lock key, which can't change; everything else comes
   // from the read inside.
-  const { refKey } = await getReviewPr(db, workspaceId, prId);
+  const { refKey, ref } = await getReviewPr(db, workspaceId, prId);
+  const repo = await (deps.repoSettings ?? repoVerificationSettings)(db, ref);
+  const sections = normalizeSections(picked, repo.defaultSections);
   return withPrLock(refKey, async () => {
     const pr = await getReviewPr(db, workspaceId, prId);
     const headSha = requireCheckout(config, pr);
@@ -1614,8 +1793,12 @@ export async function startVerification(
     const toStart: ReportSection[] = [];
     for (const section of sections) {
       const runId = running.get(section);
+      const refusal = repoSectionRefusal(section, repo);
       if (runId) runs.push({ section, runId, existing: true });
-      else toStart.push(section);
+      else if (refusal) {
+        firstError ??= new ReviewWorkspaceError(refusal, 409);
+        failed.push({ section, error: refusal });
+      } else toStart.push(section);
     }
     if (toStart.length > 0) {
       // First, so a harness that can't run fails before the provider reads.
@@ -1650,6 +1833,9 @@ export async function startVerification(
         tickets,
         namedTickets,
         settings,
+        repo,
+        config,
+        reviewDeps,
       };
       for (const section of toStart) {
         try {
@@ -1762,13 +1948,56 @@ function knownSource(source: string, tickets: readonly { key: string }[]): strin
   return source === "title" || tickets.some((t) => t.key === source) ? source : "description";
 }
 
+/** The file the user's `verify` playbook is written to, in a playbook check's context. */
+const PLAYBOOK_FILE = "playbook.md";
+
+/**
+ * Writes what a repo or playbook check follows into its context folder and
+ * returns the task lines that point at it. The repo's instructions are read
+ * from its base branch; the playbook is the user's own text from Settings.
+ */
+async function writeInstructions(
+  inputs: RunInputs,
+  section: RepoSection,
+  contextDir: string,
+): Promise<{ task: string; instructions?: RepoInstructions }> {
+  if (section === "playbookVerify") {
+    writeFileSync(join(contextDir, PLAYBOOK_FILE), `${inputs.repo.verifyPlaybook ?? ""}\n`);
+    return { task: `PLAYBOOK=${join(contextDir, PLAYBOOK_FILE)}` };
+  }
+  let instructions: RepoInstructions;
+  try {
+    instructions = await writeRepoInstructions(
+      readyFrom(inputs.config, inputs.pr, inputs.reviewDeps),
+      inputs.repo.defaultBranch,
+      contextDir,
+    );
+  } catch (e) {
+    if (e instanceof RepoInstructionsError) {
+      throw new ReviewWorkspaceError(`can't run repo verification: ${e.message}`, 409);
+    }
+    throw e;
+  }
+  return {
+    task: [
+      `REPO_INSTRUCTIONS=${join(contextDir, REPO_INSTRUCTIONS_DIR)}`,
+      `REPO_INSTRUCTION_FILES=${instructions.files.length}`,
+      `RUNNABLE_COMMANDS=${TEST_RUNNER_PREFIXES.join(", ")}`,
+      `MAX_COMMANDS=${MAX_REPO_COMMANDS}`,
+    ].join("\n"),
+    instructions,
+  };
+}
+
 /** Starts one section's run, with a context directory of its own that goes when the run ends. */
 async function startSectionRun(
   db: Db,
-  { override, harness, pr, headSha, sources, detail, tickets, namedTickets, settings }: RunInputs,
+  inputs: RunInputs,
   section: ReportSection,
   deps: VerificationDeps,
 ): Promise<string> {
+  const { override, harness, pr, headSha, sources, detail, tickets, namedTickets, settings } =
+    inputs;
   const sections = [section];
   const { model: tier, effort } = sectionRunChoice(section, settings, override);
   const model = harnessModel(harness, settings, tier);
@@ -1800,6 +2029,10 @@ async function startSectionRun(
     material.groupFiles.forEach((file, i) => {
       writeFileSync(join(contextDir, "groups", `${i + 1}.md`), file);
     });
+    const followed = isRepoSection(section)
+      ? await writeInstructions(inputs, section, contextDir)
+      : null;
+    let requested: RequestedCommand[] = [];
     const audit = emptyAudit();
     let volumes: ReadVolume[] = [];
     const limits = { ...material.limits, checkoutDir: pr.worktreePath };
@@ -1810,7 +2043,10 @@ async function startSectionRun(
         targetKey: targetKeyFor(pr.refKey, headSha),
         cwd: pr.worktreePath,
         addDirs: [contextDir],
-        parts: sectionParts(section, material),
+        parts: sectionParts(
+          section,
+          followed ? { ...material, task: `${material.task}\n${followed.task}` } : material,
+        ),
         partSchema: sectionAnswerSchema(section, limits),
         combine: (answers, fellBack) => combineSectionAnswers(section, answers, fellBack),
         outputSchema: verificationReportSchema(limits, audit),
@@ -1837,10 +2073,24 @@ async function startSectionRun(
               tripwires: tripped.tripwires,
               tripwiresOmitted: tripped.omitted,
             };
+          // Which commit the instructions came from is the server's record, not the agent's.
+          let repoVerify: Check | undefined;
+          if (report.repoVerify && followed?.instructions) {
+            const { requested: asked, ...check } = report.repoVerify as Check & {
+              requested?: RequestedCommand[];
+            };
+            requested = asked ?? [];
+            repoVerify = {
+              ...check,
+              instructions: followed.instructions,
+              commands: pendingCommands(requested),
+            };
+          }
           return {
             ...report,
             ...(claims && { claims }),
             ...(malice && { malice }),
+            ...(repoVerify && { repoVerify }),
             coverage: counted.coverage,
           };
         },
@@ -1865,6 +2115,10 @@ async function startSectionRun(
           readingGroups: material.groups,
           detailLoaded: detail !== null,
           ...(TICKET_SECTIONS.includes(section) && { namedTickets }),
+          ...(followed?.instructions && {
+            instructionsCommit: followed.instructions.commit,
+            instructionsBranch: followed.instructions.branch,
+          }),
           sections,
           model,
           // The section's Claude Code alias, which an OpenCode or Pi harness maps to `model`.
@@ -1887,7 +2141,16 @@ async function startSectionRun(
           );
         }
         await recordReadVolumes(db, handle.id, volumes);
-        return recordAudit(db, handle.id, audit);
+        await recordAudit(db, handle.id, audit);
+        if (outcome.status === "succeeded" && requested.length > 0) {
+          await runRepoCommands(
+            db,
+            inputs.config,
+            { id: handle.id, workspaceId: pr.workspaceId, prId: pr.id, headSha },
+            requested,
+            deps.repoCommands,
+          );
+        }
       })
       .catch((e) => console.error("[verification] could not record the audit:", e))
       .finally(removeContext);

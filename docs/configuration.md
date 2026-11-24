@@ -330,7 +330,7 @@ has written your providers and MCP servers into it.
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `prVerification` | `sections`, the user's overrides of each verification check's Claude Code `model` (`sonnet`, `opus` or `haiku`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), by section name; a check with no override runs on its default (Opus at high effort for `risk` and `malice`, Haiku at low effort for `comments` and `observability`, Sonnet at medium effort for the rest). A `model` saved before checks had their own is ignored. `harness`, the id of the Claude Code, OpenCode or Pi [agent harness](features/workspaces.md#agent-harnesses) the checks run with; left out, the built-in agent. `harnessModels`, by harness id, the model an OpenCode or Pi harness runs each tier on (`provider/model`, optionally OpenCode's `#variant` or Pi's `:level`): `opus`, `sonnet` and `haiku`. Also `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
 | `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
-| `reviewPrep` | `maxConcurrentVerifications` (2, from 1 to 5): how many PRs [review prep](features/review-workspaces.md#review-prep) verifies at once; the rest wait their turn | Edit the file by hand |
+| `reviewPrep` | `maxConcurrentVerifications` (2, from 1 to 5): how many PRs [review prep](features/review-workspaces.md#review-prep) verifies at once; the rest wait their turn. `sizeTiers`: when a PR counts as small (`smallMaxLines` 20 and `smallMaxFiles` 2, both at or under) or big (`bigMinLines` 500 or `bigMinFiles` 10, either at or over), which decides the checks review prep runs | Edit the file by hand |
 | `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
@@ -468,9 +468,10 @@ The tabs in **Settings**, in order:
    connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
    groups start collapsed.
 4. **Repositories.** The repos workspaces can use, with each repo's setup and
-   run scripts, ticket tracker and playbooks (up to seven prompts of 4000
-   characters for testing, deploying, monitoring, reverting and picking a
-   reviewer; they live with the repo in the database, not in `settings.json`,
+   run scripts, ticket tracker, verification checks (which report checks
+   its PRs run by default) and playbooks (up to eight prompts of 4000
+   characters for testing, deploying, monitoring, reverting, picking a
+   reviewer and verifying a PR; they live with the repo in the database, not in `settings.json`,
    and agents read them only through the `get_repo_playbook` tool; see
    [Repo playbooks](features/workspaces.md#repo-playbooks)), the workspace
    agent command, and the terminal cap.

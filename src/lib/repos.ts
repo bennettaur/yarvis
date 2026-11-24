@@ -1,5 +1,6 @@
 import { sidecarFetch } from "./api";
 import type { PrRef } from "./pr/types";
+import type { ReportSection } from "./reviewWorkspaces/verification";
 
 // Mirrors the sidecar's MAX_PLAYBOOK_CHARS, PLAYBOOK_KEYS and RepoPlaybooks.
 export const PLAYBOOK_MAX_CHARS = 4000;
@@ -33,6 +34,11 @@ export const PLAYBOOK_FIELDS = [
     label: "Pick a reviewer",
     hint: "Who should review a PR here, and how to choose.",
   },
+  {
+    key: "verify",
+    label: "Verify a PR",
+    hint: "What to check on a PR here. Runs as the Playbook verification check.",
+  },
 ] as const;
 
 export type PlaybookKey = (typeof PLAYBOOK_FIELDS)[number]["key"];
@@ -55,6 +61,8 @@ export interface Repo {
   /** Where the repo's tickets are filed; mirrors the sidecar's `RepoTracker`. */
   tracker: RepoTracker | null;
   playbooks: RepoPlaybooks;
+  /** The verification sections its PRs run when none are picked; null for Yarvis's defaults. */
+  verificationChecks: ReportSection[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -72,6 +80,7 @@ export interface CreateRepoInput {
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
   playbooks?: RepoPlaybooks;
+  verificationChecks?: ReportSection[] | null;
 }
 
 export interface UpdateRepoInput {
@@ -82,6 +91,7 @@ export interface UpdateRepoInput {
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
   playbooks?: RepoPlaybooks;
+  verificationChecks?: ReportSection[] | null;
 }
 
 /**

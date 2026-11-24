@@ -965,7 +965,7 @@ export async function requireReadyPr(
   return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
 }
 
-function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
+export function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }

@@ -8,6 +8,9 @@ import {
   changedUpstack,
   coverageKnown,
   type ImpactBand,
+  type InstructedCheck,
+  type RepoCommand,
+  type RepoInstructions,
   type Severity,
   type ThemeCohesion,
   VERIFICATION_CHECKS,
@@ -419,6 +422,81 @@ function Tripwires({
         {omitted > 0 && <li className="text-zinc-500">{omitted} more not listed.</li>}
       </ul>
     </details>
+  );
+}
+
+/**
+ * Under a repo or playbook check: which commit the repo's instructions came
+ * from, and the steps they asked for that a read-only run couldn't take.
+ */
+const COMMAND_STATUS: Record<RepoCommand["status"], string> = {
+  pending: "Running",
+  passed: "Passed",
+  failed: "Failed",
+  "not-run": "Not run",
+};
+
+function InstructedNote({
+  check,
+  instructions,
+  commands = [],
+}: {
+  check: InstructedCheck;
+  instructions?: RepoInstructions;
+  commands?: RepoCommand[];
+}) {
+  const skipped = check.skipped ?? [];
+  if (!instructions && skipped.length === 0 && commands.length === 0) return null;
+  return (
+    <div className="space-y-1 pl-6 text-xs text-zinc-400">
+      {instructions && (
+        <p>
+          Instructions from {instructions.branch} at{" "}
+          <code className="font-mono">{instructions.commit.slice(0, 7)}</code>:{" "}
+          {instructions.files.length === 0
+            ? "the repo has none."
+            : `${instructions.files.join(", ")}${instructions.omitted > 0 ? `, and ${instructions.omitted} more left out` : ""}.`}
+        </p>
+      )}
+      {commands.length > 0 && (
+        <ul className="space-y-1">
+          {commands.map((c, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: two commands can be the same
+            <li key={i}>
+              <details>
+                <summary className="cursor-pointer">
+                  <span className="text-zinc-300">{COMMAND_STATUS[c.status]}</span>{" "}
+                  <code className="font-mono">{c.argv.join(" ")}</code>
+                  {c.reason && <span className="text-zinc-500"> ({c.reason})</span>}
+                </summary>
+                <p className="mt-1 text-zinc-500">{c.why}</p>
+                {c.output && (
+                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-zinc-900 p-2 font-mono text-[11px] text-zinc-400">
+                    {c.output}
+                  </pre>
+                )}
+              </details>
+            </li>
+          ))}
+        </ul>
+      )}
+      {skipped.length > 0 && (
+        <details>
+          <summary className="cursor-pointer">
+            {skipped.length} {skipped.length === 1 ? "step" : "steps"} left for you
+          </summary>
+          <ul className="mt-1 space-y-0.5">
+            {skipped.map((s, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: two steps can read the same
+              <li key={i}>
+                <span className="text-zinc-300">{s.step}</span>{" "}
+                <span className="text-zinc-500">{s.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -997,6 +1075,16 @@ export default function VerificationReportView({
                       omitted={report.malice.tripwiresOmitted ?? 0}
                       onOpen={onOpen}
                     />
+                  )}
+                  {key === "repoVerify" && report.repoVerify && (
+                    <InstructedNote
+                      check={report.repoVerify}
+                      instructions={report.repoVerify.instructions}
+                      commands={report.repoVerify.commands}
+                    />
+                  )}
+                  {key === "playbookVerify" && report.playbookVerify && (
+                    <InstructedNote check={report.playbookVerify} />
                   )}
                 </div>
               );

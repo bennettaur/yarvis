@@ -589,7 +589,7 @@ async function recordProcess(db: Db, id: string, pgid: number): Promise<void> {
  * range the sandbox opens unless configured into it; listed so they stay
  * closed even then.
  */
-function localServicePorts(config: Config): number[] {
+export function localServicePorts(config: Config): number[] {
   const ports = [config.port];
   try {
     if (config.databaseUrl) ports.push(Number(new URL(config.databaseUrl).port || 5432));

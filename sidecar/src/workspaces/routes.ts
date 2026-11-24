@@ -6,6 +6,7 @@ import { getDb } from "../db/client.ts";
 import { REVIEW_COMMENT_SOURCES } from "../db/schema.ts";
 import { createIssueCloser } from "../issues/close.ts";
 import { clientError, describeError } from "../llm/errors.ts";
+import { REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
 import { endWorkspaceAgentSessions, STOPPED_END_REASON } from "./agentSessions.ts";
 import { resolveWorkspaceBrief } from "./brief.ts";
 import { CONTROL_CHARACTERS, MAX_FILE_BYTES, WorktreeFileError } from "./files.ts";
@@ -60,6 +61,13 @@ import { mergeWorkspaceRepoStack, workspaceRepoStack } from "./stack.ts";
 import { repoTrackerSchema } from "./tracker.ts";
 import { listWorkspaceWorktrees, resolveWorktree } from "./worktrees.ts";
 
+/** Stored in report order without repeats, so the repo's set reads the same however it was sent. */
+const verificationChecksSchema = z
+  .array(z.enum(REPORT_SECTIONS))
+  .min(1)
+  .max(REPORT_SECTIONS.length)
+  .transform((picked) => REPORT_SECTIONS.filter((s) => picked.includes(s)));
+
 const createRepoSchema = z.object({
   cloneUrl: z.string().min(1),
   name: z.string().min(1).optional(),
@@ -68,6 +76,7 @@ const createRepoSchema = z.object({
   pullIssues: z.boolean().optional(),
   tracker: repoTrackerSchema.nullish(),
   playbooks: repoPlaybooksSchema.optional(),
+  verificationChecks: verificationChecksSchema.nullish(),
 });
 
 const updateRepoSchema = z.object({
@@ -80,6 +89,8 @@ const updateRepoSchema = z.object({
   tracker: repoTrackerSchema.nullish(),
   // Replaces every prompt; one left out or empty is cleared.
   playbooks: repoPlaybooksSchema.optional(),
+  // Null goes back to the app's defaults; leaving it out keeps it.
+  verificationChecks: verificationChecksSchema.nullish(),
 });
 
 const createWorkspaceSchema = z.object({

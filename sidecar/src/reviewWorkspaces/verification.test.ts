@@ -24,6 +24,7 @@ import {
   mustReadCap,
   normalizeSections,
   REPORT_SECTIONS,
+  repoVerificationSettingsOf,
   SECTION_RUN_DEFAULTS,
   sectionAnswerSchema,
   sectionParts,
@@ -1294,6 +1295,38 @@ describe("picking sections", () => {
     expect(sectionParts("quality", { ...material, groups: 0 })).toEqual([
       expect.objectContaining({ prompt: material.task }),
     ]);
+    // A repo or playbook check follows its instructions over the whole PR.
+    expect(sectionParts("repoVerify", material)).toEqual([
+      expect.objectContaining({ agent: "yarvis-review:repo-verifier", prompt: material.task }),
+    ]);
+  });
+
+  it("leaves the repo's own checks out of the defaults until its settings pick them", () => {
+    expect(DEFAULT_SECTIONS).not.toContain("repoVerify");
+    expect(DEFAULT_SECTIONS).not.toContain("playbookVerify");
+    expect(repoVerificationSettingsOf(null)).toEqual({
+      defaultSections: [...DEFAULT_SECTIONS],
+      repoVerify: false,
+      verifyPlaybook: null,
+      defaultBranch: null,
+    });
+    const repo = (verificationChecks: string[] | null, verify?: string) => ({
+      verificationChecks,
+      playbooks: verify === undefined ? {} : { verify },
+      defaultBranch: "main",
+    });
+    expect(repoVerificationSettingsOf(repo(["playbookVerify", "repoVerify", "tests"]))).toEqual({
+      defaultSections: ["tests", "repoVerify"],
+      repoVerify: true,
+      verifyPlaybook: null,
+      defaultBranch: "main",
+    });
+    expect(
+      repoVerificationSettingsOf(repo(["playbookVerify"], "  Check the changelog.  ")),
+    ).toMatchObject({
+      defaultSections: ["playbookVerify"],
+      verifyPlaybook: "Check the changelog.",
+    });
   });
 });
 

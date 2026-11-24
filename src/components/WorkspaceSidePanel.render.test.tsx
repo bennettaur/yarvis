@@ -72,6 +72,7 @@ const REPO: WorkspaceRepoDetail = {
     pullIssues: false,
     tracker: null,
     playbooks: {},
+    verificationChecks: null,
     createdAt: "2026-06-01T09:00:00.000Z",
     updatedAt: "2026-06-01T09:00:00.000Z",
   },

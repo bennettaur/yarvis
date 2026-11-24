@@ -70,6 +70,7 @@ describe("must-read lookup", () => {
         report: r,
         size: null,
         namedTickets: [],
+        defaultSections: [],
       }) as VerificationChecklist;
     expect(reportOf(checklist(report))).toBe(report);
     expect(reportOf(checklist(null))).toBeNull();

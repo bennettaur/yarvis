@@ -263,8 +263,9 @@ async function startReport(
     deps.review,
     (id) => registryFor(deps).isLive(id),
     deps.verification.settings,
+    deps.verification.repoSettings,
   );
-  const asked = normalizeSections(options.sections);
+  const asked = normalizeSections(options.sections, checklist.defaultSections);
   const items = checklist.items.filter((item) => asked.includes(item.section));
   // Any instance's run counts, as it does for startVerification, which joins it.
   const running = items.filter((item) => item.latest?.status === "running");

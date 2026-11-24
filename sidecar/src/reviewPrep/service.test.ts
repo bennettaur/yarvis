@@ -21,8 +21,13 @@ import {
 } from "../reviewWorkspaces/kickoff.ts";
 import type { PrMeta, ReviewDeps } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
-import { DEFAULT_SECTIONS, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
+import {
+  DEFAULT_SECTIONS,
+  REPORT_SECTIONS,
+  type ReportSection,
+} from "../reviewWorkspaces/verification.ts";
 import { prepReview, prepsSettled, type ReviewPrepDeps } from "./service.ts";
+import type { SizeTierThresholds } from "./sizeTier.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -73,6 +78,7 @@ const report = {
   observability: pass,
   quality: pass,
   approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
+  flow: { title: "Flow", explanation: "How it runs.", mermaid: "flowchart TD\n  a --> b" },
 };
 const meta: PrMeta = {
   title: "Feature work",
@@ -89,6 +95,16 @@ let kickoff: KickoffDeps;
 let prepDeps: ReviewPrepDeps;
 let stack: PrRef[];
 let maxConcurrent: number;
+let sizeTiers: SizeTierThresholds;
+let storiesStarted: PrRef[];
+
+/** Thresholds no PR meets, so a test runs the default checks whatever the test remote's size. */
+const EVERY_PR_NORMAL: SizeTierThresholds = {
+  smallMaxLines: -1,
+  smallMaxFiles: -1,
+  bigMinLines: Number.MAX_SAFE_INTEGER,
+  bigMinFiles: Number.MAX_SAFE_INTEGER,
+};
 
 async function until(check: () => Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -109,7 +125,7 @@ const prepOf = async (r: PrRef) =>
   );
 
 beforeEach(async () => {
-  await sql`TRUNCATE review_workspaces, review_workspace_prs, review_preps, agent_runs, attention_items RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE review_workspaces, review_workspace_prs, review_preps, agent_runs, attention_items, pr_guides RESTART IDENTITY CASCADE`;
   config.workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-prep-root-"));
   remote = createTestRemote();
   fakeDir = mkdtempSync(join(tmpdir(), "yarvis-prep-fake-"));
@@ -170,7 +186,17 @@ exit 1`,
     kickoff,
     loadStack: async () => stack,
     prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent }),
+    tier: {
+      sizeTiers: async () => sizeTiers,
+      startStory: async (r) => {
+        storiesStarted.push(r);
+        return { status: "started" };
+      },
+      pollMs: 25,
+    },
   };
+  sizeTiers = EVERY_PR_NORMAL;
+  storiesStarted = [];
 });
 
 afterEach(async () => {
@@ -187,14 +213,20 @@ afterAll(async () => {
 });
 
 /** PR 1 checked out, with every default check started (confirmed) and held open by the fake. */
-async function heldChecks(): Promise<void> {
-  await kickOffVerification(db, config, ref, {}, kickoff);
+async function heldChecks(sections?: ReportSection[]): Promise<void> {
+  await kickOffVerification(db, config, ref, { sections }, kickoff);
   await until(
     async () => (await attention()).some((a) => a.title.includes("go-ahead")),
     "the checkout",
   );
   await sql`TRUNCATE attention_items`;
-  const started = await kickOffVerification(db, config, ref, { confirmed: true }, kickoff);
+  const started = await kickOffVerification(
+    db,
+    config,
+    ref,
+    { confirmed: true, sections },
+    kickoff,
+  );
   expect(started).toMatchObject({ status: "started" });
 }
 
@@ -316,7 +348,7 @@ describe("prepReview", () => {
     expect(one?.workspaceId).toBe(workspaces[0]?.id ?? "");
     expect(two?.workspaceId).toBe(workspaces[0]?.id ?? "");
     // PR 2 has no branch on the test remote.
-    expect(two).toMatchObject({ state: "failed", note: "Its checkout failed." });
+    expect(two).toMatchObject({ state: "failed", note: expect.stringMatching(/checkout failed/i) });
   });
 
   it("verifies only as many PRs at once as the setting allows", async () => {
@@ -331,6 +363,46 @@ describe("prepReview", () => {
     await prepsSettled();
     expect((await prepOf(ref))?.state).toBe("ready");
     expect((await prepOf(ref2))?.state).toBe("failed");
+  });
+});
+
+describe("sizing a prep", () => {
+  const runSections = async () =>
+    (await db.select().from(agentRuns)).flatMap((r) => (r.meta as { sections: string[] }).sections);
+
+  it("runs only the summary and risk on a small PR, and says so", async () => {
+    sizeTiers = { ...EVERY_PR_NORMAL, smallMaxLines: 1_000_000, smallMaxFiles: 1_000 };
+    await heldChecks(["summary", "risk"]);
+    await prepReview(db, config, ref, prepDeps);
+    await until(async () => (await prepOf(ref))?.state === "verifying", "the prep to join");
+    release();
+    await prepsSettled();
+
+    expect(await prepOf(ref)).toMatchObject({ state: "ready" });
+    expect((await runSections()).sort()).toEqual(["risk", "summary"]);
+    const body = (await prepItems())[0]?.body ?? "";
+    expect(body).toMatch(/Small PR \(\d+ changed lines in \d+ files, generated files left out\)/);
+    // The checks it skipped on purpose aren't counted against the verdict.
+    expect(body).not.toContain("without a result");
+    expect(storiesStarted).toEqual([]);
+  });
+
+  it("adds the flow diagram and starts the Story walkthrough on a big PR", async () => {
+    sizeTiers = { ...EVERY_PR_NORMAL, bigMinFiles: 1 };
+    await heldChecks([...DEFAULT_SECTIONS, "flow"]);
+    await prepReview(db, config, ref, prepDeps);
+    await until(async () => (await prepOf(ref))?.state === "verifying", "the prep to join");
+    release();
+    await prepsSettled();
+
+    expect(await prepOf(ref)).toMatchObject({ state: "ready" });
+    expect(await runSections()).toContain("flow");
+    expect(storiesStarted).toEqual([ref]);
+    const body = (await prepItems())[0]?.body ?? "";
+    expect(body).toContain("Big PR (");
+    expect(body).toContain(
+      "the flow diagram ran too. The Story walkthrough is still being written.",
+    );
   });
 });
 

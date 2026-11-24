@@ -488,14 +488,14 @@ function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocatio
   );
 }
 
-/** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
-function suggestedSections(items: ChecklistItem[]): ReportSection[] {
+/** Sections worth running next: the repo's defaults with nothing for the PR's head, and nothing going. */
+function suggestedSections(
+  items: ChecklistItem[],
+  defaults: readonly ReportSection[],
+): ReportSection[] {
   return items
     .filter(
-      (i) =>
-        DEFAULT_SECTIONS.includes(i.section) &&
-        !i.result?.current &&
-        i.latest?.status !== "running",
+      (i) => defaults.includes(i.section) && !i.result?.current && i.latest?.status !== "running",
     )
     .map((i) => i.section);
 }
@@ -517,7 +517,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const checklist = useVerificationChecklist(workspaceId, pr.id);
   const items = checklist.data?.items ?? NO_ITEMS;
   const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
-  const picked = pickedSections ?? suggestedSections(items);
+  const picked =
+    pickedSections ?? suggestedSections(items, checklist.data?.defaultSections ?? DEFAULT_SECTIONS);
   const anyRunning = items.some((i) => i.latest?.status === "running");
   const { refresh } = checklist;
   useEffect(() => {

@@ -117,6 +117,8 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   quality: { theme: "maintainability", label: "Code quality" },
   comments: { theme: "maintainability", label: "Comment quality" },
   approach: { theme: "maintainability", label: "Simpler approach" },
+  repoVerify: { theme: "repo", label: "Repo verification" },
+  playbookVerify: { theme: "repo", label: "Playbook verification" },
 };
 
 const run = (over: Partial<ChecklistRun> = {}): ChecklistRun => ({
@@ -157,6 +159,7 @@ const checklist = ({
   report,
   size,
   namedTickets: [],
+  defaultSections: [...DEFAULT_SECTIONS],
 });
 
 /** Every section in `report` answered by one current run. */

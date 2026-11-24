@@ -14,6 +14,12 @@ import {
   updateRepo,
 } from "../lib/repos";
 import { invalidatePrefix } from "../lib/resourceCache";
+import {
+  DEFAULT_SECTIONS,
+  REPORT_SECTIONS,
+  type ReportSection,
+  SECTION_LABEL,
+} from "../lib/reviewWorkspaces/verification";
 
 interface Draft {
   id?: string;
@@ -29,6 +35,8 @@ interface Draft {
   azureAreaPath: string;
   jiraProjectKey: string;
   playbooks: Record<PlaybookKey, string>;
+  /** Null keeps Yarvis's default checks, which change with the app. */
+  verificationChecks: ReportSection[] | null;
 }
 
 function playbookDraft(saved: RepoPlaybooks | undefined): Record<PlaybookKey, string> {
@@ -50,6 +58,7 @@ function blankDraft(): Draft {
     azureAreaPath: "",
     jiraProjectKey: "",
     playbooks: playbookDraft({}),
+    verificationChecks: null,
   };
 }
 
@@ -67,6 +76,7 @@ function draftFromRepo(r: Repo): Draft {
     azureAreaPath: t?.provider === "azure-boards" ? (t.areaPath ?? "") : "",
     jiraProjectKey: t?.provider === "jira" ? t.projectKey : "",
     playbooks: playbookDraft(r.playbooks),
+    verificationChecks: r.verificationChecks,
   };
 }
 
@@ -154,6 +164,10 @@ export default function ReposSection() {
         setError(tracker.error);
         return;
       }
+      if (draft.verificationChecks?.length === 0) {
+        setError("Pick at least one verification check, or use Yarvis's defaults");
+        return;
+      }
       const payload: CreateRepoInput = {
         cloneUrl: draft.cloneUrl.trim(),
         name: draft.name.trim() || undefined,
@@ -162,6 +176,7 @@ export default function ReposSection() {
         pullIssues: draft.pullIssues,
         tracker: tracker.tracker,
         playbooks: draft.playbooks,
+        verificationChecks: draft.verificationChecks,
       };
       if (draft.id) {
         await updateRepo(draft.id, payload);
@@ -388,6 +403,11 @@ function DraftEditor({
         ))}
       </div>
 
+      <VerificationChecks
+        picked={draft.verificationChecks}
+        onChange={(verificationChecks) => setDraft((d) => ({ ...d, verificationChecks }))}
+      />
+
       <div className="mt-4 flex justify-end gap-2">
         <button
           onClick={onCancel}
@@ -430,6 +450,60 @@ function ScriptEditor({
         onChange={(e) => setValue(e.target.value)}
         className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 font-mono text-xs outline-none focus:border-zinc-500"
       />
+    </div>
+  );
+}
+
+/**
+ * Which verification checks this repo's PRs run when none are picked: by the
+ * review prep and by a run started without a list. Repo verification follows
+ * instructions from the repo itself, so it runs only once ticked here.
+ */
+function VerificationChecks({
+  picked,
+  onChange,
+}: {
+  picked: ReportSection[] | null;
+  onChange: (picked: ReportSection[] | null) => void;
+}) {
+  const shown = picked ?? DEFAULT_SECTIONS;
+  const toggle = (section: ReportSection) =>
+    onChange(
+      REPORT_SECTIONS.filter((s) => (s === section ? !shown.includes(s) : shown.includes(s))),
+    );
+  return (
+    <div className="mt-4">
+      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+        Verification checks
+      </div>
+      <p className="mb-2 text-xs text-zinc-500">
+        The checks a PR here runs by default.{" "}
+        {picked === null ? (
+          "Using Yarvis's defaults."
+        ) : (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="text-indigo-400 hover:text-indigo-300"
+          >
+            Use Yarvis's defaults
+          </button>
+        )}{" "}
+        Repo verification follows this repo's own AGENTS.md and skills from its default branch, and
+        runs only when ticked. Playbook verification needs a Verify a PR playbook above.
+      </p>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+        {REPORT_SECTIONS.map((section) => (
+          <label key={section} className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={shown.includes(section)}
+              onChange={() => toggle(section)}
+            />
+            {SECTION_LABEL[section]}
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

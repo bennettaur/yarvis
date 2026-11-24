@@ -32,6 +32,10 @@ On this page:
      for example `bun run dev`.
    - **Pull issues**. Tick it to show the repo's issues on the Issues tab.
    - **Playbooks** (optional). See [Repo playbooks](#repo-playbooks).
+   - **Verification checks** (optional). The verification report checks its
+     PRs run when none are picked, by review prep among others. Untouched, it
+     uses Yarvis's defaults. Repo verification runs only when ticked here; see
+     [Repo and playbook verification](review-workspaces.md#repo-and-playbook-verification).
 3. Optional: install the GitHub CLI and the stack extension for the
    [Stack tab](#stacked-pull-requests)'s grouping and merge button:
    ```bash
@@ -47,10 +51,12 @@ Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
 
 ### Repo playbooks
 
-Each repo can carry up to seven prompts for shipping a PR, one text area each
+Each repo can carry up to eight prompts for shipping a PR, one text area each
 under **Settings → Repositories → Playbooks**: **Test in staging**, **Deploy**,
 **Monitor the deploy**, **Monitor production**, **Test in production**,
-**Revert** and **Pick a reviewer**. Write them in plain text, up to 4000
+**Revert**, **Pick a reviewer** and **Verify a PR**. **Verify a PR** is what
+the [playbook verification](review-workspaces.md#repo-and-playbook-verification)
+check runs. Write them in plain text, up to 4000
 characters each. A repo with none saved has no playbook.
 
 Playbooks are stored in Yarvis, never read from the repo. An agent follows them

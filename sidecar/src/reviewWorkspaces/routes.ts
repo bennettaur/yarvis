@@ -562,6 +562,7 @@ export function createReviewWorkspaceRoutes(
           deps(),
           (id) => registry.isLive(id),
           (options.verification ?? defaultVerificationDeps(config)).settings,
+          options.verification?.repoSettings,
         ),
       );
     } catch (e) {

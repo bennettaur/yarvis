@@ -57,6 +57,7 @@ function prime() {
     report: { summary: "s", mustRead: [{ path: "src/a.ts", reason: "the core change" }] },
     size: null,
     namedTickets: [],
+    defaultSections: [],
   };
   primeCache(verificationKey(pr.id), checklist);
 }

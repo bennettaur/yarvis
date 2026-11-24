@@ -1280,6 +1280,26 @@ describe("repo routes", () => {
     expect(await playbooks(replaced)).toEqual({ testStaging: "run e2e" });
   });
 
+  it("saves a repo's verification checks in report order, and null goes back to the defaults", async () => {
+    const repo = await addRepo();
+    expect(repo).toMatchObject({ verificationChecks: null });
+    const patch = (body: unknown) =>
+      app.request(`/api/repos/${repo.id}`, {
+        method: "PATCH",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    const checks = async (res: Response) =>
+      ((await res.json()) as { verificationChecks: unknown }).verificationChecks;
+
+    const set = await patch({ verificationChecks: ["repoVerify", "summary", "summary"] });
+    expect(await checks(set)).toEqual(["summary", "repoVerify"]);
+    expect(await checks(await patch({ name: "renamed" }))).toEqual(["summary", "repoVerify"]);
+    expect((await patch({ verificationChecks: [] })).status).toBe(400);
+    expect((await patch({ verificationChecks: ["vibes"] })).status).toBe(400);
+    expect(await checks(await patch({ verificationChecks: null }))).toBeNull();
+  });
+
   it("stores playbooks given when a repo is created, and lists none as an empty set", async () => {
     const bare = await addRepo();
     const created = await app.request("/api/repos", {
