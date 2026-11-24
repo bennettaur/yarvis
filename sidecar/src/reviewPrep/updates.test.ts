@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { fakePrinting, resultLine } from "../agentRuns/testSupport.ts";
+import { fakeClaude, fakePrinting, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, prUpdateWatches } from "../db/schema.ts";
@@ -80,7 +80,7 @@ let clock: Date;
 let fakeDir: string;
 let rereviewSettings: RereviewRunConfig;
 
-/** What the fake "What's changed" agent answers: no verdicts, so the server fills them in. */
+/** What the fake "What's changed" agent answers: it leaves the open thread out, so the server adds it and overrules the verdict. */
 const answer = {
   summary: "The author changed a.ts.",
   verdict: "ready_to_approve",
@@ -220,7 +220,7 @@ describe("runPrUpdateWatch", () => {
         // The fake agent says ready but gives the open thread no verdict, so the server overrules it.
         "What's changed: needs another look.",
         "Your comments: 0 of 1 addressed or resolved, 1 still open.",
-        "Other changes: 2 files to read.",
+        "Other changes: 2 changes to read.",
       ].join("\n"),
     );
     const runs = await db.select().from(agentRuns);
@@ -329,8 +329,57 @@ describe("runPrUpdateWatch", () => {
     // Without an answer, the item falls back to the thread count.
     expect(item?.body).toContain("Your threads: 1 of 1 touched by the new commits, 1 still open.");
     expect(item?.body).toMatch(
-      /What's changed didn't run: it needs your go-ahead, since it would cost about \$[\d.]+, over its \$0 budget\./,
+      /What's changed didn't run: it needs your go-ahead, since it would cost about \$[\d.]+, over its \$0\.00 budget\./,
     );
     expect(await db.select().from(agentRuns)).toEqual([]);
+  });
+
+  /** Pushes to the reviewed PR and runs the watch until its alert is raised. */
+  async function pushAndAlert(): Promise<void> {
+    const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
+    heads.set("gh:o/r/1", { open: true, headSha: pushed });
+    await runPrUpdateWatch(db, config, deps);
+    later(11);
+    await runPrUpdateWatch(db, config, deps);
+    await prUpdatesSettled();
+  }
+
+  it("reuses a What's changed run that already covers the new commits", async () => {
+    await reviewedWorkspace();
+    threads = [thread({ id: "1", path: "src/a.ts" })];
+    await pushAndAlert();
+    // The claim is given back, as after a failed alert, so the same head is alerted again.
+    await db.update(prUpdateWatches).set({ alertedHeadSha: null });
+    later(5);
+    expect((await runPrUpdateWatch(db, config, deps)).started).toEqual(["gh:o/r/1"]);
+    await prUpdatesSettled();
+
+    expect(await db.select().from(agentRuns)).toHaveLength(1);
+    const [item] = await items();
+    expect(item?.body).toContain("What's changed: needs another look.");
+  });
+
+  it("says so when too much changed for What's changed to read", async () => {
+    await reviewedWorkspace();
+    deps.rereview.readerBudgetBytes = 1;
+    await pushAndAlert();
+
+    const [item] = await items();
+    expect(item?.body).toContain(
+      "What's changed didn't run: there's too much to read at once. Read the changes in the Since last review tab.",
+    );
+    expect(await db.select().from(agentRuns)).toEqual([]);
+  });
+
+  it("still raises the item, with the thread count, when What's changed fails", async () => {
+    await reviewedWorkspace();
+    threads = [thread({ id: "1", path: "src/a.ts" })];
+    const run = deps.rereview.run as NonNullable<typeof deps.rereview.run>;
+    deps.rereview.run = { ...run, program: fakeClaude(fakeDir, "broken", "exit 1") };
+    await pushAndAlert();
+
+    const [item] = await items();
+    expect(item?.body).toContain("Your threads: 1 of 1 touched by the new commits, 1 still open.");
+    expect(item?.body).toContain("What's changed failed. See Settings → Diagnostics.");
   });
 });

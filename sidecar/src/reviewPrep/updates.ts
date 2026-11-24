@@ -1,5 +1,10 @@
 import { and, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
-import { agentRunRegistry, getAgentRunSummary } from "../agentRuns/service.ts";
+import {
+  type AgentRunSummary,
+  agentRunRegistry,
+  getAgentRunSummary,
+  ProcessSlots,
+} from "../agentRuns/service.ts";
 import { raiseAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
@@ -304,8 +309,8 @@ async function alertUpdate(
   if (since) lines.push(since.line);
 
   const rereview = onNewCommits ? await whatsChanged(db, config, pr, deps) : null;
-  if (rereview?.answer) {
-    lines.push(...answerLines(rereview.answer));
+  if (rereview?.answerLines) {
+    lines.push(...rereview.answerLines);
   } else {
     const threads = await threadSummary(pr.ref, since?.changedPaths ?? null, deps);
     if (threads) lines.push(threads);
@@ -407,15 +412,27 @@ async function threadSummary(
 }
 
 interface WhatsChanged {
-  /** The run's checked answer, when it finished with one. */
-  answer: Rereview | null;
+  /** The run's answer as item lines, when it finished with one. */
+  answerLines: string[] | null;
   /** Why there is no answer, for the item. */
   note: string | null;
 }
 
+const noAnswer = (note: string): WhatsChanged => ({ answerLines: null, note });
+
 /** A little past the run's own timeout, so the run ends itself first. */
 const REREVIEW_WAIT_MS = REREVIEW_RUN_TIMEOUT_MS + 60_000;
 const REREVIEW_POLL_MS = 2_000;
+
+/**
+ * Most "What's changed" runs this job starts at once. A burst of pushes
+ * across watched PRs would otherwise start one Claude Code process per PR.
+ */
+const MAX_CONCURRENT_REREVIEWS = 2;
+const rereviewSlots = new ProcessSlots(MAX_CONCURRENT_REREVIEWS);
+const neverAborts = new AbortController().signal;
+
+const usd = (amount: number) => `$${amount.toFixed(2)}`;
 
 /**
  * Runs "What's changed" over the new commits and waits for its answer, or
@@ -428,65 +445,94 @@ async function whatsChanged(
   config: Config,
   pr: ReviewWorkspacePr,
   deps: PrUpdateDeps,
-): Promise<WhatsChanged | null> {
-  if (pr.worktreeStatus !== "ready") return null;
+): Promise<WhatsChanged> {
+  if (pr.worktreeStatus !== "ready") {
+    return noAnswer(
+      "What's changed didn't run: the PR's checkout isn't ready. Refresh the PR in its workspace.",
+    );
+  }
   const registry = deps.rereview.run?.registry ?? agentRunRegistry;
   try {
+    const fromLastReview = undefined;
     const latest = await latestRereview(
       db,
       pr.workspaceId,
       pr.id,
       deps.review,
       (id) => registry.isLive(id),
-      undefined,
+      fromLastReview,
       {
         config,
         settings: deps.rereview.settings,
         readerBudgetBytes: deps.rereview.readerBudgetBytes,
       },
     );
-    let runId: string;
+    let run: AgentRunSummary | null;
     if (latest.lastSucceeded?.current) {
-      runId = latest.lastSucceeded.run.id;
+      run = latest.lastSucceeded.run;
     } else if (latest.current && latest.run?.status === "running") {
-      runId = latest.run.id;
+      run = await waitForRunEnd(db, latest.run.id, registry);
     } else {
       const size = latest.size;
       if (!size) {
-        return { answer: null, note: "What's changed couldn't be sized, so it didn't run." };
+        return noAnswer(
+          "What's changed didn't run: Yarvis couldn't work out how much changed. Start it from the Since last review tab.",
+        );
       }
       if (size.overAgentBudget) {
-        return {
-          answer: null,
-          note: "Too much changed for What's changed to read at once. Read the changes in the Since last review tab.",
-        };
+        return noAnswer(
+          "What's changed didn't run: there's too much to read at once. Read the changes in the Since last review tab.",
+        );
       }
       if (size.overBudget) {
-        return {
-          answer: null,
-          note: `What's changed didn't run: it needs your go-ahead, since it would cost about $${size.estimatedCostUsd.toFixed(2)}, over its $${size.budgetUsd} budget.`,
-        };
+        return noAnswer(
+          `What's changed didn't run: it needs your go-ahead, since it would cost about ${usd(size.estimatedCostUsd)}, over its ${usd(size.budgetUsd)} budget.`,
+        );
       }
-      runId = (await startRereview(db, config, pr.workspaceId, pr.id, deps.review, deps.rereview))
-        .runId;
+      const release = (await rereviewSlots.acquire(neverAborts)) as () => void;
+      try {
+        const { runId } = await startRereview(
+          db,
+          config,
+          pr.workspaceId,
+          pr.id,
+          deps.review,
+          deps.rereview,
+        );
+        run = await waitForRunEnd(db, runId, registry);
+      } finally {
+        release();
+      }
     }
-    const run = await runEnd(db, runId, registry);
     if (run?.status === "succeeded" && run.result) {
-      return { answer: run.result as Rereview, note: null };
+      // The stored result is `checkedRereview`'s output, so it is already checked.
+      return { answerLines: answerLines(run.result as Rereview), note: null };
     }
-    if (run?.status === "cancelled") return { answer: null, note: "What's changed was cancelled." };
-    return { answer: null, note: "What's changed failed. See Settings → Diagnostics." };
+    if (run?.status === "running") {
+      return noAnswer(
+        "What's changed is still running. Its answer will be in the Since last review tab.",
+      );
+    }
+    if (run?.status === "cancelled") return noAnswer("What's changed was cancelled.");
+    return noAnswer("What's changed failed. See Settings → Diagnostics.");
   } catch (e) {
-    if (e instanceof ReviewWorkspaceError) {
-      return { answer: null, note: `What's changed didn't run: ${e.message}.` };
-    }
+    if (e instanceof ReviewWorkspaceError)
+      return noAnswer(`What's changed didn't run: ${e.message}.`);
     console.error("[pr-updates] What's changed failed:", describeError(e));
-    return { answer: null, note: "What's changed failed. See Settings → Diagnostics." };
+    return noAnswer("What's changed failed. See Settings → Diagnostics.");
   }
 }
 
-/** Waits for a run to end, reading it from the database so a run another instance started counts too. */
-async function runEnd(db: Db, id: string, registry: typeof agentRunRegistry) {
+/**
+ * Waits for a run to end, reading it from the database so a run another
+ * instance started counts too. Returns it still running past the deadline.
+ */
+async function waitForRunEnd(
+  db: Db,
+  id: string,
+  registry: typeof agentRunRegistry,
+): Promise<AgentRunSummary | null> {
+  // Waits out a run live in this process, which its own timeout bounds; one elsewhere is polled below.
   await registry.follow(id, () => undefined);
   const deadline = Date.now() + REREVIEW_WAIT_MS;
   for (;;) {
@@ -510,11 +556,11 @@ function answerLines(answer: Rereview): string[] {
       `Your comments: ${comments.length - open} of ${comments.length} addressed or resolved, ${open} still open.`,
     );
   }
-  const review = answer.newChanges.filter((c) => c.kind === "needs_review").length;
-  const minor = answer.newChanges.length - review;
+  const toRead = answer.newChanges.filter((c) => c.kind === "needs_review").length;
+  const minor = answer.newChanges.length - toRead;
   lines.push(
-    review > 0
-      ? `Other changes: ${plural(review, "file")} to read${minor > 0 ? `, ${minor} minor` : ""}.`
+    toRead > 0
+      ? `Other changes: ${plural(toRead, "change")} to read${minor > 0 ? `, ${minor} minor` : ""}.`
       : `Other changes: nothing new to read${minor > 0 ? ` (${minor} minor)` : ""}.`,
   );
   return lines;

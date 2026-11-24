@@ -729,6 +729,11 @@ tab opens on changes it hasn't summarised, turn on auto-start under
 are set too ($1 by default). Like the verification report's, the budget only
 warns; a run you start finishes even if it goes over.
 
+When someone pushes to a PR you reviewed, Yarvis also runs it for you, with
+the same model and budget, whatever auto-start says. A run estimated over the
+budget isn't started that way: the alert asks for your go-ahead instead (see
+[PR updated since your review](#pr-updated-since-your-review)).
+
 ### New commits pushed
 
 The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
@@ -758,19 +763,22 @@ last push. Then it:
    [Since last review](#since-last-review) tab shows it.
 3. Runs [What's changed](#whats-changed) over the new commits, whether or not
    its auto-start is on, and waits for its answer. It doesn't re-run the
-   verification checks. A run that already covers the new commits is reused.
-   One over its budget isn't started, and the item says it needs your
-   go-ahead. When the changes are more than its agent can read, the item says
-   so. When the new commits couldn't be fetched, nothing runs and the item
+   verification checks. A run that already covers the new commits is reused,
+   and at most two of these runs go at once. One over its budget isn't
+   started, and the item says it needs your go-ahead. When the changes are
+   more than its agent can read, the item says so. When the new commits
+   couldn't be fetched or the checkout isn't ready, nothing runs and the item
    asks you to refresh the PR yourself.
 4. Adds a **PR updated since your review** item under Review, which opens the
    PR's **Since last review** tab. It says whether you can approve, how many
    of your comments are addressed or resolved and how many are still open,
    and how many other changes need reading. The agent's own words stay in the
-   tab. Without an answer, the item instead counts which of your review
-   threads the new commits touch (the provider marks them outdated, or their
-   file changed) and which are still open, and says why What's changed didn't
-   run.
+   tab.
+
+   When there's no answer (the run didn't start, failed, or is still going),
+   the item says why. It then counts which of your review threads the new
+   commits touch (the provider marks them outdated, or their file changed)
+   and which are still open.
 
 Each head gets one item, and a later push updates the item while you haven't
 read it yet. A merged or closed PR is left alone. Nothing is posted to the
