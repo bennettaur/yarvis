@@ -46,11 +46,13 @@ describe("replyToPrThread on Azure", () => {
 // Azure, so this guards the boundary in case a caller reaches it directly.
 describe("merge dispatch rejects non-github refs", () => {
   it("mergePr throws for an azure ref", () => {
-    expect(() => mergePr(azureRef, "MERGE")).toThrow(/only supported for GitHub/);
+    expect(() => mergePr(azureRef, "MERGE", "d".repeat(40))).toThrow(/only supported for GitHub/);
   });
 
   it("enableAutoMerge throws for an azure ref", () => {
-    expect(() => enableAutoMerge(azureRef, "SQUASH")).toThrow(/only supported for GitHub/);
+    expect(() => enableAutoMerge(azureRef, "SQUASH", "d".repeat(40))).toThrow(
+      /only supported for GitHub/,
+    );
   });
 
   it("disableAutoMerge throws for an azure ref", () => {

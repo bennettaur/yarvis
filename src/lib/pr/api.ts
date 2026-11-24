@@ -182,7 +182,7 @@ function requireGithub(ref: PrRef): void {
 export function mergePr(
   ref: PrRef,
   method: MergeMethod,
-  headSha?: string,
+  headSha: string,
 ): Promise<{ ok: boolean }> {
   requireGithub(ref);
   return ghMergePr(ref, method, headSha);
@@ -191,7 +191,7 @@ export function mergePr(
 export function enableAutoMerge(
   ref: PrRef,
   method: MergeMethod,
-  headSha?: string,
+  headSha: string,
 ): Promise<{ ok: boolean }> {
   requireGithub(ref);
   return ghEnableAutoMerge(ref, method, headSha);

@@ -773,10 +773,7 @@ has the same actions as the PRs tab's header: **Ready for review** on a draft,
 allows them, the link to a coding [workspace](workspaces.md) on the PR's
 branch, refresh, open on GitHub or Azure DevOps, and copy link. Once you have
 approved the PR, **Approve** is replaced by a **✓ Approved** label in both
-places. It comes back if the author asks you to review again. **Merge** and
-auto-merge are pinned to the commit the checkout is on, so if someone has
-pushed since, GitHub refuses and you update the checkout and look again. It
-also has:
+places. It comes back if the author asks you to review again. It also has:
 
 - **Guided review**, **Story** and **Ask Claude**, which open those tabs (see
   [Guided review](#guided-review), [Story](#story) and [Ask Claude](#ask-claude)).
@@ -786,6 +783,10 @@ also has:
   **Remove from workspace**, which takes the PR and its checkout out, and
   **Mutation testing**, which opens that tab (see
   [Mutation testing](#mutation-testing)).
+
+**Merge** and auto-merge are pinned to the commit you reviewed, the one the
+checkout is on. If someone has pushed since, GitHub refuses the merge; update
+the checkout and look again.
 
 When the PR conflicts with its base, a red **Conflicts with <base>** banner
 sits under the bar with **Resolve conflicts**, which hands the merge to a

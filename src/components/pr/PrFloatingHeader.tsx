@@ -358,11 +358,17 @@ export function usePrActions(prRef: PrRef, seen?: SeenCommits) {
   };
 
   const runMerge = async (op: "merge" | "auto_merge", method: MergeMethod) => {
+    // Pinned to the head this surface shows, so a push since can't merge
+    // unseen. With no head yet (a checkout still cloning) it refuses rather
+    // than merge unpinned.
+    const headSha = seen?.headSha;
+    if (!headSha) {
+      setError("There's no reviewed commit to merge yet.");
+      return;
+    }
     setMergePending(true);
     setError(null);
     try {
-      // Pinned to the head on screen, so a push since can't merge unseen.
-      const headSha = seen?.headSha ?? undefined;
       if (op === "merge") await mergePr(prRef, method, headSha);
       else await enableAutoMerge(prRef, method, headSha);
       invalidatePr(prRef);

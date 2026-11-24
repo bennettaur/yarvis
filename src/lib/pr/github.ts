@@ -143,10 +143,10 @@ export const ghSubmitReview = (
 
 // `headSha` is the commit the user reviewed; GitHub refuses the merge once the
 // branch has moved past it.
-export const ghMergePr = (ref: PrRef, method: MergeMethod, headSha?: string) =>
+export const ghMergePr = (ref: PrRef, method: MergeMethod, headSha: string) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method, headSha });
 
-export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod, headSha?: string) =>
+export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod, headSha: string) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method, headSha });
 
 export const ghDisableAutoMerge = (ref: PrRef) =>

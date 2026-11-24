@@ -101,7 +101,7 @@ describe("github merge validation", () => {
     const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
       method: "POST",
       headers: { ...auth, "Content-Type": "application/json" },
-      body: JSON.stringify({ method: "FAST_FORWARD" }),
+      body: JSON.stringify({ method: "FAST_FORWARD", headSha: "a".repeat(40) }),
     });
     expect(res.status).toBe(400);
   });
@@ -119,6 +119,15 @@ describe("github merge validation", () => {
     const res = await configured.request("/api/github/pr/octo/repo/abc/auto-merge", {
       method: "DELETE",
       headers: { ...auth },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses a merge with no head sha, since nothing pins it", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "SQUASH" }),
     });
     expect(res.status).toBe(400);
   });

@@ -2159,20 +2159,19 @@ export class GitHubClient {
    * equivalent of the green "Merge" button). Keyed by the PR's node id, so a
    * preflight resolves it first. GitHub rejects a method the repo disallows or
    * a PR that isn't currently mergeable; the error is surfaced to the caller.
-   * With `expectedHeadSha`, GitHub also refuses once the branch has moved past
-   * that commit, so a push landing after the review can't merge unreviewed.
-   * Left out, `$head` is never sent, which GraphQL treats as no pin at all.
+   * GitHub also refuses once the branch has moved past `expectedHeadSha`, so a
+   * push landing after the review can't merge unreviewed.
    */
   async mergePullRequest(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
-    expectedHeadSha?: string,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID){
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
         mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
       { id, method, head: expectedHeadSha },
@@ -2182,19 +2181,19 @@ export class GitHubClient {
   /**
    * Arms auto-merge: GitHub merges the PR automatically once its branch
    * protections pass. Requires the repo to allow auto-merge and the chosen
-   * method; GitHub rejects otherwise. `expectedHeadSha` pins the commit as it
-   * does for {@link mergePullRequest}.
+   * method; GitHub rejects otherwise. `expectedHeadSha` pins the commit as
+   * it does for {@link mergePullRequest}.
    */
   async enableAutoMerge(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
-    expectedHeadSha?: string,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID){
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
         enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
       { id, method, head: expectedHeadSha },

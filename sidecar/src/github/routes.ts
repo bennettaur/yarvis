@@ -132,13 +132,11 @@ const viewedSchema = z.object({
 
 // The merge / auto-merge body carries the chosen strategy. GitHub defaults to a
 // merge commit when omitted, so `method` is optional. `headSha` is the commit
-// the user reviewed: GitHub refuses the merge if the branch has moved since.
+// the user reviewed and is required: GitHub refuses the merge if the branch has
+// moved since, and a merge nobody pinned is one nobody reviewed.
 const mergeSchema = z.object({
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
-  headSha: z
-    .string()
-    .regex(/^[0-9a-f]{40}$/, "expected a commit sha")
-    .optional(),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha"),
 });
 
 /**
