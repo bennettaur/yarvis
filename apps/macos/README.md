@@ -97,8 +97,9 @@ socket closed with `4401`, signs the app out.
 
 The sidebar lists the pages in the web UI's order, with Settings at the
 bottom. Cmd-1 to Cmd-6 open Chat, Terminal, Workspaces, Calendar, Alarms
-and Heads down, Cmd-, opens Settings, and Cmd-Shift-] / Cmd-Shift-[
-step through every page. Open chat tabs, the model pick, terminal
+and Heads down (Review, between Workspaces and Calendar, has no digit,
+as in the web UI), Cmd-, opens Settings, and Cmd-Shift-] /
+Cmd-Shift-[ step through every page. Open chat tabs, the model pick, terminal
 layouts and the selected workspace are saved on this Mac per server,
 since they hold that server's ids; signing in to another server shows
 that server's own. The last page and display choices (the Chats
@@ -142,7 +143,35 @@ Native:
   checks; files open as a diff (click a line number, then shift-click
   another, to comment on a range) or in an editor (Cmd-S saves) that won't
   overwrite a change made since it loaded. New workspaces are created with repos and
-  branches. Lists are polled only while the page is on screen.
+  branches. Lists are polled only while the page is on screen. A linked
+  PR's row has Open in review workspace.
+- **Review.** Review workspaces: the list (paste a PR link or `repo#12`
+  to start one), and a workspace with a nav (sections, changed files with
+  viewed boxes and must-read stars, all files, commits, stack layers to
+  add), a PR bar (approve, request changes, merge and auto-merge, start
+  or open the PR's workspace, update the checkout, conflict and
+  new-commits banners) and one or two tab groups you can drag tabs
+  between. Tabs: Description, Reviewers, Checks, Comments, Since last
+  review with the agent's re-review summary, Guided review with its flow
+  graph, Story, Verification with the decision panel and Copy as
+  Markdown, Flow diagram, Mutation testing, Ask Claude, and per-file
+  diffs, files and commits. Diffs and files are native views: split or
+  unified, lines wrap at the window's width, unchanged stretches fold
+  (Show 20 more, Show all, or Whole file), and syntax is highlighted.
+  Hover a line number for + (comment) or ? (ask about the lines); drag
+  or shift-click line numbers to cover a range. Cmd-click or F12 goes
+  to a definition and Shift-F12 finds references, using the checkout's
+  text search (no TypeScript-aware answers or hover info). Copying is by
+  line. Ctrl-Tab and Cmd-Option-Left/Right step through tabs, Cmd-W
+  closes the review tab rather than the window, Cmd-\ moves a tab to the
+  other side, and Option-J/K step through changed files. The tab layout
+  is saved per workspace and server. Ask Claude is one read-only session
+  per workspace. The verification Flow diagram is drawn by Mermaid in a
+  web view that loads nothing remote, holds no token and runs only its
+  own two scripts. It's there in a `make-app.sh` build made after `bun
+  install` at the repo root; otherwise the tab shows the Mermaid
+  source. Story diffs aren't highlighted, and the guided review's graph
+  has no image export.
 - **Calendar.** Agenda, week, month and day views of the connected
   Google calendar, with overlapping meetings side by side. Each meeting
   has an alarm button, which knows the alarms the agent already set.

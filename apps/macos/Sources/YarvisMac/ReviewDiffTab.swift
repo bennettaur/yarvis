@@ -46,6 +46,7 @@ private struct ReviewChangedFileDiff: View {
     @State private var head: ReviewFileContent?
     @State private var base: ReviewFileContent?
     @State private var loadError: String?
+    @State private var attempt = 0
 
     private var path: String { file.path }
     private var hasBase: Bool { file.status != "added" }
@@ -76,7 +77,7 @@ private struct ReviewChangedFileDiff: View {
             if pr.viewed == nil { pr.loadViewed() }
         }
         .onChange(of: spec.revealRequest, initial: true) { reveal.follow(line: spec.revealLine) }
-        .task(id: "\(pr.pr.headSha ?? ""):\(pr.pr.mergeBaseSha ?? ""):\(context.diffMode.rawValue)") { await load() }
+        .task(id: "\(ReviewCodeReads.loadKey(pr.pr)):\(context.diffMode.rawValue):\(attempt)") { await load() }
     }
 
     @ViewBuilder
@@ -154,7 +155,7 @@ private struct ReviewChangedFileDiff: View {
                 onLineAction: { annotations.perform($0) },
                 symbols: reviewCodeSymbols(context, path: path))
         } else if let loadError {
-            ReviewCodeNote(text: loadError, error: true)
+            ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
         } else {
             ReviewCodeNote(text: "Loading file…", loading: true)
         }
@@ -239,6 +240,7 @@ struct ReviewFileTab: View {
     @State private var document: ReviewCodeDocument?
     @State private var head: ReviewFileContent?
     @State private var loadError: String?
+    @State private var attempt = 0
 
     private var path: String { spec.path ?? "" }
 
@@ -276,7 +278,7 @@ struct ReviewFileTab: View {
                     onLineAction: { annotations.perform($0) },
                     symbols: reviewCodeSymbols(context, path: path))
             } else if let loadError {
-                ReviewCodeNote(text: loadError, error: true)
+                ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
                 ReviewCodeNote(text: "Loading file…", loading: true)
             }
@@ -288,7 +290,7 @@ struct ReviewFileTab: View {
             pr.loadTree()
         }
         .onChange(of: spec.revealRequest, initial: true) { reveal.follow(line: spec.revealLine) }
-        .task(id: "\(pr.pr.headSha ?? ""):\(path)") { await load() }
+        .task(id: "\(ReviewCodeReads.loadKey(pr.pr)):\(path):\(attempt)") { await load() }
     }
 
     private func load() async {

@@ -10,6 +10,7 @@ struct ReviewCommitTab: View {
 
     @State private var files: CommitFiles?
     @State private var loadError: String?
+    @State private var attempt = 0
     @State private var picked: String?
 
     private var sha: String { spec.sha ?? "" }
@@ -20,13 +21,13 @@ struct ReviewCommitTab: View {
             if let files {
                 loaded(files)
             } else if let loadError {
-                ReviewCodeNote(text: loadError, error: true)
+                ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
                 ReviewCodeNote(text: "Loading commit…", loading: true)
             }
         }
         .onAppear { pr.loadCommits() }
-        .task(id: sha) { await load() }
+        .task(id: "\(sha):\(attempt)") { await load() }
     }
 
     @ViewBuilder
@@ -97,6 +98,7 @@ private struct ReviewCommitFileDiff: View {
     @State private var diff: CommitFileDiff?
     @State private var document: ReviewCodeDocument?
     @State private var loadError: String?
+    @State private var attempt = 0
 
     var body: some View {
         Group {
@@ -107,12 +109,12 @@ private struct ReviewCommitFileDiff: View {
             } else if let document {
                 ReviewCodeView(document: document, folded: true)
             } else if let loadError {
-                ReviewCodeNote(text: loadError, error: true)
+                ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
                 ReviewCodeNote(text: "Loading diff…", loading: true)
             }
         }
-        .task(id: "\(sha):\(file.path):\(context.diffMode.rawValue)") { await load() }
+        .task(id: "\(sha):\(file.path):\(context.diffMode.rawValue):\(attempt)") { await load() }
     }
 
     private func load() async {

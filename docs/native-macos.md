@@ -15,10 +15,12 @@ natively, and lists what in the API gets in its way.
 - `YarvisMac`: the SwiftUI app.
 
 The app is laid out like the web UI: a sidebar with the Chat, Terminal,
-Workspaces, Calendar, Alarms and Heads down pages in the web's order
-and Settings at the bottom, and the attention bell as a panel. `AppModel` routes between pages as the web's
-`App.tsx` does: an attention item, a `yarvis://` link or a workspace mention
-opens the chat thread, workspace or terminal pane it names, and a PTY id is
+Workspaces, Review, Calendar, Alarms and Heads down pages in the web's
+order and Settings at the bottom, and the attention bell as a panel.
+`AppModel` routes between pages as the web's `App.tsx` does: an
+attention item, a `yarvis://` link or a workspace mention opens the
+chat thread, workspace, review workspace or terminal pane it names
+(`openReview` is the web's `handleOpenReview`), and a PTY id is
 routed by the surface that owns it (`tab:terminal/…` to Terminal,
 `ws-claude:<id>` and `ws:<id>/…` to Workspaces).
 
@@ -34,6 +36,13 @@ Native:
 - Workspaces: the list, the detail page with its agent and terminals,
   provisioning, new workspaces, archiving, changed and all files, diffs
   with review comments, and the editor.
+- Review workspaces: every tab of the web's Review page. Diffs and files
+  are an `NSTableView` with a Myers line diff and a small tokenizer for
+  highlighting instead of Monaco, so code navigation is the sidecar's
+  text search only. The verification Flow diagram is Mermaid in a
+  locked-down `WKWebView` (bundled by `make-app.sh` from
+  `node_modules`); the guide's flow graph is drawn natively. Azure's
+  viewed files are kept on this Mac per server.
 - Calendar: agenda, week, month and day views, and meeting alarms.
 - Alarms: the list, and a takeover driven by `alarm.fire` and
   `alarm.release` events and the `/api/alarms/stream` SSE.
@@ -46,7 +55,7 @@ Native:
   and permission prompts, dismissing and opening. New attention items
   post a macOS notification when the app runs as `Yarvis.app`.
 
-In a `WKWebView`: everything else, including first-run setup, PRs, tasks,
+In a `WKWebView`: everything else, including first-run setup, the PRs list, tasks,
 memory, and the rest of Settings.
 
 Checked against a real `yarvis-server` with the sidecar off: sign-in with a

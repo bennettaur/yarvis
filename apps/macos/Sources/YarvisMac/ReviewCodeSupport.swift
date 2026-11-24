@@ -6,6 +6,7 @@ struct ReviewCodeNote: View {
     let text: String
     var error = false
     var loading = false
+    var retry: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 8) {
@@ -14,6 +15,7 @@ struct ReviewCodeNote: View {
                 .foregroundStyle(error ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
+            if let retry { Button("Try again", action: retry).controlSize(.small) }
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -67,9 +69,18 @@ struct ReviewLineCounts: View {
     }
 }
 
-/// Reads shared through `ReviewCodeCache`, keyed by the commit they're read at.
+/// Reads shared through `ReviewCodeCache`, keyed by the commit they're read
+/// at. Content at a commit never changes, so a refresh that moves the head
+/// reads fresh and one that doesn't has nothing new to read. Failures aren't
+/// cached; a tab loads again when `loadKey` changes or on "Try again".
 @MainActor
 enum ReviewCodeReads {
+    /// Changes when the PR's commits or its checkout's state change, as a
+    /// refresh or checkout update does.
+    static func loadKey(_ pr: ReviewWorkspacePr) -> String {
+        "\(pr.headSha ?? ""):\(pr.mergeBaseSha ?? ""):\(pr.status):\(pr.worktreeStatus)"
+    }
+
     static func file(_ context: ReviewTabContext, path: String, side: ReviewFileSide) async throws -> ReviewFileContent {
         let pr = context.pr
         let sha = (side == .head ? pr.pr.headSha : pr.pr.mergeBaseSha) ?? ""

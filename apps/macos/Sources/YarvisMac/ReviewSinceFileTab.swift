@@ -12,6 +12,7 @@ struct ReviewSinceFileTab: View {
     @State private var view: SinceFileView?
     @State private var document: ReviewCodeDocument?
     @State private var loadError: String?
+    @State private var attempt = 0
     @State private var wholeFile = false
 
     private var path: String { spec.path ?? "" }
@@ -25,7 +26,7 @@ struct ReviewSinceFileTab: View {
             } else if let view {
                 loaded(view)
             } else if let loadError {
-                ReviewCodeNote(text: loadError, error: true)
+                ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
                 ReviewCodeNote(text: "Comparing with your review…", loading: true)
             }
@@ -34,7 +35,7 @@ struct ReviewSinceFileTab: View {
             pr.loadChangedFiles()
             pr.loadTree()
         }
-        .task(id: "\(pr.pr.headSha ?? ""):\(pr.pr.mergeBaseSha ?? ""):\(from):\(context.diffMode.rawValue)") {
+        .task(id: "\(ReviewCodeReads.loadKey(pr.pr)):\(from):\(context.diffMode.rawValue):\(attempt)") {
             await load()
         }
     }
