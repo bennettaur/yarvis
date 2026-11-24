@@ -32,7 +32,9 @@ final class SettingsModel {
     private unowned let app: AppModel
     private let client: YarvisClient
 
-    var tab: SettingsTab = .connection
+    var tab: SettingsTab = .connection {
+        didSet { if tab != oldValue { clearSecrets() } }
+    }
 
     // MARK: Vault
 
@@ -89,6 +91,20 @@ final class SettingsModel {
 
     func stop() {
         vaultTask?.cancel()
+        clearSecrets()
+    }
+
+    /// Drops everything secret the page holds, so it doesn't outlive the
+    /// screen that showed it.
+    func clearSecrets() {
+        mintedToken = nil
+        newBackupCodes = nil
+        enrollment = nil
+        enrollmentCode = ""
+        currentPassphrase = ""
+        newPassphrase = ""
+        vaultPassphrase = ""
+        recoveryKey = ""
     }
 
     var isAdmin: Bool { (me ?? app.device)?.has(.admin) ?? false }
@@ -118,8 +134,6 @@ final class SettingsModel {
             reloadDevices()
         case "account.changed", "account.reset", "account.backup_code_used":
             reloadAccount()
-        case "approval.requested", "approval.answered":
-            app.attention?.reloadApprovals()
         default:
             break
         }
@@ -130,10 +144,11 @@ final class SettingsModel {
         reloadDevices()
     }
 
-    /// Shows a Settings tab by the web's key. Only `devices` has its own
-    /// page here; any other key shows the default tab.
+    /// Shows a tab by key. The web's Settings has only `devices` in common
+    /// with this page; any other key shows Connection.
     func open(tab key: String) {
-        tab = key == "devices" ? .devices : .connection
+        let wanted = SettingsTab(rawValue: key) ?? .connection
+        tab = wanted == .account && !isAdmin ? .connection : wanted
     }
 
     // MARK: Vault
@@ -152,8 +167,7 @@ final class SettingsModel {
     private func applyVault(_ state: String?) {
         let wasBlocked = vaultNeedsUnlock
         vaultState = state
-        if wasBlocked, !vaultNeedsUnlock {
-            // The sidecar starts after the unlock, so these pages had nothing to load before.
+        if SettingsRules.pagesNeedReload(wasBlocked: wasBlocked, vault: state) {
             app.chat?.resync()
             app.workspaces?.resync()
             app.attention?.reload()
@@ -166,16 +180,18 @@ final class SettingsModel {
         vaultBusy = true
         vaultError = nil
         defer { vaultBusy = false }
+        defer {
+            vaultPassphrase = ""
+            recoveryKey = ""
+        }
         do {
             if useRecoveryKey {
                 try await client.unlockVault(recoveryKey: recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines))
             } else {
                 try await client.unlockVault(passphrase: vaultPassphrase)
             }
-            vaultPassphrase = ""
-            recoveryKey = ""
             applyVault("unlocked")
-        } catch YarvisError.http(status: 409, let error, _) where error == "the vault is already unlocked" {
+        } catch let error as YarvisError where SettingsRules.isAlreadyUnlocked(error) {
             applyVault("unlocked")
         } catch {
             vaultError = error.localizedDescription
@@ -227,7 +243,7 @@ final class SettingsModel {
             devicesError = error.localizedDescription
             return
         }
-        if device.current || device.deviceId == thisDevice?.deviceId {
+        if SettingsRules.revokeEndsSession(device, thisDeviceId: thisDevice?.deviceId) {
             await app.signOut()
         } else {
             await loadDevices()
@@ -285,10 +301,11 @@ final class SettingsModel {
         guard canChangePassphrase else { return }
         let (current, new, others) = (currentPassphrase, newPassphrase, signOutOthers)
         await account({ try await $0.changePassphrase(current: current, new: new, signOutOtherDevices: others) }) {
-            currentPassphrase = ""
-            newPassphrase = ""
             return SettingsRules.passphraseChanged(otherDevicesSignedOut: $0.count)
         }
+        // A refused attempt shouldn't leave the passphrases on screen either.
+        currentPassphrase = ""
+        newPassphrase = ""
     }
 
     func startEnrollment() async {

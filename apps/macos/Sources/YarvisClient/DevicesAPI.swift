@@ -52,23 +52,12 @@ public struct TotpEnrollment: Codable, Sendable, Equatable {
     public var qrSvg: String?
 }
 
-public struct VaultWrapper: Codable, Sendable, Equatable {
-    public var id: String
-    public var label: String
-    public var kind: String
-}
-
-public struct VaultStatus: Codable, Sendable, Equatable {
-    public var state: String
-    public var wrappers: [VaultWrapper]
-}
-
 /// The scopes a token made from the app can have. `terminal` and `admin`
 /// are refused by the server and made with `yarvis-server device add`.
 public let mintableScopes: [Scope] = [.read, .chat, .approve]
 
 extension Scope {
-    /// What the scope lets a device do, in the web UI's words.
+    /// What the scope lets a device do, for the token form.
     public var summary: String {
         switch self {
         case .read: return "see data and events"
@@ -152,12 +141,6 @@ extension YarvisClient {
     }
 
     // MARK: Vault
-
-    /// Only servers on the vault backend have the vault routes; the rest
-    /// answer 404.
-    public func vaultStatus() async throws -> VaultStatus {
-        try await get(VaultStatus.self, "/api/vault/status")
-    }
 
     /// Opens the vault with its passphrase. Needs `admin`, not a fresh check.
     public func unlockVault(passphrase: String) async throws {

@@ -26,6 +26,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .onDisappear { model.clearSecrets() }
     }
 }
 
@@ -302,6 +303,7 @@ struct VaultUnlockView: View {
             Button("Sign Out") { model.signOut() }.buttonStyle(.link)
         }
         .textFieldStyle(.roundedBorder)
+        .onDisappear { model.clearSecrets() }
         .frame(width: 320)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

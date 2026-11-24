@@ -1,6 +1,6 @@
 import Foundation
 
-/// Checks and wording for the Settings forms, matching the web UI's.
+/// Checks and wording for the Settings forms.
 public enum SettingsRules {
     public static let minPassphraseLength = 12
 
@@ -35,7 +35,7 @@ public enum SettingsRules {
         "\(n) backup code\(n == 1 ? "" : "s") left."
     }
 
-    /// Devices the list shows: the web UI hides revoked ones.
+    /// Devices the list shows: revoked ones are history, not something to manage.
     public static func active(_ devices: [DeviceRecord]) -> [DeviceRecord] {
         devices.filter { !$0.isRevoked }
     }
@@ -43,5 +43,22 @@ public enum SettingsRules {
     /// True when the app can't start until the vault is dealt with.
     public static func vaultBlocksApp(_ state: String?) -> Bool {
         state == "locked" || state == "uninitialized"
+    }
+
+    /// The server's 409 for an unlock that raced another one. The vault is open, so it counts as success.
+    public static func isAlreadyUnlocked(_ error: YarvisError) -> Bool {
+        if case .http(409, "the vault is already unlocked", _) = error { return true }
+        return false
+    }
+
+    /// The sidecar starts only once the vault opens, so chat, workspaces
+    /// and attention had nothing to load until then.
+    public static func pagesNeedReload(wasBlocked: Bool, vault: String?) -> Bool {
+        wasBlocked && !vaultBlocksApp(vault)
+    }
+
+    /// Revoking the device this app runs on signs it out.
+    public static func revokeEndsSession(_ device: DeviceRecord, thisDeviceId: String?) -> Bool {
+        device.current || device.deviceId == thisDeviceId
     }
 }

@@ -139,14 +139,6 @@ private func sent(_ id: String) throws -> (method: String?, path: String?, body:
 }
 
 @Suite struct VaultAPITests {
-    @Test func readsTheVaultStatus() async throws {
-        let (c, id) = client(200, #"{"state":"locked","wrappers":[{"id":"w1","label":"Passphrase","kind":"passphrase"}]}"#)
-        let s = try await c.vaultStatus()
-        #expect(s.state == "locked" && s.wrappers.first?.label == "Passphrase")
-        let r = try sent(id)
-        #expect(r.method == "GET" && r.path == "/api/vault/status")
-    }
-
     @Test func unlocksWithThePassphrase() async throws {
         let (c, id) = client(200, #"{"state":"unlocked"}"#)
         try await c.unlockVault(passphrase: "vault pass")
@@ -175,13 +167,6 @@ private func sent(_ id: String) throws -> (method: String?, path: String?, body:
         let (c, _) = client(403, #"{"error":"that doesn't open the vault"}"#)
         await #expect(throws: YarvisError.http(status: 403, error: "that doesn't open the vault", detail: nil)) {
             try await c.unlockVault(recoveryKey: "x")
-        }
-    }
-
-    @Test func aMissingVaultRouteIsA404() async throws {
-        let (c, _) = client(404, #"{"error":"not found"}"#)
-        await #expect(throws: YarvisError.http(status: 404, error: "not found", detail: nil)) {
-            try await c.vaultStatus()
         }
     }
 }
@@ -217,7 +202,7 @@ private func sent(_ id: String) throws -> (method: String?, path: String?, body:
         #expect(SettingsRules.active(list).count == 1)
     }
 
-    @Test func countsReadAsTheWebDoes() {
+    @Test func pluralizesCounts() {
         #expect(SettingsRules.devicesSignedOut(1) == "Signed out 1 other device.")
         #expect(SettingsRules.devicesSignedOut(2) == "Signed out 2 other devices.")
         #expect(SettingsRules.passphraseChanged(otherDevicesSignedOut: 0) == "Passphrase changed. 0 other devices signed out.")
@@ -230,5 +215,28 @@ private func sent(_ id: String) throws -> (method: String?, path: String?, body:
         #expect(!SettingsRules.vaultBlocksApp("unlocked"))
         #expect(!SettingsRules.vaultBlocksApp("absent"))
         #expect(!SettingsRules.vaultBlocksApp(nil))
+    }
+
+    @Test func recognizesAnAlreadyUnlockedVault() {
+        #expect(SettingsRules.isAlreadyUnlocked(.http(status: 409, error: "the vault is already unlocked", detail: nil)))
+        #expect(!SettingsRules.isAlreadyUnlocked(.http(status: 409, error: "there is no vault yet", detail: nil)))
+        #expect(!SettingsRules.isAlreadyUnlocked(.http(status: 403, error: "the vault is already unlocked", detail: nil)))
+        #expect(!SettingsRules.isAlreadyUnlocked(.badResponse))
+    }
+
+    @Test func pagesReloadOnlyWhenTheVaultOpens() {
+        #expect(SettingsRules.pagesNeedReload(wasBlocked: true, vault: "unlocked"))
+        #expect(!SettingsRules.pagesNeedReload(wasBlocked: false, vault: "unlocked"))
+        #expect(!SettingsRules.pagesNeedReload(wasBlocked: true, vault: "locked"))
+        #expect(!SettingsRules.pagesNeedReload(wasBlocked: true, vault: "uninitialized"))
+    }
+
+    @Test func revokingThisDeviceEndsTheSession() {
+        let other = record()
+        #expect(!SettingsRules.revokeEndsSession(other, thisDeviceId: "me"))
+        #expect(SettingsRules.revokeEndsSession(other, thisDeviceId: "d"))
+        var current = record()
+        current.current = true
+        #expect(SettingsRules.revokeEndsSession(current, thisDeviceId: nil))
     }
 }
