@@ -495,7 +495,7 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         t.apply(.toolCall(ToolActivity(id: "c1", name: "recall", status: "pending")))
         t.apply(.delta("partial"))
         t.apply(.error(message: "The model refused.", detail: "Try another."))
-        #expect(t.finish(cancelled: false) == .failed("The model refused. Try another."))
+        #expect(t.finish(cancelled: false) == .failed(TurnFailure(message: "The model refused.", detail: "Try another.")))
         #expect(t.reply.isEmpty)
         #expect(t.tools.count == 1)
     }

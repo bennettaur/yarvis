@@ -1,240 +1,419 @@
+import AppKit
 import SwiftUI
 import YarvisClient
 
+/// The Chat page: the "Chats" history, a strip of tabs, the front tab's
+/// thread and an optional artifact pane, laid out as the web's `ChatTabs`.
 struct ChatView: View {
     @Bindable var chat: ChatModel
 
     var body: some View {
-        HSplitView {
-            threadList.frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
-            thread.frame(minWidth: 420)
-        }
-    }
-
-    private var threadList: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Threads").font(.headline)
-                Spacer()
-                Button { chat.newThread() } label: { Image(systemName: "square.and.pencil") }
-                    .help("New thread")
+        HStack(spacing: 0) {
+            if chat.historyOpen {
+                ChatHistory(chat: chat).frame(width: 256)
+                Divider()
             }
-            .padding(10)
-            List(chat.sessions, selection: Binding(get: { chat.selectedId }, set: { chat.open($0) })) { s in
-                VStack(alignment: .leading) {
-                    Text(s.title ?? "Untitled").lineLimit(1)
-                    Text(relative(s.updatedAt)).font(.caption2).foregroundStyle(.secondary)
-                }
-                .tag(s.id)
-            }
-        }
-    }
-
-    private var thread: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(chat.messages) { MessageRow(message: $0) }
-                        if chat.isStreaming || !chat.liveTools.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ToolActivityList(tools: chat.liveTools)
-                                if !chat.reply.isEmpty {
-                                    MarkdownText(chat.reply)
-                                } else if chat.isStreaming {
-                                    ProgressView().controlSize(.small)
-                                }
-                            }
-                        }
-                        Color.clear.frame(height: 1).id("end")
+            HSplitView {
+                VStack(spacing: 0) {
+                    ChatTabStrip(chat: chat)
+                    Divider()
+                    if let thread = chat.activeThread {
+                        ChatPanel(thread: thread, chat: chat).id(thread.id)
+                    } else {
+                        Spacer()
                     }
-                    .padding(16)
                 }
-                .onChange(of: chat.reply) { proxy.scrollTo("end", anchor: .bottom) }
-                .onChange(of: chat.messages.count) { proxy.scrollTo("end", anchor: .bottom) }
-            }
-            if let notice = chat.notice {
-                Text(notice).font(.callout).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 4)
-            }
-            if let error = chat.error {
-                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
-                    .padding(.horizontal, 16).padding(.bottom, 4)
-            }
-            if let front = chat.approvals.first {
-                ToolApprovalBar(request: front, waitingCount: chat.approvals.count - 1) { approved in
-                    chat.answer(front, approved: approved)
+                .frame(minWidth: 420)
+                if let pane = chat.artifact {
+                    ChatArtifactPane(pane: pane, chat: chat)
                 }
             }
-            composer
         }
-    }
-
-    private var composer: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .bottom) {
-                TextField("Message Yarvis", text: $chat.draft, axis: .vertical)
-                    .lineLimit(1...8)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { chat.send() }
-                if chat.isStreaming {
-                    Button("Stop", role: .destructive) { chat.stop() }
-                        .keyboardShortcut(".", modifiers: .command)
-                } else {
-                    Button("Send") { chat.send() }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            ModelPicker(chat: chat)
+        .environment(\.chatLinkRouter, ChatLinkRouter { chat.follow($0) })
+        .environment(\.workspaceNames, chat.workspaceNames)
+        .onAppear {
+            chat.becameVisible()
+            chat.mcp.startPolling()
         }
-        .padding(12)
+        .onDisappear { chat.mcp.stopPolling() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            chat.becameVisible()
+        }
     }
 }
 
-private func relative(_ iso: String) -> String {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    guard let date = f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
-    return date.formatted(.relative(presentation: .named))
-}
-
-struct ModelPicker: View {
+/// Every chat, newest first. Ones open in a tab read brighter, and the
+/// front tab's is highlighted.
+private struct ChatHistory: View {
     @Bindable var chat: ChatModel
 
     var body: some View {
-        HStack {
-            Menu {
-                ForEach(chat.providers) { p in
-                    Menu(p.label) {
-                        ForEach(p.models, id: \.id) { m in
-                            Button(m.id) { chat.choose(provider: p.id, model: m.id) }
-                        }
-                    }
-                    .disabled(!p.available)
-                }
-            } label: {
-                Text(chat.model ?? "No model").font(.caption)
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            Spacer()
-        }
-    }
-}
-
-struct MessageRow: View {
-    let message: ChatMessage
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(message.role == "user" ? "You" : "Yarvis").font(.caption.bold()).foregroundStyle(.secondary)
-            if let tools = message.toolCalls, !tools.isEmpty {
-                ToolActivityList(tools: tools)
-            }
-            if message.role == "user" {
-                Text(message.content).textSelection(.enabled)
-            } else {
-                MarkdownText(message.content)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// One compact line per tool call: name, status, and the result on hover.
-struct ToolActivityList: View {
-    let tools: [ToolActivity]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(tools) { t in
-                HStack(spacing: 6) {
-                    statusIcon(t.status)
-                    Text(t.server.map { "\($0) · \(t.name)" } ?? t.name).font(.caption.monospaced())
-                    if let ms = t.durationMs { Text("\(Int(ms)) ms").font(.caption2).foregroundStyle(.secondary) }
-                }
-                .help(t.result ?? "")
-            }
-        }
-    }
-
-    @ViewBuilder private func statusIcon(_ status: String) -> some View {
-        switch status {
-        case "ok": Image(systemName: "checkmark.circle").foregroundStyle(.green)
-        case "error": Image(systemName: "xmark.circle").foregroundStyle(.red)
-        case "denied": Image(systemName: "hand.raised").foregroundStyle(.orange)
-        default: ProgressView().controlSize(.mini)
-        }
-    }
-}
-
-/// The front of the approval queue, like the web's `ToolApprovalBar`.
-struct ToolApprovalBar: View {
-    let request: ToolApprovalRequest
-    let waitingCount: Int
-    let answer: (Bool) -> Void
-    @State private var showArgs = false
-
-    private var hasReason: Bool { !(request.reason ?? "").isEmpty }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Approve?").bold()
-                Text(request.name).font(.body.monospaced())
-                if let server = request.server, !server.isEmpty { Text("on \(server)").foregroundStyle(.secondary) }
-                if waitingCount > 0 { Text("+\(waitingCount) waiting").font(.caption).foregroundStyle(.secondary) }
+                Text("Chats").font(.headline)
                 Spacer()
-                Group {
-                    Button("Deny") { answer(false) }
-                    Button("Approve") { answer(true) }.buttonStyle(.borderedProminent)
+                Button { chat.historyOpen = false } label: { Image(systemName: "sidebar.left") }
+                    .buttonStyle(.borderless).help("Hide chats")
+            }
+            .padding(10)
+            if let error = chat.sessionsError {
+                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).padding(.horizontal, 10)
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(chat.sessions) { row($0) }
                 }
-                .armedAfterAppearing(id: request.id)
+                .padding(.horizontal, 6)
             }
-            // A URL is shown in full, since where a call goes is what matters most.
-            if let url = request.args?["url"]?.stringValue {
-                Text(url).font(.caption.monospaced()).textSelection(.enabled)
+        }
+    }
+
+    private func row(_ s: ChatSession) -> some View {
+        let title = s.title ?? "Untitled chat"
+        let active = chat.activeThread?.sessionId == s.id
+        let open = chat.isOpen(sessionId: s.id)
+        return Button { chat.openSession(s.id) } label: {
+            Text(title).lineLimit(1).truncationMode(.tail)
+                .foregroundStyle(active || open ? .primary : .secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(active ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(title)
+    }
+}
+
+private struct ChatTabStrip: View {
+    @Bindable var chat: ChatModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if !chat.historyOpen {
+                Button { chat.historyOpen = true } label: { Image(systemName: "sidebar.left") }
+                    .buttonStyle(.borderless).help("Show chats")
             }
-            if hasReason, let reason = request.reason {
-                Text("The assistant says: \(reason)").font(.callout).foregroundStyle(.secondary)
-            }
-            // A stated reason is the model's claim, so the arguments it
-            // describes stay in view to check it against.
-            DisclosureGroup("Arguments", isExpanded: Binding(get: { showArgs || hasReason },
-                                                             set: { showArgs = $0 })) {
-                ScrollView {
-                    Text(request.args?.prettyPrinted ?? "{}").font(.caption.monospaced()).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(chat.tabs.tabs) { tab($0) }
                 }
-                .frame(maxHeight: 160)
+            }
+            Button { chat.newTab() } label: { Image(systemName: "plus") }
+                .buttonStyle(.borderless).help("New chat")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+    }
+
+    private func tab(_ tab: ChatTabsState.Tab) -> some View {
+        let label = chat.label(tab)
+        let thread = chat.thread(tab.id)
+        let active = chat.tabs.activeId == tab.id
+        return HStack(spacing: 5) {
+            if thread?.awaitingApproval == true {
+                Circle().fill(.orange).frame(width: 7, height: 7).help("\(label) — needs your approval")
+            } else if thread?.busy == true {
+                BusyDot()
+            }
+            Text(label).lineLimit(1).frame(maxWidth: 160, alignment: .leading)
+            Button { chat.close(tab.id) } label: { Image(systemName: "xmark").font(.caption2) }
+                .buttonStyle(.borderless).help("Close tab")
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(active ? Color.accentColor.opacity(0.15) : .clear, in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture { chat.select(tab.id) }
+        .help(label)
+    }
+}
+
+private struct BusyDot: View {
+    @State private var dim = false
+
+    var body: some View {
+        Circle().fill(.green).frame(width: 7, height: 7).opacity(dim ? 0.3 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.8).repeatForever()) { dim = true }
+            }
+    }
+}
+
+/// One tab's thread: the conversation, then the approval bar, errors, MCP
+/// issues, the queue and the composer.
+private struct ChatPanel: View {
+    @Bindable var thread: ChatThread
+    let chat: ChatModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ChatConversation(thread: thread)
+            if let front = thread.approvals.first {
+                ToolApprovalBar(request: front, waitingCount: thread.approvals.count - 1,
+                                answer: { thread.answer(front, approved: $0) },
+                                alwaysAllow: { thread.alwaysAllow(front) })
+            }
+            if let notice = thread.notice {
+                HStack {
+                    Text(notice).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { thread.notice = nil } label: { Image(systemName: "xmark") }.buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 4)
+            }
+            if let error = thread.error {
+                ErrorNotice(error: error, canRetry: !thread.busy && thread.messages.contains { $0.role == "user" },
+                            retry: { thread.retry() }, dismiss: { thread.error = nil })
+            }
+            McpConnectionBar(model: chat.mcp)
+            QueuedMessages(thread: thread)
+            ChatComposer(thread: thread, chat: chat)
+        }
+    }
+}
+
+/// The messages, sticking to the newest until the user scrolls up.
+private struct ChatConversation: View {
+    let thread: ChatThread
+    @State private var pinned = true
+    @State private var hovering = false
+    @State private var wheelMonitor: Any?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(thread.messages.filter { $0.role == "user" || $0.role == "assistant" }) {
+                        MessageRow(message: $0, thread: thread)
+                    }
+                    if thread.showsLive { liveTurn }
+                    Color.clear.frame(height: 1).id("end")
+                        .onAppear { pinned = true }
+                }
+                .padding(16)
+            }
+            .onHover { hovering = $0 }
+            .onAppear {
+                proxy.scrollTo("end", anchor: .bottom)
+                installWheelMonitor()
+            }
+            .onDisappear { removeWheelMonitor() }
+            .onChange(of: thread.live) { if pinned { proxy.scrollTo("end", anchor: .bottom) } }
+            .onChange(of: thread.messages) { if pinned { proxy.scrollTo("end", anchor: .bottom) } }
+            .overlay(alignment: .bottomTrailing) {
+                if !pinned {
+                    Button {
+                        pinned = true
+                        withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                    } label: {
+                        Image(systemName: "arrow.down").padding(8).background(.regularMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain).help("Scroll to newest").padding(12)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var liveTurn: some View {
+        let live = thread.live
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Yarvis").font(.caption.bold()).foregroundStyle(.secondary)
+            if !live.tools.isEmpty || !live.reasoning.isEmpty {
+                TurnActivity(tools: live.tools, reasoning: live.reasoning, reasoningLive: live.isReasoning,
+                             reasoningSeconds: live.reasoningSeconds,
+                             folded: !live.reply.isEmpty || !thread.busy)
+            }
+            if !live.reply.isEmpty {
+                MarkdownText(live.reply)
+            } else if thread.busy && live.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Thinking…").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Scrolling up with the wheel over the conversation releases the pin.
+    /// Growth from streaming moves the end out of view too, so only the
+    /// user's own scroll counts.
+    private func installWheelMonitor() {
+        guard wheelMonitor == nil else { return }
+        let hover = $hovering
+        let pin = $pinned
+        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            MainActor.assumeIsolated {
+                if hover.wrappedValue, event.scrollingDeltaY > 0 { pin.wrappedValue = false }
+            }
+            return event
+        }
+    }
+
+    private func removeWheelMonitor() {
+        if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
+        wheelMonitor = nil
+    }
+}
+
+/// A turn's failure: one line, the detail on demand, Retry and dismiss.
+private struct ErrorNotice: View {
+    let error: TurnFailure
+    let canRetry: Bool
+    let retry: () -> Void
+    let dismiss: () -> Void
+    @State private var showDetail = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(.red)
+                Text(error.message).font(.callout).foregroundStyle(.red).textSelection(.enabled).lineLimit(2)
+                Spacer()
+                if error.detail != nil {
+                    Button(showDetail ? "Hide details" : "Details") { showDetail.toggle() }
+                }
+                if canRetry { Button("Retry", action: retry) }
+                Button(action: dismiss) { Image(systemName: "xmark") }.help("Dismiss")
+            }
+            .buttonStyle(.borderless)
+            if showDetail, let detail = error.detail {
+                HStack(alignment: .top) {
+                    ScrollView {
+                        Text(detail).font(.caption.monospaced()).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 140)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString("\(error.message)\n\(detail)", forType: .string)
+                    } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(.borderless).help("Copy")
+                }
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 6)
+        .background(.red.opacity(0.06))
+    }
+}
+
+private struct QueuedMessages: View {
+    let thread: ChatThread
+
+    var body: some View {
+        if !thread.queue.items.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(thread.queueHeld ? "Queued — waiting until you send them" : "Queued — sends when the reply finishes")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if thread.queueHeld {
+                        Button("Send next") { thread.sendNextQueued() }.controlSize(.small)
+                    }
+                }
+                ForEach(Array(thread.queue.items.enumerated()), id: \.offset) { i, text in
+                    HStack {
+                        Text(text).lineLimit(2).font(.callout)
+                        Spacer()
+                        Button { thread.removeQueued(at: i) } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.borderless).help("Remove")
+                    }
+                    .padding(6)
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 5))
+                }
+            }
+            .padding(.horizontal, 16).padding(.top, 6)
+        }
+    }
+}
+
+/// The text box and its footer. Enter sends (or queues while a turn runs),
+/// Shift+Enter starts a new line.
+private struct ChatComposer: View {
+    @Bindable var thread: ChatThread
+    @Bindable var chat: ChatModel
+    @FocusState private var focused: Bool
+
+    private var hasText: Bool { !thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .topLeading) {
+                // Sizes the box to its text, up to the frame's cap.
+                Text(thread.draft.isEmpty ? " " : thread.draft + " ")
+                    .font(.body).padding(.horizontal, 5).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .hidden()
+                if thread.draft.isEmpty {
+                    Text("Message...").foregroundStyle(.tertiary).padding(.horizontal, 5).padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $thread.draft)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(.vertical, 8)
+                    .focused($focused)
+                    .onKeyPress(.return, phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        thread.submit()
+                        return .handled
+                    }
+            }
+            .frame(minHeight: 36, maxHeight: 180)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.background))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            HStack(spacing: 10) {
+                Toggle("Thinking", isOn: $chat.reasoningOn).toggleStyle(.checkbox).font(.caption)
+                    .help("Ask the model to show its reasoning, when it can")
+                ModelPicker(thread: thread, providers: chat.providers)
+                Spacer()
+                if thread.busy {
+                    Button("Queue") { thread.enqueueDraft() }.disabled(!hasText)
+                    Button("Stop", role: .destructive) { thread.stop() }
+                        .keyboardShortcut(".", modifiers: .command)
+                } else {
+                    Button("Send") { thread.submit() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!hasText)
+                }
             }
         }
         .padding(12)
-        .background(.yellow.opacity(0.12))
-        .id(request.id)
+        .onAppear { focused = true }
     }
 }
 
-extension View {
-    /// Disables approve and deny buttons for a moment after a new request
-    /// takes their place, as the web's bar arms its keys, so a double click
-    /// can't answer one the user never saw.
-    func armedAfterAppearing(id: String) -> some View {
-        modifier(ArmedAfterAppearing(id: id))
-    }
-}
+private struct ModelPicker: View {
+    let thread: ChatThread
+    let providers: [ProviderInfo]
 
-private struct ArmedAfterAppearing: ViewModifier {
-    let id: String
-    @State private var armed = false
-
-    func body(content: Content) -> some View {
-        content
-            .disabled(!armed)
-            .task(id: id) {
-                armed = false
-                try? await Task.sleep(for: .milliseconds(400))
-                armed = true
+    var body: some View {
+        Menu {
+            ForEach(providers) { p in
+                Menu(p.available ? p.label : "\(p.label) (no key)") {
+                    ForEach(p.models, id: \.id) { m in
+                        Button {
+                            thread.choose(provider: p.id, model: m.id)
+                        } label: {
+                            if p.id == thread.provider && m.id == thread.model {
+                                Label(m.id, systemImage: "checkmark")
+                            } else {
+                                Text(m.id)
+                            }
+                        }
+                    }
+                }
+                .disabled(!p.available)
             }
+        } label: {
+            Text(label).font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var label: String {
+        guard let model = thread.model else { return "No model" }
+        let provider = providers.first { $0.id == thread.provider }?.label
+        return provider.map { "\($0) · \(model)" } ?? model
     }
 }

@@ -132,15 +132,18 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     /// `user`, `assistant` or `tool`.
     public var role: String
     public var content: String
+    /// Where the message came from, when not typed in a chat tab.
+    public var metadata: ChatMessageMetadata?
     public var toolCalls: [ToolActivity]?
     public var createdAt: String
 
     public init(id: String, sessionId: String, role: String, content: String,
-                toolCalls: [ToolActivity]? = nil, createdAt: String) {
+                metadata: ChatMessageMetadata? = nil, toolCalls: [ToolActivity]? = nil, createdAt: String) {
         self.id = id
         self.sessionId = sessionId
         self.role = role
         self.content = content
+        self.metadata = metadata
         self.toolCalls = toolCalls
         self.createdAt = createdAt
     }
@@ -149,13 +152,18 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
 public struct ModelInfo: Codable, Sendable, Equatable, Hashable {
     public var id: String
     public var capabilities: [String]
+    /// The context size at which the sidecar compacts this model's chats.
+    public var compactAtTokens: Double?
 }
 
 public struct ProviderInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var id: String
     public var label: String
     public var models: [ModelInfo]
+    /// False when the provider has no key set.
     public var available: Bool
+    /// A provider the user added in Settings.
+    public var custom: Bool?
 }
 
 /// A tool call waiting for the user inside a chat turn.
@@ -200,8 +208,9 @@ public enum ChatStreamEvent: Sendable, Equatable {
         case "delta": return .delta(string("text") ?? "")
         case "reasoning": return .reasoning(string("text") ?? "")
         case "tool_call":
+            let id = string("id") ?? ""
             return .toolCall(ToolActivity(
-                id: string("id") ?? "", name: string("name") ?? "", server: string("server"),
+                id: id, name: string("name") ?? id, server: string("server"),
                 args: v["args"], status: "pending"))
         case "tool_result":
             return .toolResult(id: string("id") ?? "", status: string("status") ?? "ok",
