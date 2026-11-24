@@ -89,7 +89,11 @@ export function copyCatalog(catalog: string | null, folder: string): string | nu
   try {
     copyFileSync(catalog, copy);
     return copy;
-  } catch {
+  } catch (e) {
+    console.warn(
+      "[agent-runs] could not copy the OpenCode model catalog; the run will use OpenCode's own:",
+      e instanceof Error ? e.message : e,
+    );
     return null;
   }
 }
