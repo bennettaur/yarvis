@@ -289,9 +289,12 @@ Every signature then waits for an approval, which any device with the
 `approve` scope can give. The Android app shows these under **Attention**.
 An unanswered approval times out after 60 seconds and the commit fails.
 
-The server's agent only signs commits. It refuses SSH logins, so `git push`
-over SSH can't use it. Push over HTTPS instead: `gh auth setup-git` makes git
-use your `gh` sign-in for that.
+The server's agent only signs commits and tags. It refuses SSH logins, so
+`git push` over SSH can't use it. Push over HTTPS instead:
+`gh auth setup-git` makes git use your `gh` sign-in for that, and
+`git config --global url."https://github.com/".insteadOf "git@github.com:"`
+moves clones with SSH remotes over too. Pushes then go through without an
+approval: only signatures ask first.
 
 ## Reach it from other devices
 
@@ -493,18 +496,18 @@ app revokes it too.
 
 ## Example: a personal Mac you check on from work
 
-The setup: Yarvis runs on your personal Mac, which stays logged in. When you
-are at it you use the desktop app or a browser. During the day you are on a
-work laptop and check on it from a browser there, where you can't unlock
-1Password on the personal Mac.
+Here Yarvis runs on a personal Mac that stays logged in. At home you use the
+desktop app or a browser on it. During the day you check on it from a browser
+on a work laptop, with nobody at the personal Mac.
 
-That rules out 1Password for both secrets and signing, since nobody is there
-to unlock it. The Keychain would do for secrets on a Mac that stays logged
-in, but it leaves signing to macOS's own agent, which signs silently for any
-process running as you, agent sessions included. The server's own agent asks
-you first, from whichever browser you have open, so this example uses it. It
-needs the vault backend, so your secrets live in the vault rather than the
-Keychain.
+This example uses the vault backend and the server's own agent:
+
+- **Not 1Password**, because nobody is at the Mac to unlock it or approve a
+  signature.
+- **Not the Keychain**, because it leaves signing to macOS's own agent. That
+  agent signs without asking for any process running as you, agent sessions
+  included. The server's agent asks you first, from whichever browser or phone
+  you have open, and it only works with the vault.
 
 1. **Build the server** as in step 1 of
    [Run the server on its own](#run-the-server-on-its-own).
@@ -530,33 +533,51 @@ Keychain.
    Leave out `upstream_socket`: the server refuses it while its own agent is
    on.
 3. **Create the vault** in your own terminal with
-   `server/target/release/yarvis-server vault init`. Pick a vault passphrase
-   that differs from your sign-in passphrase, and write down the recovery key.
+   `server/target/release/yarvis-server vault init`. You choose a sign-in
+   passphrase in step 5, and the vault refuses to share it, so pick a
+   different one here. Write down the recovery key.
    Add the public key it prints to GitHub as a **signing key**.
 4. **Point git at that key.** In `~/.gitconfig`, remove any
    `gpg.ssh.program` line that names 1Password's `op-ssh-sign`, then add the
-   lines from step 3 of
-   [Home server](#home-server-sign-with-the-servers-own-agent). Run
-   `gh auth setup-git` so pushes go over HTTPS.
+   three settings from step 3 of
+   [Home server](#home-server-sign-with-the-servers-own-agent). Set up
+   pushes over HTTPS as that section's last paragraph says.
 5. **Set up the account.** Start the server in a terminal, open
    `http://localhost:7878`, and follow steps 4 and 5 of
-   [Run the server on its own](#run-the-server-on-its-own). Unlock the vault,
-   then enter your provider keys again in **Settings → Credentials**. A new
-   vault starts empty, so nothing comes over from the Keychain on its own.
+   [Run the server on its own](#run-the-server-on-its-own), but before you
+   press Ctrl+C, unlock the vault and enter your provider keys again in
+   **Settings → Credentials**. A new vault starts empty, so nothing comes over
+   from the Keychain on its own.
 6. **Keep it running** with the LaunchAgent from step 6. After each restart
    the server waits, locked, until you unlock the vault from a browser.
 7. **Publish it on Tailscale** as in
-   [Reach it over Tailscale](#reach-it-over-tailscale), and add the
-   `ts.net` address to `auth.origins`. Caddy only reaches your home network,
+   [Reach it over Tailscale](#reach-it-over-tailscale), including its step
+   that adds the `ts.net` address to `auth.origins`. Caddy only reaches your home network,
    so it doesn't help from work.
 8. **Point the desktop app at it** as in step 7, so the app doesn't start a
    second server on the same database.
 
 From the work laptop, open the `ts.net` address in a browser and sign in with
 your passphrase and an authenticator code. Approve commits there, or in the
-Android app on your phone. The work laptop has to be signed in to your
-personal tailnet for this, so check your company allows that. If it doesn't,
-use the Android app over Tailscale instead.
+Android app on your phone. The work laptop has to run Tailscale signed in to
+your personal tailnet, which some companies don't allow on their machines. If
+yours doesn't, use the [Android app](#connect-the-android-app) over Tailscale
+instead.
+
+Think about what the work laptop then holds. A browser sign-in gets every
+scope, the terminal included, so that browser can open a shell on your
+personal Mac. Your passphrases are typed on a machine your company manages
+and may monitor. To keep that small:
+
+- Use a separate browser profile for Yarvis, and **Sign out** at the end of
+  the day. Signing out revokes that device.
+- Unlock the vault from your phone or at the Mac rather than from the work
+  laptop.
+- Limit what the work laptop can reach in your tailnet. By default a new
+  device can reach every device and port. Add an access rule in the
+  [Tailscale admin console](https://login.tailscale.com/admin/acls) that lets
+  it reach only port 443 on the Mac, or share just the Mac with it through
+  Tailscale's machine sharing.
 
 ## Troubleshooting
 
