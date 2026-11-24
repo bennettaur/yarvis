@@ -6,15 +6,18 @@ import YarvisClient
 /// The pages in the sidebar, in the web UI's nav order. Settings is pinned
 /// to the bottom, as in the web UI's rail.
 enum Section: String, Hashable, CaseIterable {
-    case chat, terminal, workspaces, settings
+    case chat, terminal, workspaces
+    case headsDown = "heads-down"
+    case settings
 
-    static let top: [Section] = [.chat, .terminal, .workspaces]
+    static let top: [Section] = [.chat, .terminal, .workspaces, .headsDown]
 
     var title: String {
         switch self {
         case .chat: return "Chat"
         case .terminal: return "Terminal"
         case .workspaces: return "Workspaces"
+        case .headsDown: return "Heads down"
         case .settings: return "Settings"
         }
     }
@@ -24,6 +27,7 @@ enum Section: String, Hashable, CaseIterable {
         case .chat: return "bubble.left.and.bubble.right"
         case .terminal: return "terminal"
         case .workspaces: return "square.stack.3d.up"
+        case .headsDown: return "scope"
         case .settings: return "gearshape"
         }
     }
@@ -50,6 +54,7 @@ final class AppModel {
     private(set) var terminals: TerminalsModel?
     private(set) var workspaces: WorkspacesModel?
     private(set) var settings: SettingsModel?
+    private(set) var headsDown: HeadsDownModel?
     private var events: EventStream?
     private var eventsTask: Task<Void, Never>?
     /// Changes on every connect and sign-out, so a 401 or 4401 that an older
@@ -93,6 +98,7 @@ final class AppModel {
         terminals = TerminalsModel(app: self, client: client)
         workspaces = WorkspacesModel(app: self, client: client)
         settings = SettingsModel(app: self, client: client)
+        headsDown = HeadsDownModel(app: self, client: client)
         attention?.start()
         startEvents(server: server, token: token, connection: connection)
         if device == nil {
@@ -130,6 +136,7 @@ final class AppModel {
         terminals?.handle(event)
         workspaces?.handle(event)
         settings?.handle(event)
+        headsDown?.handle(event)
     }
 
     /// Events were missed (`lagged`), so every page reads its data again.
@@ -140,6 +147,7 @@ final class AppModel {
         terminals?.resync()
         workspaces?.resync()
         settings?.resync()
+        headsDown?.resync()
     }
 
     /// True from the user pressing Sign Out until the app has forgotten the token.
@@ -187,6 +195,7 @@ final class AppModel {
         terminals?.stop()
         workspaces?.stop()
         settings?.stop()
+        headsDown?.stop()
     }
 
     /// Drops the token and everything signed in with it, and shows sign-in.
@@ -204,6 +213,7 @@ final class AppModel {
         terminals = nil
         workspaces = nil
         settings = nil
+        headsDown = nil
         self.server = nil
         signOutReason = reason
         codeRequest?.resume(returning: nil)

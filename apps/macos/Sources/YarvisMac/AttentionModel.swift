@@ -102,8 +102,9 @@ final class AttentionModel {
             answering = item
             return
         }
-        if item.isHeadsDown {
-            app.showWebUI()
+        if item.isHeadsDown, let headsDown = app.headsDown {
+            headsDown.openQuestions(from: item)
+            app.attentionOpen = false
             return
         }
         inbox.remove(itemId: item.id)
@@ -111,7 +112,7 @@ final class AttentionModel {
         navigate(item.navTarget)
     }
 
-    private func navigate(_ target: JSONValue?) {
+    func navigate(_ target: JSONValue?) {
         switch target?["type"]?.stringValue {
         case "chat":
             if let id = target?["sessionId"]?.stringValue { app.openChat(sessionId: id) } else { app.section = .chat }
@@ -132,6 +133,8 @@ final class AttentionModel {
             } else {
                 app.showWebUI()
             }
+        case "heads-down":
+            app.section = .headsDown
         default:
             app.showWebUI()
         }
