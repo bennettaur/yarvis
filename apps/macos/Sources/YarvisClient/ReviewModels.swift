@@ -249,7 +249,7 @@ public struct ReviewCommit: Codable, Sendable, Equatable, Hashable {
     public var subject: String
     public var author: String
     public var date: String
-    public var parents: [String]
+    public var parents: [String]?
     /// New since the last review.
     public var isNew: Bool
     /// The reviewed commit this one is a rebase of.
@@ -270,8 +270,8 @@ public struct SinceFile: Codable, Sendable, Equatable, Hashable {
 public struct SinceReview: Codable, Sendable, Equatable {
     public var fromHeadSha: String
     public var toHeadSha: String
-    public var fromMergeBase: String
-    public var toMergeBase: String
+    public var fromMergeBase: String?
+    public var toMergeBase: String?
     public var rebased: Bool
     public var baseMoved: Bool
     public var mark: ReviewMark
@@ -449,7 +449,7 @@ public struct Rereview: Codable, Sendable, Equatable {
 
 public struct RereviewSize: Codable, Sendable, Equatable {
     public var files: Int
-    public var changedLines: Int
+    public var changedLines: Int?
     public var binary: [String]
     public var noInterdiff: [String]
     public var skimmed: [String]

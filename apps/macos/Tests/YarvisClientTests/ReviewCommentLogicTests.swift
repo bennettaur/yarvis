@@ -102,14 +102,13 @@ private func insight(_ id: String, path: String = "a.ts", end: Int, sha: String 
         #expect(linesText(content, start: 4, end: 4) == "four")
         #expect(linesText(content, start: 3, end: 1) == "three")
         #expect(linesText(content, start: 9, end: 10) == "")
-        #expect(linesText("a\r\nb\r\nc", start: 2, end: 2) == "b\r")
+        // As shown: a CRLF file's lines go without their "\r".
+        #expect(linesText("a\r\nb\r\nc", start: 1, end: 2) == "a\nb")
+        #expect(linesText("a\nb\n", start: 2, end: 3) == "b")
     }
 
-    @Test func countsPerPath() {
-        let threads = [thread("a", bodies: ["1", "2"]), thread("b", outdated: true), thread("c", path: nil),
-                       thread("d", path: "b.ts", resolved: true)]
-        #expect(commentCountsByPath(threads) == ["a.ts": 3, "b.ts": 1])
-        #expect(openThreadsByPath(threads) == ["a.ts"])
+    @Test func outdatedLabel() {
         #expect(outdatedThreadsLabel([thread("a")]) == "1 outdated thread")
+        #expect(outdatedThreadsLabel([thread("a"), thread("b")]) == "2 outdated threads")
     }
 }

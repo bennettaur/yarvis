@@ -33,17 +33,20 @@ final class ReviewModel {
         self.app = app
         self.client = client
         serverDefaults = ServerDefaults(server: client.baseURL)
-        if let saved = serverDefaults.string(Self.selectedKey) { select(saved) }
-        resync()
     }
+
+    /// The saved workspace opens when the page is first shown, not at sign-in,
+    /// so a session that never visits Review starts none of its reads.
+    private var restored = false
 
     func stop() {
         workspace?.stop()
         workspace = nil
+        ReviewCodeCache.shared.clear()
     }
 
-    /// The review routes send no server events, so this only passes on PTY
-    /// starts and exits, which can be the workspace's Ask Claude session.
+    /// Passed to the open workspace, whose Ask Claude session attaches when
+    /// a `pty.started` event names it.
     func handle(_ event: ServerEvent) {
         workspace?.handle(event)
     }
@@ -55,6 +58,10 @@ final class ReviewModel {
 
     /// The page came on screen.
     func appeared() {
+        if !restored {
+            restored = true
+            if workspace == nil, let saved = serverDefaults.string(Self.selectedKey) { select(saved) }
+        }
         Task { await refreshList() }
         workspace?.reload()
     }
@@ -118,9 +125,12 @@ final class ReviewModel {
 
     /// Shows a workspace, or the list for nil.
     func select(_ id: String?) {
+        restored = true
         serverDefaults.set(id, Self.selectedKey)
         guard id != workspace?.id else { return }
         workspace?.stop()
+        // File contents are kept for one workspace at a time.
+        ReviewCodeCache.shared.clear()
         workspace = id.map { ReviewWorkspaceModel(page: self, client: client, id: $0) }
     }
 
@@ -149,7 +159,7 @@ final class ReviewModel {
             return
         }
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let ws = try await client.createReviewWorkspace(name: trimmed.isEmpty ? shortPrName(ref) : trimmed, refs: [ref])
+        let ws = try await client.createReviewWorkspace(name: trimmed.isEmpty ? prLabel(ref) : trimmed, refs: [ref])
         workspaces.insert(ws, at: 0)
         app.openReview(OpenReviewRequest(workspaceId: ws.id, prId: ws.prs.first?.id, tab: tab))
     }

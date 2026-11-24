@@ -86,23 +86,35 @@ struct ReviewCodeDocument: Sendable {
 }
 
 /// Reads shared by every code tab: file versions, built documents and their
-/// colouring, kept for the most recent few dozen so switching tabs or diff
-/// modes doesn't fetch or diff again. Keys name the commit they were read at,
-/// so nothing here goes stale.
+/// colouring, kept within a memory budget, oldest dropped first, so switching
+/// tabs or diff modes doesn't fetch or diff again. Keys name the commit they
+/// were read at, so nothing here goes stale.
 @MainActor
 final class ReviewCodeCache {
     static let shared = ReviewCodeCache()
 
-    private var values: [String: any Sendable] = [:]
+    enum Failure: Error {
+        /// Two callers used one key for different types: a bug in the keys.
+        case typeMismatch(key: String)
+    }
+
+    private var values: [String: (value: any Sendable, cost: Int)] = [:]
     private var order: [String] = []
+    private var total = 0
     private var inFlight: [String: Task<any Sendable, Error>] = [:]
-    private let capacity = 80
+    /// Bumped by `clear()`, so a read that started before it isn't stored after.
+    private var generation = 0
+    /// Roughly how many bytes the cache holds before dropping the oldest.
+    private let budget = 96 << 20
+    /// A value bigger than this is returned but not kept.
+    private let largest = 24 << 20
 
     /// The value under `key`, read once however many tabs ask at the same time.
     func value<T: Sendable>(_ key: String, _ read: @escaping @Sendable () async throws -> T) async throws -> T {
-        if let hit = values[key] as? T {
+        if let hit = values[key] {
+            guard let typed = hit.value as? T else { throw mismatch(key) }
             touch(key)
-            return hit
+            return typed
         }
         let task: Task<any Sendable, Error>
         if let running = inFlight[key] {
@@ -111,25 +123,43 @@ final class ReviewCodeCache {
             task = Task { try await read() }
             inFlight[key] = task
         }
+        let started = generation
         do {
             let value = try await task.value
-            inFlight[key] = nil
-            store(key, value)
-            guard let typed = value as? T else { throw CancellationError() }
+            if generation == started {
+                inFlight[key] = nil
+                store(key, value)
+            }
+            guard let typed = value as? T else { throw mismatch(key) }
             return typed
         } catch {
-            inFlight[key] = nil
+            if generation == started { inFlight[key] = nil }
             throw error
         }
     }
 
-    /// The value under `key` if it's already here, for a first paint without a spinner.
-    func cached<T>(_ key: String) -> T? { values[key] as? T }
+    private func mismatch(_ key: String) -> Failure {
+        assertionFailure("ReviewCodeCache: \(key) holds another type")
+        return .typeMismatch(key: key)
+    }
+
+    /// Drops everything, for when the page stops or another workspace opens.
+    func clear() {
+        generation += 1
+        for task in inFlight.values { task.cancel() }
+        inFlight = [:]
+        values = [:]
+        order = []
+        total = 0
+    }
 
     /// A document built off the main thread.
     func document(_ id: String, _ build: @escaping @Sendable () -> ReviewCodeDocument) async -> ReviewCodeDocument {
-        (try? await value("doc:\(id)") { await Task.detached(priority: .userInitiated) { build() }.value })
-            ?? build()
+        let built: @Sendable () async -> ReviewCodeDocument = {
+            await Task.detached(priority: .userInitiated) { build() }.value
+        }
+        if let cached = try? await value("doc:\(id)", built) { return cached }
+        return await built()
     }
 
     /// The colouring for one version, or nil when it isn't worth colouring.
@@ -143,10 +173,35 @@ final class ReviewCodeCache {
     }
 
     private func store(_ key: String, _ value: any Sendable) {
-        values[key] = value
+        let cost = Self.cost(value)
+        guard cost <= largest else { return }
+        if let old = values[key] { total -= old.cost }
+        values[key] = (value, cost)
+        total += cost
         touch(key)
-        while order.count > capacity {
-            values[order.removeFirst()] = nil
+        while total > budget, let oldest = order.first {
+            order.removeFirst()
+            total -= values.removeValue(forKey: oldest)?.cost ?? 0
+        }
+    }
+
+    /// Roughly how many bytes a value holds, counting its text.
+    private static func cost(_ value: any Sendable) -> Int {
+        switch value {
+        case let file as ReviewFileContent: return file.content.utf8.count + 256
+        case let view as SinceFileView:
+            return (view.original?.content.utf8.count ?? 0) + (view.modified?.content.utf8.count ?? 0)
+                + view.patch.utf8.count + 256
+        case let diff as CommitFileDiff:
+            return (diff.original?.content.utf8.count ?? 0) + (diff.modified?.content.utf8.count ?? 0)
+                + diff.patch.utf8.count + 256
+        case let files as CommitFiles: return files.files.count * 200 + 256
+        // Text twice per side (whole and split into lines), plus the rows.
+        case let doc as ReviewCodeDocument:
+            return 2 * ((doc.old?.text.utf8.count ?? 0) + doc.new.text.utf8.count) + doc.pairs.count * 40
+        case let spans as [[SyntaxSpan]]?:
+            return (spans ?? []).reduce(0) { $0 + 16 + $1.count * MemoryLayout<SyntaxSpan>.stride }
+        default: return 1_024
         }
     }
 

@@ -4,7 +4,7 @@ import YarvisClient
 /// One PR's guided review: the guide, the step being read, and a
 /// generation in flight. Kept per PR so a slow generation survives switching tabs.
 @MainActor @Observable
-final class ReviewGuideModel {
+final class ReviewGuideModel: ReviewTabModel {
     private let client: YarvisClient
     let ref: PrRef
 
@@ -15,6 +15,11 @@ final class ReviewGuideModel {
     private(set) var generating = false
     var error: String?
 
+    /// Bumped by every change to which guide is shown (a generation landing,
+    /// a dismiss), so an answer started before it can't put an older guide back.
+    private var version = 0
+    private var tasks: [String: Task<Void, Never>] = [:]
+
     init(client: YarvisClient, ref: PrRef) {
         self.client = client
         self.ref = ref
@@ -23,14 +28,18 @@ final class ReviewGuideModel {
     func load() {
         guard !loaded, !loading else { return }
         loading = true
-        Task {
+        let version = version
+        tasks["load"] = Task {
             do {
-                guide = try await client.prGuide(ref)
-                step = guide.map { min(max($0.currentStep, 0), max($0.steps.count - 1, 0)) } ?? 0
+                let found = try await client.prGuide(ref)
+                if version == self.version {
+                    guide = found
+                    step = found.map(guideInitialStep) ?? 0
+                    loaded = true
+                }
                 error = nil
-                loaded = true
             } catch {
-                self.error = reviewErrorText(error)
+                if !Task.isCancelled { self.error = error.localizedDescription }
             }
             loading = false
         }
@@ -40,23 +49,31 @@ final class ReviewGuideModel {
     func generate(title: String?) {
         generating = true
         error = nil
-        Task {
+        let version = version
+        tasks["generate"] = Task {
             do {
                 let fresh = try await client.generatePrGuide(ref, title: title)
-                guide = fresh
-                step = 0
-                loaded = true
+                // A dismiss while it ran stands.
+                if version == self.version {
+                    self.version += 1
+                    guide = fresh
+                    step = guideInitialStep(fresh)
+                    loaded = true
+                }
             } catch {
-                self.error = reviewErrorText(error)
+                if !Task.isCancelled { self.error = error.localizedDescription }
             }
             generating = false
         }
     }
 
-    /// Moves to step `index` (clamped), saves the place and opens its code.
-    func goTo(_ index: Int, _ context: ReviewTabContext) {
+    /// Applies a move: marks what it says, saves the place and opens the step's code.
+    private func apply(_ move: GuideMove, _ context: ReviewTabContext) {
         guard let guide, !guide.steps.isEmpty else { return }
-        step = min(max(index, 0), guide.steps.count - 1)
+        let result = guideMove(guide, from: step, move)
+        if !result.markViewed.isEmpty { context.pr.setViewed(result.markViewed, true) }
+        if result.dismiss { return dismiss() }
+        step = result.step
         let (client, ref, step) = (client, ref, step)
         // Fire and forget: a lost save only means the guide reopens a step back.
         Task { _ = try? await client.setPrGuideProgress(ref, step: step) }
@@ -64,30 +81,21 @@ final class ReviewGuideModel {
         focus(path: s.path, line: s.startLine, context)
     }
 
-    func next(_ context: ReviewTabContext) {
-        guard let current = currentStep else { return }
-        context.pr.setViewed(current.paths, true)
-        goTo(step + 1, context)
-    }
-
-    func back(_ context: ReviewTabContext) {
-        goTo(step - 1, context)
-    }
-
-    func finish(_ context: ReviewTabContext) {
-        if let current = currentStep { context.pr.setViewed(current.paths, true) }
-        dismiss()
-    }
+    func goTo(_ index: Int, _ context: ReviewTabContext) { apply(.goTo(index), context) }
+    func next(_ context: ReviewTabContext) { apply(.next, context) }
+    func back(_ context: ReviewTabContext) { apply(.back, context) }
+    func finish(_ context: ReviewTabContext) { apply(.finish, context) }
 
     func dismiss() {
+        version += 1
         guide = nil
         step = 0
         let (client, ref) = (client, ref)
-        Task {
+        tasks["dismiss"] = Task {
             do {
                 try await client.deletePrGuide(ref)
             } catch {
-                self.error = reviewErrorText(error)
+                self.error = error.localizedDescription
             }
         }
     }
@@ -95,6 +103,15 @@ final class ReviewGuideModel {
     /// Opens a location without changing the step.
     func focus(path: String, line: Int?, _ context: ReviewTabContext) {
         ReviewLinks(context: context).open(path, line: line)
+    }
+
+    /// Cancels reads and a generation in flight; the agent run itself goes on server-side.
+    func stop() {
+        tasks["load"]?.cancel()
+        tasks["generate"]?.cancel()
+        tasks = [:]
+        loading = false
+        generating = false
     }
 
     var currentStep: PrGuideStep? {
@@ -108,7 +125,7 @@ struct ReviewGuideTab: View {
 
     private var model: ReviewGuideModel {
         let pr = context.pr
-        return ReviewTabModels.get(context) { ReviewGuideModel(client: context.client, ref: pr.ref) }
+        return context.workspace.tabModels.get(pr.prId) { ReviewGuideModel(client: context.client, ref: pr.ref) }
     }
 
     var body: some View {

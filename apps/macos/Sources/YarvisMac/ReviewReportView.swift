@@ -185,7 +185,7 @@ struct ReviewReportView: View {
                 HStack(spacing: 6) {
                     Text("Tickets:").font(.caption).foregroundStyle(.secondary)
                     ForEach(tickets, id: \.self) { t in
-                        Button("\(t.key) \(t.title)") { openExternal(t.url) }.buttonStyle(.link).font(.caption)
+                        Button("\(t.key) \(t.title)") { openExternal(t.url) }.buttonStyle(.link).font(.caption).help(t.url)
                     }
                 }
             }
@@ -248,7 +248,7 @@ struct ReviewReportView: View {
         let attention = impact.changes.filter { $0.band >= attentionBand }
         return VStack(alignment: .leading, spacing: 4) {
             Text(impactCountsText(impact.counts)
-                + (impact.band > impact.highestChangeBand
+                + (impact.raisedByVolume > 0
                     ? " · raised from \(impactLabels[impact.highestChangeBand] ?? "\(impact.highestChangeBand)") by the number of changes, so splitting the PR would lower it" : ""))
                 .font(.caption).foregroundStyle(.secondary)
             if !attention.isEmpty {
@@ -352,7 +352,7 @@ private struct ReviewCheckFindings: View {
                                 .opacity(ctx.viewed.contains(path) ? 0.55 : 1)
                             if let layer = changedUpstack(ctx.upstack, path: path, line: f.line) {
                                 Button("changed in #\(layer.number) above") { openExternal(layer.url) }
-                                    .buttonStyle(.link).font(.caption)
+                                    .buttonStyle(.link).font(.caption).help(layer.url)
                             }
                         }
                     }

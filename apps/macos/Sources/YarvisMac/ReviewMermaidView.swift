@@ -20,9 +20,9 @@ enum MermaidScript {
 
 /// Draws a Mermaid flowchart in a web view that holds only the page the app
 /// built: no remote loads, no file access, no token, no windows opened by
-/// script, no navigation. A link in the drawing opens in the browser through
-/// `openWebLink`. Calls `onResult` with nil once drawn, or Mermaid's error.
-struct ReviewMermaidView: NSViewRepresentable {
+/// script, no navigation, links included. Calls `onResult` with nil once
+/// drawn, or Mermaid's error.
+struct ReviewMermaidWebView: NSViewRepresentable {
     let script: String
     let source: String
     let dark: Bool
@@ -56,10 +56,10 @@ struct ReviewMermaidView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-        var parent: ReviewMermaidView
+        var parent: ReviewMermaidWebView
         private var loaded: (source: String, dark: Bool)?
 
-        init(_ parent: ReviewMermaidView) {
+        init(_ parent: ReviewMermaidWebView) {
             self.parent = parent
         }
 
@@ -72,7 +72,7 @@ struct ReviewMermaidView: NSViewRepresentable {
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
             guard let body = message.body as? [String: Any] else { return }
             if body["ok"] as? Bool == true {
-                if let h = body["height"] as? Double, h > 0 { parent.height = h }
+                if let h = body["height"] as? Double { parent.height = mermaidHeight(h) }
                 parent.onResult(nil)
             } else {
                 parent.onResult(body["error"] as? String ?? "unknown error")
@@ -81,12 +81,8 @@ struct ReviewMermaidView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
                      decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
-            // The page the app loaded arrives as about:blank; everything else stays out.
-            if action.navigationType == .other, action.request.url?.absoluteString == "about:blank" {
-                return decisionHandler(.allow)
-            }
-            if action.navigationType == .linkActivated, let url = action.request.url { openWebLink(url) }
-            decisionHandler(.cancel)
+            decisionHandler(mermaidNavigation(isLinkClick: action.navigationType == .linkActivated,
+                                              url: action.request.url) == .allow ? .allow : .cancel)
         }
 
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
@@ -112,7 +108,7 @@ private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
 
 /// A verification flow: title, explanation, the drawing when it can be
 /// drawn, and its source.
-struct ReviewFlowView: View {
+struct ReviewMermaidView: View {
     let flow: VerificationFlow
     @Environment(\.colorScheme) private var scheme
     @State private var height: CGFloat = 200
@@ -141,7 +137,7 @@ struct ReviewFlowView: View {
             ReviewErrorText("The diagram isn't a flowchart, so it isn't drawn.")
         } else if let script = MermaidScript.source {
             if let drawError { ReviewErrorText("Couldn't draw the diagram: \(drawError)") }
-            ReviewMermaidView(script: script, source: flow.mermaid, dark: scheme == .dark, height: $height) { drawError = $0 }
+            ReviewMermaidWebView(script: script, source: flow.mermaid, dark: scheme == .dark, height: $height) { drawError = $0 }
                 .frame(height: height)
                 .opacity(drawError == nil ? 1 : 0)
                 .frame(height: drawError == nil ? height : 0)

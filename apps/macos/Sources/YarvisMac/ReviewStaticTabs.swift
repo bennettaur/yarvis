@@ -27,29 +27,19 @@ private struct DetailPage<Content: View>: View {
     }
 }
 
-private struct SectionTitle: View {
-    let text: String
-
-    init(_ text: String) { self.text = text }
-
-    var body: some View {
-        Text(text.uppercased()).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-    }
-}
-
 struct ReviewDescriptionTab: View {
     let context: ReviewTabContext
 
     var body: some View {
         DetailPage(context: context) { detail in
-            SectionTitle("Description")
+            ReviewSectionTitle("Description")
             let body = detail.body.trimmingCharacters(in: .whitespacesAndNewlines)
             if body.isEmpty {
                 Text("No description.").foregroundStyle(.secondary)
             } else {
                 MarkdownText(body).textSelection(.enabled)
             }
-            SectionTitle("Comments")
+            ReviewSectionTitle("Comments")
             let general = detail.reviewThreads.filter { $0.path == nil || $0.line == nil }
             if general.isEmpty {
                 Text("No general comments.").foregroundStyle(.secondary)
@@ -70,7 +60,7 @@ struct ReviewReviewersTab: View {
 
     var body: some View {
         DetailPage(context: context) { detail in
-            SectionTitle("Reviewers")
+            ReviewSectionTitle("Reviewers")
             if detail.reviewers.isEmpty {
                 Text("No reviewers requested.").foregroundStyle(.secondary)
             }
@@ -105,7 +95,7 @@ struct ReviewChecksTab: View {
     var body: some View {
         DetailPage(context: context) { detail in
             HStack {
-                SectionTitle("Checks")
+                ReviewSectionTitle("Checks")
                 if !detail.checks.isEmpty {
                     Text("\(detail.checks.count) checks").font(.caption).foregroundStyle(.secondary)
                     CopyButton(text: checksClipboardText(detail.checks), help: "Copy every check")
@@ -154,7 +144,7 @@ struct ReviewCommentsTab: View {
             let threads = detail.reviewThreads
             let resolved = threads.filter(\.isResolved).count
             HStack(spacing: 12) {
-                SectionTitle("Comments")
+                ReviewSectionTitle("Comments")
                 Text("\(threads.count - resolved) open · \(resolved) resolved")
                     .font(.caption).foregroundStyle(.secondary)
                 if resolved > 0 {
@@ -199,7 +189,7 @@ struct ReviewCommentsTab: View {
     private func conversation(_ detail: PrDetail) -> some View {
         let comments = detail.conversation ?? []
         if !comments.isEmpty {
-            SectionTitle("Conversation")
+            ReviewSectionTitle("Conversation")
             if detail.conversationTruncated == true {
                 Text("Showing the latest \(comments.count); open the PR on the provider for the rest.")
                     .font(.caption).foregroundStyle(.orange)

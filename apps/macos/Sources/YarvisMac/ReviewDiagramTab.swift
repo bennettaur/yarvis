@@ -46,7 +46,7 @@ struct ReviewDiagramTab: View {
                     Text("This diagram is for an older head; the pull request has moved to \(reportSha(pr.pr.headSha)).")
                         .font(.callout).foregroundStyle(.orange)
                 }
-                ReviewFlowView(flow: flow)
+                ReviewMermaidView(flow: flow)
             }
         } else {
             Text("No diagram yet. Run Flow diagram from the verification checklist: an agent finds the flow the change sits in, follows it up to what starts it and down to where it ends, and draws it as a flowchart with the changed steps marked.")

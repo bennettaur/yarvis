@@ -252,3 +252,33 @@ public func whereToLook(_ report: VerificationReport?) -> [ReviewPlace] {
     }
     return places
 }
+
+/// How a "request changes" attempt ended.
+public struct RequestChangesOutcome: Sendable, Equatable {
+    /// Drafts on the PR that a retry at the same head must not post again.
+    /// Empty once the verdict is sent.
+    public var posted: Set<String>
+    /// Nil when the verdict went through.
+    public var error: String?
+}
+
+/// Posts each chosen draft that has a line, one at a time, then the verdict.
+/// The verdict is sent only once every comment is up, so a failure never
+/// leaves it pointing at comments that aren't there. Drafts in `posted` are
+/// skipped; a draft without a path and line is never posted as a line
+/// comment, since its text is already in `summary`.
+public func sendChangesRequest(client: YarvisClient, ref: PrRef, chosen: [DraftComment], summary: String,
+                           seen: SeenCommits, posted: Set<String>) async -> RequestChangesOutcome {
+    var posted = posted
+    do {
+        for d in chosen {
+            guard let path = d.path, let line = d.line, !posted.contains(d.id) else { continue }
+            _ = try await client.postPrComment(ref, NewPrComment(path: path, line: line, body: d.body), seen: seen)
+            posted.insert(d.id)
+        }
+        try await client.applyReviewAction(ref, .requestChanges, body: summary, seen: seen)
+        return RequestChangesOutcome(posted: [], error: nil)
+    } catch {
+        return RequestChangesOutcome(posted: posted, error: error.localizedDescription)
+    }
+}

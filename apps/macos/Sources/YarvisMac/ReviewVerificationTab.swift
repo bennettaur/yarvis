@@ -5,7 +5,7 @@ import YarvisClient
 /// holds: CI evidence, the stack above, mutation testing, the run choices and
 /// what has been posted. Kept per PR across tab switches.
 @MainActor @Observable
-final class ReviewVerificationModel {
+final class ReviewVerificationModel: ReviewTabModel {
     private let client: YarvisClient
     let workspaceId: String
     let prId: String
@@ -34,6 +34,14 @@ final class ReviewVerificationModel {
     private(set) var linked: WorkspaceForPr?
     private(set) var posts: [String: ReviewPostState] = [:]
 
+    /// The decision panel's submit in flight.
+    private(set) var deciding = false
+    private(set) var decisionError: String?
+    private(set) var decisionDone: String?
+    /// Comments a failed "request changes" already posted, and the head they were posted at.
+    private(set) var requestPosted: (head: String, ids: Set<String>) = ("", [])
+    private var tasks: [String: Task<Void, Never>] = [:]
+
     init(client: YarvisClient, workspaceId: String, prId: String, ref: PrRef) {
         self.client = client
         self.workspaceId = workspaceId
@@ -41,59 +49,69 @@ final class ReviewVerificationModel {
         self.ref = ref
     }
 
+    private func run(_ key: String, _ work: @escaping @MainActor () async -> Void) {
+        tasks[key]?.cancel()
+        tasks[key] = Task { await work() }
+    }
+
     func loadOnce() {
-        if runConfig == nil { Task { runConfig = try? await client.verificationRunConfig() } }
+        if runConfig == nil { run("config") { [self] in runConfig = try? await client.verificationRunConfig() } }
         if evidence == nil && !evidenceLoading { loadEvidence() }
-        if upstack == nil { Task { upstack = try? await client.verificationUpstack(workspaceId: workspaceId, prId: prId) } }
-        if linked == nil { Task { linked = try? await client.workspaceForPr(ref) } }
+        if upstack == nil {
+            run("upstack") { [self] in upstack = try? await client.verificationUpstack(workspaceId: workspaceId, prId: prId) }
+        }
+        if linked == nil { run("linked") { [self] in linked = try? await client.workspaceForPr(ref) } }
         loadMutation()
+    }
+
+    func stop() {
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
+        evidenceLoading = false
+        starting = false
+        deciding = false
     }
 
     func loadEvidence() {
         evidenceLoading = true
-        Task {
+        run("evidence") { [self] in
             do {
                 evidence = try await client.verificationEvidence(workspaceId: workspaceId, prId: prId)
                 evidenceError = nil
             } catch {
-                evidenceError = reviewErrorText(error)
+                evidenceError = error.localizedDescription
             }
             evidenceLoading = false
         }
     }
 
     func loadMutation() {
-        Task {
+        run("mutation") { [self] in
             do {
                 mutation = try await client.mutationTesting(workspaceId: workspaceId, prId: prId)
                 mutationError = nil
             } catch {
-                mutationError = reviewErrorText(error)
+                mutationError = error.localizedDescription
             }
         }
     }
 
-    func run(_ sections: [String], checklist: VerificationChecklist?, pr: ReviewPrModel) {
+    func start(_ sections: [String], checklist: VerificationChecklist?, pr: ReviewPrModel) {
         guard !sections.isEmpty else { return }
         starting = true
         startError = nil
         for s in sections { rowErrors[s] = nil }
-        let named = parseNamedTickets(tickets ?? checklist?.namedTickets.joined(separator: ", ") ?? "")
-        let choice = VerificationRunChoice(model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort)
-        let harness = harness.isEmpty ? nil : harness
-        Task {
+        let request = verificationRunRequest(typedTickets: tickets, savedTickets: checklist?.namedTickets ?? [],
+                                             model: model, effort: effort, harness: harness)
+        run("start") { [self] in
             do {
-                let started = try await client.startVerification(workspaceId: workspaceId, prId: prId, sections: sections,
-                                                                 namedTickets: named, choice: choice, harness: harness)
+                let started = try await client.startVerification(
+                    workspaceId: workspaceId, prId: prId, sections: sections, namedTickets: request.namedTickets,
+                    choice: request.choice, harness: request.harness)
                 for f in started.failed { rowErrors[f.section] = f.error }
-                // Only the sections that started are unticked; with none left the suggestions return.
-                let startedSections = Set(started.runs.map(\.section))
-                if let current = picked {
-                    let left = current.filter { !startedSections.contains($0) }
-                    picked = left.isEmpty ? nil : left
-                }
+                picked = pickedAfterStart(picked, started: Set(started.runs.map(\.section)))
             } catch {
-                startError = reviewErrorText(error)
+                startError = error.localizedDescription
             }
             starting = false
             pr.loadChecklist(force: true)
@@ -101,11 +119,11 @@ final class ReviewVerificationModel {
     }
 
     func cancel(runId: String, section: String, pr: ReviewPrModel) {
-        Task {
+        run("cancel:\(section)") { [self] in
             do {
                 try await client.cancelAgentRun(id: runId)
             } catch {
-                rowErrors[section] = reviewErrorText(error)
+                rowErrors[section] = error.localizedDescription
             }
             pr.loadChecklist(force: true)
         }
@@ -114,14 +132,14 @@ final class ReviewVerificationModel {
     func postToPr(key: String, path: String, line: Int, body: String, _ pr: ReviewPrModel) {
         posts[key] = .posting
         let (client, ref, seen) = (client, ref, pr.pr.seen)
-        Task {
+        run("post:\(key)") { [self] in
             do {
                 let result = try await client.postPrComment(ref, NewPrComment(path: path, line: line, body: body), seen: seen)
                 posts[key] = .postedToPr(onFile: result.placement == .file)
                 pr.loadDetail(force: true)
                 pr.invalidateLastReview()
             } catch {
-                posts[key] = .failed(reviewErrorText(error))
+                posts[key] = .failed(error.localizedDescription)
             }
         }
     }
@@ -129,15 +147,75 @@ final class ReviewVerificationModel {
     func addToWorkspace(key: String, path: String, line: Int, body: String) {
         guard let linked else { return }
         posts[key] = .posting
-        Task {
+        run("add:\(key)") { [self] in
             do {
                 _ = try await client.addFindingToWorkspace(workspaceId: linked.id, workspaceRepoId: linked.workspaceRepoId,
                                                            path: path, line: line, body: body)
                 posts[key] = .added
             } catch {
-                posts[key] = .failed(reviewErrorText(error))
+                posts[key] = .failed(error.localizedDescription)
             }
         }
+    }
+
+    func clearDecisionMessages() {
+        decisionError = nil
+        decisionDone = nil
+    }
+
+    /// The PR's threads, its vote in a stack and the last-review mark change with what was sent.
+    private func refreshAfterDecision(_ pr: ReviewPrModel) {
+        pr.loadDetail(force: true)
+        pr.loadStack(force: true)
+        pr.invalidateLastReview()
+    }
+
+    func approve(_ body: String, pr: ReviewPrModel, done: @escaping @MainActor () -> Void) {
+        guard !deciding else { return }
+        deciding = true
+        clearDecisionMessages()
+        let (seen, text) = (pr.pr.seen, body.trimmingCharacters(in: .whitespacesAndNewlines))
+        run("decide") { [self] in
+            do {
+                try await client.applyReviewAction(ref, .approve, body: text.isEmpty ? nil : text, seen: seen)
+                refreshAfterDecision(pr)
+                decisionDone = "Approved."
+                done()
+            } catch {
+                decisionError = error.localizedDescription
+            }
+            deciding = false
+        }
+    }
+
+    /// Posts the drafts with lines, then the verdict; a retry at the same head skips what went up.
+    func requestChanges(_ chosen: [DraftComment], summary: String, pr: ReviewPrModel,
+                        done: @escaping @MainActor () -> Void) {
+        guard !deciding else { return }
+        deciding = true
+        clearDecisionMessages()
+        let head = pr.pr.headSha ?? ""
+        let already = postedIds(head: head)
+        let seen = pr.pr.seen
+        run("decide") { [self] in
+            let outcome = await sendChangesRequest(client: client, ref: ref, chosen: chosen, summary: summary,
+                                                            seen: seen, posted: already)
+            requestPosted = (head, outcome.posted)
+            if let error = outcome.error {
+                decisionError = error
+            } else {
+                decisionDone = "Changes requested."
+                done()
+            }
+            // Whatever went up shows on the PR, even when the rest didn't.
+            refreshAfterDecision(pr)
+            deciding = false
+        }
+    }
+
+    /// The drafts already posted at `head`; after a push, nothing posted at the old one counts.
+    func postedIds(head: String) -> Set<String> {
+        requestPosted.head == head ? requestPosted.ids : []
     }
 }
 
@@ -150,7 +228,7 @@ struct ReviewVerificationTab: View {
 
     private var model: ReviewVerificationModel {
         let pr = context.pr
-        return ReviewTabModels.get(context) {
+        return context.workspace.tabModels.get(pr.prId) {
             ReviewVerificationModel(client: context.client, workspaceId: pr.workspaceId, prId: pr.prId, ref: pr.ref)
         }
     }
@@ -186,24 +264,17 @@ struct ReviewVerificationTab: View {
         .reviewPoll(context, while: mutationRunning) { model.loadMutation() }
     }
 
-    private func current(_ checklist: VerificationChecklist, _ model: ReviewVerificationModel) -> (evidence: [EvidenceItem]?, upstack: VerificationUpstack?) {
-        // Results read at another commit than the checklist's would point at different lines.
-        let evidence = model.evidence.flatMap { $0.headSha == checklist.headSha ? $0.items : nil }
-        let upstack = model.upstack.flatMap { $0.headSha == checklist.headSha ? $0 : nil }
-        return (evidence, upstack)
-    }
-
     @ViewBuilder private func content(_ model: ReviewVerificationModel, _ checklist: VerificationChecklist) -> some View {
-        let (evidence, upstack) = current(checklist, model)
-        let currentSections = Set(checklist.items.filter { $0.result?.current == true }.map(\.section))
+        let inputs = decisionInputs(checklist: checklist, evidence: model.evidence, upstack: model.upstack)
+        let (evidence, upstack, currentSections) = (inputs.evidence, inputs.upstack, inputs.currentSections)
         let mutationRun = model.mutation?.run
         let assessment = assessReview(report: checklist.report, evidence: evidence, items: checklist.items,
                                       mutation: mutationRun, upstack: upstack)
         let picked = model.picked ?? suggestedSections(checklist.items)
         topBar(model, checklist, picked: picked, assessment: assessment, evidence: evidence)
         if let error = model.startError { ReviewErrorText(error) }
-        ReviewDecisionPanel(context: context, assessment: assessment, report: checklist.report, evidence: evidence,
-                            currentSections: currentSections)
+        ReviewDecisionPanel(context: context, model: model, assessment: assessment, report: checklist.report,
+                            evidence: evidence, currentSections: currentSections)
         Text("Each check is an agent that reads every changed file's diff. Run the ones you want; each runs on its own, and the report below shows each check's newest result. Beside them is what CI, code scanners and bots already reported on the PR.")
             .font(.caption).foregroundStyle(.secondary)
         evidenceStatus(model, checklist)
@@ -272,7 +343,7 @@ struct ReviewVerificationTab: View {
             .fixedSize()
             .help("Run the checks you start at one effort instead of each check's own, set in Settings")
             Button(model.starting ? "Starting…" : "Run picked (\(picked.count))") {
-                model.run(picked, checklist: checklist, pr: pr)
+                model.start(picked, checklist: checklist, pr: pr)
             }
             .disabled(model.starting || !pr.pr.checkoutReady || picked.isEmpty)
             .help(!pr.pr.checkoutReady ? "Waiting for the checkout" : picked.isEmpty ? "Pick at least one check" : "")
@@ -362,7 +433,7 @@ struct ReviewVerificationTab: View {
                 if runningHere, let id = latest?.id {
                     Button("Cancel") { model.cancel(runId: id, section: item.section, pr: pr) }
                 } else if !running {
-                    Button(latest != nil ? "Re-run" : "Run") { model.run([item.section], checklist: checklist, pr: pr) }
+                    Button(latest != nil ? "Re-run" : "Run") { model.start([item.section], checklist: checklist, pr: pr) }
                         .disabled(!pr.pr.checkoutReady || model.starting)
                 }
             }
@@ -431,7 +502,7 @@ private struct ReviewEvidenceRow: View {
                                     ReviewPathLink(path: path, line: e.line, canOpen: ctx.canOpen(path)) { ctx.open(path, e.line) }
                                 }
                                 if e.url != nil {
-                                    Button("Open") { openExternal(e.url) }.buttonStyle(.link).font(.caption)
+                                    Button("Open") { openExternal(e.url) }.buttonStyle(.link).font(.caption).help(e.url ?? "")
                                 }
                             }
                             if !e.detail.isEmpty { Text(e.detail).font(.caption).foregroundStyle(.secondary) }

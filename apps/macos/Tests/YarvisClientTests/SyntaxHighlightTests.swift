@@ -104,3 +104,15 @@ private func splitAll(_ code: String) -> [String] {
         #expect(highlightLines(String(repeating: "x", count: 10), language: "go") != nil)
     }
 }
+
+@Suite struct MarkdownHighlightTests {
+    @Test func singleBacktickStaysOnItsLine() {
+        let spans = highlightLines("a `code\nb", language: "markdown")
+        #expect(spans?[1].isEmpty == true)
+    }
+
+    @Test func fencesSpanLines() {
+        let spans = highlightLines("```\nx\n```", language: "markdown")
+        #expect(spans?.allSatisfy { $0.first?.kind == .string } == true)
+    }
+}

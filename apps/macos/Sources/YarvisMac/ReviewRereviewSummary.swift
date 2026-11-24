@@ -4,7 +4,7 @@ import YarvisClient
 /// The "What's changed" summary for one PR: the latest stored run for the
 /// range the tab compares, the run being followed, and what started it.
 @MainActor @Observable
-final class ReviewRereviewModel {
+final class ReviewRereviewModel: ReviewTabModel {
     private let client: YarvisClient
     let workspaceId: String
     let prId: String
@@ -13,7 +13,7 @@ final class ReviewRereviewModel {
     private(set) var from: String?
     private(set) var latest: LatestRereview?
     private(set) var loadError: String?
-    /// The run this tab started, and the range it was for.
+    /// The run this tab started and the range it was for, until it finishes.
     private var started: (runId: String, from: String)?
     private(set) var progress: RereviewProgress?
     private(set) var starting = false
@@ -24,6 +24,9 @@ final class ReviewRereviewModel {
     private var autoStarted = Set<String>()
     private var followed: String?
     private var stream: Task<Void, Never>?
+    /// The tab is showing; only then is a stream opened.
+    private var attached = false
+    private var tasks: [String: Task<Void, Never>] = [:]
     private var generation = 0
 
     init(client: YarvisClient, workspaceId: String, prId: String) {
@@ -35,57 +38,65 @@ final class ReviewRereviewModel {
     private var startedId: String? { started?.from == from ? started?.runId : nil }
 
     var run: RereviewRun? { latest?.run }
+    var follow: AgentRunFollow { rereviewFollow(latest, startedId: startedId, progress: progress) }
+    var running: Bool { follow.running }
+    var runningElsewhere: Bool { follow.runningElsewhere }
 
-    var followId: String? {
-        startedId ?? (run?.status == "running" && run?.live == true ? run?.id : nil)
+    private func run(_ key: String, _ work: @escaping @MainActor () async -> Void) {
+        tasks[key]?.cancel()
+        tasks[key] = Task { await work() }
     }
-
-    var running: Bool { followId != nil && progress != nil && progress?.finished == nil }
-    var runningElsewhere: Bool { !running && run?.status == "running" && run?.live == false }
 
     /// Points the model at the range starting at `from`; a new range drops the old one's run.
-    func show(from: String, headSha: String?) {
-        let moved = self.from != from
-        self.from = from
-        if moved {
+    func show(from: String) {
+        if self.from != from {
+            self.from = from
             latest = nil
-            detach()
+            closeStream()
         }
-        load(headSha: headSha)
+        load()
     }
 
-    func load(headSha: String? = nil) {
+    func load() {
         guard let from else { return }
         generation += 1
         let generation = generation
-        Task {
+        run("load") { [self] in
             do {
                 let next = try await client.latestRereview(workspaceId: workspaceId, prId: prId, from: from)
                 guard generation == self.generation, self.from == from else { return }
                 latest = next
                 loadError = nil
-                follow()
-                autoStartIfDue(key: "\(from):\(headSha ?? next.headSha ?? "")")
+                if let s = started, next.run?.id == s.runId, next.run?.status != "running" { started = nil }
+                followRun()
+                autoStartIfDue(from: from)
             } catch {
-                guard generation == self.generation else { return }
-                loadError = reviewErrorText(error)
+                guard generation == self.generation, !Task.isCancelled else { return }
+                loadError = error.localizedDescription
             }
         }
     }
 
-    private func autoStartIfDue(key: String) {
-        guard let latest, !autoStarted.contains(key),
+    private func autoStartIfDue(from: String) {
+        guard let latest, !autoStarted.contains(from),
               shouldAutoStartRereview(latest, autoStart: true, alreadyStarted: startedId != nil) else { return }
-        autoStarted.insert(key)
-        Task {
+        autoStarted.insert(from)
+        run("autoStart") { [self] in
             // Without the setting the button still works; nothing starts by itself.
-            guard let config = try? await client.rereviewRunConfig(), config.autoStart else { return }
+            guard let config = try? await client.rereviewRunConfig(), config.autoStart, self.from == from else { return }
             start()
         }
     }
 
-    func follow() {
-        guard let id = followId, id != followed else { return }
+    func attach() {
+        attached = true
+        followRun()
+    }
+
+    /// Follows the run if it isn't already. Only while attached, so a late
+    /// load or start can't open a stream for a hidden tab.
+    func followRun() {
+        guard attached, let id = follow.followId, id != followed else { return }
         followed = id
         stream?.cancel()
         progress = RereviewProgress()
@@ -99,7 +110,7 @@ final class ReviewRereviewModel {
                 return
             } catch {
                 if Task.isCancelled { return }
-                progress?.error = "Lost track of the run: \(reviewErrorText(error))"
+                progress?.error = "Lost track of the run: \(error.localizedDescription)"
             }
             if Task.isCancelled { return }
             // A stream that closed without `done` leaves nothing to follow.
@@ -108,11 +119,23 @@ final class ReviewRereviewModel {
         }
     }
 
-    func detach() {
+    private func closeStream() {
         stream?.cancel()
         stream = nil
         followed = nil
         progress = nil
+    }
+
+    /// The tab went off screen; the stream replays from the start when it returns.
+    func detach() {
+        attached = false
+        closeStream()
+    }
+
+    func stop() {
+        detach()
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
     }
 
     func start() {
@@ -120,25 +143,25 @@ final class ReviewRereviewModel {
         confirming = false
         starting = true
         actionError = nil
-        Task {
+        run("start") { [self] in
             do {
                 let started = try await client.startRereview(workspaceId: workspaceId, prId: prId, from: from)
                 self.started = (started.runId, from)
                 load()
             } catch {
-                actionError = reviewErrorText(error)
+                actionError = error.localizedDescription
             }
             starting = false
         }
     }
 
     func cancel() {
-        guard let id = followId else { return }
-        Task {
+        guard let id = follow.followId else { return }
+        run("cancel") { [self] in
             do {
                 try await client.cancelAgentRun(id: id)
             } catch {
-                actionError = reviewErrorText(error)
+                actionError = error.localizedDescription
             }
         }
     }
@@ -151,7 +174,7 @@ struct ReviewRereviewSummary: View {
 
     private var model: ReviewRereviewModel {
         let pr = context.pr
-        return ReviewTabModels.get(context) {
+        return context.workspace.tabModels.get(pr.prId) {
             ReviewRereviewModel(client: context.client, workspaceId: pr.workspaceId, prId: pr.prId)
         }
     }
@@ -233,8 +256,8 @@ struct ReviewRereviewSummary: View {
         }
         .padding(12)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
-        .task(id: since.fromHeadSha) { model.show(from: since.fromHeadSha, headSha: context.pr.pr.headSha) }
-        .onAppear { model.follow() }
+        .task(id: since.fromHeadSha) { model.show(from: since.fromHeadSha) }
+        .task(id: context.isActive) { context.isActive ? model.attach() : model.detach() }
         .onDisappear { model.detach() }
     }
 }

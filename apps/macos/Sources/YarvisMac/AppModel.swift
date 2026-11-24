@@ -329,8 +329,9 @@ final class AppModel {
         return false
     }
 
-    /// Shows a review workspace with one of its PRs brought forward, as the
-    /// web's `handleOpenReview` does.
+    /// Shows a review workspace with one of its PRs brought forward. Links,
+    /// attention items and the Workspaces page's PR rows all land here, so
+    /// each opens the same tab the same way.
     func openReview(_ request: OpenReviewRequest) {
         section = .review
         review?.open(request)

@@ -183,25 +183,14 @@ public func insightIsStale(_ insight: PrInsight, currentSha: String) -> Bool {
 }
 
 /// Lines `start` to `end` (1-based, inclusive) of `content`, sent with a
-/// question so the agent sees what the reader sees.
+/// question so the agent sees what the reader sees. Split as the code view
+/// splits (`splitFileLines`), so a CRLF file's lines go without their "\r".
 public func linesText(_ content: String, start: Int, end: Int) -> String {
-    let lines = content.components(separatedBy: "\n")
+    let lines = splitFileLines(content)
     let from = max(0, start - 1)
     let to = min(lines.count, max(start, end))
     guard from < to else { return "" }
     return lines[from..<to].joined(separator: "\n")
-}
-
-/// Comments per file, replies and outdated threads included.
-public func commentCountsByPath(_ threads: [PrThread]) -> [String: Int] {
-    var counts: [String: Int] = [:]
-    for t in threads { if let path = t.path { counts[path, default: 0] += t.comments.count } }
-    return counts
-}
-
-/// The files with an unresolved thread.
-public func openThreadsByPath(_ threads: [PrThread]) -> Set<String> {
-    Set(threads.filter { !$0.isResolved }.compactMap(\.path))
 }
 
 /// "1 outdated thread", "3 outdated threads".

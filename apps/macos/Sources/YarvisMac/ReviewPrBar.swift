@@ -54,10 +54,7 @@ struct ReviewPrBarView: View {
                 message: "Closes its tabs and deletes its checkout. Comments and reviews on the provider are "
                     + "untouched, and you can add the PR again later.",
                 action: "Remove", busyLabel: "Removing…"
-            ) {
-                try await workspace.client.removeReviewPr(workspaceId: workspace.id, prId: pr.prId)
-                await workspace.read()
-            }
+            ) { try await workspace.removePr(pr.prId) }
         }
     }
 
@@ -70,7 +67,7 @@ struct ReviewPrBarView: View {
             Button("Update checkout") { bar.refreshCheckout() }
                 .disabled(bar.refreshing || pr.pr.status != "ready")
             Button("Mark reviewed here") { bar.markReviewedHere() }
-                .disabled(pr.pr.headSha == nil)
+                .disabled(pr.pr.headSha == nil || bar.marking)
             Button("Mutation testing") { workspace.openTab(ReviewTabSpec(kind: .mutation, prId: pr.prId)) }
             Divider()
             Button("Remove from workspace…", role: .destructive) { removing = true }

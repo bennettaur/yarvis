@@ -69,7 +69,7 @@ private struct ReviewListRow: View {
                     }
                     if workspace.status != "active" { WorkspaceStatusChip(status: workspace.status) }
                     Spacer()
-                    Text(reviewOpenedAgo(workspace.lastOpenedAt))
+                    Text(shortAgo(workspace.lastOpenedAt))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .help(workspace.lastOpenedAt ?? "")

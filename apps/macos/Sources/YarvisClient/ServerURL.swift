@@ -71,8 +71,10 @@ func encodeQueryValue(_ s: String) -> String {
 }
 
 /// Percent-encodes one path segment. Ids such as `ws:<id>/<tab>/<pane>` hold
-/// slashes, which must not become path separators.
+/// slashes, which must not become path separators, and a segment that is
+/// `.` or `..` would be read as moving up the path, so its dots are encoded.
 public func encodePathSegment(_ s: String) -> String {
+    if s == "." || s == ".." { return String(repeating: "%2E", count: s.count) }
     var allowed = CharacterSet.urlPathAllowed
     allowed.remove(charactersIn: "/?#%")
     return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s

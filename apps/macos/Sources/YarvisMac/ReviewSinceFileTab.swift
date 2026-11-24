@@ -73,7 +73,8 @@ struct ReviewSinceFileTab: View {
             } else if data.patch.isEmpty {
                 ReviewCodeNote(text: "No difference once upstream changes are set aside: the author's change to this file is the same as before.")
             } else if let document {
-                ReviewCodeView(document: document, folded: !wholeFile, symbols: reviewCodeSymbols(context, path: path))
+                ReviewCodeView(document: document, folded: !wholeFile, symbols: reviewCodeSymbols(context, path: path),
+                               active: context.isActive)
             } else {
                 ReviewCodeNote(text: "Comparing with your review…", loading: true)
             }

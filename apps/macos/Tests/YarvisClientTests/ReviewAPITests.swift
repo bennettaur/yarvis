@@ -50,7 +50,7 @@ private let workspaceJSON = #"""
             #expect(back == ref)
         }
         #expect(az.key == "az:acme/Proj X/web/7")
-        #expect(shortPrName(az) == "web#7")
+        #expect(prLabel(az) == "web#7")
         #expect(az.webURL?.absoluteString == "https://dev.azure.com/acme/Proj%20X/_git/web/pullrequest/7")
     }
 
@@ -279,19 +279,5 @@ private extension JSONValue {
         #expect(adjacentPath(["a", "b"], current: "b", forward: true) == "a")
         #expect(adjacentPath(["a", "b"], current: nil, forward: false) == "b")
         #expect(adjacentPath([], current: nil, forward: true) == nil)
-    }
-
-    @Test func fileNotesCollectLinedItemsForThePathInLineOrder() throws {
-        let report = try JSONDecoder().decode(VerificationReport.self, from: json(#"""
-        {"mustRead":[{"path":"a.ts","reason":"r","flags":[{"note":"odd","line":9},{"note":"no line"}]}],
-         "claims":{"items":[{"claim":"c","source":"title","status":"missing","evidence":"e","path":"a.ts","line":2},
-                            {"claim":"ok","source":"title","status":"verified","evidence":"e","path":"a.ts","line":3}],
-                   "gaps":[]},
-         "tests":{"status":"issues","findings":[{"title":"t","detail":"d","severity":"low","path":"a.ts","line":5},
-                                                {"title":"x","detail":"d","severity":"low","path":"b.ts","line":1}]}}
-        """#))
-        let notes = fileNotes(report, path: "a.ts")
-        #expect(notes.map(\.source) == ["Claim missing", "Test quality", "Looks off"])
-        #expect(notes[1].hoverText == "Test quality (low): t. d")
     }
 }

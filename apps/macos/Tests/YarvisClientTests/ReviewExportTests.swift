@@ -90,4 +90,89 @@ private func input(report: VerificationReport? = nil, items: [ChecklistItem] = [
         #expect(verificationReportMarkdown(input(report: report), nonce: "n")
             .contains("The checks read 3 of 4 changed files in full.\n\nNot read:\n\n- `x`: big"))
     }
+
+    @Test func stripsHiddenCharactersBeforeSizingAFence() {
+        var report = VerificationReport()
+        report.mustRead = [VerificationMustRead(path: "a`\u{200B}`b.ts", reason: "r")]
+        report.flow = VerificationFlow(title: "F", explanation: "", mermaid: "a[\"``\u{200B}``\"]")
+        let md = verificationReportMarkdown(input(report: report), nonce: "n")
+        #expect(md.contains("- ```a``b.ts```: r"))
+        #expect(md.contains("`````mermaid\na[\"````\"]\n`````"))
+    }
+
+    @Test func saysARunWasCancelled() {
+        let done = ChecklistRun(id: "a", status: "succeeded", live: false, current: true, startedAt: "")
+        let cancelled = ChecklistRun(id: "b", status: "cancelled", live: false, current: true, startedAt: "")
+        let rerunning = ChecklistRun(id: "c", status: "running", live: true, current: true, startedAt: "")
+        let md = verificationReportMarkdown(input(items: [item("Risk", result: done, latest: cancelled),
+                                                          item("Tests", result: done, latest: rerunning)]), nonce: "n")
+        #expect(md.contains("| Risk | current head; last run cancelled |"))
+        #expect(md.contains("| Tests | current head; re-running |"))
+    }
+
+    @Test func keepsAMultiLineFindingDetailInItsBullet() {
+        var report = VerificationReport()
+        report.tests = VerificationCheck(status: "issues", findings: [
+            VerificationFinding(title: "No test", detail: "First.\n## Not a heading", severity: "high", path: "a.ts", line: 4),
+        ])
+        #expect(verificationReportMarkdown(input(report: report), nonce: "n")
+            .contains("## Test quality\n\n- **[high] No test** (`a.ts:4`)\n  > First.\n  > ## Not a heading"))
+    }
+
+    @Test func includesMustReadsOutliersWithTheirQuestionAndClaims() {
+        var report = VerificationReport()
+        report.mustRead = [VerificationMustRead(path: "db.ts", reason: "Migrations", lines: LineRange(start: 3, end: 9),
+                                                flags: [.init(note: "Drops a column", line: 5)])]
+        report.changeMap = VerificationChangeMap(intent: "Cache", themes: [
+            ChangeTheme(title: "Logo", description: "Swaps it", risk: "low", cohesion: "outlier", question: "Why here?",
+                        files: [.init(path: "logo.svg", lines: nil)]),
+        ], unmapped: ["x.md"])
+        report.claims = VerificationClaims(items: [
+            VerificationClaim(claim: "Expires", source: "ABC-1", status: "missing", evidence: "No TTL.", path: "c.ts", line: 2),
+        ], gaps: [])
+        let md = verificationReportMarkdown(input(report: report), nonce: "n")
+        #expect(md.contains("### Must read\n\n- `db.ts:3-9`: Migrations\n  - Looks off (line 5): Drops a column"))
+        #expect(md.contains("- **Logo** (outlier, low risk)\n  > Swaps it\n  > Files: `logo.svg`\n  > Question for the author: Why here?"))
+        #expect(md.contains("In no theme: `x.md`"))
+        #expect(md.contains("- **[missing] Expires** (from ABC-1) (`c.ts:2`)\n  > No TTL."))
+    }
+
+    @Test func includesAFinishedMutationPassAndSkipsOneThatDidnt() {
+        let summary = MutationSummary(killed: 3, survived: 1, timeouts: 0, errors: 0, uncovered: 0, equivalent: 0, valid: 4,
+                                      killRate: 0.75, verdict: "mixed", notes: ["Slow tests"])
+        var run = MutationRun(id: "m", headSha: "bbbbbbbbbb", status: "succeeded", phase: "done", summary: summary,
+                              findings: [MutationFinding(mutantId: "1", path: "a.ts", line: 3, title: "Off by one",
+                                                         detail: "Missed", severity: "medium", suggestion: "assert x")],
+                              startedAt: "", isCurrentHead: false, live: false)
+        var withRun = input()
+        withRun.mutation = run
+        let md = verificationReportMarkdown(withRun, nonce: "n")
+        #expect(md.contains("## Mutation testing (older head bbbbbbb)\n\nVerdict: **mixed**. 3 killed, 1 survived"))
+        #expect(md.contains("- Slow tests"))
+        #expect(md.contains("- **[medium] Off by one** (`a.ts:3`)\n  > Missed\n  > Suggested test: assert x"))
+        run.status = "running"
+        withRun.mutation = run
+        #expect(!verificationReportMarkdown(withRun, nonce: "n").contains("## Mutation testing"))
+    }
+
+    @Test func includesRiskTripwiresAndTheApproach() {
+        var report = VerificationReport()
+        report.risk = VerificationRisk(level: "high", clientImpact: "Logins break.", mitigations: ["Flag"], concerns: [
+            VerificationConcern(title: "Load", detail: "More queries", path: "q.ts", line: 7),
+        ], impact: VerificationImpact(band: 4, highestChangeBand: 3, load: 1, raisedByVolume: 1, counts: [:], changes: [
+            VerificationChange(kind: "logic", title: "Auth", reach: "core", evidence: "unproven", sensitive: true, count: 1,
+                               check: "Try a bad token", path: "auth.ts", line: 4, band: 4),
+        ]))
+        report.malice = MaliceCheck(status: "pass", findings: [], tripwires: [
+            VerificationTripwire(kind: "build", path: "postinstall.sh", line: nil, note: "Runs curl"),
+        ], tripwiresOmitted: 2)
+        report.approach = VerificationApproach(rating: "simpler", reason: "Too much", alternative: "Use a map", path: "m.ts", line: 1)
+        let md = verificationReportMarkdown(input(report: report), nonce: "n")
+        #expect(md.contains("## Risk\n\nLevel: **high**\n\n> Logins break.\n\nImpact 4/5 (highest single change 3/5)."))
+        #expect(md.contains("- **Auth** (band 4, logic, core, evidence unproven, sensitive) (`auth.ts:4`)\n  > Check: Try a bad token"))
+        #expect(md.contains("Mitigations:\n\n- Flag"))
+        #expect(md.contains("Concerns:\n\n- **Load** (`q.ts:7`)\n  > More queries"))
+        #expect(md.contains("Tripwires the fixed rules found:\n\n- build (`postinstall.sh`): Runs curl\n- 2 more not listed"))
+        #expect(md.contains("## Simpler approach\n\n**A simpler way exists**\n\n> Too much\n\nAlternative (`m.ts:1`):\n\n> Use a map"))
+    }
 }

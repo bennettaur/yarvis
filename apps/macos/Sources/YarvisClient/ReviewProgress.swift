@@ -101,3 +101,31 @@ public func reduceMutationProgress(_ state: MutationProgress, _ event: MutationP
     }
     return next
 }
+
+/// Where a tab stands with an agent run it may follow: the stored run, the
+/// one this tab started, and the stream it has open. Shared by the mutation
+/// and re-review tabs.
+public struct AgentRunFollow: Sendable, Equatable {
+    /// The run to follow: the one this tab started, else one this sidecar is running.
+    public var followId: String?
+    /// Following a run whose stream is open.
+    public var running: Bool
+    /// The stored run is going on another app instance's sidecar, so there is nothing to follow.
+    public var runningElsewhere: Bool
+    /// The stored run says it runs here, but its stream stopped.
+    public var lostTrack: Bool
+
+    /// `runStatus`/`runLive`/`runId` describe the stored run. `streamOpen` is
+    /// whether a followed stream is still delivering, and `streamEnded`
+    /// whether one closed. With `storedMustRun`, running also needs the
+    /// stored run to say so, so a stream that ends early can't leave the tab
+    /// spinning on a stopped run.
+    public init(startedId: String?, runId: String?, runStatus: String?, runLive: Bool?, streamOpen: Bool,
+                streamEnded: Bool, storedMustRun: Bool) {
+        let stored = runStatus == "running"
+        followId = startedId ?? (stored && runLive == true ? runId : nil)
+        running = followId != nil && streamOpen && (!storedMustRun || stored)
+        runningElsewhere = !running && stored && runLive == false
+        lostTrack = !running && stored && runLive == true && streamEnded
+    }
+}

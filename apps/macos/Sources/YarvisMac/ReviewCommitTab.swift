@@ -99,6 +99,8 @@ private struct ReviewCommitFileDiff: View {
     @State private var document: ReviewCodeDocument?
     @State private var loadError: String?
     @State private var attempt = 0
+    /// Why the bytes differ when no line does (line endings, final newline).
+    @State private var invisibleNote: String?
 
     var body: some View {
         Group {
@@ -106,8 +108,21 @@ private struct ReviewCommitFileDiff: View {
                 ReviewCodeNote(text: "Binary file — no text diff to show.")
             } else if let diff, diff.tooLarge {
                 ReviewCodeNote(text: "This file is too large to show here.")
+            } else if let document, document.new.lines.isEmpty && (document.old?.lines.isEmpty ?? true) {
+                ReviewCodeNote(text: "This file is empty.")
             } else if let document {
-                ReviewCodeView(document: document, folded: true)
+                VStack(spacing: 0) {
+                    if let invisibleNote {
+                        Text(invisibleNote)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                    ReviewCodeView(document: document, folded: true, active: context.isActive)
+                }
             } else if let loadError {
                 ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
@@ -132,10 +147,12 @@ private struct ReviewCommitFileDiff: View {
             let old = data.original?.content ?? ""
             let new = data.modified?.content ?? ""
             let split = context.diffMode == .split
-            document = await ReviewCodeCache.shared.document("\(key)|\(split)") {
+            let built = await ReviewCodeCache.shared.document("\(key)|\(split)") {
                 .diff(oldKey: "commit:\(id):\(data.parentSha):\(data.oldPath ?? path)", old: old,
                       newKey: "commit:\(id):\(sha):\(path)", new: new, path: path, split: split)
             }
+            invisibleNote = built.pairs.contains(where: \.changed) ? nil : invisibleChangeNote(old: old, new: new)
+            document = built
         } catch {
             loadError = error.localizedDescription
         }

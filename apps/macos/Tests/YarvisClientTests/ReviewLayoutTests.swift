@@ -240,9 +240,21 @@ private func open(_ specs: ReviewTabSpec...) -> ReviewTabLayout {
         #expect(ReviewShortcut.resolve(P(.character("w"), command: true)) == .closeTab)
         #expect(ReviewShortcut.resolve(P(.character("w"), command: true, shift: true)) == nil)
         #expect(ReviewShortcut.resolve(P(.character("\\"), command: true)) == .otherGroup)
-        #expect(ReviewShortcut.resolve(P(.character("j"), option: true)) == .nextFile)
-        #expect(ReviewShortcut.resolve(P(.character("k"), option: true)) == .prevFile)
-        #expect(ReviewShortcut.resolve(P(.character("j"), command: true, option: true)) == nil)
+        #expect(ReviewShortcut.resolve(P(.keyJ, option: true)) == .nextFile)
+        #expect(ReviewShortcut.resolve(P(.keyK, option: true)) == .prevFile)
+        #expect(ReviewShortcut.resolve(P(.keyJ, command: true, option: true)) == nil)
+        // Option-J types "∆"; only the physical key counts.
+        #expect(ReviewShortcut.resolve(P(.character("j"), option: true)) == nil)
+    }
+
+    @Test func mapsKeyCodesToKeys() {
+        #expect(ReviewShortcut.key(keyCode: 48, characters: "\t") == .tab)
+        #expect(ReviewShortcut.key(keyCode: 123, characters: nil) == .left)
+        #expect(ReviewShortcut.key(keyCode: 124, characters: nil) == .right)
+        #expect(ReviewShortcut.key(keyCode: 38, characters: "∆") == .keyJ)
+        #expect(ReviewShortcut.key(keyCode: 40, characters: "˚") == .keyK)
+        #expect(ReviewShortcut.key(keyCode: 13, characters: "W") == .character("w"))
+        #expect(ReviewShortcut.key(keyCode: 42, characters: "\\") == .character("\\"))
     }
 
     @Test func onlyTabCyclingWorksWhileTyping() {

@@ -139,3 +139,83 @@ func reviewCodeSymbols(_ context: ReviewTabContext, path: String) -> CodeSymbols
             }
         })
 }
+
+// MARK: Find in file
+
+/// A code tab's find bar: open, what it looks for, which match is current
+/// and how many the code view found.
+struct ReviewFindState {
+    var shown = false
+    var query = ""
+    var index = 0
+    var count = 0
+    /// Bumped by Cmd-F, so a bar that's already open takes focus again.
+    var focusRequest = 0
+
+    var codeFind: CodeFind? { shown && !query.isEmpty ? CodeFind(query: query, index: index) : nil }
+
+    var countText: String {
+        guard !query.isEmpty else { return "" }
+        guard count > 0 else { return "No matches" }
+        return "\((index % count + count) % count + 1) of \(count)"
+    }
+}
+
+struct ReviewFindBar: View {
+    @Binding var state: ReviewFindState
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Find in file", text: $state.query)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 280)
+                .focused($focused)
+                .onKeyPress(.return, phases: .down) { press in
+                    state.index += press.modifiers.contains(.shift) ? -1 : 1
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    state.shown = false
+                    return .handled
+                }
+            Text(state.countText).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Button { state.index -= 1 } label: { Image(systemName: "chevron.up") }
+                .help("Previous match (Shift-Return)")
+                .disabled(state.count == 0)
+            Button { state.index += 1 } label: { Image(systemName: "chevron.down") }
+                .help("Next match (Return)")
+                .disabled(state.count == 0)
+            Spacer()
+            Button("Done") { state.shown = false }
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .onAppear { focused = true }
+        .onChange(of: state.focusRequest) { focused = true }
+        .onChange(of: state.query) { state.index = 0 }
+        Divider()
+    }
+}
+
+extension View {
+    /// Cmd-F opens the find bar. Only the tab showing registers it, since a
+    /// hidden tab's shortcut would otherwise answer for the visible one.
+    func reviewFindShortcut(_ state: Binding<ReviewFindState>, enabled: Bool) -> some View {
+        background {
+            if enabled {
+                Button("Find") {
+                    state.wrappedValue.shown = true
+                    state.wrappedValue.focusRequest += 1
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            }
+        }
+    }
+}

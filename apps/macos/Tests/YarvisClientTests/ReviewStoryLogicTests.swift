@@ -44,34 +44,20 @@ private let patch = [
         #expect(chapterRead(cache, viewed: ["a.ts", "b.ts"]))
     }
 
-    @Test func parsesLineNumbersAndSkipsGitsHeader() {
-        let rows = patchRows(patch)
-        #expect(rows.first?.text == "@@ -1,3 +1,3 @@")
-        #expect(rows[1] == PatchRow(.context, " one", right: 1, left: 1))
-        #expect(rows[2] == PatchRow(.del, "-two", left: 2))
-        #expect(rows[3] == PatchRow(.add, "+TWO", right: 2))
-        #expect(rows.last == PatchRow(.context, " forty-one", right: 40, left: 41))
-        #expect(rows[3].body == "TWO")
-    }
-
-    @Test func treatsNoNewlineMarkersAsMetadata() {
-        let rows = patchRows("@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b")
-        #expect(rows.map(\.kind) == [.hunk, .del, .meta, .add])
-        #expect(rows[3].rightLine == 1)
-        #expect(rowsInRange(rows, lines: nil).map(\.kind) == [.hunk, .del, .add])
-    }
-
-    @Test func showsTheWholePatchWithoutARange() {
-        let rows = patchRows(patch)
-        #expect(rowsInRange(rows, lines: nil) == rows)
+    @Test func showsTheWholePatchWithoutGitsHeaderOrMetaWithoutARange() {
+        let rows = parseUnifiedDiff(patch + "\n\\ No newline at end of file")
+        let shown = rowsInRange(rows, lines: nil)
+        #expect(shown.first?.text == "@@ -1,3 +1,3 @@")
+        #expect(!shown.contains { $0.kind == .meta })
+        #expect(shown.count == rows.count - 1)
     }
 
     @Test func keepsOnlyTheHunksThatTouchTheRangeARemovalByWhereItWas() {
-        let rows = patchRows(patch)
+        let rows = parseUnifiedDiff(patch)
         #expect(rowsInRange(rows, lines: LineRange(start: 38, end: 40)).map(\.text)
-            == ["@@ -40,2 +38,3 @@", " forty", "+added", " forty-one"])
+            == ["@@ -40,2 +38,3 @@", "forty", "added", "forty-one"])
         #expect(rowsInRange(rows, lines: LineRange(start: 19, end: 21)).map(\.text)
-            == ["@@ -20,2 +19,0 @@", "-gone", "-also gone"])
+            == ["@@ -20,2 +19,0 @@", "gone", "also gone"])
         #expect(rowsInRange(rows, lines: LineRange(start: 100, end: 120)).isEmpty)
     }
 }

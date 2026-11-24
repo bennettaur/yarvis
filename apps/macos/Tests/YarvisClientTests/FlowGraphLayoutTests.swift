@@ -44,23 +44,4 @@ private func graph(_ edges: [(String, String)], extra: [String] = []) -> PrGuide
         node.file = nil
         #expect(flowNodeLabel(node).location == nil)
     }
-
-    @Test func drawsOnlyFlowcharts() {
-        #expect(isDrawableFlowchart("flowchart LR\n a-->b"))
-        #expect(isDrawableFlowchart("graph TD\n a-->b"))
-        #expect(!isDrawableFlowchart("sequenceDiagram\n a->>b: hi"))
-        #expect(!isDrawableFlowchart("%%{init: {}}%%\nflowchart LR"))
-    }
-
-    @Test func mermaidPageLoadsNothingAndAllowsOnlyItsOwnScripts() throws {
-        let page = mermaidPage(script: "var mermaid={};", source: "flowchart LR\n a[\"</script><script>alert(1)</script>\"]",
-                               dark: true)
-        #expect(page.contains("default-src 'none'"))
-        #expect(!page.contains("script-src 'unsafe-inline'"))
-        #expect(page.components(separatedBy: "'sha256-").count == 3)
-        // The source can't close its script element.
-        #expect(!page.contains("</script><script>alert"))
-        #expect(page.contains("securityLevel: \"strict\""))
-        #expect(!page.contains("http://") && !page.contains("https://") && !page.contains("file:"))
-    }
 }

@@ -61,6 +61,14 @@ private func gh(_ owner: String, _ repo: String, _ n: Int) -> PrRef { .github(ow
         #expect(resolvePrLocator("http://dev.azure.com/acme/Shop/_git/web/pullrequest/42").isEmpty)
     }
 
+    @Test func refusesDotSegmentsAsNames() {
+        #expect(resolvePrLocator("acme/..#4").isEmpty)
+        #expect(resolvePrLocator("https://github.com/acme/../pull/4").isEmpty)
+        #expect(resolvePrLocator("..#4", knownRepos: [KnownRepo(owner: "a", repo: "..")]).isEmpty)
+        #expect(parsePrLink("https://dev.azure.com/acme/%2E%2E/_git/web/pullrequest/4") == nil)
+        #expect(parsePrLink("https://github.com/acme/%2e/pull/4") == nil)
+    }
+
     @Test func parsePrLinkRefusesZeroAndNonHttps() {
         #expect(parsePrLink("https://github.com/a/b/pull/0") == nil)
         #expect(parsePrLink("http://github.com/a/b/pull/3") == nil)
@@ -208,11 +216,11 @@ private func detail(state: String = "OPEN", draft: Bool = false, mergeable: Stri
 
     @Test func openedAgoRoundsToTheLargestUnit() {
         let now = parseISODate("2026-11-24T12:00:00Z")!
-        #expect(reviewOpenedAgo(nil, now: now) == "never opened")
-        #expect(reviewOpenedAgo("2026-11-24T11:59:50Z", now: now) == "just now")
-        #expect(reviewOpenedAgo("2026-11-24T11:15:00Z", now: now) == "45m ago")
-        #expect(reviewOpenedAgo("2026-11-24T07:00:00Z", now: now) == "5h ago")
-        #expect(reviewOpenedAgo("2026-11-21T12:00:00Z", now: now) == "3d ago")
+        #expect(shortAgo(nil, now: now) == "never opened")
+        #expect(shortAgo("2026-11-24T11:59:50Z", now: now) == "just now")
+        #expect(shortAgo("2026-11-24T11:15:00Z", now: now) == "45m ago")
+        #expect(shortAgo("2026-11-24T07:00:00Z", now: now) == "5h ago")
+        #expect(shortAgo("2026-11-21T12:00:00Z", now: now) == "3d ago")
     }
 
     @Test func filterPathsNeedsEveryWord() {
@@ -234,7 +242,6 @@ private func detail(state: String = "OPEN", draft: Bool = false, mergeable: Stri
         let addable = addableLayers(stack, held: [gh("o", "r", 4).key])
         #expect(addable.map(\.number) == [2, 3])
         #expect(addable.map(pickedByDefault) == [true, false])
-        #expect(notInStack([gh("o", "r", 2), gh("o", "r", 9)], stack) == [gh("o", "r", 9)])
         #expect(stackAddError(["r#2: boom", "r#3: nope"]) == "Couldn't add r#2: boom; r#3: nope")
         #expect(stackAddError([]) == nil)
     }
@@ -273,5 +280,23 @@ private func detail(state: String = "OPEN", draft: Bool = false, mergeable: Stri
             == .azure(org: "acme", project: "Shop", repo: "web", prId: 9))
         #expect(linkedPrRef(url: nil, owner: "o", repo: "r", number: 9) == .github(owner: "o", repo: "r", number: 9))
         #expect(linkedPrRef(url: "not a link", owner: "o", repo: "r", number: 9) == .github(owner: "o", repo: "r", number: 9))
+    }
+}
+
+@Suite struct FileTreeRowsTests {
+    private let tree = buildFileTree(["src/a.ts", "src/lib/b.ts", "README.md"])
+
+    @Test func showsEverythingWhenFoldersStartOpen() {
+        let rows = visibleTreeRows(tree, startsOpen: true, toggled: [])
+        #expect(rows.map(\.id) == ["src", "src/lib", "src/lib/b.ts", "src/a.ts", "README.md"])
+        #expect(rows.map(\.depth) == [0, 1, 2, 1, 0])
+    }
+
+    @Test func aToggledFolderHidesItsContents() {
+        #expect(visibleTreeRows(tree, startsOpen: true, toggled: ["src/lib"]).map(\.id)
+            == ["src", "src/lib", "src/a.ts", "README.md"])
+        #expect(visibleTreeRows(tree, startsOpen: false, toggled: []).map(\.id) == ["src", "README.md"])
+        #expect(visibleTreeRows(tree, startsOpen: false, toggled: ["src"]).map(\.id)
+            == ["src", "src/lib", "src/a.ts", "README.md"])
     }
 }

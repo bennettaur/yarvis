@@ -11,7 +11,8 @@ struct ReviewTabGroupsView: View {
         let groups = model.layout.groups
         if groups.count > 1 {
             ReviewSplitView(ratio: Binding(get: { model.layout.ratio }, set: { model.setGroupRatio($0) }),
-                            minRatio: ReviewTabLayout.minRatio, maxRatio: 1 - ReviewTabLayout.minRatio) {
+                            minRatio: ReviewTabLayout.minRatio, maxRatio: 1 - ReviewTabLayout.minRatio,
+                            onDragEnd: model.endGroupRatioDrag) {
                 ReviewTabGroupView(model: model, index: 0).id(groups[0].key)
             } trailing: {
                 ReviewTabGroupView(model: model, index: 1).id(groups[1].key)
@@ -46,11 +47,9 @@ private struct ReviewTabGroupView: View {
                         ForEach(group.tabs) { spec in
                             if let pr = model.prs[spec.prId] {
                                 let active = spec.id == group.activeId
-                                ReviewTabBody(spec: spec, context: ReviewTabContext(workspace: model, pr: pr))
+                                ReviewTabHost(active: active, content: ReviewTabBody(
+                                    spec: spec, context: ReviewTabContext(workspace: model, pr: pr, isActive: active)))
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .opacity(active ? 1 : 0)
-                                    .allowsHitTesting(active)
-                                    .accessibilityHidden(!active)
                             }
                         }
                         if splitHint {
@@ -161,6 +160,30 @@ private struct ReviewTabChip: View {
             }
             return true
         }
+    }
+}
+
+/// Hosts one tab's body in its own AppKit view, so a hidden tab is really
+/// hidden: it draws nothing, takes no clicks, and gives up the key focus
+/// if it held it, so typing can't land in a tab nobody sees.
+private struct ReviewTabHost: NSViewRepresentable {
+    let active: Bool
+    let content: ReviewTabBody
+
+    func makeNSView(context: Context) -> NSHostingView<ReviewTabBody> {
+        let view = NSHostingView(rootView: content)
+        view.isHidden = !active
+        return view
+    }
+
+    func updateNSView(_ view: NSHostingView<ReviewTabBody>, context: Context) {
+        view.rootView = content
+        guard view.isHidden == active else { return }
+        if !active, let window = view.window, let focused = window.firstResponder as? NSView,
+           focused.isDescendant(of: view) {
+            window.makeFirstResponder(nil)
+        }
+        view.isHidden = !active
     }
 }
 

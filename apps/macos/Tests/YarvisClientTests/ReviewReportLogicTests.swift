@@ -20,6 +20,37 @@ private func since(rebased: Bool, baseMoved: Bool) -> SinceReview {
                        rebaseMatchSkipped: false)
 }
 
+private func rereviewRun(_ id: String, _ status: String) -> RereviewRun {
+    RereviewRun(id: id, status: status, startedAt: "")
+}
+
+private func checkRun(current: Bool) -> ChecklistRun {
+    ChecklistRun(id: "r", status: "succeeded", live: false, headSha: "h", current: current, startedAt: "")
+}
+
+private func guide(_ steps: [PrGuideStep], current: Int = 0) -> PrGuide {
+    PrGuide(headSha: "h", steps: steps, currentStep: current, stale: false, createdAt: "")
+}
+
+/// The web's fixture for `fileNotes`.
+private let notesReport: VerificationReport = {
+    var r = VerificationReport()
+    r.summary = "Adds a cache."
+    r.mustRead = [VerificationMustRead(path: "src/cache.ts", reason: "Eviction")]
+    r.risk = VerificationRisk(level: "medium", clientImpact: "Stale profiles.", mitigations: [], concerns: [
+        VerificationConcern(title: "No invalidation", detail: "Edits stay stale.", path: "src/cache.ts", line: 22),
+        VerificationConcern(title: "Whole-PR concern", detail: "No line."),
+    ])
+    r.performance = VerificationCheck(status: "issues", findings: [
+        VerificationFinding(title: "N+1", detail: "One query per user.", severity: "high", path: "src/cache.ts", line: 9),
+        VerificationFinding(title: "Elsewhere", detail: "Other file.", severity: "low", path: "src/b.ts", line: 3),
+    ])
+    r.observability = VerificationCheck(status: "issues", findings: [
+        VerificationFinding(title: "Swallowed error", detail: "catch drops it.", severity: "medium", path: "src/cache.ts"),
+    ])
+    return r
+}()
+
 @Suite struct ReviewReportLogicTests {
     @Test func findingBodyNamesTheReportAndQuotesWhatItSaid() {
         #expect(findingCommentBody(title: "No test", detail: "Line one\nLine two", severity: "high", section: "tests")
@@ -113,30 +144,66 @@ private func since(rebased: Bool, baseMoved: Bool) -> SinceReview {
         #expect(resolvedNow.open.map(\.threadId) == ["f", "a"])
     }
 
-    @Test func autoStartsOncePerRangeWithinBudget() {
+    @Test func autoStartsOnlyWhenNothingCoversTheRangeAndItsWithinBudget() {
         let size = RereviewSize(files: 1, changedLines: 1, binary: [], noInterdiff: [], skimmed: [], readBytes: 1,
                                 overAgentBudget: false, estimatedCostUsd: 0.1, budgetUsd: 1, overBudget: false)
-        var latest = LatestRereview(current: false, size: size)
-        #expect(shouldAutoStartRereview(latest, autoStart: true, alreadyStarted: false))
-        #expect(!shouldAutoStartRereview(latest, autoStart: false, alreadyStarted: false))
-        #expect(!shouldAutoStartRereview(latest, autoStart: true, alreadyStarted: true))
-        latest.size?.overBudget = true
-        #expect(!shouldAutoStartRereview(latest, autoStart: true, alreadyStarted: false))
+        let fresh = LatestRereview(current: false, size: size)
+        #expect(shouldAutoStartRereview(fresh, autoStart: true, alreadyStarted: false))
+        #expect(!shouldAutoStartRereview(fresh, autoStart: false, alreadyStarted: false))
+        #expect(!shouldAutoStartRereview(fresh, autoStart: true, alreadyStarted: true))
+        var overBudget = fresh
+        overBudget.size?.overBudget = true
+        #expect(!shouldAutoStartRereview(overBudget, autoStart: true, alreadyStarted: false))
+        var tooBig = fresh
+        tooBig.size?.overAgentBudget = true
+        #expect(!shouldAutoStartRereview(tooBig, autoStart: true, alreadyStarted: false))
+        var current = fresh
+        current.current = true
+        #expect(!shouldAutoStartRereview(current, autoStart: true, alreadyStarted: false))
+        var covered = fresh
+        covered.lastSucceeded = .init(run: rereviewRun("s", "succeeded"), current: true)
+        #expect(!shouldAutoStartRereview(covered, autoStart: true, alreadyStarted: false))
+        var running = fresh
+        running.run = rereviewRun("r", "running")
+        #expect(!shouldAutoStartRereview(running, autoStart: true, alreadyStarted: false))
     }
 
-    @Test func mutationStateFollowsBothTheStreamAndTheStoredPass() {
-        let run = MutationRun(id: "m", headSha: "h", status: "running", phase: "mutants", startedAt: "",
-                              isCurrentHead: true, live: true)
-        var progress = MutationProgress()
-        #expect(MutationTabState(run: run, followId: "m", progress: progress, blocked: false, confirming: false).running)
-        progress.streamEnded = true
-        let lost = MutationTabState(run: run, followId: "m", progress: progress, blocked: false, confirming: false)
-        #expect(!lost.running && lost.lostTrack && !lost.canStart)
-        var elsewhere = run
-        elsewhere.live = false
-        let other = MutationTabState(run: elsewhere, followId: nil, progress: nil, blocked: false, confirming: false)
-        #expect(other.runningElsewhere && !other.canStart)
-        #expect(!MutationTabState(run: nil, followId: nil, progress: nil, blocked: true, confirming: false).canStart)
+    @Test func rereviewIsReadyWhenTheAgentSaysSoOrNothingItRaisedIsOpen() {
+        func review(_ verdict: String, _ changes: [String] = []) -> Rereview {
+            Rereview(summary: "", verdict: verdict, verdictReason: "", comments: [],
+                     newChanges: changes.map { RereviewChange(path: "a", kind: $0, reason: "") })
+        }
+        let none = RereviewGroups(open: [], disagreed: [], addressed: [])
+        #expect(rereviewReady(review("ready_to_approve", ["needs_review"]),
+                              groups: RereviewGroups(open: [comment("a", "partly")], disagreed: [], addressed: [])))
+        #expect(rereviewReady(review("needs_another_look", ["minor"]), groups: none))
+        #expect(!rereviewReady(review("needs_another_look", ["needs_review"]), groups: none))
+        #expect(!rereviewReady(review("needs_another_look"),
+                               groups: RereviewGroups(open: [], disagreed: [comment("b", "disagreed")], addressed: [])))
+        #expect(!rereviewReady(review("needs_another_look"),
+                               groups: RereviewGroups(open: [comment("c", "unclear")], disagreed: [], addressed: [])))
+    }
+
+    @Test func followingARunNeedsAStreamAndSaysWhenItRunsElsewhere() {
+        let here = AgentRunFollow(startedId: nil, runId: "r", runStatus: "running", runLive: true, streamOpen: true,
+                                  streamEnded: false, storedMustRun: true)
+        #expect(here.followId == "r" && here.running && !here.runningElsewhere && !here.lostTrack)
+        let started = AgentRunFollow(startedId: "s", runId: nil, runStatus: nil, runLive: nil, streamOpen: true,
+                                     streamEnded: false, storedMustRun: false)
+        #expect(started.followId == "s" && started.running)
+        let storedStopped = AgentRunFollow(startedId: "s", runId: "s", runStatus: "succeeded", runLive: true,
+                                           streamOpen: true, streamEnded: false, storedMustRun: true)
+        #expect(!storedStopped.running)
+        let elsewhere = AgentRunFollow(startedId: nil, runId: "r", runStatus: "running", runLive: false, streamOpen: false,
+                                       streamEnded: false, storedMustRun: true)
+        #expect(elsewhere.followId == nil && elsewhere.runningElsewhere)
+        let lost = AgentRunFollow(startedId: nil, runId: "r", runStatus: "running", runLive: true, streamOpen: false,
+                                  streamEnded: true, storedMustRun: true)
+        #expect(lost.lostTrack && !lost.running)
+        var progress = RereviewProgress()
+        #expect(rereviewFollow(nil, startedId: "s", progress: progress).running)
+        progress.finished = "succeeded"
+        #expect(!rereviewFollow(nil, startedId: "s", progress: progress).running)
     }
 
     @Test func killRateAndChips() {
@@ -157,5 +224,118 @@ private func since(rebased: Bool, baseMoved: Bool) -> SinceReview {
         #expect(guideStepLocation(step) == "a.ts:3")
         step.endLine = 9
         #expect(guideStepLocation(step) == "a.ts:3–9")
+    }
+
+    @Test func fileNotesGatherWhatCitesALineFromRiskAndEveryCheckInLineOrder() {
+        #expect(fileNotes(notesReport, path: "src/cache.ts") == [
+            FileNote(source: "Performance", title: "N+1", detail: "One query per user.", severity: "high", line: 9),
+            FileNote(source: "Risk", title: "No invalidation", detail: "Edits stay stale.", line: 22),
+        ])
+        #expect(fileNotes(nil, path: "src/cache.ts").isEmpty)
+    }
+
+    @Test func fileNotesNoteUnmetClaimsAndUnfinishedWorkButNotVerifiedClaims() {
+        var r = VerificationReport()
+        r.claims = VerificationClaims(items: [
+            VerificationClaim(claim: "Caches users", source: "description", status: "verified", evidence: "e", path: "a.ts", line: 2),
+            VerificationClaim(claim: "Invalidates", source: "ABC-1", status: "partial", evidence: "only on delete", path: "a.ts", line: 9),
+        ], gaps: [VerificationFinding(title: "TODO left", detail: "d", severity: "low", path: "a.ts", line: 5)])
+        #expect(fileNotes(r, path: "a.ts") == [
+            FileNote(source: "Unfinished work", title: "TODO left", detail: "d", severity: "low", line: 5),
+            FileNote(source: "Claim partial", title: "Invalidates", detail: "only on delete", line: 9),
+        ])
+    }
+
+    @Test func fileNotesAddEachFlagThatCitesALineLabelledApartFromTheReason() {
+        var r = notesReport
+        r.mustRead = [
+            VerificationMustRead(path: "src/cache.ts", reason: "Eviction", flags: [
+                .init(note: "TTL is read but never applied", line: 30), .init(note: "No line"),
+            ]),
+            VerificationMustRead(path: "src/b.ts", reason: "Other", flags: [.init(note: "Flagged in b", line: 5)]),
+        ]
+        let notes = fileNotes(r, path: "src/cache.ts")
+        #expect(notes.first { $0.source == "Looks off" } == FileNote(source: "Looks off", title: "TTL is read but never applied", line: 30))
+        #expect(notes.map(\.line) == [9, 22, 30])
+        #expect(notes[2].hoverText == "Looks off: TTL is read but never applied")
+        #expect(notes[0].hoverText == "Performance (high): N+1. One query per user.")
+    }
+
+    @Test func fileNotesTakeFlagsOnlyFromTheFilesOwnMustRead() {
+        var r = notesReport
+        r.mustRead = [
+            VerificationMustRead(path: "src/cache.ts", reason: "Eviction", flags: [.init(note: "TTL", line: 30)]),
+            VerificationMustRead(path: "src/b.ts", reason: "Other", flags: [.init(note: "Flagged in b", line: 5)]),
+        ]
+        #expect(fileNotes(r, path: "src/b.ts").map(\.title) == ["Elsewhere", "Flagged in b"])
+        #expect(fileNotes(r, path: "src/none.ts").isEmpty)
+    }
+
+    @Test func decisionInputsDropEvidenceAndStacksReadAtAnotherCommit() {
+        func item(_ section: String, current: Bool?) -> ChecklistItem {
+            ChecklistItem(section: section, theme: "t", label: section, description: "",
+                          latest: current.map(checkRun), result: current.map(checkRun))
+        }
+        let checklist = VerificationChecklist(headSha: "h", themes: [], items: [
+            item("summary", current: true), item("risk", current: false), item("tests", current: nil),
+        ], namedTickets: [])
+        let ci = EvidenceItem(id: "ci-checks", theme: "t", label: "CI", description: "", summary: "", tone: "good",
+                              entries: [], hiddenEntries: 0)
+        let same = decisionInputs(checklist: checklist, evidence: VerificationEvidence(headSha: "h", items: [ci]),
+                                  upstack: VerificationUpstack(headSha: "h", layers: []))
+        #expect(same.evidence == [ci])
+        #expect(same.upstack != nil)
+        #expect(same.currentSections == ["summary"])
+        let other = decisionInputs(checklist: checklist, evidence: VerificationEvidence(headSha: "old", items: [ci]),
+                                   upstack: VerificationUpstack(headSha: "old", layers: []))
+        #expect(other.evidence == nil && other.upstack == nil)
+        #expect(decisionInputs(checklist: checklist, evidence: nil, upstack: nil).evidence == nil)
+    }
+
+    @Test func runRequestsUseTheSettingsChoiceWhenNothingIsPicked() {
+        let defaults = verificationRunRequest(typedTickets: nil, savedTickets: ["ABC-1", "#2"], model: "", effort: "",
+                                              harness: "")
+        #expect(defaults == VerificationRunRequest(namedTickets: ["ABC-1", "#2"], choice: VerificationRunChoice(), harness: nil))
+        let picked = verificationRunRequest(typedTickets: "", savedTickets: ["ABC-1"], model: "opus", effort: "high",
+                                            harness: "h2")
+        #expect(picked == VerificationRunRequest(namedTickets: [], choice: VerificationRunChoice(model: "opus", effort: "high"),
+                                                 harness: "h2"))
+    }
+
+    @Test func onlyStartedSectionsAreUntickedAndNoneLeftMeansSuggestions() {
+        #expect(pickedAfterStart(["risk", "tests"], started: ["risk"]) == ["tests"])
+        #expect(pickedAfterStart(["risk"], started: ["risk"]) == nil)
+        #expect(pickedAfterStart(nil, started: ["risk"]) == nil)
+        #expect(pickedAfterStart(["risk"], started: []) == ["risk"])
+    }
+
+    @Test func guideMovesClampMarkForwardOnlyAndFinishDismisses() {
+        let steps = [
+            PrGuideStep(path: "a.ts", startLine: 1, endLine: nil, explanation: "", covers: ["b.ts", "a.ts"]),
+            PrGuideStep(path: "c.ts", startLine: nil, endLine: nil, explanation: ""),
+        ]
+        let g = guide(steps)
+        #expect(guideMove(g, from: 0, .goTo(9)) == GuideMoveResult(step: 1, markViewed: [], dismiss: false))
+        #expect(guideMove(g, from: 1, .goTo(-3)).step == 0)
+        #expect(guideMove(g, from: 0, .next) == GuideMoveResult(step: 1, markViewed: ["a.ts", "b.ts"], dismiss: false))
+        #expect(guideMove(g, from: 1, .back) == GuideMoveResult(step: 0, markViewed: [], dismiss: false))
+        #expect(guideMove(g, from: 1, .finish) == GuideMoveResult(step: 1, markViewed: ["c.ts"], dismiss: true))
+        #expect(guideInitialStep(guide(steps, current: 7)) == 1)
+        #expect(guideInitialStep(guide(steps, current: -1)) == 0)
+        #expect(guideInitialStep(guide([], current: 3)) == 0)
+    }
+
+    @Test func fileNotesCollectLinedItemsForThePathInLineOrder() throws {
+        let report = try JSONDecoder().decode(VerificationReport.self, from: json(#"""
+        {"mustRead":[{"path":"a.ts","reason":"r","flags":[{"note":"odd","line":9},{"note":"no line"}]}],
+         "claims":{"items":[{"claim":"c","source":"title","status":"missing","evidence":"e","path":"a.ts","line":2},
+                            {"claim":"ok","source":"title","status":"verified","evidence":"e","path":"a.ts","line":3}],
+                   "gaps":[]},
+         "tests":{"status":"issues","findings":[{"title":"t","detail":"d","severity":"low","path":"a.ts","line":5},
+                                                {"title":"x","detail":"d","severity":"low","path":"b.ts","line":1}]}}
+        """#))
+        let notes = fileNotes(report, path: "a.ts")
+        #expect(notes.map(\.source) == ["Claim missing", "Test quality", "Looks off"])
+        #expect(notes[1].hoverText == "Test quality (low): t. d")
     }
 }

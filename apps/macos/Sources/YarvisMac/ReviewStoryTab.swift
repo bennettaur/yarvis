@@ -1,19 +1,29 @@
 import SwiftUI
 import YarvisClient
 
+/// A file's patch as Story shows it, parsed and coloured once when it arrives.
+enum ReviewStoryDiff {
+    case loading
+    case failed(String)
+    case tooLarge
+    /// Rows of the whole patch; `spans` colour each row's text, when the language is known.
+    case rows([DiffLine], spans: [[SyntaxSpan]]?)
+}
+
 /// One PR's story: the chapter chosen and the patches read for it.
 @MainActor @Observable
-final class ReviewStoryModel {
+final class ReviewStoryModel: ReviewTabModel {
     private let client: YarvisClient
     let workspaceId: String
     let prId: String
 
     /// Nil until the reader picks one; the first unread chapter shows until then.
     var chosen: String?
-    private(set) var diffs: [String: Result<ReviewFileDiff, Error>] = [:]
+    private(set) var diffs: [String: ReviewStoryDiff] = [:]
     private var diffHead: String?
     private(set) var starting = false
     var startError: String?
+    private var tasks: [String: Task<Void, Never>] = [:]
 
     init(client: YarvisClient, workspaceId: String, prId: String) {
         self.client = client
@@ -28,27 +38,52 @@ final class ReviewStoryModel {
             diffs = [:]
         }
         guard diffs[path] == nil, head != nil else { return }
-        Task {
+        diffs[path] = .loading
+        tasks["diff:\(path)"] = Task {
             do {
-                diffs[path] = .success(try await client.reviewFileDiff(workspaceId: workspaceId, prId: prId, path: path))
+                let diff = try await client.reviewFileDiff(workspaceId: workspaceId, prId: prId, path: path)
+                guard diffHead == head else { return }
+                diffs[path] = diff.tooLarge ? .tooLarge : Self.parse(diff.patch, path: path)
             } catch {
-                diffs[path] = .failure(error)
+                guard diffHead == head, !Task.isCancelled else { return }
+                diffs[path] = .failed(error.localizedDescription)
             }
         }
+    }
+
+    /// Each row's text is coloured as part of one document, so a string or
+    /// comment that spans rows is still recognised.
+    private static func parse(_ patch: String, path: String) -> ReviewStoryDiff {
+        let rows = parseUnifiedDiff(patch)
+        let spans = languageForPath(path).flatMap { language in
+            highlightLines(rows.map { $0.kind == .hunk || $0.kind == .meta ? "" : $0.text }.joined(separator: "\n"),
+                           language: language)
+        }
+        return .rows(rows, spans: spans)
     }
 
     func writeChangeMap(_ pr: ReviewPrModel) {
         starting = true
         startError = nil
-        Task {
+        tasks["changeMap"] = Task {
             do {
-                _ = try await client.startVerification(workspaceId: workspaceId, prId: prId, sections: ["changeMap"])
-                pr.loadChecklist(force: true)
+                let started = try await client.startVerification(workspaceId: workspaceId, prId: prId,
+                                                                 sections: ["changeMap"])
+                startError = started.failed.first?.error
             } catch {
-                startError = reviewErrorText(error)
+                startError = error.localizedDescription
             }
+            // Re-read either way: a refused start can still mean a run is going.
+            pr.loadChecklist(force: true)
             starting = false
         }
+    }
+
+    func stop() {
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
+        diffs = diffs.filter { if case .rows = $0.value { return true } else { return false } }
+        starting = false
     }
 }
 
@@ -59,7 +94,7 @@ struct ReviewStoryTab: View {
     private var pr: ReviewPrModel { context.pr }
 
     private var model: ReviewStoryModel {
-        ReviewTabModels.get(context) {
+        context.workspace.tabModels.get(pr.prId) {
             ReviewStoryModel(client: context.client, workspaceId: pr.workspaceId, prId: pr.prId)
         }
     }
@@ -228,21 +263,19 @@ private struct ReviewStoryFile: View {
             note("The diff shows once the checkout is ready.")
         } else {
             switch model.diffs[file.path] {
-            case nil:
+            case nil, .loading?:
                 ReviewWaiting("Reading the diff…")
-            case .failure(let error):
-                ReviewErrorText(reviewErrorText(error))
-            case .success(let diff):
-                if diff.tooLarge {
-                    note("Too large to show here; click the path above.")
-                } else {
-                    rows(rowsInRange(patchRows(diff.patch), lines: file.lines))
-                }
+            case .failed(let error)?:
+                ReviewErrorText(error)
+            case .tooLarge?:
+                note("Too large to show here; click the path above.")
+            case .rows(let all, let spans)?:
+                rows(rowsInRange(all, lines: file.lines), spans: spans)
             }
         }
     }
 
-    @ViewBuilder private func rows(_ rows: [PatchRow]) -> some View {
+    @ViewBuilder private func rows(_ rows: [DiffLine], spans: [[SyntaxSpan]]?) -> some View {
         if rows.filter({ $0.kind != .hunk }).isEmpty {
             note("No text changes to show here; click the path above.")
         } else {
@@ -250,11 +283,11 @@ private struct ReviewStoryFile: View {
                 file.lines.map { n.line >= $0.start && n.line <= $0.end } ?? true
             }
             let shown = Array(rows.prefix(storyMaxRows))
-            let headLines = Set(shown.compactMap(\.rightLine))
+            let headLines = Set(shown.compactMap(\.newLine))
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(shown.enumerated()), id: \.offset) { _, row in
-                    ReviewStoryRow(row: row)
-                    if let line = row.rightLine {
+                ForEach(shown) { row in
+                    ReviewStoryRow(row: row, spans: spans.flatMap { $0.indices.contains(row.id) ? $0[row.id] : nil } ?? [])
+                    if let line = row.newLine {
                         ForEach(Array(notes.filter { $0.line == line }.enumerated()), id: \.offset) { ReviewStoryNote(note: $1) }
                     }
                 }
@@ -283,16 +316,16 @@ private struct ReviewStoryFile: View {
 }
 
 private struct ReviewStoryRow: View {
-    let row: PatchRow
+    let row: DiffLine
+    let spans: [SyntaxSpan]
 
     var body: some View {
         HStack(spacing: 0) {
-            Text(row.leftLine.map(String.init) ?? "").frame(width: 40, alignment: .trailing)
-            Text(row.rightLine.map(String.init) ?? "").frame(width: 40, alignment: .trailing)
-            Text(row.kind == .hunk ? row.text : row.text.isEmpty ? " " : row.text)
-                .padding(.leading, 8)
+            Text(row.oldLine.map(String.init) ?? "").frame(width: 40, alignment: .trailing)
+            Text(row.newLine.map(String.init) ?? "").frame(width: 40, alignment: .trailing)
+            Text(marker).frame(width: 16)
+            Text(styled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(row.kind == .hunk ? .secondary : .primary)
         }
         .font(.system(size: 11, design: .monospaced))
         .foregroundStyle(.secondary)
@@ -302,10 +335,34 @@ private struct ReviewStoryRow: View {
         .textSelection(.enabled)
     }
 
+    private var marker: String {
+        switch row.kind {
+        case .added: return "+"
+        case .removed: return "-"
+        default: return ""
+        }
+    }
+
+    /// The row's text in the code view's syntax colours.
+    private var styled: AttributedString {
+        let text = row.text.isEmpty ? " " : row.text
+        guard row.kind != .hunk, row.kind != .meta, !spans.isEmpty else {
+            var plain = AttributedString(text)
+            plain.foregroundColor = row.kind == .hunk ? .secondary : .primary
+            return plain
+        }
+        let ns = NSMutableAttributedString(string: text, attributes: [.foregroundColor: NSColor.textColor])
+        for span in spans where span.start + span.length <= ns.length {
+            ns.addAttribute(.foregroundColor, value: CodeRowView.color(span.kind),
+                            range: NSRange(location: span.start, length: span.length))
+        }
+        return (try? AttributedString(ns, including: \.appKit)) ?? AttributedString(text)
+    }
+
     private var background: Color {
         switch row.kind {
-        case .add: return .green.opacity(0.15)
-        case .del: return .red.opacity(0.15)
+        case .added: return .green.opacity(0.15)
+        case .removed: return .red.opacity(0.15)
         case .hunk: return .blue.opacity(0.08)
         default: return .clear
         }

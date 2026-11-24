@@ -7,8 +7,13 @@ import YarvisClient
 /// to new commits.
 @MainActor @Observable
 final class ReviewPrBarModel {
-    unowned let workspace: ReviewWorkspaceModel
+    /// Weak: actions finish after awaits, by which time the workspace may be gone.
+    private weak var workspace: ReviewWorkspaceModel?
+    private let client: YarvisClient
+    private let workspaceId: String
+    private unowned let app: AppModel
     let prId: String
+    private var stopped = false
 
     enum Prompt: Equatable { case approve, requestChanges }
 
@@ -51,19 +56,23 @@ final class ReviewPrBarModel {
     private var refreshTask: Task<Void, Never>?
     /// What "Mark reviewed here" said, until the next action.
     var markMessage: String?
+    private(set) var marking = false
 
     init(workspace: ReviewWorkspaceModel, prId: String) {
         self.workspace = workspace
+        client = workspace.client
+        workspaceId = workspace.id
+        app = workspace.page.app
         self.prId = prId
     }
 
     func stop() {
+        stopped = true
         refreshTask?.cancel()
         refreshTask = nil
     }
 
-    private var pr: ReviewPrModel? { workspace.prs[prId] }
-    private var client: YarvisClient { workspace.client }
+    private var pr: ReviewPrModel? { workspace?.prs[prId] }
 
     // MARK: Review and merge
 
@@ -142,7 +151,7 @@ final class ReviewPrBarModel {
 
     func openOrStartWorkspace() {
         if let linkedWorkspace {
-            workspace.page.app.openWorkspace(id: linkedWorkspace.id)
+            app.openWorkspace(id: linkedWorkspace.id)
             return
         }
         guard let ref = pr?.ref, !startingWorkspace else { return }
@@ -152,7 +161,8 @@ final class ReviewPrBarModel {
             defer { startingWorkspace = false }
             do {
                 let started = try await client.startWorkspaceForPr(ref)
-                workspace.page.app.openWorkspace(id: started.workspaceId)
+                guard !stopped else { return }
+                app.openWorkspace(id: started.workspaceId)
             } catch {
                 workspaceError = error.localizedDescription
             }
@@ -175,7 +185,7 @@ final class ReviewPrBarModel {
                 }
                 conflictStep = .done(handOff)
                 pr.loadDetail(force: true)
-                if handOff.outcome == "created" { workspace.page.app.openWorkspace(id: handOff.workspaceId) }
+                if handOff.outcome == "created" && !stopped { app.openWorkspace(id: handOff.workspaceId) }
             } catch {
                 conflictError = error.localizedDescription
                 conflictStep = .idle
@@ -207,7 +217,7 @@ final class ReviewPrBarModel {
         let target = pr.status.value?.headSha
         refreshPhase = .refreshing(line: nil)
         markMessage = nil
-        let (ws, id) = (workspace.id, prId)
+        let (ws, id) = (workspaceId, prId)
         refreshTask = Task { [client] in
             do {
                 _ = try await client.refreshReviewPr(workspaceId: ws, prId: id)
@@ -222,7 +232,7 @@ final class ReviewPrBarModel {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                await workspace.read()
+                await workspace?.read()
                 if let failure {
                     refreshPhase = .failed(failure)
                 } else {
@@ -242,10 +252,12 @@ final class ReviewPrBarModel {
     }
 
     func markReviewedHere() {
-        guard let pr else { return }
+        guard let pr, !marking else { return }
+        marking = true
         markMessage = nil
-        let (ws, id) = (workspace.id, prId)
+        let (ws, id) = (workspaceId, prId)
         Task { [client] in
+            defer { marking = false }
             do {
                 let mark = try await client.markReviewedHere(workspaceId: ws, prId: id)
                 markMessage = "Marked reviewed at \(mark.headSha.prefix(7)). “Since last review” starts from here now."

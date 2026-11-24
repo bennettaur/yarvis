@@ -31,9 +31,12 @@ struct ReviewSetupSheet: View {
                 Button("Later") { dismiss() }.disabled(busy).keyboardShortcut(.cancelAction)
                 if info?.script != nil {
                     Button("Don't run") { answer(false) }.disabled(busy)
+                    // Waits for the detail too, so the fork warning is showing before anything runs.
+                    let detailKnown = pr.detail.value != nil
                     Button(busy ? "Starting…" : "Run setup") { answer(true) }
-                        .disabled(busy || !setupRunnable(info))
-                        .help(setupRunnable(info) ? "" : "The PR's commit isn't known yet")
+                        .disabled(busy || !setupRunnable(info) || !detailKnown)
+                        .help(!setupRunnable(info) ? "The PR's commit isn't known yet"
+                            : detailKnown ? "" : "Loading the pull request…")
                 }
             }
         }

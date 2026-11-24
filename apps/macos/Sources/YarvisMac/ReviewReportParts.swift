@@ -153,24 +153,22 @@ struct ReviewFold<Content: View>: View {
 }
 
 /// "3 hours ago" for an ISO date, or the raw string when it doesn't parse.
-func reviewRelativeTime(_ iso: String, now: Date = Date()) -> String {
+func longAgo(_ iso: String, now: Date = Date()) -> String {
     guard let date = parseISODate(iso) else { return iso }
     let f = RelativeDateTimeFormatter()
     f.unitsStyle = .full
     return f.localizedString(for: date, relativeTo: now)
 }
 
-func reviewErrorText(_ error: Error) -> String {
-    error.localizedDescription
-}
-
 extension View {
-    /// Runs `tick` every `seconds` while `active` holds and the page is on
-    /// screen. Restarts whenever `active` changes.
+    /// Runs `tick` every `seconds` while `active` holds, the tab is the one
+    /// showing in its group and the page is on screen. Restarts whenever
+    /// either changes.
     func reviewPoll(_ context: ReviewTabContext, every seconds: Double = 3, while active: Bool,
                     _ tick: @escaping @MainActor () -> Void) -> some View {
-        task(id: active) {
-            guard active else { return }
+        let polling = active && context.isActive
+        return task(id: polling) {
+            guard polling else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(seconds))
                 if Task.isCancelled { return }
@@ -195,28 +193,5 @@ struct ReviewSectionTitle: View {
             Text(text.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             if let count { Text("\(count)").font(.caption).foregroundStyle(.tertiary) }
         }
-    }
-}
-
-/// Per-PR state for the agent tabs, kept while the tab isn't on screen so a
-/// slow request or a started run outlives switching tabs. Held for the open
-/// workspace only: opening another, or the same one again after a reconnect,
-/// starts fresh, so no model keeps an old connection's client.
-@MainActor
-enum ReviewTabModels {
-    private static var owner: ObjectIdentifier?
-    private static var store: [String: AnyObject] = [:]
-
-    static func get<M: AnyObject>(_ context: ReviewTabContext, make: () -> M) -> M {
-        let workspace = ObjectIdentifier(context.workspace)
-        if owner != workspace {
-            owner = workspace
-            store = [:]
-        }
-        let key = "\(M.self):\(context.pr.prId)"
-        if let model = store[key] as? M { return model }
-        let model = make()
-        store[key] = model
-        return model
     }
 }

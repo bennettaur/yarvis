@@ -99,7 +99,7 @@ struct ReviewAnnotationBar: View {
                     DisclosureGroup(isExpanded: $showOutdated) {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
-                                ForEach(Array(outdated.enumerated()), id: \.offset) { _, thread in
+                                ForEach(keyedThreads(outdated), id: \.key) { _, thread in
                                     PrThreadView(context: annotations.context, thread: thread)
                                 }
                             }
@@ -144,7 +144,7 @@ struct ReviewLineCommentBlock: View {
         let moved = store.movedToFile[path].flatMap { $0.anchor == anchor ? $0 : nil }
         let composer = store.composers[path].flatMap { $0.anchor == anchor ? $0 : nil }
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
+            ForEach(keyedThreads(threads), id: \.key) { _, thread in
                 PrThreadView(context: context, thread: thread)
             }
             ForEach(pending, id: \.id) { comment in
@@ -177,5 +177,17 @@ struct ReviewLineCommentBlock: View {
             }
         }
         .onChange(of: inline, initial: true) { _, next in store.settleComments(path: path, threads: next) }
+    }
+}
+
+/// Threads keyed by id, so a thread keeps its open reply box when others
+/// come and go. A provider can leave an id off (Azure does on some
+/// threads), and then the thread's position stands in for it.
+func keyedThreads(_ threads: [PrThread]) -> [(key: String, thread: PrThread)] {
+    var seen = Set<String>()
+    return threads.enumerated().map { i, thread in
+        let key = thread.id.isEmpty || seen.contains(thread.id) ? "at-\(i)" : thread.id
+        seen.insert(key)
+        return (key, thread)
     }
 }

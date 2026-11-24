@@ -5,7 +5,11 @@ import YarvisClient
 /// checked-out PR, on a PTY the server names after the workspace.
 @MainActor @Observable
 final class ReviewClaudeModel {
-    unowned let workspace: ReviewWorkspaceModel
+    /// Weak: starts finish after awaits, by which time the workspace may be gone.
+    private weak var workspace: ReviewWorkspaceModel?
+    private let client: YarvisClient
+    private unowned let app: AppModel
+    let sessionId: String
 
     enum Phase: Equatable {
         /// No PR is checked out yet.
@@ -26,11 +30,12 @@ final class ReviewClaudeModel {
 
     init(workspace: ReviewWorkspaceModel) {
         self.workspace = workspace
+        client = workspace.client
+        app = workspace.page.app
+        sessionId = YarvisClient.reviewClaudeSessionId(workspaceId: workspace.id)
     }
 
-    var sessionId: String { YarvisClient.reviewClaudeSessionId(workspaceId: workspace.id) }
-    private var client: YarvisClient { workspace.client }
-    private var anyCheckoutReady: Bool { workspace.prs.values.contains { $0.pr.checkoutReady } }
+    private var anyCheckoutReady: Bool { workspace?.prs.values.contains { $0.pr.checkoutReady } ?? false }
 
     func stop() {
         attempt += 1
@@ -52,7 +57,7 @@ final class ReviewClaudeModel {
     }
 
     func workspaceChanged() {
-        if let saved = workspace.workspace?.askClaudeRepoConfig, phase != .live { loadRepoConfig = saved }
+        if let saved = workspace?.workspace?.askClaudeRepoConfig, phase != .live { loadRepoConfig = saved }
         if wanted && phase == .waiting && anyCheckoutReady { start(loadRepoConfig: nil) }
     }
 
@@ -62,10 +67,12 @@ final class ReviewClaudeModel {
         attach()
     }
 
+    /// A start's answer and a `pty.started` event can both arrive; the
+    /// second finds the terminal already attached.
     private func attach() {
-        controller?.stop()
-        controller = TerminalController(app: workspace.page.app, client: client, sessionId: sessionId)
         phase = .live
+        guard controller == nil else { return }
+        controller = TerminalController(app: app, client: client, sessionId: sessionId)
     }
 
     /// Attaches to a running session, or starts one. `loadRepoConfig` nil
@@ -78,7 +85,8 @@ final class ReviewClaudeModel {
         attempt += 1
         let mine = attempt
         phase = .starting
-        let (client, sessionId, id) = (client, sessionId, workspace.id)
+        guard let id = workspace?.id else { return }
+        let (client, sessionId) = (client, sessionId)
         Task {
             if choice == nil, (try? await client.ptyExists(sessionId)) == true {
                 guard mine == attempt else { return }
@@ -107,12 +115,12 @@ final class ReviewClaudeModel {
         controller = nil
         phase = .starting
         if let choice { loadRepoConfig = choice }
-        let (client, sessionId) = (client, sessionId)
+        let (client, sessionId, app) = (client, sessionId, app)
         Task {
             do {
                 // An exited session has nothing to end.
                 if try await client.ptyExists(sessionId) {
-                    try await workspace.page.app.withFreshCode { [client] in try await client.ptyKill(sessionId) }
+                    try await app.withFreshCode { [client] in try await client.ptyKill(sessionId) }
                 }
             } catch {
                 guard mine == attempt else { return }

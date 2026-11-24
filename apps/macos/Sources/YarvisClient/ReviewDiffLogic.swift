@@ -26,7 +26,7 @@ public enum LineEdit: Equatable, Sendable {
 /// Past this many differing lines the diff stops looking for the shortest
 /// edit and shows the rest as replaced, which keeps a rewrite of a big file
 /// from costing seconds and hundreds of megabytes.
-public let maxDiffEdits = 4_000
+public let maxDiffEdits = 2_000
 
 /// The line diff from `old` to `new` (Myers), with each changed stretch as
 /// its deletions followed by its insertions.
@@ -278,11 +278,30 @@ public func foldedRows(_ pairs: [DiffPair], keep: Set<Int> = [], reveals: [Int: 
 /// Tab stops every this many columns.
 public let codeTabWidth = 4
 
+/// How many columns a scalar takes in a monospaced view: 0 for combining
+/// marks and joiners, 2 for East Asian wide characters and emoji, 1 otherwise.
+public func columnWidth(_ scalar: Unicode.Scalar) -> Int {
+    let v = scalar.value
+    if v < 0x300 { return 1 }
+    switch scalar.properties.generalCategory {
+    case .nonspacingMark, .enclosingMark, .format: return 0
+    default: break
+    }
+    if (0xFE00...0xFE0F).contains(v) || (0xE0100...0xE01EF).contains(v) { return 0 }
+    if scalar.properties.isEmojiPresentation { return 2 }
+    let wide: [ClosedRange<UInt32>] = [
+        0x1100...0x115F, 0x2E80...0x303E, 0x3041...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xA000...0xA4CF,
+        0xAC00...0xD7A3, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFF60, 0xFFE0...0xFFE6,
+        0x1F300...0x1F64F, 0x1F900...0x1F9FF, 0x20000...0x3FFFD,
+    ]
+    return wide.contains { $0.contains(v) } ? 2 : 1
+}
+
 /// How many monospaced columns a line takes, tabs to the next stop.
 public func displayColumns(_ line: String) -> Int {
     var col = 0
-    for u in line.utf16 {
-        if u == 9 { col += codeTabWidth - col % codeTabWidth } else if !(u >= 0xDC00 && u <= 0xDFFF) { col += 1 }
+    for scalar in line.unicodeScalars {
+        col += scalar == "\t" ? codeTabWidth - col % codeTabWidth : columnWidth(scalar)
     }
     return col
 }
@@ -292,13 +311,46 @@ public func displayColumns(_ line: String) -> Int {
 public func utf16Offset(atColumn column: Int, in line: String) -> Int {
     var col = 0
     var offset = 0
-    for u in line.utf16 {
-        let width = u == 9 ? codeTabWidth - col % codeTabWidth : (u >= 0xDC00 && u <= 0xDFFF ? 0 : 1)
+    for scalar in line.unicodeScalars {
+        let width = scalar == "\t" ? codeTabWidth - col % codeTabWidth : columnWidth(scalar)
         if width > 0 && column < col + width { return offset }
         col += width
-        offset += 1
+        offset += scalar.utf16.count
     }
     return offset
+}
+
+/// Lines longer than this many columns are drawn cut off, since wrapping
+/// a minified bundle's one line fills screens with nothing readable.
+public let maxDrawnColumns = 5_000
+
+/// The line as drawn: a carriage return or Unicode line or paragraph
+/// separator inside it shows as a visible mark instead of breaking the
+/// line, keeping every UTF-16 offset where it was.
+public func drawableLine(_ line: String) -> String {
+    guard line.unicodeScalars.contains(where: { lineBreakMarks[$0] != nil }) else { return line }
+    var out = String.UnicodeScalarView()
+    for scalar in line.unicodeScalars { out.append(lineBreakMarks[scalar] ?? scalar) }
+    return String(out)
+}
+
+private let lineBreakMarks: [Unicode.Scalar: Unicode.Scalar] = [
+    "\r": "\u{240D}", "\u{0085}": "\u{2424}", "\u{2028}": "\u{2424}", "\u{2029}": "\u{00B6}",
+    "\u{000B}": "\u{240B}", "\u{000C}": "\u{240C}",
+]
+
+/// Why two versions whose bytes differ show no changed line: the change is
+/// only in line endings, the newline at the end, or how characters are
+/// encoded. Nil when the bytes are the same.
+public func invisibleChangeNote(old: String, new: String) -> String? {
+    // Bytes, not `==`: String equality treats "é" and "e\u{301}" as equal.
+    guard !old.utf8.elementsEqual(new.utf8) else { return nil }
+    var notes: [String] = []
+    if old.utf8.contains(13) != new.utf8.contains(13) { notes.append("Line endings changed.") }
+    let oldEnds = old.utf8.last == 10, newEnds = new.utf8.last == 10
+    if oldEnds && !newEnds && !new.isEmpty { notes.append("No newline at end of file.") }
+    if !oldEnds && newEnds && !old.isEmpty { notes.append("Newline added at end of file.") }
+    return notes.isEmpty ? "The versions differ only in how some characters are encoded." : notes.joined(separator: " ")
 }
 
 /// How many wrapped rows a line of `columns` takes at `perRow` columns a row.
@@ -345,4 +397,84 @@ public func navigationTab(prId: String, path: String, line: Int?, changed: Set<S
     if changed.contains(path) { return .diff(prId: prId, path: path, revealLine: line) }
     if tree.contains(path) { return .file(prId: prId, path: path, revealLine: line) }
     return nil
+}
+
+// MARK: Report marks
+
+/// How the verification report marks a new-file line.
+public struct ReviewLineMark: Equatable, Sendable {
+    /// Inside the must-read range.
+    public var mustRead = false
+    /// Cited by at least one of the report's notes.
+    public var cited = false
+    /// Plain text: "Must read: …" and each note's own text, one per line.
+    public var hover: String?
+
+    public init(mustRead: Bool = false, cited: Bool = false, hover: String? = nil) {
+        self.mustRead = mustRead
+        self.cited = cited
+        self.hover = hover
+    }
+
+    mutating func addHover(_ text: String) {
+        hover = hover.map { $0 + "\n" + text } ?? text
+    }
+}
+
+/// Past this many lines a must-read range is a model's mistake, not a range.
+private let maxMarkedRange = 5_000
+
+/// The must-read range and each line a note cites, with their hover text.
+/// A must-read with no lines marks nothing.
+public func reviewLineMarks(mustRead: VerificationMustRead?, notes: [FileNote]) -> [Int: ReviewLineMark] {
+    var marks: [Int: ReviewLineMark] = [:]
+    if let mustRead, let lines = mustRead.lines, lines.start >= 1, lines.start <= lines.end {
+        for line in lines.start...min(lines.end, lines.start + maxMarkedRange) {
+            marks[line, default: ReviewLineMark()].mustRead = true
+            marks[line]?.addHover("Must read: \(mustRead.reason)")
+        }
+    }
+    for note in notes {
+        marks[note.line, default: ReviewLineMark()].cited = true
+        marks[note.line]?.addHover(note.hoverText)
+    }
+    return marks
+}
+
+// MARK: Find in file
+
+/// Where a search term appears in one line: UTF-16 offset and length.
+public struct LineMatch: Equatable, Sendable {
+    public var line: Int
+    public var start: Int
+    public var length: Int
+
+    public init(line: Int, start: Int, length: Int) {
+        self.line = line
+        self.start = start
+        self.length = length
+    }
+}
+
+/// Stops a one-letter search in a huge file from building a huge list.
+public let maxFindMatches = 10_000
+
+/// Every case-insensitive occurrence of `query` in `lines` (1-based line
+/// numbers), in order.
+public func findMatches(_ query: String, in lines: [String], limit: Int = maxFindMatches) -> [LineMatch] {
+    guard !query.isEmpty else { return [] }
+    var out: [LineMatch] = []
+    for (i, line) in lines.enumerated() {
+        let ns = line as NSString
+        var range = NSRange(location: 0, length: ns.length)
+        while range.length > 0 {
+            let found = ns.range(of: query, options: [.caseInsensitive], range: range)
+            guard found.location != NSNotFound, found.length > 0 else { break }
+            out.append(LineMatch(line: i + 1, start: found.location, length: found.length))
+            if out.count >= limit { return out }
+            let next = found.location + found.length
+            range = NSRange(location: next, length: ns.length - next)
+        }
+    }
+    return out
 }

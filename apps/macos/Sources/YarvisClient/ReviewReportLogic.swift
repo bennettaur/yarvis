@@ -43,9 +43,7 @@ func unmention(_ text: String) -> String {
 public func findingCommentBody(title: String, detail: String, severity: String?, section: String) -> String {
     let tag = severity.map { "\(section), \($0)" } ?? section
     let quoted = unmention(detail).components(separatedBy: "\n").map { "> \($0)" }.joined(separator: "\n")
-    let oneLine = unmention(title).replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        .trimmingCharacters(in: .whitespaces)
-    return "**\(oneLine)** (verification report: \(tag))\n\n\(quoted)"
+    return "**\(oneLine(unmention(title)))** (verification report: \(tag))\n\n\(quoted)"
 }
 
 /// Lines either side of a stacked layer's change that still count as near it.
@@ -324,24 +322,28 @@ public let mutationVerdictSentences: [String: String] = [
 
 /// Where the mutation tab stands, from the stored pass and the stream it follows.
 public struct MutationTabState: Sendable, Equatable {
-    /// Following a pass this sidecar runs, with the stream open.
-    public var running: Bool
-    /// Another app instance's sidecar runs it, so there is nothing to follow.
-    public var runningElsewhere: Bool
-    /// The pass says it runs here but its stream stopped.
-    public var lostTrack: Bool
+    public var follow: AgentRunFollow
     public var canStart: Bool
 
-    /// Running only while both the stream and the stored pass say so, so a
-    /// stream that ends early doesn't leave the tab spinning on a stopped pass.
-    public init(run: MutationRun?, followId: String?, progress: MutationProgress?, blocked: Bool, confirming: Bool) {
-        let streamOpen = progress.map { $0.finished == nil && !$0.streamEnded } ?? false
-        let stored = run?.status == "running"
-        running = followId != nil && streamOpen && stored
-        runningElsewhere = !running && stored && run?.live == false
-        lostTrack = !running && stored && run?.live == true && progress?.streamEnded == true
-        canStart = !running && !runningElsewhere && !lostTrack && !blocked && !confirming
+    public var running: Bool { follow.running }
+    public var runningElsewhere: Bool { follow.runningElsewhere }
+    public var lostTrack: Bool { follow.lostTrack }
+
+    public init(run: MutationRun?, startedId: String?, progress: MutationProgress?, blocked: Bool, confirming: Bool) {
+        follow = AgentRunFollow(
+            startedId: startedId, runId: run?.id, runStatus: run?.status, runLive: run?.live,
+            streamOpen: progress.map { $0.finished == nil && !$0.streamEnded } ?? false,
+            streamEnded: progress?.streamEnded == true, storedMustRun: true)
+        canStart = !follow.running && !follow.runningElsewhere && !follow.lostTrack && !blocked && !confirming
     }
+}
+
+/// Where the re-review summary stands. Following lasts until the run's
+/// `done`; the stored run isn't consulted, since it is re-read only then.
+public func rereviewFollow(_ latest: LatestRereview?, startedId: String?, progress: RereviewProgress?) -> AgentRunFollow {
+    AgentRunFollow(startedId: startedId, runId: latest?.run?.id, runStatus: latest?.run?.status,
+                   runLive: latest?.run?.live, streamOpen: progress.map { $0.finished == nil } ?? false,
+                   streamEnded: progress?.finished != nil, storedMustRun: false)
 }
 
 // MARK: Guided review
@@ -364,3 +366,83 @@ public let guideFindingKindLabels: [String: String] = [
     "convention": "convention",
     "other": "flagged",
 ]
+
+/// A move through a guided review.
+public enum GuideMove: Sendable, Equatable {
+    case goTo(Int)
+    case next
+    case back
+    case finish
+}
+
+/// What a move does: the step to show, the paths to mark viewed, and
+/// whether the guide ends.
+public struct GuideMoveResult: Sendable, Equatable {
+    public var step: Int
+    public var markViewed: [String]
+    public var dismiss: Bool
+}
+
+/// The step a guide opens on: the saved one, kept within the steps.
+public func guideInitialStep(_ guide: PrGuide) -> Int {
+    min(max(guide.currentStep, 0), max(guide.steps.count - 1, 0))
+}
+
+/// Moving on past a step marks its paths viewed, and so does finishing;
+/// going back marks nothing and unmarks nothing.
+public func guideMove(_ guide: PrGuide, from step: Int, _ move: GuideMove) -> GuideMoveResult {
+    let last = max(guide.steps.count - 1, 0)
+    let clamp = { (i: Int) in min(max(i, 0), last) }
+    let paths = guide.steps.indices.contains(step) ? guide.steps[step].paths : []
+    switch move {
+    case .goTo(let i): return GuideMoveResult(step: clamp(i), markViewed: [], dismiss: false)
+    case .next: return GuideMoveResult(step: clamp(step + 1), markViewed: paths, dismiss: false)
+    case .back: return GuideMoveResult(step: clamp(step - 1), markViewed: [], dismiss: false)
+    case .finish: return GuideMoveResult(step: step, markViewed: paths, dismiss: true)
+    }
+}
+
+// MARK: Verification inputs
+
+/// What the decision panel and export judge by. CI results or a stack read
+/// at another commit than the checklist's would point at different lines, so
+/// they are left out.
+public struct DecisionInputs: Sendable, Equatable {
+    public var evidence: [EvidenceItem]?
+    public var upstack: VerificationUpstack?
+    /// Sections whose result is for the PR's head.
+    public var currentSections: Set<String>
+}
+
+public func decisionInputs(checklist: VerificationChecklist, evidence: VerificationEvidence?,
+                           upstack: VerificationUpstack?) -> DecisionInputs {
+    DecisionInputs(
+        evidence: evidence.flatMap { $0.headSha == checklist.headSha ? $0.items : nil },
+        upstack: upstack.flatMap { $0.headSha == checklist.headSha ? $0 : nil },
+        currentSections: Set(checklist.items.filter { $0.result?.current == true }.map(\.section)))
+}
+
+/// What a "Run" sends beyond its sections. Empty picks mean the Settings choice.
+public struct VerificationRunRequest: Sendable, Equatable {
+    public var namedTickets: [String]
+    public var choice: VerificationRunChoice
+    public var harness: String?
+}
+
+/// `typedTickets` is nil until the reviewer types, and the checklist's last
+/// tickets are offered again until then.
+public func verificationRunRequest(typedTickets: String?, savedTickets: [String], model: String, effort: String,
+                                   harness: String) -> VerificationRunRequest {
+    VerificationRunRequest(
+        namedTickets: parseNamedTickets(typedTickets ?? savedTickets.joined(separator: ", ")),
+        choice: VerificationRunChoice(model: model.isEmpty ? nil : model, effort: effort.isEmpty ? nil : effort),
+        harness: harness.isEmpty ? nil : harness)
+}
+
+/// The ticks after a run starts: only the sections that started are
+/// unticked, and with none left the suggestions return (nil).
+public func pickedAfterStart(_ picked: [String]?, started: Set<String>) -> [String]? {
+    guard let picked else { return nil }
+    let left = picked.filter { !started.contains($0) }
+    return left.isEmpty ? nil : left
+}

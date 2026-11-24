@@ -63,8 +63,8 @@ private struct ReviewInsightCard: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             Text(insight.question).font(.caption).italic().foregroundStyle(.secondary).textSelection(.enabled)
-            // Model-written, so plain text.
-            Text(insight.answer).textSelection(.enabled)
+            // No link router here, so only http(s) links in the answer open.
+            MarkdownText(insight.answer).textSelection(.enabled)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -4,6 +4,7 @@ import YarvisClient
 /// The suggested decision with its reasons, and the forms that act on it.
 struct ReviewDecisionPanel: View {
     let context: ReviewTabContext
+    let model: ReviewVerificationModel
     let assessment: ReviewAssessment
     let report: VerificationReport?
     let evidence: [EvidenceItem]?
@@ -16,17 +17,13 @@ struct ReviewDecisionPanel: View {
     }
 
     @State private var mode: Mode?
-    @State private var busy = false
-    @State private var error: String?
-    @State private var done: String?
-    /// Comments already posted by an earlier try, kept per head so a retry doesn't repeat them.
-    @State private var posted: (head: String, ids: Set<String>) = ("", [])
 
     private var pr: ReviewPrModel { context.pr }
 
     var body: some View {
         let drafts = draftComments(report: report, evidence: evidence, currentSections: currentSections)
-        let postedIds = posted.head == (pr.pr.headSha ?? "") ? posted.ids : []
+        let postedIds = model.postedIds(head: pr.pr.headSha ?? "")
+        let busy = model.deciding
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Chip(text: assessment.suggestion.label, color: suggestionColor)
@@ -36,7 +33,7 @@ struct ReviewDecisionPanel: View {
                 Spacer()
                 ForEach(Mode.allCases, id: \.self) { m in
                     Toggle(m.rawValue, isOn: Binding(get: { mode == m }, set: { on in
-                        done = nil
+                        model.clearDecisionMessages()
                         mode = on ? m : nil
                     }))
                     .toggleStyle(.button)
@@ -44,14 +41,17 @@ struct ReviewDecisionPanel: View {
             }
             reasons
             switch mode {
-            case .approve?: ReviewApproveForm(assessment: assessment, busy: busy) { approve($0) }
+            case .approve?:
+                ReviewApproveForm(assessment: assessment, busy: busy) { model.approve($0, pr: pr) { mode = nil } }
             case .requestChanges?:
-                ReviewRequestChangesForm(drafts: drafts, posted: postedIds, busy: busy) { requestChanges($0, $1) }
+                ReviewRequestChangesForm(drafts: drafts, posted: postedIds, busy: busy) {
+                    model.requestChanges($0, summary: $1, pr: pr) { mode = nil }
+                }
             case .reviewDeeper?: whereToLookList
             case nil: EmptyView()
             }
-            if let error { ReviewErrorText(error) }
-            if let done { Text(done).font(.callout).foregroundStyle(.green) }
+            if let error = model.decisionError { ReviewErrorText(error) }
+            if let done = model.decisionDone { Text(done).font(.callout).foregroundStyle(.green) }
         }
         .padding(12)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.25)))
@@ -98,61 +98,6 @@ struct ReviewDecisionPanel: View {
                     }
                 }
             }
-        }
-    }
-
-    /// The PR's threads, its vote in a stack and the last-review mark change with what was sent.
-    private func refreshPr() {
-        pr.loadDetail(force: true)
-        pr.loadStack(force: true)
-        pr.invalidateLastReview()
-    }
-
-    private func approve(_ body: String) {
-        busy = true
-        error = nil
-        let (client, ref, seen) = (context.client, pr.ref, pr.pr.seen)
-        let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            do {
-                try await client.applyReviewAction(ref, .approve, body: text.isEmpty ? nil : text, seen: seen)
-                refreshPr()
-                done = "Approved."
-                mode = nil
-            } catch {
-                self.error = reviewErrorText(error)
-            }
-            busy = false
-        }
-    }
-
-    /// Line comments go first, one at a time; the verdict is sent only once
-    /// all are up, so a failure never leaves a verdict pointing at comments
-    /// that aren't there.
-    private func requestChanges(_ chosen: [DraftComment], _ summary: String) {
-        busy = true
-        error = nil
-        let (client, ref, seen) = (context.client, pr.ref, pr.pr.seen)
-        let head = pr.pr.headSha ?? ""
-        var nowPosted = posted.head == head ? posted.ids : []
-        Task {
-            do {
-                for d in chosen {
-                    guard let path = d.path, let line = d.line, !nowPosted.contains(d.id) else { continue }
-                    _ = try await client.postPrComment(ref, NewPrComment(path: path, line: line, body: d.body), seen: seen)
-                    nowPosted.insert(d.id)
-                }
-                try await client.applyReviewAction(ref, .requestChanges, body: summary, seen: seen)
-                done = "Changes requested."
-                mode = nil
-                nowPosted = []
-            } catch {
-                self.error = reviewErrorText(error)
-            }
-            // Whatever went up shows on the PR, even when the rest didn't.
-            refreshPr()
-            posted = (head, nowPosted)
-            busy = false
         }
     }
 }

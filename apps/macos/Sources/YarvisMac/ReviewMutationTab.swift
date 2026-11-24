@@ -5,7 +5,7 @@ import YarvisClient
 /// the start prompt. Kept per PR so a pass started here is still followed
 /// after switching tabs.
 @MainActor @Observable
-final class ReviewMutationModel {
+final class ReviewMutationModel: ReviewTabModel {
     private let client: YarvisClient
     let workspaceId: String
     let prId: String
@@ -24,6 +24,9 @@ final class ReviewMutationModel {
 
     private var followed: String?
     private var stream: Task<Void, Never>?
+    /// The tab is showing; only then is a stream opened.
+    private var attached = false
+    private var tasks: [String: Task<Void, Never>] = [:]
     private var generation = 0
 
     init(client: YarvisClient, workspaceId: String, prId: String) {
@@ -34,20 +37,22 @@ final class ReviewMutationModel {
 
     var run: MutationRun? { state?.run }
 
-    var followId: String? {
-        startedId ?? (run?.status == "running" && run?.live == true ? run?.id : nil)
+    var tab: MutationTabState {
+        MutationTabState(run: run, startedId: startedId, progress: progress, blocked: state?.blocked != nil,
+                         confirming: confirming != nil)
     }
 
-    var tab: MutationTabState {
-        MutationTabState(run: run, followId: followId, progress: progress, blocked: state?.blocked != nil,
-                         confirming: confirming != nil)
+    /// Runs `work` as the one task called `key`, cancelling the one before it.
+    private func run(_ key: String, _ work: @escaping @MainActor () async -> Void) {
+        tasks[key]?.cancel()
+        tasks[key] = Task { await work() }
     }
 
     func load() {
         generation += 1
         let generation = generation
         loading = state == nil
-        Task {
+        run("load") { [self] in
             do {
                 let next = try await client.mutationTesting(workspaceId: workspaceId, prId: prId)
                 guard generation == self.generation else { return }
@@ -56,19 +61,26 @@ final class ReviewMutationModel {
                 follow()
             } catch {
                 guard generation == self.generation else { return }
-                loadError = reviewErrorText(error)
+                loadError = error.localizedDescription
             }
             loading = false
         }
     }
 
     func loadConfig() {
-        Task { if let c = try? await client.mutationTestingConfig() { config = c } }
+        run("config") { [self] in if let c = try? await client.mutationTestingConfig() { config = c } }
     }
 
-    /// Follows `followId` if it isn't already; replays from the pass's start.
+    /// The tab came on screen: follow the pass, if one is going.
+    func attach() {
+        attached = true
+        follow()
+    }
+
+    /// Follows the pass if it isn't already, replaying from its start. Only
+    /// while attached, so a late load can't open a stream for a hidden tab.
     func follow() {
-        guard let id = followId, id != followed else { return }
+        guard attached, let id = tab.follow.followId, id != followed else { return }
         followed = id
         stream?.cancel()
         progress = MutationProgress()
@@ -83,7 +95,7 @@ final class ReviewMutationModel {
                 return
             } catch {
                 if Task.isCancelled { return }
-                progress?.error = "Lost track of the run: \(reviewErrorText(error))"
+                progress?.error = "Lost track of the run: \(error.localizedDescription)"
             }
             if Task.isCancelled { return }
             progress?.streamEnded = true
@@ -93,16 +105,23 @@ final class ReviewMutationModel {
 
     /// The tab went off screen; the stream starts again, from the beginning, when it returns.
     func detach() {
+        attached = false
         stream?.cancel()
         stream = nil
         followed = nil
+    }
+
+    func stop() {
+        detach()
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
     }
 
     func start() {
         guard let headSha = state?.headSha, let confirm = confirming else { return }
         starting = true
         actionError = nil
-        Task {
+        run("start") { [self] in
             do {
                 let started = try await client.startMutationTesting(workspaceId: workspaceId, prId: prId, headSha: headSha,
                                                                     confirmRunTests: confirm)
@@ -110,7 +129,7 @@ final class ReviewMutationModel {
                 startedId = started.runId
                 load()
             } catch {
-                actionError = reviewErrorText(error)
+                actionError = error.localizedDescription
             }
             starting = false
         }
@@ -118,11 +137,11 @@ final class ReviewMutationModel {
 
     func cancel() {
         actionError = nil
-        Task {
+        run("cancel") { [self] in
             do {
                 try await client.cancelMutationTesting(workspaceId: workspaceId, prId: prId)
             } catch {
-                actionError = reviewErrorText(error)
+                actionError = error.localizedDescription
             }
         }
     }
@@ -133,7 +152,7 @@ struct ReviewMutationTab: View {
 
     private var model: ReviewMutationModel {
         let pr = context.pr
-        return ReviewTabModels.get(context) {
+        return context.workspace.tabModels.get(pr.prId) {
             ReviewMutationModel(client: context.client, workspaceId: pr.workspaceId, prId: pr.prId)
         }
     }
@@ -161,8 +180,8 @@ struct ReviewMutationTab: View {
         .onAppear {
             model.loadConfig()
             context.pr.loadChangedFiles()
-            model.follow()
         }
+        .task(id: context.isActive) { context.isActive ? model.attach() : model.detach() }
         .onDisappear { model.detach() }
         .task(id: setupKey) { model.load() }
     }
@@ -242,7 +261,7 @@ struct ReviewMutationTab: View {
             HStack {
                 Button(model.starting ? "Starting…" : "Start mutation testing") { model.start() }
                     .disabled(model.starting)
-                    
+
                 Button("Not now") { model.confirming = nil }
             }
         }

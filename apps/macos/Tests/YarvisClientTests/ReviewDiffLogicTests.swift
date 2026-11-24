@@ -117,7 +117,7 @@ private func lines(_ s: String) -> [String] { s.map(String.init) }
         #expect(displayColumns("ab") == 2)
         #expect(displayColumns("\tx") == 5)
         #expect(displayColumns("ab\tx") == 5)
-        #expect(displayColumns("😀") == 1)
+        #expect(displayColumns("😀") == 2)
         #expect(utf16Offset(atColumn: 0, in: "\tx") == 0)
         #expect(utf16Offset(atColumn: 3, in: "\tx") == 0)
         #expect(utf16Offset(atColumn: 4, in: "\tx") == 1)
@@ -146,5 +146,62 @@ private func lines(_ s: String) -> [String] { s.map(String.init) }
         #expect(navigationTab(prId: "p", path: "b.ts", line: 9, changed: changed, tree: tree)
             == .file(prId: "p", path: "b.ts", revealLine: 9))
         #expect(navigationTab(prId: "p", path: "../etc", line: 1, changed: changed, tree: tree) == nil)
+    }
+
+    @Test func wideAndCombiningCharactersCountTheirWidth() {
+        #expect(displayColumns("日本") == 4)
+        #expect(displayColumns("한글") == 4)
+        #expect(displayColumns("ｘ") == 2)
+        #expect(displayColumns("e\u{301}") == 1)
+        #expect(displayColumns("👍🏽") == 4)
+        #expect(displayColumns("a\u{200B}b") == 2)
+        #expect(displayColumns("❤\u{FE0F}") == 1)
+        // A click on the second column of a wide character lands on it.
+        #expect(utf16Offset(atColumn: 1, in: "日本") == 0)
+        #expect(utf16Offset(atColumn: 2, in: "日本") == 1)
+        // Emoji are two UTF-16 units.
+        #expect(utf16Offset(atColumn: 2, in: "😀x") == 2)
+    }
+
+    @Test func lineBreaksInsideALineAreDrawnAsMarks() {
+        #expect(drawableLine("plain") == "plain")
+        #expect(drawableLine("a\rb\u{2028}c\u{0085}d") == "a\u{240D}b\u{2424}c\u{2424}d")
+        #expect(drawableLine("a\u{2028}b").utf16.count == "a\u{2028}b".utf16.count)
+    }
+
+    @Test func explainsChangesNoLineShows() {
+        #expect(invisibleChangeNote(old: "a\n", new: "a\n") == nil)
+        #expect(invisibleChangeNote(old: "a\r\nb\r\n", new: "a\nb\n") == "Line endings changed.")
+        #expect(invisibleChangeNote(old: "a\nb\n", new: "a\nb") == "No newline at end of file.")
+        #expect(invisibleChangeNote(old: "a", new: "a\n") == "Newline added at end of file.")
+        #expect(invisibleChangeNote(old: "é", new: "e\u{301}") != nil)
+    }
+
+    @Test func highlightsTheMustReadRangeAndEachCitedLine() {
+        let mustRead = VerificationMustRead(path: "src/cache.ts", reason: "Eviction logic",
+                                            lines: LineRange(start: 10, end: 12))
+        let notes = [
+            FileNote(source: "Performance", title: "N+1", detail: "One query per user", severity: "high", line: 9),
+            FileNote(source: "Risk", title: "Races", line: 11),
+        ]
+        let marks = reviewLineMarks(mustRead: mustRead, notes: notes)
+        #expect(marks.keys.sorted() == [9, 10, 11, 12])
+        #expect(marks[10] == ReviewLineMark(mustRead: true, hover: "Must read: Eviction logic"))
+        #expect(marks[9] == ReviewLineMark(cited: true, hover: "Performance (high): N+1. One query per user"))
+        #expect(marks[11] == ReviewLineMark(mustRead: true, cited: true, hover: "Must read: Eviction logic\nRisk: Races"))
+    }
+
+    @Test func noRangeForAMustReadWithoutLines() {
+        let mustRead = VerificationMustRead(path: "a.ts", reason: "why")
+        #expect(reviewLineMarks(mustRead: mustRead, notes: []).isEmpty)
+    }
+
+    @Test func findsEveryMatchIgnoringCase() {
+        let matches = findMatches("ab", in: ["xAbab", "none", "AB"])
+        #expect(matches == [LineMatch(line: 1, start: 1, length: 2), LineMatch(line: 1, start: 3, length: 2),
+                            LineMatch(line: 3, start: 0, length: 2)])
+        #expect(findMatches("", in: ["a"]).isEmpty)
+        #expect(findMatches("a", in: ["aaaa"], limit: 2).count == 2)
+        #expect(findMatches("x", in: ["日x"]) == [LineMatch(line: 1, start: 1, length: 1)])
     }
 }

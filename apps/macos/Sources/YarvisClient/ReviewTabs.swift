@@ -19,7 +19,6 @@ public struct ReviewTabSpec: Codable, Sendable, Hashable, Identifiable {
             .diagram, .mutation, .claude,
         ]
 
-        public var isStatic: Bool { ![.diff, .file, .sinceFile, .commit].contains(self) }
 
         public var label: String {
             switch self {
@@ -143,8 +142,6 @@ public func findReviewWorkspace(holding ref: PrRef,
     return nil
 }
 
-/// "repo#12", the name a new workspace gets when its PR's title isn't known.
-public func shortPrName(_ ref: PrRef) -> String { "\(ref.repoName)#\(ref.number)" }
 
 // MARK: File order
 

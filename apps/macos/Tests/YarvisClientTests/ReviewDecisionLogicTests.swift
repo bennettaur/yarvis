@@ -169,4 +169,55 @@ private let green = [evidence("ci-checks", summary: "All 4 passed")]
             ReviewPlace(path: "q.ts", line: 7, reason: "Code quality: Race"),
         ])
     }
+
+    private func draft(_ id: String, path: String? = "a.ts", line: Int? = 3) -> DraftComment {
+        DraftComment(id: id, source: "Risk", title: id, body: "body \(id)", severity: "high", path: path, line: line,
+                     pickedByDefault: true)
+    }
+
+    /// A client whose comment posts fail for bodies naming `failing`, recording every request path.
+    private func stubbed(failing: String? = nil) -> (YarvisClient, String) {
+        let (session, id) = StubProtocol.session { req, body in
+            let url = req.url?.absoluteString ?? ""
+            if url.hasSuffix("/comments"), let failing,
+               String(decoding: body ?? Data(), as: UTF8.self).contains(failing) {
+                return (500, json(#"{"error":"boom"}"#))
+            }
+            return (200, json(url.hasSuffix("/comments") ? #"{"ok":true,"placement":"line"}"# : "{}"))
+        }
+        return (YarvisClient(baseURL: URL(string: "https://yarvis.test")!, token: "t", session: session), id)
+    }
+
+    private func paths(_ id: String) -> [String] {
+        StubProtocol.recorded(id).map { String(($0.0.url?.path ?? "").split(separator: "/").last ?? "") }
+    }
+
+    private let ref = PrRef.github(owner: "o", repo: "r", number: 1)
+
+    @Test func requestChangesPostsLineCommentsThenTheVerdict() async {
+        let (client, id) = stubbed()
+        let outcome = await sendChangesRequest(client: client, ref: ref, chosen: [draft("a"), draft("summary-only", path: nil, line: nil)],
+                                           summary: "s", seen: SeenCommits(), posted: [])
+        #expect(outcome == RequestChangesOutcome(posted: [], error: nil))
+        #expect(paths(id) == ["comments", "reviews"])
+    }
+
+    @Test func requestChangesSendsNoVerdictWhenACommentFails() async {
+        let (client, id) = stubbed(failing: "body b")
+        let outcome = await sendChangesRequest(client: client, ref: ref, chosen: [draft("a"), draft("b"), draft("c")],
+                                           summary: "s", seen: SeenCommits(), posted: [])
+        #expect(outcome.posted == ["a"])
+        #expect(outcome.error != nil)
+        #expect(paths(id) == ["comments", "comments"])
+    }
+
+    @Test func requestChangesRetrySkipsWhatWasPosted() async {
+        let (client, id) = stubbed()
+        let outcome = await sendChangesRequest(client: client, ref: ref, chosen: [draft("a"), draft("b")], summary: "s",
+                                           seen: SeenCommits(), posted: ["a"])
+        #expect(outcome.error == nil)
+        #expect(paths(id) == ["comments", "reviews"])
+        let bodies = StubProtocol.recorded(id).compactMap { bodyJSON($0.1)?["body"]?.stringValue }
+        #expect(bodies.first == "body b")
+    }
 }

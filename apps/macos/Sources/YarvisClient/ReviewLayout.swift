@@ -330,7 +330,9 @@ public enum ReviewShortcut: Sendable, Equatable {
 
     /// A key press, without AppKit, so the mapping is testable.
     public struct Press: Sendable {
-        public enum Key: Sendable, Equatable { case tab, left, right, character(String) }
+        /// `keyJ` and `keyK` are the physical keys, since Option turns the
+        /// letters into symbols and other layouts put them elsewhere.
+        public enum Key: Sendable, Equatable { case tab, left, right, keyJ, keyK, character(String) }
         public var key: Key
         public var command = false
         public var control = false
@@ -347,9 +349,21 @@ public enum ReviewShortcut: Sendable, Equatable {
         }
     }
 
+    /// The key of a key press, from its virtual key code and its characters
+    /// ignoring modifiers.
+    public static func key(keyCode: UInt16, characters: String?) -> Press.Key {
+        switch keyCode {
+        case 48: return .tab
+        case 123: return .left
+        case 124: return .right
+        case 38: return .keyJ
+        case 40: return .keyK
+        default: return .character(characters?.lowercased() ?? "")
+        }
+    }
+
     /// Cmd-digits and Cmd-Shift-[ / ] already move between the app's pages,
-    /// so tabs cycle on Ctrl-Tab and Cmd-Option-arrows instead. `character`
-    /// is the key ignoring modifiers, since Option turns J into a symbol.
+    /// so tabs cycle on Ctrl-Tab and Cmd-Option-arrows instead.
     public static func resolve(_ p: Press) -> ReviewShortcut? {
         let mod = p.command || p.control
         if p.control && !p.command && !p.option && p.key == .tab { return p.shift ? .prevTab : .nextTab }
@@ -364,8 +378,8 @@ public enum ReviewShortcut: Sendable, Equatable {
             return nil
         }
         if p.option && !mod && !p.shift {
-            if p.key == .character("j") { return .nextFile }
-            if p.key == .character("k") { return .prevFile }
+            if p.key == .keyJ { return .nextFile }
+            if p.key == .keyK { return .prevFile }
         }
         return nil
     }

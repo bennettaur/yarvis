@@ -39,94 +39,26 @@ public func chapterRead(_ chapter: StoryChapter, viewed: Set<String>) -> Bool {
     chapter.files.allSatisfy { viewed.contains($0.path) }
 }
 
-/// One row of a unified patch, with both files' line numbers.
-public struct PatchRow: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable {
-        case hunk, add, del, context, meta
-    }
-
-    public var kind: Kind
-    /// The line as the patch has it, marker column included.
-    public var text: String
-    /// The head file's line for add and context rows.
-    public var rightLine: Int?
-    /// The base file's line for del and context rows.
-    public var leftLine: Int?
-
-    public init(_ kind: Kind, _ text: String, right: Int? = nil, left: Int? = nil) {
-        self.kind = kind
-        self.text = text
-        rightLine = right
-        leftLine = left
-    }
-
-    /// The line without its `+`, `-` or space marker.
-    public var body: String {
-        guard kind == .add || kind == .del || kind == .context, let first = text.first,
-              first == "+" || first == "-" || first == " " else { return text }
-        return String(text.dropFirst())
-    }
+/// Where a hunk starts on the head side, from its `@@ -a,b +c,d @@` header.
+private func headStart(_ header: String) -> Int? {
+    guard let at = header.firstIndex(of: "+") else { return nil }
+    return Int(header[header.index(after: at)...].prefix(while: \.isNumber))
 }
 
-private func firstNumber(after marker: Character, in text: String) -> Int? {
-    guard let at = text.firstIndex(of: marker) else { return nil }
-    let digits = text[text.index(after: at)...].prefix(while: \.isNumber)
-    return Int(digits)
-}
-
-/// Parses a unified patch into rows. A raw `git diff` starts each file with
-/// a header block (`diff --git`, `index`, `---`/`+++`) up to the first hunk;
-/// it carries no source lines, so it is skipped rather than counted.
-public func patchRows(_ patch: String) -> [PatchRow] {
-    var rows: [PatchRow] = []
-    var right = 0
-    var left = 0
-    var inFileHeader = false
-    for text in patch.components(separatedBy: "\n") {
-        if text.hasPrefix("diff --git") {
-            inFileHeader = true
-            continue
-        }
-        if text.hasPrefix("@@") {
-            inFileHeader = false
-            // `@@ -a,b +c,d @@`: a and c are the hunk's first base and head lines.
-            right = firstNumber(after: "+", in: text) ?? 0
-            left = firstNumber(after: "-", in: text) ?? 0
-            rows.append(PatchRow(.hunk, text))
-            continue
-        }
-        if inFileHeader { continue }
-        if text.hasPrefix("\\") {
-            rows.append(PatchRow(.meta, text))
-        } else if text.hasPrefix("+") {
-            rows.append(PatchRow(.add, text, right: right))
-            right += 1
-        } else if text.hasPrefix("-") {
-            rows.append(PatchRow(.del, text, left: left))
-            left += 1
-        } else {
-            rows.append(PatchRow(.context, text, right: right, left: left))
-            right += 1
-            left += 1
-        }
-    }
-    return rows
-}
-
-/// The hunks of a file's patch that touch `lines` on the head side, each with
-/// its header row; the whole patch when there is no range. A hunk that only
-/// removes lines is kept when it sits at a line inside the range, since a
-/// removal is part of the theme too.
-public func rowsInRange(_ rows: [PatchRow], lines: LineRange?) -> [PatchRow] {
+/// The hunks of a file's parsed patch (`parseUnifiedDiff`) that touch
+/// `lines` on the head side, each with its header row; the whole patch when
+/// there is no range. A hunk that only removes lines is kept when it sits at
+/// a line inside the range, since a removal is part of the theme too.
+public func rowsInRange(_ rows: [DiffLine], lines: LineRange?) -> [DiffLine] {
     let shown = rows.filter { $0.kind != .meta }
     guard let lines else { return shown }
     let inRange = { (n: Int) in n >= lines.start && n <= lines.end }
-    var kept: [PatchRow] = []
-    var hunk: [PatchRow] = []
+    var kept: [DiffLine] = []
+    var hunk: [DiffLine] = []
     func flush() {
         guard !hunk.isEmpty else { return }
-        let heads = hunk.compactMap(\.rightLine)
-        let start = hunk[0].kind == .hunk ? firstNumber(after: "+", in: hunk[0].text) : nil
+        let heads = hunk.compactMap(\.newLine)
+        let start = hunk[0].kind == .hunk ? headStart(hunk[0].text) : nil
         let touches = heads.isEmpty ? start.map(inRange) ?? false : heads.contains(where: inRange)
         if touches { kept += hunk }
         hunk = []

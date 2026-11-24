@@ -336,7 +336,7 @@ public struct VerificationRunConfig: Codable, Sendable, Equatable {
     public var maxBudgetUsd: Double
     public var harness: String?
     public var harnesses: [Harness]
-    public var sectionDefaults: [SectionDefault]
+    public var sectionDefaults: [SectionDefault]?
 }
 
 // MARK: CI evidence and the stack above
@@ -403,7 +403,7 @@ public struct BaselineResult: Codable, Sendable, Equatable, Hashable, Identifiab
     public var durationMs: Double
     public var testCount: Int?
     public var problem: String?
-    public var excerpt: String
+    public var excerpt: String?
 }
 
 public struct MutantResult: Codable, Sendable, Equatable, Hashable, Identifiable {
@@ -413,7 +413,7 @@ public struct MutantResult: Codable, Sendable, Equatable, Hashable, Identifiable
     public var oldText: String
     public var newText: String
     public var description: String
-    public var rationale: String
+    public var rationale: String?
     public var testCommandId: String?
     public var testFiles: [String]
     /// "killed", "survived", "timeout", "error", "uncovered" or "equivalent".
@@ -425,9 +425,9 @@ public struct MutantResult: Codable, Sendable, Equatable, Hashable, Identifiable
 
 public struct MutationExecution: Codable, Sendable, Equatable {
     public var baselines: [BaselineResult]
-    public var positiveControls: [MutantResult]
+    public var positiveControls: [MutantResult]?
     public var mutants: [MutantResult]
-    public var planned: Int
+    public var planned: Int?
 }
 
 public struct MutationSummary: Codable, Sendable, Equatable {

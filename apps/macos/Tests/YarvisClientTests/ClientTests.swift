@@ -31,6 +31,9 @@ import Testing
     @Test func sessionIdsKeepTheirSlashesInsideOneSegment() {
         #expect(encodePathSegment("ws:abc/t1/p2") == "ws:abc%2Ft1%2Fp2")
         #expect(encodePathSegment("a?b#c%d") == "a%3Fb%23c%25d")
+        #expect(encodePathSegment("..") == "%2E%2E")
+        #expect(encodePathSegment(".") == "%2E")
+        #expect(encodePathSegment("a..b") == "a..b")
     }
 }
 

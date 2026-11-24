@@ -13,11 +13,11 @@ struct CodeAnnotationSlot: Hashable {
     var id: String { "\(kind):\(side.rawValue):\(line)" }
 }
 
-/// How the verification report marks a new-file line.
-struct CodeLineMark: Equatable {
-    var mustRead = false
-    /// The report's notes on the line, shown on hover.
-    var notes: String?
+/// What the find bar is looking for, and which match it's on. `index`
+/// counts up and down freely; the view wraps it round the match count.
+struct CodeFind: Equatable {
+    var query: String
+    var index: Int
 }
 
 /// A gutter action on one line or a selected range.
@@ -55,11 +55,16 @@ struct ReviewCodeView: NSViewRepresentable {
     let document: ReviewCodeDocument
     var folded = false
     var slots: [CodeAnnotationSlot] = []
-    var marks: [Int: CodeLineMark] = [:]
+    var marks: [Int: ReviewLineMark] = [:]
     var reveal: CodeReveal?
     var annotation: @MainActor (CodeAnnotationSlot) -> AnyView = { _ in AnyView(EmptyView()) }
     var onLineAction: (@MainActor (CodeLineAction) -> Void)?
     var symbols: CodeSymbols?
+    var find: CodeFind?
+    /// Told how many matches `find` has whenever that changes.
+    var onFindCount: (@MainActor (Int) -> Void)?
+    /// False while the tab is hidden: updates are ignored until it shows again.
+    var active = true
 
     func makeCoordinator() -> CodeViewCoordinator { CodeViewCoordinator() }
 
@@ -154,23 +159,42 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
     private var reveals: [Int: FoldReveal] = [:]
     private var revealedKey: Int?
     private var pendingReveal: Int?
-    private var lanes: [CodeLane] = []
+    private(set) var lanes: [CodeLane] = []
     private var laneWidth: CGFloat = 0
     /// Measured SwiftUI heights by slot id.
     private var heights: [String: CGFloat] = [:]
     /// One host per slot for as long as the slot exists, so a reload or a
     /// scroll away never drops what's typed in its composer.
     private var hosts: [CodeAnnotationSlot: CodeHostRowView] = [:]
+    private var foldHosts: [Int: CodeHostRowView] = [:]
+    /// What the rows were last built from, so an update that changes none
+    /// of it skips rebuilding them.
+    private var rowInputs: RowInputs?
+
+    private struct RowInputs: Equatable {
+        var document: String
+        var folded: Bool
+        var slots: [CodeAnnotationSlot]
+        var reveal: CodeReveal?
+        var findPair: Int?
+    }
 
     private var oldSpans: [[SyntaxSpan]]?
     private var newSpans: [[SyntaxSpan]]?
     private var texts: [String: NSAttributedString] = [:]
+
+    /// The find bar's matches in the order the rows show them.
+    private var matches: [(side: DiffSide, match: LineMatch)] = []
+    private var matchesFor: String?
+    private var currentMatch: Int?
+    private var matchesByLine: [String: [(match: LineMatch, current: Bool)]] = [:]
 
     var selection: Selection? { didSet { if selection != oldValue { redrawCode() } } }
     var hover: (row: Int, side: DiffSide)?
     /// Where the last plain click landed, for F12 and the context menu.
     var caret: (side: DiffSide, line: Int, offset: Int)?
     private var popover: NSPopover?
+    private var symbolSearch: Task<Void, Never>?
 
     func attach(table: CodeTableView, scroll: NSScrollView) {
         self.table = table
@@ -185,10 +209,13 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
 
     func detach() {
         if let frameObserver { NotificationCenter.default.removeObserver(frameObserver) }
+        symbolSearch?.cancel()
         popover?.close()
     }
 
     func update(_ next: ReviewCodeView) {
+        // A hidden tab keeps what it showed; it catches up when shown again.
+        guard next.active else { return }
         let previous = view
         view = next
         let documentChanged = previous?.document.id != next.document.id
@@ -199,6 +226,8 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
             texts = [:]
             oldSpans = nil
             newSpans = nil
+            matchesFor = nil
+            foldHosts = [:]
             layoutLanes(force: true)
             highlight(next.document)
         }
@@ -206,17 +235,81 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
             revealedKey = reveal.key
             pendingReveal = reveal.line
         }
-        let newRows = buildRows()
-        if newRows != rows || documentChanged {
-            rows = newRows
-            let live = Set(next.slots)
-            hosts = hosts.filter { live.contains($0.key) }
-            table?.reloadData()
+        let findMoved = updateFind(next.find)
+        let inputs = RowInputs(document: next.document.id, folded: next.folded, slots: next.slots,
+                               reveal: next.reveal, findPair: currentMatchPair)
+        if inputs != rowInputs {
+            rowInputs = inputs
+            let newRows = buildRows()
+            if newRows != rows || documentChanged {
+                rows = newRows
+                let live = Set(next.slots)
+                hosts = hosts.filter { live.contains($0.key) }
+                table?.reloadData()
+            } else {
+                refreshAnnotations()
+            }
         } else {
             refreshAnnotations()
-            if previous?.marks != next.marks { redrawCode() }
         }
+        if previous?.marks != next.marks || findMoved { redrawCode() }
+        if findMoved, let pair = currentMatchPair { scrollTo(pair: pair) }
         applyPendingReveal()
+    }
+
+    // MARK: Find
+
+    /// Recomputes the matches when the query or document changed and moves
+    /// to the asked-for one. True when what's highlighted changed.
+    private func updateFind(_ find: CodeFind?) -> Bool {
+        guard let doc = document else { return false }
+        let query = find?.query ?? ""
+        let key = "\(doc.id)\u{0}\(query)"
+        var changed = false
+        if matchesFor != key {
+            matchesFor = key
+            matches = findOrdered(query, in: doc)
+            changed = true
+            let count = matches.count
+            if let report = view?.onFindCount {
+                DispatchQueue.main.async { report(count) }
+            }
+        }
+        let current = matches.isEmpty ? nil : ((find?.index ?? 0) % matches.count + matches.count) % matches.count
+        if current != currentMatch || changed {
+            currentMatch = current
+            matchesByLine = [:]
+            for (i, m) in matches.enumerated() {
+                matchesByLine["\(m.side.rawValue):\(m.match.line)", default: []].append((m.match, i == current))
+            }
+            texts = [:]
+            return true
+        }
+        return false
+    }
+
+    /// Matches on the lines the rows show, top to bottom, old side first in a row.
+    private func findOrdered(_ query: String, in doc: ReviewCodeDocument) -> [(side: DiffSide, match: LineMatch)] {
+        guard !query.isEmpty else { return [] }
+        var found: [(pair: Int, side: DiffSide, match: LineMatch)] = []
+        for m in findMatches(query, in: doc.new.lines) {
+            if let pair = doc.newIndex[m.line] { found.append((pair, .right, m)) }
+        }
+        if let old = doc.old {
+            for m in findMatches(query, in: old.lines) {
+                guard let pair = doc.oldIndex[m.line] else { continue }
+                // A unified diff shows a shared line once, from the new side.
+                if doc.mode == .split || doc.pairs[pair].new == nil { found.append((pair, .left, m)) }
+            }
+        }
+        found.sort { ($0.pair, $0.side.rawValue, $0.match.start) < ($1.pair, $1.side.rawValue, $1.match.start) }
+        return Array(found.prefix(maxFindMatches)).map { ($0.side, $0.match) }
+    }
+
+    private var currentMatchPair: Int? {
+        guard let currentMatch, currentMatch < matches.count, let doc = document else { return nil }
+        let m = matches[currentMatch]
+        return doc.pairIndex(side: m.side, line: m.match.line)
     }
 
     /// Scrolls to an asked-for line once the view has its real width, since
@@ -237,6 +330,7 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
             if let i = doc.pairIndex(side: slot.side, line: slot.line) { keep.insert(i) }
         }
         if let line = view.reveal?.line, let i = doc.newIndex[line] { keep.insert(i) }
+        if let pair = currentMatchPair { keep.insert(pair) }
         let codeRows = view.folded && doc.mode != .file
             ? foldedRows(doc.pairs, keep: keep, reveals: reveals)
             : doc.pairs.indices.map { CodeRow.pair($0) }
@@ -324,7 +418,10 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
         lanes.first { $0.side == side } ?? lanes.first
     }
 
-    var allLanes: [CodeLane] { lanes }
+    /// Columns a line takes as drawn: a cut-off line counts to its marker.
+    private func drawnColumns(_ lines: CodeLines?, _ line: Int?) -> Int {
+        min(lines?.columns(line) ?? 0, maxDrawnColumns + tooLongMarker.count)
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
@@ -338,13 +435,13 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
             var wraps = 1
             switch doc.mode {
             case .file:
-                wraps = wrappedRows(columns: doc.new.columns(pair.new), perRow: lanes.first?.columns ?? 80)
+                wraps = wrappedRows(columns: drawnColumns(doc.new, pair.new), perRow: lanes.first?.columns ?? 80)
             case .unified:
-                let cols = pair.new != nil ? doc.new.columns(pair.new) : (doc.old?.columns(pair.old) ?? 0)
+                let cols = pair.new != nil ? drawnColumns(doc.new, pair.new) : drawnColumns(doc.old, pair.old)
                 wraps = wrappedRows(columns: cols, perRow: lanes.first?.columns ?? 80)
             case .split:
-                let left = wrappedRows(columns: doc.old?.columns(pair.old) ?? 0, perRow: lanes.first?.columns ?? 80)
-                let right = wrappedRows(columns: doc.new.columns(pair.new), perRow: lanes.last?.columns ?? 80)
+                let left = wrappedRows(columns: drawnColumns(doc.old, pair.old), perRow: lanes.first?.columns ?? 80)
+                let right = wrappedRows(columns: drawnColumns(doc.new, pair.new), perRow: lanes.last?.columns ?? 80)
                 wraps = max(left, right)
             }
             return CGFloat(wraps) * CodeMetrics.lineHeight
@@ -366,7 +463,8 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
             cell.needsDisplay = true
             return cell
         case .fold(let id, let hidden):
-            let cell = CodeHostRowView()
+            let cell = foldHosts[id] ?? CodeHostRowView()
+            foldHosts[id] = cell
             cell.setContent(AnyView(CodeFoldBar(hidden: hidden) { [weak self] how in self?.expand(fold: id, how) }),
                             frame: nil)
             return cell
@@ -450,21 +548,32 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
         guard let text = source?.line(line) else { return nil }
         let key = "\(side.rawValue):\(line)"
         if let cached = texts[key] { return cached }
-        let out = NSMutableAttributedString(string: text, attributes: CodeRowView.textAttributes)
+        let tooLong = (source?.columns(line) ?? 0) > maxDrawnColumns
+        let shown = tooLong ? String(text.utf16.prefix(utf16Offset(atColumn: maxDrawnColumns, in: text))) ?? text : text
+        let out = NSMutableAttributedString(string: drawableLine(shown), attributes: CodeRowView.textAttributes)
+        let length = out.length
         let spans = side == .left ? oldSpans : newSpans
         if let spans, line - 1 < spans.count {
-            let length = out.length
-            // A span can run over the "\r" the line lost, so it's clamped.
+            // A span can run past what's drawn (a cut-off line, the "\r" a
+            // line lost), so it's clamped.
             for span in spans[line - 1] where span.start < length {
                 out.addAttribute(.foregroundColor, value: CodeRowView.color(span.kind),
                                  range: NSRange(location: span.start, length: min(span.length, length - span.start)))
             }
         }
+        for found in matchesByLine[key] ?? [] where found.match.start < length {
+            let color = found.current ? NSColor.findHighlightColor : NSColor.systemYellow.withAlphaComponent(0.35)
+            out.addAttribute(.backgroundColor, value: color, range: NSRange(
+                location: found.match.start, length: min(found.match.length, length - found.match.start)))
+        }
+        if tooLong {
+            out.append(NSAttributedString(string: tooLongMarker, attributes: CodeRowView.markerAttributes))
+        }
         texts[key] = out
         return out
     }
 
-    func mark(newLine: Int?) -> CodeLineMark? {
+    func mark(newLine: Int?) -> ReviewLineMark? {
         guard let newLine else { return nil }
         return view?.marks[newLine]
     }
@@ -472,19 +581,25 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
     /// The report's notes on the line a row shows, for its hover text.
     func tooltip(row: Int) -> String? {
         guard let doc = document, row >= 0, row < rows.count, case .pair(let i) = rows[row] else { return nil }
-        return mark(newLine: doc.pairs[i].new)?.notes
+        return mark(newLine: doc.pairs[i].new)?.hover
     }
 
     // MARK: Reveal
 
     func scrollTo(line: Int) {
-        guard let table, let scroll, let doc = document else { return }
-        if let i = doc.newIndex[line], !rows.contains(.pair(i)) {
+        guard let doc = document,
+              let i = doc.newIndex[line] ?? doc.newIndex[max(1, min(line, doc.new.lines.count))] else { return }
+        scrollTo(pair: i)
+    }
+
+    /// Centres a pair's row, opening its fold first if it's hidden.
+    private func scrollTo(pair i: Int) {
+        guard let table, let scroll else { return }
+        if !rows.contains(.pair(i)) {
             rows = buildRows()
             table.reloadData()
         }
-        guard let i = doc.newIndex[line] ?? doc.newIndex[max(1, min(line, doc.new.lines.count))],
-              let row = rows.firstIndex(of: .pair(i)) else { return }
+        guard let row = rows.firstIndex(of: .pair(i)) else { return }
         let rect = table.rect(ofRow: row)
         let visible = scroll.contentView.bounds.height
         let y = max(0, min(rect.midY - visible / 2, table.bounds.height - visible))
@@ -558,10 +673,13 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
         popover = pop
         pop.show(relativeTo: anchor, of: table, preferredEdge: .maxY)
         let line = caret.side == .right ? caret.line : nil
-        Task { [weak self] in
+        symbolSearch?.cancel()
+        // A newer search, or the popover closing, makes this one's answer moot.
+        symbolSearch = Task { [weak self] in
             let outcome = await symbols.search(kind, word, line)
+            guard !Task.isCancelled, let self, self.popover === pop, pop.isShown else { return }
             if case .matches(let matches) = outcome, matches.count == 1 {
-                self?.popover?.close()
+                pop.close()
                 symbols.open(matches[0])
                 return
             }
@@ -577,6 +695,9 @@ final class CodeViewCoordinator: NSObject, NSTableViewDataSource, NSTableViewDel
         return NSRect(x: lane.textX, y: r.minY, width: 40, height: CodeMetrics.lineHeight)
     }
 }
+
+/// Ends a line drawn cut off at `maxDrawnColumns`; copying still copies all of it.
+let tooLongMarker = " … line too long to show in full"
 
 private struct CodeHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
@@ -610,8 +731,8 @@ final class CodeTableView: NSTableView {
         guard let coordinator else { return nil }
         let row = row(at: point)
         guard row >= 0 else { return nil }
-        guard let lane = coordinator.allLanes.first(where: { point.x >= $0.x && point.x < $0.x + $0.width })
-            ?? coordinator.allLanes.first else { return nil }
+        guard let lane = coordinator.lanes.first(where: { point.x >= $0.x && point.x < $0.x + $0.width })
+            ?? coordinator.lanes.first else { return nil }
         let spot: Spot
         if point.x < lane.actionsX { spot = .number }
         else if point.x < lane.actionsX + CodeMetrics.actionWidth {
@@ -822,6 +943,20 @@ final class CodeRowView: NSView {
         .font: CodeMetrics.font, .foregroundColor: NSColor.tertiaryLabelColor,
     ]
 
+    static let markerAttributes: [NSAttributedString.Key: Any] = [
+        .font: CodeMetrics.font, .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph,
+    ]
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        clipsToBounds = true
+    }
+
     static func color(_ kind: SyntaxTokenKind) -> NSColor {
         switch kind {
         case .keyword: return .systemPink
@@ -836,7 +971,7 @@ final class CodeRowView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let coordinator, let doc = coordinator.document, let i = pairIndex, i < doc.pairs.count else { return }
         let pair = doc.pairs[i]
-        let lanes = coordinator.allLanes
+        let lanes = coordinator.lanes
         let selection = coordinator.selection
         let mark = coordinator.mark(newLine: pair.new)
         for lane in lanes {
@@ -881,12 +1016,12 @@ final class CodeRowView: NSView {
                     NSColor.systemOrange.withAlphaComponent(0.10).setFill()
                     laneRect.fill()
                 }
-                if mark.notes != nil {
+                if mark.cited {
                     NSColor.systemOrange.withAlphaComponent(0.16).setFill()
                     laneRect.fill()
                 }
                 NSColor.systemOrange.setFill()
-                NSRect(x: lane.x, y: 0, width: mark.notes != nil ? 3 : 2, height: bounds.height).fill()
+                NSRect(x: lane.x, y: 0, width: mark.cited ? 3 : 2, height: bounds.height).fill()
             }
 
             // Numbers: old and new in a unified lane, one otherwise.
@@ -942,6 +1077,16 @@ final class CodeHostRowView: NSView {
     private var placement: (x: CGFloat, width: CGFloat)?
 
     override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        clipsToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        clipsToBounds = true
+    }
 
     func setContent(_ view: AnyView, frame: (CGFloat, CGFloat)?) {
         placement = frame.map { (x: $0.0, width: $0.1) }

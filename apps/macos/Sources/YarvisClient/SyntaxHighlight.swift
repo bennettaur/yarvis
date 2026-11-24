@@ -277,7 +277,7 @@ private struct LanguageSpec {
             return LanguageSpec(blockComments: [("<!--", "-->")], backslashEscapes: false, literals: [],
                                 identifierExtras: [45], tags: true)
         case "markdown":
-            return LanguageSpec(quotes: [], multilineQuotes: ["```", "`"], backslashEscapes: false, literals: [],
+            return LanguageSpec(quotes: ["`"], multilineQuotes: ["```"], backslashEscapes: false, literals: [],
                                 headingPrefix: "#")
         default:
             return nil

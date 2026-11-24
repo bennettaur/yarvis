@@ -41,7 +41,8 @@ struct ReviewWorkspaceView: View {
                 .padding(.vertical, 6)
                 .background(Color.red.opacity(0.08))
             }
-            ReviewSplitView(ratio: $model.navRatio, minRatio: ReviewWorkspaceModel.minNavRatio, maxRatio: 0.5) {
+            ReviewSplitView(ratio: $model.navRatio, minRatio: ReviewWorkspaceModel.minNavRatio, maxRatio: 0.5,
+                            onDragEnd: model.saveNavRatio) {
                 ReviewNavView(model: model)
             } trailing: {
                 VStack(spacing: 0) {
@@ -64,7 +65,10 @@ struct ReviewWorkspaceView: View {
                 ReviewSetupSheet(workspace: model, pr: pr)
             }
         }
-        .onAppear { keys = ReviewKeyMonitor(model: model) }
+        .onAppear {
+            keys?.stop()
+            keys = ReviewKeyMonitor(model: model)
+        }
         .onDisappear {
             keys?.stop()
             keys = nil
@@ -142,6 +146,8 @@ struct ReviewSplitView<Leading: View, Trailing: View>: View {
     @Binding var ratio: Double
     var minRatio = 0.2
     var maxRatio = 0.8
+    /// Called once a drag ends, so the ratio is saved once rather than per step.
+    var onDragEnd: () -> Void = {}
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let trailing: () -> Trailing
     @State private var dragStart: Double?
@@ -162,7 +168,10 @@ struct ReviewSplitView<Leading: View, Trailing: View>: View {
                             dragStart = start
                             ratio = min(max(start + drag.translation.width / width, minRatio), maxRatio)
                         }
-                        .onEnded { _ in dragStart = nil })
+                        .onEnded { _ in
+                            dragStart = nil
+                            onDragEnd()
+                        })
                 trailing().frame(maxWidth: .infinity)
             }
         }
@@ -175,7 +184,8 @@ struct ReviewSplitView<Leading: View, Trailing: View>: View {
 @MainActor
 final class ReviewKeyMonitor {
     private weak var model: ReviewWorkspaceModel?
-    private var monitor: Any?
+    // Read in deinit, which isn't on the main actor; only the main actor writes it.
+    nonisolated(unsafe) private var monitor: Any?
 
     init(model: ReviewWorkspaceModel) {
         self.model = model
@@ -192,22 +202,24 @@ final class ReviewKeyMonitor {
         monitor = nil
     }
 
+    deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+    }
+
     private func handle(_ event: NSEvent) -> Bool {
         guard let model, !model.stopped, model.page.app.section == .review, model.page.workspace === model,
               let window = event.window, window.isKeyWindow, window.attachedSheet == nil,
               window === (NSApp.mainWindow ?? window) else { return false }
         let flags = event.modifierFlags
-        let key: ReviewShortcut.Press.Key
-        switch event.keyCode {
-        case 48: key = .tab
-        case 123: key = .left
-        case 124: key = .right
-        default: key = .character(event.charactersIgnoringModifiers?.lowercased() ?? "")
-        }
+        let key = ReviewShortcut.key(keyCode: event.keyCode, characters: event.charactersIgnoringModifiers)
         let press = ReviewShortcut.Press(key, command: flags.contains(.command), control: flags.contains(.control),
                                          option: flags.contains(.option), shift: flags.contains(.shift))
         guard let shortcut = ReviewShortcut.resolve(press) else { return false }
-        if shortcut.yieldsToTextEntry && Self.isTextEntry(window.firstResponder) { return false }
+        if shortcut.yieldsToTextEntry && Self.isTextEntry(window.firstResponder) {
+            // Cmd-W would fall through to File › Close and close the window
+            // mid-sentence, so it does nothing while a review tab is open.
+            return shortcut == .closeTab && model.layout.activeTab != nil
+        }
         switch shortcut {
         case .nextTab: model.cycleTab(forward: true)
         case .prevTab: model.cycleTab(forward: false)

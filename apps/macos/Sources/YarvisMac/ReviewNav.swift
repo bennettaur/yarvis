@@ -8,7 +8,7 @@ struct ReviewNavView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 if model.prs.isEmpty {
                     Text("Paste a PR link above to start reviewing.").font(.callout).foregroundStyle(.secondary)
                 }
@@ -82,7 +82,7 @@ private struct ReviewNavPrGroup: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if let status = cloneStatusText(pr.pr, lastLog: model.cloneLogs[pr.prId]) {
+            if let status = cloneStatusText(pr.pr, lastLog: pr.cloneLog) {
                 let failed = pr.pr.status == "error" || pr.pr.worktreeStatus == "error"
                 Text(status)
                     .font(.caption)
@@ -96,8 +96,6 @@ private struct ReviewNavPrGroup: View {
         .overlay(alignment: .leading) { Rectangle().fill(color).frame(width: 2) }
         .onAppear(perform: load)
         .onChange(of: pr.pr.headSha) { _, _ in load() }
-        // The commits it marks as new are counted from the last review.
-        .onChange(of: pr.lastReview.value) { _, _ in pr.loadCommits(force: true) }
     }
 
     private func load() {
@@ -112,9 +110,9 @@ private struct ReviewNavPrGroup: View {
     @ViewBuilder
     private var content: some View {
         let active = model.layout.activeTab
-        let detail = pr.detail.value
-        let openThreads = (detail?.reviewThreads ?? []).filter { !$0.isResolved }.count
-        let newCommits = (pr.commits.value?.commits ?? []).filter(\.isNew).count
+        let activeKind = active?.prId == pr.prId ? active?.kind : nil
+        let openThreads = pr.openThreadCount
+        let newCommits = pr.newCommitCount
         ForEach(Self.items, id: \.self) { kind in
             let badge: String? = kind == .comments && openThreads > 0 ? "\(openThreads)"
                 : kind == .sinceReview && newCommits > 0 ? "\(newCommits) new" : nil
@@ -126,7 +124,7 @@ private struct ReviewNavPrGroup: View {
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(active?.prId == pr.prId && active?.kind == kind ? Color.accentColor.opacity(0.2) : .clear,
+                .background(activeKind == kind ? Color.accentColor.opacity(0.2) : .clear,
                             in: RoundedRectangle(cornerRadius: 4))
                 .contentShape(Rectangle())
             }
@@ -140,7 +138,8 @@ private struct ReviewNavPrGroup: View {
                 .foregroundStyle(.orange)
         }
         DisclosureGroup(isExpanded: $filesOpen) {
-            ReviewChangedFilesTree(model: model, pr: pr)
+            ReviewChangedFilesTree(model: model, pr: pr,
+                                   activePath: activeKind == .diff ? active?.path : nil)
         } label: {
             sectionLabel("Changed files", count: pr.changedFiles.value?.files.count)
         }
@@ -168,21 +167,14 @@ private struct ReviewNavPrGroup: View {
     ]
 }
 
-func fileStatusColor(_ status: String) -> Color {
-    switch status {
-    case "added": return .green
-    case "deleted": return .red
-    case "renamed": return .cyan
-    default: return .orange
-    }
-}
-
 private struct ReviewChangedFilesTree: View {
     @Bindable var model: ReviewWorkspaceModel
     let pr: ReviewPrModel
+    let activePath: String?
+    @State private var toggled: Set<String> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             if pr.detail.value == nil && pr.detail.loading && pr.changedFiles.value == nil {
                 Text("Fetching the pull request…").font(.caption).foregroundStyle(.secondary)
             }
@@ -193,10 +185,24 @@ private struct ReviewChangedFilesTree: View {
                     Text("No file changes.").font(.caption).foregroundStyle(.secondary)
                 } else {
                     summary(files)
-                    let byPath = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
-                    ForEach(buildFileTree(files.map(\.path))) { node in
-                        ReviewFileTreeRows(node: node, depth: 0) { path in
-                            byPath[path].map { ReviewChangedFileRow(model: model, pr: pr, file: $0) }
+                    let viewed = pr.viewed
+                    ForEach(visibleTreeRows(pr.fileTree, startsOpen: true, toggled: toggled)) { row in
+                        if row.node.isFolder {
+                            ReviewFolderRow(name: row.node.name, depth: row.depth, open: !toggled.contains(row.id)) {
+                                toggled.formSymmetricDifference([row.id])
+                            }
+                        } else if let file = pr.changedByPath[row.id] {
+                            let prId = pr.prId
+                            ReviewChangedFileRow(
+                                file: file, depth: row.depth, viewed: viewed?.contains(file.path),
+                                mustReadReason: pr.mustReadByPath[file.path]?.reason,
+                                comments: pr.commentCounts[file.path] ?? 0,
+                                hasOpenThreads: pr.openThreadPaths.contains(file.path),
+                                active: activePath == file.path,
+                                setViewed: { [pr] in pr.setViewed(file.path, $0) },
+                                open: { [model] in model.openTab(.diff(prId: prId, path: file.path)) }
+                            )
+                            .equatable()
                         }
                     }
                 }
@@ -210,7 +216,7 @@ private struct ReviewChangedFilesTree: View {
     @ViewBuilder
     private func summary(_ files: [ReviewChangedFile]) -> some View {
         let viewed = pr.viewed.map { v in files.filter { v.contains($0.path) }.count }
-        let mustRead = pr.checklist.value?.report?.mustRead?.count ?? 0
+        let mustRead = pr.mustReadByPath.count
         HStack(spacing: 8) {
             if let viewed { Text("\(viewed)/\(files.count) viewed") }
             if mustRead > 0 { Text("★ \(mustRead) must read").foregroundStyle(.orange) }
@@ -220,60 +226,56 @@ private struct ReviewChangedFilesTree: View {
     }
 }
 
-/// A folder tree whose folders start open; `file` draws each file row.
-private struct ReviewFileTreeRows<Row: View>: View {
-    let node: FileTreeNode
+private struct ReviewFolderRow: View {
+    let name: String
     let depth: Int
-    var startsOpen = true
-    @ViewBuilder let file: (String) -> Row?
-    @State private var open: Bool?
+    let open: Bool
+    let toggle: () -> Void
 
     var body: some View {
-        if let children = node.children {
-            VStack(alignment: .leading, spacing: 1) {
-                Button { open = !(open ?? startsOpen) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: (open ?? startsOpen) ? "chevron.down" : "chevron.right").font(.caption2)
-                        Text(node.name).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .padding(.leading, CGFloat(depth) * 10)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                // Built only once opened: a whole repository is far more rows than to build up front.
-                if open ?? startsOpen {
-                    ForEach(children) { child in
-                        ReviewFileTreeRows(node: child, depth: depth + 1, startsOpen: startsOpen, file: file)
-                    }
-                }
+        Button(action: toggle) {
+            HStack(spacing: 4) {
+                Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2)
+                Text(name).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
-        } else {
-            file(node.path).padding(.leading, CGFloat(depth) * 10)
+            .padding(.leading, CGFloat(depth) * 10)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 }
 
-private struct ReviewChangedFileRow: View {
-    @Bindable var model: ReviewWorkspaceModel
-    let pr: ReviewPrModel
+/// Takes plain values rather than reading the models, so a change to one
+/// file's state redraws that row and not the whole tree.
+private struct ReviewChangedFileRow: View, Equatable {
     let file: ReviewChangedFile
+    let depth: Int
+    let viewed: Bool?
+    let mustReadReason: String?
+    let comments: Int
+    let hasOpenThreads: Bool
+    let active: Bool
+    let setViewed: (Bool) -> Void
+    let open: () -> Void
+
+    nonisolated static func == (a: Self, b: Self) -> Bool {
+        a.file == b.file && a.depth == b.depth && a.viewed == b.viewed && a.mustReadReason == b.mustReadReason
+            && a.comments == b.comments && a.hasOpenThreads == b.hasOpenThreads && a.active == b.active
+    }
 
     var body: some View {
-        let viewed = pr.viewed?.contains(file.path)
-        let mustRead = pr.checklist.value?.report?.mustRead?.first { $0.path == file.path }
-        let threads = pr.detail.value?.reviewThreads ?? []
-        let count = navCommentCounts(threads)[file.path] ?? 0
-        let active = model.layout.activeTab
+        let (letter, color) = changeLetter(file.status)
         HStack(spacing: 4) {
-            Toggle("", isOn: Binding(get: { viewed ?? false }, set: { pr.setViewed(file.path, $0) }))
+            Toggle("", isOn: Binding(get: { viewed ?? false }, set: { setViewed($0) }))
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .disabled(viewed == nil)
                 .help("Viewed")
-            Text(fileStatusLetter(file.status))
+            Text(letter)
                 .font(.caption2.monospaced().weight(.bold))
-                .foregroundStyle(fileStatusColor(file.status))
-            Button { model.openTab(.diff(prId: pr.prId, path: file.path)) } label: {
+                .foregroundStyle(color)
+            Button(action: open) {
                 Text(file.path.split(separator: "/").last.map(String.init) ?? file.path)
                     .font(.caption)
                     .lineLimit(1)
@@ -282,21 +284,20 @@ private struct ReviewChangedFileRow: View {
             }
             .buttonStyle(.plain)
             .help(file.oldPath.map { "\($0) → \(file.path)" } ?? file.path)
-            if let mustRead {
-                Text("★").font(.caption).foregroundStyle(.orange).help("Must read: \(mustRead.reason)")
+            if let mustReadReason {
+                Text("★").font(.caption).foregroundStyle(.orange).help("Must read: \(mustReadReason)")
             }
-            if count > 0 {
-                let open = navOpenThreadPaths(threads).contains(file.path)
-                Label("\(count)", systemImage: "text.bubble")
+            if comments > 0 {
+                Label("\(comments)", systemImage: "text.bubble")
                     .font(.caption2)
-                    .foregroundStyle(open ? .orange : .secondary)
-                    .help(open ? "Has open comments" : "Comments")
+                    .foregroundStyle(hasOpenThreads ? .orange : .secondary)
+                    .help(hasOpenThreads ? "Has open comments" : "Comments")
             }
         }
         .opacity(viewed == true ? 0.55 : 1)
         .padding(.horizontal, 2)
-        .background(active?.kind == .diff && active?.prId == pr.prId && active?.path == file.path
-            ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 3))
+        .padding(.leading, CGFloat(depth) * 10)
+        .background(active ? Color.accentColor.opacity(0.2) : .clear, in: RoundedRectangle(cornerRadius: 3))
     }
 }
 
@@ -305,7 +306,7 @@ private struct ReviewCommitsList: View {
     let pr: ReviewPrModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
+        LazyVStack(alignment: .leading, spacing: 1) {
             if let error = pr.commits.error, pr.commits.value == nil {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else if let commits = pr.commits.value {
@@ -337,27 +338,31 @@ private struct ReviewAllFilesTree: View {
     @Bindable var model: ReviewWorkspaceModel
     let pr: ReviewPrModel
     @State private var query = ""
+    /// Folders start closed: a whole repository is far more rows than to build up front.
+    @State private var toggled: Set<String> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        LazyVStack(alignment: .leading, spacing: 2) {
             if let error = pr.tree.error, pr.tree.value == nil {
                 Text(error).font(.caption).foregroundStyle(.red)
             } else if let paths = pr.tree.value?.paths {
-                let changed = Set(pr.changedFiles.value?.files.map(\.path) ?? [])
                 TextField("Filter \(paths.count) files…", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
                 if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                    ForEach(buildFileTree(paths)) { node in
-                        ReviewFileTreeRows(node: node, depth: 0, startsOpen: false) { path in
-                            row(path, label: path.split(separator: "/").last.map(String.init) ?? path,
-                                changed: changed.contains(path))
+                    ForEach(visibleTreeRows(pr.allFilesTree, startsOpen: false, toggled: toggled)) { row in
+                        if row.node.isFolder {
+                            ReviewFolderRow(name: row.node.name, depth: row.depth, open: toggled.contains(row.id)) {
+                                toggled.formSymmetricDifference([row.id])
+                            }
+                        } else {
+                            fileRow(row.id, label: row.node.name).padding(.leading, CGFloat(row.depth) * 10)
                         }
                     }
                 } else {
                     let matches = filterPaths(paths, query: query)
                     if matches.isEmpty { Text("No matches.").font(.caption).foregroundStyle(.secondary) }
-                    ForEach(matches, id: \.self) { path in row(path, label: path, changed: changed.contains(path)) }
+                    ForEach(matches, id: \.self) { path in fileRow(path, label: path) }
                     if matches.count >= 200 {
                         Text("First 200 shown; keep typing to narrow.").font(.caption2).foregroundStyle(.secondary)
                     }
@@ -369,8 +374,9 @@ private struct ReviewAllFilesTree: View {
         .onAppear { pr.loadTree() }
     }
 
-    private func row(_ path: String, label: String, changed: Bool) -> some View {
-        Button {
+    private func fileRow(_ path: String, label: String) -> some View {
+        let changed = pr.changedByPath[path] != nil
+        return Button {
             model.openTab(changed ? .diff(prId: pr.prId, path: path) : .file(prId: pr.prId, path: path))
         } label: {
             HStack(spacing: 4) {

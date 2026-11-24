@@ -56,22 +56,22 @@ private func isHidden(_ s: Unicode.Scalar) -> Bool {
     }
 }
 
+/// Not `clipboardSafeText`: that drops every control character, newlines
+/// and tabs included, which the report's prose and code blocks need.
 private func stripHidden(_ text: String) -> String {
-    var out = String.UnicodeScalarView()
-    out.append(contentsOf: text.unicodeScalars.filter { !isHidden($0) })
-    return String(out)
+    String(String.UnicodeScalarView(text.unicodeScalars.filter { !isHidden($0) }))
 }
 
 /// A field meant to be one line, so a newline in it can't start a heading of its own.
 private func line(_ text: String) -> String {
-    text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+    oneLine(stripHidden(text))
 }
 
 /// Prose as a Markdown quote, `pad` deep, so a line in it that starts with
 /// `#` or `---` stays inside the quote.
 private func quoted(_ text: String, _ pad: String = "") -> String {
-    let normal = text.replacingOccurrences(of: "\r\n?|[\u{2028}\u{2029}]", with: "\n", options: .regularExpression)
+    let normal = stripHidden(text)
+        .replacingOccurrences(of: "\r\n?|[\u{2028}\u{2029}]", with: "\n", options: .regularExpression)
         .trimmingCharacters(in: .whitespacesAndNewlines)
     let joined = normal.components(separatedBy: "\n").map { trimEnd("\(pad)> \($0)") }.joined(separator: "\n")
     return joined.range(of: #"^\s*>$"#, options: .regularExpression) != nil ? "" : joined
@@ -83,16 +83,20 @@ private func trimEnd(_ s: String) -> String {
     return s
 }
 
+/// Counted over scalars, so a backtick that a combining mark joins into one
+/// `Character` still counts.
 private func longestBacktickRun(_ text: String) -> Int {
     var longest = 0, run = 0
-    for c in text {
+    for c in text.unicodeScalars {
         run = c == "`" ? run + 1 : 0
         longest = max(longest, run)
     }
     return longest
 }
 
-/// Inline code in more backticks than any run inside it, so a backtick in a path can't close it.
+/// Inline code in more backticks than any run inside it, so a backtick in a
+/// path can't close it. Hidden characters go first: one between two backticks
+/// would hide a run the fence must outgrow once it is stripped.
 private func code(_ text: String) -> String {
     let value = line(text)
     let ticks = String(repeating: "`", count: longestBacktickRun(value) + 1)
@@ -102,8 +106,9 @@ private func code(_ text: String) -> String {
 
 /// A block fenced longer than any backtick run inside it.
 private func fenced(_ text: String, _ lang: String = "") -> String {
-    let fence = String(repeating: "`", count: max(2, longestBacktickRun(text)) + 1)
-    return "\(fence)\(lang)\n\(text)\n\(fence)"
+    let body = stripHidden(text)
+    let fence = String(repeating: "`", count: max(2, longestBacktickRun(body)) + 1)
+    return "\(fence)\(lang)\n\(body)\n\(fence)"
 }
 
 /// A table cell: one line, with pipes and backslashes escaped so it can't add columns.

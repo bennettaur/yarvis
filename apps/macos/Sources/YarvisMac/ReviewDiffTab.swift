@@ -15,9 +15,7 @@ struct ReviewDiffTab: View {
         Group {
             if let changed = pr.changedFiles.value {
                 if let file = changed.files.first(where: { $0.path == path }) {
-                    ReviewChangedFileDiff(context: context, spec: spec, file: file,
-                                          order: changedFileOrder(changed.files))
-                        .id(path)
+                    ReviewChangedFileDiff(context: context, spec: spec, file: file).id(path)
                 } else {
                     ReviewFileTab(context: context, spec: spec)
                 }
@@ -38,15 +36,17 @@ private struct ReviewChangedFileDiff: View {
     let context: ReviewTabContext
     let spec: ReviewTabSpec
     let file: ReviewChangedFile
-    let order: [String]
 
     @State private var wholeFile = false
+    @State private var find = ReviewFindState()
     @State private var reveal = ReviewRevealState()
     @State private var document: ReviewCodeDocument?
     @State private var head: ReviewFileContent?
     @State private var base: ReviewFileContent?
     @State private var loadError: String?
     @State private var attempt = 0
+    /// Why the bytes differ when no line does (line endings, final newline).
+    @State private var invisibleNote: String?
 
     private var path: String { file.path }
     private var hasBase: Bool { file.status != "added" }
@@ -56,7 +56,8 @@ private struct ReviewChangedFileDiff: View {
 
     var body: some View {
         let pr = context.pr
-        let notes = fileNotes(report, path: path)
+        // A hidden tab skips the per-render work; the code view keeps what it showed.
+        let notes = context.isActive ? fileNotes(report, path: path) : []
         let annotations = ReviewFileAnnotations(context: context, path: path, headContent: head?.content ?? "",
                                                 canComment: true)
         VStack(spacing: 0) {
@@ -66,9 +67,11 @@ private struct ReviewChangedFileDiff: View {
                 ReviewReportNotes(reason: mustRead?.reason, notes: notes) { reveal.jump($0) }
                 Divider()
             }
+            if find.shown { ReviewFindBar(state: $find) }
             ReviewAnnotationBar(annotations: annotations, error: pr.viewedError)
             content(annotations, notes: notes)
         }
+        .reviewFindShortcut($find, enabled: context.isActive && document != nil)
         .onAppear {
             pr.loadDetail()
             pr.loadInsights()
@@ -85,7 +88,7 @@ private struct ReviewChangedFileDiff: View {
         let pr = context.pr
         let viewed = pr.viewed ?? []
         let isViewed = viewed.contains(path)
-        let next = nextUnviewed(order: order, after: path, viewed: viewed)
+        let next = nextUnviewed(order: pr.fileOrder, after: path, viewed: viewed)
         let status = reviewFileStatus(file.status)
         HStack(spacing: 10) {
             Group {
@@ -144,16 +147,30 @@ private struct ReviewChangedFileDiff: View {
             ReviewCodeNote(text: "Binary file — no text diff to show.")
         } else if base?.tooLarge == true || head?.tooLarge == true {
             ReviewCodeNote(text: "This file is too large to show here (\(file.additions) additions, \(file.deletions) deletions).")
+        } else if let document, document.new.lines.isEmpty && (document.old?.lines.isEmpty ?? true) {
+            ReviewCodeNote(text: "This file is empty.")
         } else if let document {
+            if let note = invisibleNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+            }
             ReviewCodeView(
                 document: document,
                 folded: !wholeFile,
-                slots: annotations.slots,
-                marks: reviewLineMarks(mustRead: mustRead, notes: notes),
+                slots: context.isActive ? annotations.slots : [],
+                marks: context.isActive ? reviewLineMarks(mustRead: mustRead, notes: notes) : [:],
                 reveal: reveal.reveal,
                 annotation: { annotations.view(for: $0) },
                 onLineAction: { annotations.perform($0) },
-                symbols: reviewCodeSymbols(context, path: path))
+                symbols: reviewCodeSymbols(context, path: path),
+                find: find.codeFind,
+                onFindCount: { find.count = $0 },
+                active: context.isActive)
         } else if let loadError {
             ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
         } else {
@@ -176,27 +193,15 @@ private struct ReviewChangedFileDiff: View {
             let newKey = ReviewCodeReads.fileKey(context, path: path, side: .head)
             let split = context.diffMode == .split
             let (old, new, path) = (b?.content ?? "", h?.content ?? "", path)
-            document = await ReviewCodeCache.shared.document("\(oldKey)|\(newKey)|\(split)") {
+            let built = await ReviewCodeCache.shared.document("\(oldKey)|\(newKey)|\(split)") {
                 .diff(oldKey: oldKey, old: old, newKey: newKey, new: new, path: path, split: split)
             }
+            invisibleNote = built.pairs.contains(where: \.changed) ? nil : invisibleChangeNote(old: old, new: new)
+            document = built
         } catch {
             loadError = error.localizedDescription
         }
     }
-}
-
-/// The report's must-read range and the lines its notes cite, for the
-/// code view to tint, with the notes as the line's hover text.
-func reviewLineMarks(mustRead: VerificationMustRead?, notes: [FileNote]) -> [Int: CodeLineMark] {
-    var marks: [Int: CodeLineMark] = [:]
-    if let lines = mustRead?.lines, lines.start <= lines.end {
-        for line in lines.start...min(lines.end, lines.start + 5_000) { marks[line, default: CodeLineMark()].mustRead = true }
-    }
-    for note in notes {
-        let existing = marks[note.line]?.notes
-        marks[note.line, default: CodeLineMark()].notes = existing.map { $0 + "\n" + note.hoverText } ?? note.hoverText
-    }
-    return marks
 }
 
 /// Why the verification report wants this file read, and what its checks
@@ -237,6 +242,7 @@ struct ReviewFileTab: View {
     let spec: ReviewTabSpec
 
     @State private var reveal = ReviewRevealState()
+    @State private var find = ReviewFindState()
     @State private var document: ReviewCodeDocument?
     @State private var head: ReviewFileContent?
     @State private var loadError: String?
@@ -262,6 +268,7 @@ struct ReviewFileTab: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             Divider()
+            if find.shown { ReviewFindBar(state: $find) }
             ReviewAnnotationBar(annotations: annotations)
             if pr.pr.headSha == nil {
                 ReviewCodeNote(text: "The pull request is still being fetched.")
@@ -269,20 +276,26 @@ struct ReviewFileTab: View {
                 ReviewCodeNote(text: "Binary file — nothing to show.")
             } else if let head, head.tooLarge {
                 ReviewCodeNote(text: "This file is too large to show here (\(Int((Double(head.size) / 1024).rounded())) KB).")
+            } else if let document, document.new.lines.isEmpty {
+                ReviewCodeNote(text: "This file is empty.")
             } else if let document {
                 ReviewCodeView(
                     document: document,
-                    slots: annotations.slots,
+                    slots: context.isActive ? annotations.slots : [],
                     reveal: reveal.reveal,
                     annotation: { annotations.view(for: $0) },
                     onLineAction: { annotations.perform($0) },
-                    symbols: reviewCodeSymbols(context, path: path))
+                    symbols: reviewCodeSymbols(context, path: path),
+                    find: find.codeFind,
+                    onFindCount: { find.count = $0 },
+                    active: context.isActive)
             } else if let loadError {
                 ReviewCodeNote(text: loadError, error: true) { attempt += 1 }
             } else {
                 ReviewCodeNote(text: "Loading file…", loading: true)
             }
         }
+        .reviewFindShortcut($find, enabled: context.isActive && document != nil)
         .onAppear {
             pr.loadChangedFiles()
             pr.loadDetail()

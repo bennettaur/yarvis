@@ -3,7 +3,7 @@ import YarvisClient
 
 /// The comparison with the last review for one PR, kept across tab switches.
 @MainActor @Observable
-final class ReviewSinceReviewModel {
+final class ReviewSinceReviewModel: ReviewTabModel {
     private let client: YarvisClient
     let workspaceId: String
     let prId: String
@@ -15,6 +15,7 @@ final class ReviewSinceReviewModel {
     private(set) var marking = false
     var markError: String?
     private var generation = 0
+    private var tasks: [String: Task<Void, Never>] = [:]
 
     init(client: YarvisClient, workspaceId: String, prId: String) {
         self.client = client
@@ -31,14 +32,15 @@ final class ReviewSinceReviewModel {
         let generation = generation
         loading = true
         error = nil
-        Task {
+        tasks["load"]?.cancel()
+        tasks["load"] = Task {
             do {
                 let next = try await client.sinceReview(workspaceId: workspaceId, prId: prId, from: from)
                 guard generation == self.generation else { return }
                 since = next
             } catch {
                 guard generation == self.generation else { return }
-                self.error = reviewErrorText(error)
+                self.error = error.localizedDescription
                 sinceFrom = nil
             }
             loading = false
@@ -46,17 +48,26 @@ final class ReviewSinceReviewModel {
     }
 
     func markReviewed(_ pr: ReviewPrModel) {
+        guard !marking else { return }
         marking = true
         markError = nil
-        Task {
+        tasks["mark"] = Task {
             do {
                 _ = try await client.markReviewedHere(workspaceId: workspaceId, prId: prId)
                 pr.invalidateLastReview()
             } catch {
-                markError = reviewErrorText(error)
+                markError = error.localizedDescription
             }
             marking = false
         }
+    }
+
+    func stop() {
+        for task in tasks.values { task.cancel() }
+        tasks = [:]
+        sinceFrom = nil
+        loading = false
+        marking = false
     }
 }
 
@@ -67,7 +78,7 @@ struct ReviewSinceReviewTab: View {
     private var pr: ReviewPrModel { context.pr }
 
     private var model: ReviewSinceReviewModel {
-        ReviewTabModels.get(context) {
+        context.workspace.tabModels.get(pr.prId) {
             ReviewSinceReviewModel(client: context.client, workspaceId: pr.workspaceId, prId: pr.prId)
         }
     }
@@ -135,7 +146,7 @@ struct ReviewSinceReviewTab: View {
     @ViewBuilder private func main(_ model: ReviewSinceReviewModel, _ since: SinceReview, _ last: LastReview) -> some View {
         Text("Since your last review").font(.headline)
         if let mark = last.mark {
-            Text("You reviewed \(reportSha(mark.headSha)) \(markSourceText(mark, ref: pr.ref)) \(reviewRelativeTime(mark.createdAt)); the checkout is at \(reportSha(pr.pr.headSha)).")
+            Text("You reviewed \(reportSha(mark.headSha)) \(markSourceText(mark, ref: pr.ref)) \(longAgo(mark.createdAt)); the checkout is at \(reportSha(pr.pr.headSha)).")
                 .font(.callout)
         }
         Text(sinceSummaryLine(since)).font(.callout).foregroundStyle(.secondary)
@@ -212,7 +223,7 @@ struct ReviewSinceReviewTab: View {
             if let from = c.rebasedFrom { Chip(text: "rebased", help: "Same change as \(from)") }
             Spacer()
             Text(c.author).foregroundStyle(.secondary)
-            Text(reviewRelativeTime(c.date)).foregroundStyle(.secondary)
+            Text(longAgo(c.date)).foregroundStyle(.secondary)
         }
         .font(.caption)
         .contentShape(Rectangle())

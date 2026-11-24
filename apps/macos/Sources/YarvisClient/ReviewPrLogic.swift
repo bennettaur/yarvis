@@ -35,7 +35,8 @@ public func parsePrLink(_ href: String) -> PrRef? {
     // `percentEncodedPath` split before decoding, so an encoded `/` stays in its segment.
     var parts: [String] = []
     for segment in url.percentEncodedPath.split(separator: "/") {
-        guard let decoded = String(segment).removingPercentEncoding else { return nil }
+        // A name of `.` or `..` would walk the sidecar route it lands in.
+        guard let decoded = String(segment).removingPercentEncoding, !isDotSegment(decoded) else { return nil }
         parts.append(decoded)
     }
     func positive(_ s: String?) -> Int? {
@@ -65,6 +66,8 @@ public func parsePrLink(_ href: String) -> PrRef? {
     return nil
 }
 
+private func isDotSegment(_ s: String) -> Bool { s == "." || s == ".." }
+
 /// The PRs a locator input could mean: a GitHub or Azure link,
 /// `owner/repo#123` (or ` 123`, `/123`), or `repo#123` resolved against the
 /// registered repos. Empty when nothing was recognized; several when a bare
@@ -74,17 +77,18 @@ public func resolvePrLocator(_ input: String, knownRepos: [KnownRepo] = []) -> [
     let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return [] }
     if let m = firstMatch("^(?:https?://)?(?:www\\.)?github\\.com/(\(ownerPattern))/(\(repoPattern))/pull/(\\d+)",
-                          trimmed, caseInsensitive: true), let n = Int(m[3]) {
+                          trimmed, caseInsensitive: true), let n = Int(m[3]), !isDotSegment(m[2]) {
         return [.github(owner: m[1], repo: m[2], number: n)]
     }
     // A link typed by hand may have no scheme. GitHub links matched above,
     // so this only picks up Azure ones.
     let hasScheme = trimmed.range(of: "^https?://", options: [.regularExpression, .caseInsensitive]) != nil
     if let ref = parsePrLink(hasScheme ? trimmed : "https://\(trimmed)"), case .azure = ref { return [ref] }
-    if let m = firstMatch("^(\(ownerPattern))/(\(repoPattern))(?:/|#|\\s+)#?(\\d+)$", trimmed), let n = Int(m[3]) {
+    if let m = firstMatch("^(\(ownerPattern))/(\(repoPattern))(?:/|#|\\s+)#?(\\d+)$", trimmed), let n = Int(m[3]),
+       !isDotSegment(m[2]) {
         return [.github(owner: m[1], repo: m[2], number: n)]
     }
-    if let m = firstMatch("^(\(repoPattern))(?:#|\\s+)#?(\\d+)$", trimmed), let n = Int(m[2]) {
+    if let m = firstMatch("^(\(repoPattern))(?:#|\\s+)#?(\\d+)$", trimmed), let n = Int(m[2]), !isDotSegment(m[1]) {
         let name = m[1].lowercased()
         return knownRepos.filter { $0.repo.lowercased() == name }.map { .github(owner: $0.owner, repo: $0.repo, number: n) }
     }
@@ -121,9 +125,7 @@ public func derivePrUiStatus(_ detail: PrDetail?, fallbackState: String = "open"
     if state == "closed" || state == "abandoned" { return .closed }
     let checks = detail?.checks ?? []
     // A completed check with no conclusion counts as failing.
-    if checks.contains(where: { $0.status == "COMPLETED" && !passingConclusions.contains(($0.conclusion ?? "").uppercased()) }) {
-        return .ciFailing
-    }
+    if checks.contains(where: { checkTone($0) == .failed }) { return .ciFailing }
     if detail?.draft ?? fallbackDraft { return .draft }
     if !checks.contains(where: { $0.status != "COMPLETED" }) && detail?.mergeable == "MERGEABLE" { return .readyToMerge }
     return .awaitingReview
@@ -339,8 +341,8 @@ public func needsSetupAnswer(_ pr: ReviewWorkspacePr) -> Bool {
     pr.worktreeStatus == "ready" && pr.setupConsent == nil && pr.setupStatus == nil
 }
 
-/// "3h ago" for the list.
-public func reviewOpenedAgo(_ iso: String?, now: Date = Date()) -> String {
+/// "3h ago": the short form, for the workspace list.
+public func shortAgo(_ iso: String?, now: Date = Date()) -> String {
     guard let iso, let date = parseISODate(iso) else { return "never opened" }
     let minutes = Int((now.timeIntervalSince(date) / 60).rounded())
     if minutes < 1 { return "just now" }
@@ -380,12 +382,6 @@ public func addableLayers(_ stack: PrStack, held: Set<String>) -> [StackEntry] {
     stack.entries.filter { $0.hasPullRequest && $0.state == "open" && !held.contains($0.ref.key) }
 }
 
-/// The held PRs this stack doesn't list, so no stack is looked up twice.
-public func notInStack(_ refs: [PrRef], _ stack: PrStack?) -> [PrRef] {
-    let inStack = Set((stack?.entries ?? []).map(\.ref.key))
-    return refs.filter { !inStack.contains($0.key) }
-}
-
 /// Ticked to start with unless someone has already approved it.
 public func pickedByDefault(_ entry: StackEntry) -> Bool { entry.reviewDecision != "approved" }
 
@@ -394,16 +390,27 @@ public func stackAddError(_ failures: [String]) -> String? {
     failures.isEmpty ? nil : "Couldn't add \(failures.joined(separator: "; "))"
 }
 
-// MARK: Changed files
+// MARK: File trees
 
-/// The single letter the nav shows for a changed file's status.
-public func fileStatusLetter(_ status: String) -> String {
-    switch status {
-    case "added": return "A"
-    case "deleted": return "D"
-    case "renamed": return "R"
-    default: return "M"
+/// One row of a folder tree as drawn: a folder or file, and how deep it sits.
+public struct FileTreeRow: Sendable, Equatable, Identifiable {
+    public var node: FileTreeNode
+    public var depth: Int
+    public var id: String { node.path }
+}
+
+/// The rows a tree shows, flattened so a long tree can be drawn lazily.
+/// A folder is open when `startsOpen`, unless its path is in `toggled`.
+public func visibleTreeRows(_ nodes: [FileTreeNode], startsOpen: Bool, toggled: Set<String>) -> [FileTreeRow] {
+    var rows: [FileTreeRow] = []
+    func walk(_ nodes: [FileTreeNode], _ depth: Int) {
+        for node in nodes {
+            rows.append(FileTreeRow(node: node, depth: depth))
+            if let children = node.children, startsOpen != toggled.contains(node.path) { walk(children, depth + 1) }
+        }
     }
+    walk(nodes, 0)
+    return rows
 }
 
 // MARK: Setup consent

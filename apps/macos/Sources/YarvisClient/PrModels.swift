@@ -188,7 +188,7 @@ public struct PrSummary: Codable, Sendable, Equatable, Hashable {
 /// `GET {PR}`: the cheap read a poll uses to notice a push.
 public struct PrStatus: Codable, Sendable, Equatable {
     public var mergeable: Bool?
-    public var mergeableState: String
+    public var mergeableState: String?
     public var headSha: String?
     public var checks: PrCheckCounts
 }
@@ -366,10 +366,10 @@ public struct StackEntry: Codable, Sendable, Equatable, Hashable {
     public var checks: PrCheckCounts
     /// "approved", "changes_requested", "review_required" or nil.
     public var reviewDecision: String?
-    public var isCurrent: Bool
-    public var needsUpdate: Bool
+    public var isCurrent: Bool?
+    public var needsUpdate: Bool?
     /// False when the provider couldn't be reached for this layer.
-    public var statusKnown: Bool
+    public var statusKnown: Bool?
 
     public var hasPullRequest: Bool { number != 0 }
 }

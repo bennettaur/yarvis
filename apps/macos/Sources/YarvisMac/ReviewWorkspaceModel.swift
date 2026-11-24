@@ -19,6 +19,8 @@ final class ReviewWorkspaceModel {
     private(set) var bars: [String: ReviewPrBarModel] = [:]
     /// The workspace's Ask Claude session.
     private(set) var claude: ReviewClaudeModel!
+    /// The agent tabs' models, kept while the workspace is open.
+    let tabModels = ReviewTabModelStore()
 
     /// Split or unified, for every diff-like tab. Saved app-wide.
     var diffMode: ReviewDiffMode = ReviewDiffMode(rawValue: UserDefaults.standard.string(forKey: "review.diffMode") ?? "")
@@ -26,29 +28,31 @@ final class ReviewWorkspaceModel {
         didSet { UserDefaults.standard.set(diffMode.rawValue, forKey: "review.diffMode") }
     }
 
-    /// The nav's share of the width. Saved app-wide.
-    var navRatio: Double = ReviewWorkspaceModel.savedNavRatio() {
-        didSet { UserDefaults.standard.set(navRatio, forKey: Self.navRatioKey) }
-    }
+    /// The nav's share of the width. Saved app-wide by `saveNavRatio()` once a drag ends.
+    var navRatio: Double = ReviewWorkspaceModel.savedNavRatio()
     static let minNavRatio = 0.12
     private static let navRatioKey = "review.navRatio"
+
+    func saveNavRatio() {
+        UserDefaults.standard.set(navRatio, forKey: Self.navRatioKey)
+    }
 
     private static func savedNavRatio() -> Double {
         let saved = UserDefaults.standard.double(forKey: navRatioKey)
         return saved >= minNavRatio && saved < 0.8 ? saved : 0.2
     }
 
-    /// The open tabs, saved per workspace on every change.
+    /// The open tabs, saved per workspace on every change but a divider drag,
+    /// which saves when it ends.
     private(set) var layout: ReviewTabLayout {
-        didSet { if layout != oldValue { serverDefaults.set(layout.serialized(), Self.layoutKey(id)) } }
+        didSet { if layout != oldValue && !draggingRatio { saveLayout() } }
     }
+    private var draggingRatio = false
     /// A focus asked for before the PR was in the workspace.
     private var pendingFocus: (prId: String, tab: ReviewTabSpec.Kind)?
     /// The PR whose setup prompt is open.
     var setupPrId: String?
 
-    /// The latest clone log line per cloning PR, for the nav's status line.
-    private(set) var cloneLogs: [String: String] = [:]
     private var progressTasks: [String: Task<Void, Never>] = [:]
     private var pollTask: Task<Void, Never>?
     private var readGeneration = 0
@@ -80,6 +84,7 @@ final class ReviewWorkspaceModel {
         progressTasks = [:]
         bars.values.forEach { $0.stop() }
         claude.stop()
+        tabModels.stop()
     }
 
     func handle(_ event: ServerEvent) {
@@ -100,7 +105,7 @@ final class ReviewWorkspaceModel {
             guard generation == readGeneration, !stopped else { return }
             apply(ws)
         } catch YarvisError.http(status: 404, _, _) {
-            guard !stopped else { return }
+            guard generation == readGeneration, !stopped else { return }
             page.closeWorkspace(forget: true)
         } catch {
             guard generation == readGeneration, !stopped else { return }
@@ -113,7 +118,7 @@ final class ReviewWorkspaceModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled, !self.stopped else { return }
                 if let ws = self.workspace, isSettling(ws), self.page.pageVisible { await self.read() }
             }
         }
@@ -137,7 +142,9 @@ final class ReviewWorkspaceModel {
         bars = nextBars
         followProgress(ws.prs)
         let ordered = orderedPrs.map(\.prId)
+        let hadClaude = layout.find("claude") != nil
         layout = layout.pruning(keeping: ordered)
+        if hadClaude && layout.find("claude") == nil { claude.detach() }
         if let focus = pendingFocus, prs[focus.prId] != nil {
             pendingFocus = nil
             openTab(ReviewTabSpec(kind: focus.tab, prId: focus.prId))
@@ -155,15 +162,20 @@ final class ReviewWorkspaceModel {
         for (prId, task) in progressTasks where !cloning.contains(prId) {
             task.cancel()
             progressTasks[prId] = nil
-            cloneLogs[prId] = nil
+            prs[prId]?.cloneLog = nil
         }
         for prId in cloning where progressTasks[prId] == nil {
             progressTasks[prId] = Task { [weak self, client, id] in
+                // A clone logs many lines a second; the nav shows one, a few times a second.
+                var shown = ContinuousClock.now - .seconds(1)
                 do {
                     for try await event in try client.reviewPrProgress(workspaceId: id, prId: prId) {
                         guard let self, !Task.isCancelled else { return }
                         switch event {
-                        case .log(let line): self.cloneLogs[prId] = line
+                        case .log(let line):
+                            guard ContinuousClock.now - shown >= .milliseconds(250) else { continue }
+                            shown = .now
+                            self.prs[prId]?.cloneLog = line
                         case .done: await self.read()
                         case .start: break
                         }
@@ -229,17 +241,26 @@ final class ReviewWorkspaceModel {
     }
 
     func setGroupRatio(_ ratio: Double) {
+        draggingRatio = true
         layout.ratio = min(max(ratio, ReviewTabLayout.minRatio), 1 - ReviewTabLayout.minRatio)
+    }
+
+    func endGroupRatioDrag() {
+        draggingRatio = false
+        saveLayout()
+    }
+
+    private func saveLayout() {
+        serverDefaults.set(layout.serialized(), Self.layoutKey(id))
     }
 
     /// Option-J / Option-K: the next or previous changed file of the front PR, as a diff.
     func stepFile(forward: Bool) {
         guard let prId = frontPrId, let pr = prs[prId] else { return }
         pr.loadChangedFiles()
-        guard let files = pr.changedFiles.value?.files else { return }
         let active = layout.activeTab
         let current = active?.kind == .diff && active?.prId == prId ? active?.path : nil
-        guard let path = adjacentPath(changedFileOrder(files), current: current, forward: forward) else { return }
+        guard let path = adjacentPath(pr.fileOrder, current: current, forward: forward) else { return }
         openTab(.diff(prId: prId, path: path))
     }
 
@@ -271,6 +292,7 @@ final class ReviewWorkspaceModel {
         Task {
             await attempt { [client, id] in
                 let ws = try await client.renameReviewWorkspace(id: id, name: trimmed)
+                guard !self.stopped else { return }
                 self.workspace?.name = ws.name
                 await self.page.refreshList()
             }
@@ -302,23 +324,22 @@ final class ReviewWorkspaceModel {
                 }
             }
             addingLayers = false
+            guard !stopped else { return }
             if let message = stackAddError(failures) { self.error = message }
             await read()
         }
     }
 
-    /// Removes the PR and its checkout; its tabs close with it.
-    func removePr(_ prId: String) {
-        Task {
-            await attempt { [client, id] in
-                try await client.removeReviewPr(workspaceId: id, prId: prId)
-                await self.read()
-            }
-        }
+    /// Removes the PR and its checkout; its tabs close once the workspace reads it gone.
+    func removePr(_ prId: String) async throws {
+        try await client.removeReviewPr(workspaceId: id, prId: prId)
+        guard !stopped else { return }
+        await read()
     }
 
     func archive() async throws {
         try await client.archiveReviewWorkspace(id: id)
+        guard !stopped else { return }
         page.closeWorkspace(forget: true)
     }
 
@@ -358,6 +379,9 @@ enum ReviewDiffMode: String, Sendable {
 struct ReviewTabContext {
     let workspace: ReviewWorkspaceModel
     let pr: ReviewPrModel
+    /// The tab is the one showing in its group. Hidden tabs stay alive, so
+    /// they use this to pause streams, polls and per-draw work.
+    let isActive: Bool
     var diffMode: ReviewDiffMode { workspace.diffMode }
     var client: YarvisClient { workspace.client }
     var app: AppModel { workspace.page.app }
