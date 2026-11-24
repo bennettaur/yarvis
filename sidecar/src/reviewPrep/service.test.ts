@@ -22,7 +22,7 @@ import {
 import type { PrMeta, ReviewDeps } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
 import { DEFAULT_SECTIONS, REPORT_SECTIONS } from "../reviewWorkspaces/verification.ts";
-import { prepReview, prepsSettled, type ReviewPrepDeps, withVerificationSlot } from "./service.ts";
+import { prepReview, prepsSettled, type ReviewPrepDeps } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -371,33 +371,5 @@ describe("the attention item", () => {
     });
     await prepsSettled();
     expect(await attention()).toHaveLength(1);
-  });
-});
-
-describe("withVerificationSlot", () => {
-  it("holds work outside the queue to the same limit, and frees the slot when it throws", async () => {
-    let checks = 0;
-    const one = async () => {
-      checks++;
-      return { maxConcurrentVerifications: 1 };
-    };
-    let failFirst = (_e: Error) => {};
-    const first = withVerificationSlot(
-      () =>
-        new Promise<void>((_resolve, reject) => {
-          failFirst = reject;
-        }),
-      one,
-    );
-    let secondRan = false;
-    const second = withVerificationSlot(async () => {
-      secondRan = true;
-    }, one);
-    await until(async () => checks >= 2, "the second call to find no free slot");
-    expect(secondRan).toBe(false);
-    failFirst(new Error("boom"));
-    await expect(first).rejects.toThrow("boom");
-    await second;
-    expect(secondRan).toBe(true);
   });
 });

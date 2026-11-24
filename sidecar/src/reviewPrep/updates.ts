@@ -1,27 +1,26 @@
-import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
+import { agentRunRegistry, getAgentRunSummary } from "../agentRuns/service.ts";
 import { raiseAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import {
-  agentRuns,
-  type PrUpdateWatch,
-  prUpdateWatches,
-  type ReviewWorkspacePr,
-} from "../db/schema.ts";
+import { type PrUpdateWatch, prUpdateWatches, type ReviewWorkspacePr } from "../db/schema.ts";
 import { createGitHubClient, POLL_BATCH_SIZE } from "../github/client.ts";
 import type { JobDefinition } from "../jobs/scheduler.ts";
 import { describeError } from "../llm/errors.ts";
 import { latestReviewMark } from "../pr/reviewMarks.ts";
 import { prSourceFor } from "../pr/source.ts";
-import { type PrDetail, type PrRef, refKey } from "../pr/types.ts";
-import type { KickoffDeps } from "../reviewWorkspaces/kickoff.ts";
+import { type PrRef, refKey } from "../pr/types.ts";
 import { shortPrName } from "../reviewWorkspaces/kickoff.ts";
 import { whenIdle } from "../reviewWorkspaces/progress.ts";
-import { type VerifyOutcome, verifyAndWait } from "../reviewWorkspaces/queue.ts";
 import {
   defaultRereviewDeps,
-  type ProviderIdentity,
+  isOutstanding,
+  latestRereview,
+  REREVIEW_RUN_TIMEOUT_MS,
+  type Rereview,
+  type RereviewDeps,
   sameIdentity,
+  startRereview,
 } from "../reviewWorkspaces/rereview.ts";
 import { latestMark, reviewSinceReview } from "../reviewWorkspaces/reviewMarks.ts";
 import {
@@ -32,20 +31,15 @@ import {
   type ReviewWorkspacePrSummary,
   refreshReviewPr,
 } from "../reviewWorkspaces/service.ts";
-import {
-  type ReportSection,
-  runSections,
-  VERIFICATION_RUN_KIND,
-} from "../reviewWorkspaces/verification.ts";
-import type { ReviewPrepConfig } from "./config.ts";
-import { defaultPrepDeps, withVerificationSlot } from "./service.ts";
+import { defaultPrepDeps } from "./service.ts";
 
 /**
  * Re-review alerts: when a PR the user reviewed gets new commits, and it sits
  * in an active review workspace, this fetches them into the workspace, works
- * out what changed and which of the user's threads the new commits touch,
- * re-runs the verification checks the PR already had, and then raises one
- * "PR updated" item that opens the Since last review tab.
+ * out what changed, runs "What's changed" over the new commits (are the
+ * user's comments addressed, is there anything new to read, can they
+ * approve), and then raises one "PR updated" item with that answer, which
+ * opens the Since last review tab.
  *
  * "Reviewed" means the PR has a review mark: a review or line comment the user
  * posted (through Yarvis or on the provider), or "Mark reviewed here". A push
@@ -62,8 +56,7 @@ const REFRESH_WAIT_MS = 10 * 60 * 1000;
 
 /**
  * Past this, an alert claimed but never raised is taken again. Longer than a
- * refresh, a checkout and a verification run together, with room to wait
- * for a slot.
+ * refresh and a "What's changed" run together.
  */
 const STALE_CLAIM_MS = 2 * 60 * 60 * 1000;
 
@@ -76,27 +69,20 @@ export interface ProviderHead {
 
 export interface PrUpdateDeps {
   review: ReviewDeps;
-  kickoff: KickoffDeps;
+  /** The "What's changed" run, and the PR's threads and who the user is there. */
+  rereview: RereviewDeps;
   /** The provider's state and head for each ref, by refKey. A ref missing from the answer couldn't be read. */
   providerHeads(refs: PrRef[]): Promise<Map<string, ProviderHead>>;
-  /** The PR's review threads, and who the user is there, to tell their threads apart. */
-  loadDetail(ref: PrRef): Promise<Pick<PrDetail, "reviewThreads">>;
-  viewer(ref: PrRef): Promise<ProviderIdentity>;
-  prepConfig?: () => Promise<ReviewPrepConfig>;
   now?: () => Date;
   settleMs?: number;
   refreshWaitMs?: number;
 }
 
 function defaultPrUpdateDeps(db: Db, config: Config): PrUpdateDeps {
-  const prep = defaultPrepDeps(db, config);
-  const rereview = defaultRereviewDeps(config);
   return {
-    review: prep.kickoff.review,
-    kickoff: prep.kickoff,
+    review: defaultPrepDeps(db, config).kickoff.review,
+    rereview: defaultRereviewDeps(config),
     providerHeads: (refs) => providerHeads(config, refs),
-    loadDetail: rereview.loadDetail,
-    viewer: rereview.viewer,
   };
 }
 
@@ -289,7 +275,7 @@ async function watchedPrs(db: Db): Promise<ReviewWorkspacePrSummary[]> {
   return [...byKey.values()];
 }
 
-/** Fetches the new head, rechecks, and raises the item. */
+/** Fetches the new head, runs "What's changed", and raises the item. */
 async function alertUpdate(
   db: Db,
   config: Config,
@@ -317,11 +303,14 @@ async function alertUpdate(
   const since = onNewCommits ? await sinceSummary(db, config, pr, deps) : null;
   if (since) lines.push(since.line);
 
-  const threads = await threadSummary(pr.ref, since?.changedPaths ?? null, deps);
-  if (threads) lines.push(threads);
-
-  const recheck = onNewCommits ? await recheckVerification(db, config, pr, deps) : null;
-  if (recheck) lines.push(recheck);
+  const rereview = onNewCommits ? await whatsChanged(db, config, pr, deps) : null;
+  if (rereview?.answer) {
+    lines.push(...answerLines(rereview.answer));
+  } else {
+    const threads = await threadSummary(pr.ref, since?.changedPaths ?? null, deps);
+    if (threads) lines.push(threads);
+  }
+  if (rereview?.note) lines.push(rereview.note);
 
   const body = [`${name}${pr.title ? `: ${pr.title}` : ""}`, ...lines, ...notes].join("\n");
   await raiseAttention(db, {
@@ -398,7 +387,10 @@ async function threadSummary(
   deps: PrUpdateDeps,
 ): Promise<string | null> {
   try {
-    const [detail, viewer] = await Promise.all([deps.loadDetail(ref), deps.viewer(ref)]);
+    const [detail, viewer] = await Promise.all([
+      deps.rereview.loadDetail(ref),
+      deps.rereview.viewer(ref),
+    ]);
     const mine = detail.reviewThreads.filter((t) =>
       t.comments.some((c) => sameIdentity(c, viewer)),
     );
@@ -414,62 +406,118 @@ async function threadSummary(
   }
 }
 
-/** The sections the PR's verification runs have covered, or none when it has no report. */
-async function reportSections(db: Db, refKey: string): Promise<ReportSection[]> {
-  const rows = await db
-    .select({ meta: agentRuns.meta })
-    .from(agentRuns)
-    .where(
-      and(
-        eq(agentRuns.kind, VERIFICATION_RUN_KIND),
-        eq(agentRuns.status, "succeeded"),
-        sql`${agentRuns.meta}->>'refKey' = ${refKey}`,
-      ),
-    );
-  const sections = new Set<ReportSection>();
-  for (const row of rows) {
-    for (const s of runSections(row.meta as Record<string, unknown>)) sections.add(s);
-  }
-  return [...sections];
+interface WhatsChanged {
+  /** The run's checked answer, when it finished with one. */
+  answer: Rereview | null;
+  /** Why there is no answer, for the item. */
+  note: string | null;
 }
 
-function recheckText(outcome: VerifyOutcome): string {
-  const why = outcome.note ? ` ${outcome.note}` : "";
-  switch (outcome.state) {
-    case "done":
-      return "The verification checks were re-run on the new commits.";
-    case "failed":
-      return `Re-running the verification checks failed.${why}`;
-    case "needs-confirmation":
-      return `The verification checks weren't re-run: they need your go-ahead.${why}`;
-    case "cancelled":
-      return "Re-running the verification checks was cancelled.";
-  }
-}
+/** A little past the run's own timeout, so the run ends itself first. */
+const REREVIEW_WAIT_MS = REREVIEW_RUN_TIMEOUT_MS + 60_000;
+const REREVIEW_POLL_MS = 2_000;
 
 /**
- * Re-runs the checks the PR's report already has, at the new head, in one of
- * review prep's verification slots. Nothing when it has no report, or its
- * checkout isn't ready.
+ * Runs "What's changed" over the new commits and waits for its answer, or
+ * reuses a run that already covers them. The rules are the Since last review
+ * tab's: a run over its budget waits for the user's go-ahead, and one past
+ * what an agent can read doesn't run at all.
  */
-async function recheckVerification(
+async function whatsChanged(
   db: Db,
   config: Config,
   pr: ReviewWorkspacePr,
   deps: PrUpdateDeps,
-): Promise<string | null> {
-  const sections = await reportSections(db, pr.refKey);
-  if (sections.length === 0 || pr.worktreeStatus !== "ready") return null;
+): Promise<WhatsChanged | null> {
+  if (pr.worktreeStatus !== "ready") return null;
+  const registry = deps.rereview.run?.registry ?? agentRunRegistry;
   try {
-    const outcome = await withVerificationSlot(
-      () => verifyAndWait(db, config, pr.ref, deps.kickoff, { sections }),
-      deps.prepConfig,
+    const latest = await latestRereview(
+      db,
+      pr.workspaceId,
+      pr.id,
+      deps.review,
+      (id) => registry.isLive(id),
+      undefined,
+      {
+        config,
+        settings: deps.rereview.settings,
+        readerBudgetBytes: deps.rereview.readerBudgetBytes,
+      },
     );
-    return recheckText(outcome);
+    let runId: string;
+    if (latest.lastSucceeded?.current) {
+      runId = latest.lastSucceeded.run.id;
+    } else if (latest.current && latest.run?.status === "running") {
+      runId = latest.run.id;
+    } else {
+      const size = latest.size;
+      if (!size) {
+        return { answer: null, note: "What's changed couldn't be sized, so it didn't run." };
+      }
+      if (size.overAgentBudget) {
+        return {
+          answer: null,
+          note: "Too much changed for What's changed to read at once. Read the changes in the Since last review tab.",
+        };
+      }
+      if (size.overBudget) {
+        return {
+          answer: null,
+          note: `What's changed didn't run: it needs your go-ahead, since it would cost about $${size.estimatedCostUsd.toFixed(2)}, over its $${size.budgetUsd} budget.`,
+        };
+      }
+      runId = (await startRereview(db, config, pr.workspaceId, pr.id, deps.review, deps.rereview))
+        .runId;
+    }
+    const run = await runEnd(db, runId, registry);
+    if (run?.status === "succeeded" && run.result) {
+      return { answer: run.result as Rereview, note: null };
+    }
+    if (run?.status === "cancelled") return { answer: null, note: "What's changed was cancelled." };
+    return { answer: null, note: "What's changed failed. See Settings → Diagnostics." };
   } catch (e) {
-    console.error("[pr-updates] the recheck failed:", describeError(e));
-    return "Re-running the verification checks failed. See Settings → Diagnostics.";
+    if (e instanceof ReviewWorkspaceError) {
+      return { answer: null, note: `What's changed didn't run: ${e.message}.` };
+    }
+    console.error("[pr-updates] What's changed failed:", describeError(e));
+    return { answer: null, note: "What's changed failed. See Settings → Diagnostics." };
   }
+}
+
+/** Waits for a run to end, reading it from the database so a run another instance started counts too. */
+async function runEnd(db: Db, id: string, registry: typeof agentRunRegistry) {
+  await registry.follow(id, () => undefined);
+  const deadline = Date.now() + REREVIEW_WAIT_MS;
+  for (;;) {
+    const run = await getAgentRunSummary(db, id);
+    if (run?.status !== "running" || Date.now() > deadline) return run;
+    await Bun.sleep(REREVIEW_POLL_MS);
+  }
+}
+
+/** The answer as counts; the agent's own words stay in the tab. */
+function answerLines(answer: Rereview): string[] {
+  const lines = [
+    answer.verdict === "ready_to_approve"
+      ? "What's changed: ready to approve."
+      : "What's changed: needs another look.",
+  ];
+  const { comments } = answer;
+  if (comments.length > 0) {
+    const open = comments.filter(isOutstanding).length;
+    lines.push(
+      `Your comments: ${comments.length - open} of ${comments.length} addressed or resolved, ${open} still open.`,
+    );
+  }
+  const review = answer.newChanges.filter((c) => c.kind === "needs_review").length;
+  const minor = answer.newChanges.length - review;
+  lines.push(
+    review > 0
+      ? `Other changes: ${plural(review, "file")} to read${minor > 0 ? `, ${minor} minor` : ""}.`
+      : `Other changes: nothing new to read${minor > 0 ? ` (${minor} minor)` : ""}.`,
+  );
+  return lines;
 }
 
 function plural(n: number, word: string): string {
@@ -479,7 +527,7 @@ function plural(n: number, word: string): string {
 export const prUpdatesJob: JobDefinition = {
   name: "pr-updates",
   description:
-    "Every 5 minutes, check the PRs you reviewed in a review workspace for new commits, fetch them, re-run their checks and tell you they're ready for another look.",
+    "Every 5 minutes, check the PRs you reviewed in a review workspace for new commits, fetch them, run What's changed over them and tell you they're ready for another look.",
   schedule: { kind: "interval", everyMs: 5 * 60 * 1000 },
   run: async ({ db, config, now }) => {
     const result = await runPrUpdateWatch(db, config, {

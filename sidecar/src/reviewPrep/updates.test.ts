@@ -4,15 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { ProcessSlots } from "../agentRuns/service.ts";
+import { fakePrinting, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, prUpdateWatches } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
+import type { RereviewRunConfig } from "../pr/models.ts";
 import { recordReviewMark } from "../pr/reviewMarks.ts";
 import type { PrDetail, PrRef, ReviewThread } from "../pr/types.ts";
 import { reviewGit } from "../reviewWorkspaces/git.ts";
-import { backgroundSettled, type KickoffDeps } from "../reviewWorkspaces/kickoff.ts";
+import { backgroundSettled } from "../reviewWorkspaces/kickoff.ts";
+import { REREVIEW_RUN_KIND } from "../reviewWorkspaces/rereview.ts";
 import {
   createReviewWorkspace,
   getReviewPr,
@@ -20,7 +22,6 @@ import {
   type ReviewDeps,
 } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
-import { REPORT_SECTIONS, VERIFICATION_RUN_KIND } from "../reviewWorkspaces/verification.ts";
 import {
   type ProviderHead,
   type PrUpdateDeps,
@@ -76,6 +77,17 @@ let deps: PrUpdateDeps;
 let heads: Map<string, ProviderHead>;
 let threads: ReviewThread[];
 let clock: Date;
+let fakeDir: string;
+let rereviewSettings: RereviewRunConfig;
+
+/** What the fake "What's changed" agent answers: no verdicts, so the server fills them in. */
+const answer = {
+  summary: "The author changed a.ts.",
+  verdict: "ready_to_approve",
+  verdictReason: "Looks done.",
+  comments: [],
+  newChanges: [],
+};
 
 async function until(check: () => Promise<boolean>, what: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -111,6 +123,8 @@ const items = () => db.select().from(attentionItems);
 beforeEach(async () => {
   await sql`TRUNCATE review_workspaces, review_workspace_prs, pr_review_marks, pr_update_watches, agent_runs, attention_items RESTART IDENTITY CASCADE`;
   config.workspacesRoot = mkdtempSync(join(tmpdir(), "yarvis-pr-updates-"));
+  fakeDir = mkdtempSync(join(tmpdir(), "yarvis-pr-updates-fake-"));
+  rereviewSettings = { model: "haiku", maxBudgetUsd: 100, autoStart: false };
   remote = createTestRemote();
   heads = new Map();
   threads = [];
@@ -122,32 +136,26 @@ beforeEach(async () => {
     setupScriptFor: async () => null,
     git: () => reviewGit({ allowFileProtocol: true }),
   };
-  const kickoff: KickoffDeps = {
-    review,
-    verification: {
-      loadDetail: async () => ({ reviewThreads: [], checks: [] }) as unknown as PrDetail,
-      loadTickets: async () => ({ tickets: [], notes: [] }),
-      settings: async () => ({
-        maxBudgetUsd: 100,
-        sections: Object.fromEntries(REPORT_SECTIONS.map((s) => [s, { model: "haiku" as const }])),
-      }),
-      run: {
-        program: "/usr/bin/false",
-        registry: new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 }),
-        instance: "test",
-        slots: new ProcessSlots(12),
-      },
-    },
-    isRegistered: async () => true,
-    pollMs: 25,
-  };
   deps = {
     review,
-    kickoff,
+    rereview: {
+      loadDetail: async () =>
+        ({
+          title: meta.title,
+          body: "Changes a.",
+          author: meta.author,
+          reviewThreads: threads,
+          conversation: [],
+        }) as unknown as PrDetail,
+      viewer: async () => ({ login: "me" }),
+      settings: async () => rereviewSettings,
+      run: {
+        program: fakePrinting(fakeDir, "claude", [resultLine({ structured_output: answer })]),
+        registry: new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 }),
+        instance: "test",
+      },
+    },
     providerHeads: async () => heads,
-    loadDetail: async () => ({ reviewThreads: threads }),
-    viewer: async () => ({ login: "me" }),
-    prepConfig: async () => ({ maxConcurrentVerifications: 2 }),
     now: () => clock,
     settleMs: 10 * 60_000,
   };
@@ -158,6 +166,7 @@ afterEach(async () => {
   await backgroundSettled();
   rmSync(config.workspacesRoot, { recursive: true, force: true });
   rmSync(remote.root, { recursive: true, force: true });
+  rmSync(fakeDir, { recursive: true, force: true });
 });
 
 afterAll(async () => {
@@ -208,9 +217,14 @@ describe("runPrUpdateWatch", () => {
       [
         "r#1: Feature work",
         "2 new commits and 2 files changed since your review.",
-        "Your threads: 1 of 2 touched by the new commits, 1 still open.",
+        // The fake agent says ready but gives the open thread no verdict, so the server overrules it.
+        "What's changed: needs another look.",
+        "Your comments: 0 of 1 addressed or resolved, 1 still open.",
+        "Other changes: 2 files to read.",
       ].join("\n"),
     );
+    const runs = await db.select().from(agentRuns);
+    expect(runs.map((r) => [r.kind, r.status])).toEqual([[REREVIEW_RUN_KIND, "succeeded"]]);
 
     // The same head isn't raised again.
     later(30);
@@ -300,15 +314,10 @@ describe("runPrUpdateWatch", () => {
     expect(await items()).toHaveLength(1);
   });
 
-  it("re-runs the checks a report already has, and says when they need a go-ahead", async () => {
+  it("asks for a go-ahead instead of running What's changed over its budget", async () => {
     await reviewedWorkspace();
-    await db.insert(agentRuns).values({
-      kind: VERIFICATION_RUN_KIND,
-      targetKey: "gh:o/r/1",
-      status: "succeeded",
-      instance: "test",
-      meta: { refKey: "gh:o/r/1", sections: ["summary"], format: 2 },
-    });
+    rereviewSettings = { ...rereviewSettings, maxBudgetUsd: 0 };
+    threads = [thread({ id: "1", path: "src/a.ts" })];
     const pushed = remote.pushToPr("src/a.ts", "export const a = 3;\n");
     heads.set("gh:o/r/1", { open: true, headSha: pushed });
     await runPrUpdateWatch(db, config, deps);
@@ -317,9 +326,11 @@ describe("runPrUpdateWatch", () => {
     await prUpdatesSettled();
 
     const [item] = await items();
-    // The test PR carries a file over the size cap, so its checks wait for the user.
-    expect(item?.body).toContain(
-      "The verification checks weren't re-run: they need your go-ahead. It's a large PR.",
+    // Without an answer, the item falls back to the thread count.
+    expect(item?.body).toContain("Your threads: 1 of 1 touched by the new commits, 1 still open.");
+    expect(item?.body).toMatch(
+      /What's changed didn't run: it needs your go-ahead, since it would cost about \$[\d.]+, over its \$0 budget\./,
     );
+    expect(await db.select().from(agentRuns)).toEqual([]);
   });
 });

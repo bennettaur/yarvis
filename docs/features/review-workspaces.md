@@ -755,18 +755,22 @@ last push. Then it:
 
 1. Fetches the new commits and moves the checkout, as **Refresh** does.
 2. Works out what changed since your review, as the
-   [Since last review](#since-last-review) tab shows it, and which of your
-   review threads the new commits touch (the provider marks them outdated, or
-   their file changed) and which are still open.
-3. Re-runs the verification checks the PR's report already has, at the new
-   head. It runs them in one of [review prep](#review-prep)'s slots, so
-   `maxConcurrentVerifications` covers them too. A PR with no report isn't
-   checked. One that would need your go-ahead (a large PR, or one over
-   budget) isn't re-run, and the item says so, as it does when a re-run
-   fails. When the new commits couldn't be fetched, nothing is re-run and the
-   item asks you to refresh the PR yourself.
-4. Adds a **PR updated since your review** item under Review, with that
-   summary, which opens the PR's **Since last review** tab.
+   [Since last review](#since-last-review) tab shows it.
+3. Runs [What's changed](#whats-changed) over the new commits, whether or not
+   its auto-start is on, and waits for its answer. It doesn't re-run the
+   verification checks. A run that already covers the new commits is reused.
+   One over its budget isn't started, and the item says it needs your
+   go-ahead. When the changes are more than its agent can read, the item says
+   so. When the new commits couldn't be fetched, nothing runs and the item
+   asks you to refresh the PR yourself.
+4. Adds a **PR updated since your review** item under Review, which opens the
+   PR's **Since last review** tab. It says whether you can approve, how many
+   of your comments are addressed or resolved and how many are still open,
+   and how many other changes need reading. The agent's own words stay in the
+   tab. Without an answer, the item instead counts which of your review
+   threads the new commits touch (the provider marks them outdated, or their
+   file changed) and which are still open, and says why What's changed didn't
+   run.
 
 Each head gets one item, and a later push updates the item while you haven't
 read it yet. A merged or closed PR is left alone. Nothing is posted to the
