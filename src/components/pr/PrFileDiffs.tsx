@@ -503,9 +503,9 @@ export default function PrFileDiffs({
   focus?: DiffFocus | null;
 }) {
   const insights = usePrInsights(prRef);
-  const files = usePrFiles(prRef);
-  const { error, loading } = files;
-  const data = files.data?.files;
+  const fileSet = usePrFiles(prRef);
+  const { error, loading } = fileSet;
+  const data = fileSet.data?.files;
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
   const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
@@ -580,7 +580,7 @@ export default function PrFileDiffs({
           onToggleViewed={onToggleViewed}
           foldAll={foldAll}
           split={split}
-          headSha={detail.data?.headSha ?? ""}
+          headSha={fileSet.data?.headSha ?? detail.data?.headSha ?? ""}
           focus={focus?.path === f.filename ? focus : null}
           insights={insights}
         />

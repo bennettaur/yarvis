@@ -807,6 +807,27 @@ describe("github client", () => {
       expect(result.files.map((f) => f.filename)).toEqual(["a.ts"]);
     });
 
+    it("reads the head strictly before and after the file list", async () => {
+      const order: string[] = [];
+      const head = "c".repeat(40);
+      const gh = new GitHubClient("t", (async (url: string) => {
+        const isFiles = String(url).includes("/files");
+        // Head reads answer slowly, so one overlapping the file list would finish after it.
+        if (!isFiles) await new Promise((resolve) => setTimeout(resolve, 10));
+        order.push(isFiles ? "files" : "head");
+        return new Response(JSON.stringify(isFiles ? [file] : { head: { sha: head } }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch);
+      await gh.prFilesAtHead("o", "r", 1);
+      expect(order).toEqual(["head", "files", "head"]);
+    });
+
+    it("names no commit when the PR reports no head", async () => {
+      const gh = new GitHubClient("t", pushingFetch([]));
+      expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();
+    });
+
     it("names no commit when a push lands mid-read", async () => {
       const gh = new GitHubClient("t", pushingFetch(["c".repeat(40), "d".repeat(40)]));
       expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();

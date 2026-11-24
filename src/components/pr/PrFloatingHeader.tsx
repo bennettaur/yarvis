@@ -319,8 +319,8 @@ function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState
 export function usePrActions(
   prRef: PrRef,
   seen?: SeenCommits,
-  // The commit a merge is pinned to, when it differs from what reviews record.
-  mergeHeadSha: string | null | undefined = seen?.headSha,
+  // The commit a merge is pinned to, when it isn't the one reviews record.
+  { mergeHeadSha = seen?.headSha }: { mergeHeadSha?: string | null } = {},
 ) {
   // Publishing, approving or merging changes both how this pull request reads
   // and how its layer reads in a stack, so the two caches are dropped together.
@@ -363,8 +363,8 @@ export function usePrActions(
   };
 
   const runMerge = async (op: "merge" | "auto_merge", method: MergeMethod) => {
-    // Pinned to the head this surface shows, so a push since can't merge
-    // unseen. With no head yet (a checkout still cloning, a diff still
+    // Pinned to the commit the reviewer is looking at, so a push since can't
+    // merge unseen. With no head yet (a checkout still cloning, a diff still
     // loading) it refuses rather than merge unpinned.
     const headSha = mergeHeadSha;
     if (!headSha) {
@@ -618,7 +618,11 @@ export default function PrFloatingHeader({
   const prRef: PrRef = pr.ref;
   // Reviews record the diff's commit, or the detail's where the provider
   // doesn't name one (Azure). Merge takes only the diff's.
-  const actions = usePrActions(prRef, { headSha: diffHeadSha ?? detail?.headSha }, diffHeadSha);
+  const actions = usePrActions(
+    prRef,
+    { headSha: diffHeadSha ?? detail?.headSha },
+    { mergeHeadSha: diffHeadSha },
+  );
   const [starPending, setStarPending] = useState(false);
   // The summary's title can be empty when the entry came from the workspace
   // poller cache, which doesn't store PR titles, so prefer the detail's.

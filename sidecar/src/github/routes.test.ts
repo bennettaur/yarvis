@@ -166,6 +166,26 @@ describe("github merge validation", () => {
   });
 });
 
+describe("github files route", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("returns the files with the commit they were read at", async () => {
+    const headSha = "f".repeat(40);
+    const file = { filename: "a.ts", status: "added", additions: 2, deletions: 0, patch: "@@" };
+    globalThis.fetch = (async (url: string) =>
+      new Response(
+        JSON.stringify(String(url).includes("/files") ? [file] : { head: { sha: headSha } }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const res = await configured.request("/api/github/pr/octo/repo/1/files", { headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ headSha, files: [file] });
+  });
+});
+
 describe("github comment thread routes", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
