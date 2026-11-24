@@ -1,8 +1,37 @@
 # A native macOS client
 
-Not built yet. This maps each part of the server's API
-([client-server.md](client-server.md)) to what a SwiftUI app would use, and
-lists what in the API would get in its way.
+A first version lives in `apps/macos/` (build and run steps are in its
+[README](../apps/macos/README.md)). This page maps each part of the server's
+API ([client-server.md](client-server.md)) to Swift, says what the app builds
+natively, and lists what in the API gets in its way.
+
+## What's built
+
+`apps/macos` is a Swift package with two targets:
+
+- `YarvisClient`: the networking, with `Codable` models named after the
+  server's and the web client's types, and no UI. It's the module an iOS app,
+  or the Android client's authors, would mirror.
+- `YarvisMac`: the SwiftUI app.
+
+Native: sign-in and sign-out, the code prompt for `reauth_required`, the
+events socket, chat (threads, streamed replies as markdown, tool activity,
+Stop, the tool approval bar), attention (items, server approvals, answering
+`ask_user` questions and permission prompts, dismissing, opening), and
+terminals in SwiftTerm. New attention items post a macOS notification when
+the app runs as `Yarvis.app`.
+
+In a `WKWebView`: everything else, including first-run setup, the vault
+unlock screen, devices and Settings.
+
+Checked against a real `yarvis-server` with the sidecar off: sign-in with a
+passphrase and TOTP, `/api/devices/me`, signing out with
+`DELETE /api/devices/me` (its 4401 close, then a second revoke answered
+`401`), a wrong reverify code (`403`, the device stays signed in),
+`/api/events` with `since`, a shell over `/api/pty/{id}` with its
+`pty.exited` event and its exited row in `GET /api/pty`, and the `4401` and
+`4403` closes. Chat and attention need the sidecar and Postgres, so they're tested
+against stubs of the sidecar's JSON only.
 
 ## Each API surface and its Swift counterpart
 
@@ -40,15 +69,24 @@ binary frame is an 8-byte big-endian offset then the bytes: feed the bytes to
 `TerminalView.feed(byteArray:)` and keep the offset. On `mode: "snapshot"`,
 reset the terminal before feeding. Send keystrokes as binary frames, and
 `{"type":"resize"}` from `sizeChanged`. Opening terminals needs the
-`terminal` scope.
+`terminal` scope. The list comes from `GET /api/pty`. Read it again on
+each `pty.started` and `pty.exited` event rather than patch it from them,
+since they can arrive in either order.
 
-**WKWebView fallback.** The fallback screens use the app's token: inject it
-into `localStorage` (`yarvis.deviceToken`) with a `WKUserScript` before the
-page loads, as the Tauri app hands its token to the page. The web UI's own
-code prompt then works inside the view for anything that needs a fresh
-device.
+**WKWebView fallback.** The web view signs in on its own, with the
+passphrase and a code, and becomes a device of its own. The app doesn't
+inject its token into the page's `localStorage`: script on the page can read
+`localStorage`, so the token would sit in a second, weaker place. The cost is
+a second sign-in and a second row on the devices page.
 
-## What in the API would get in the way
+**Chat and attention.** These are sidecar routes behind `/api/sidecar`.
+A chat turn is `POST /api/chat` answered as SSE (`delta`, `tool_call`,
+`tool_result`, `tool_approval_request`, `error`, `done`), read through
+`URLSession.bytes`; cancelling the request stops the turn. The attention
+stream (`/api/attention/stream`) replays nothing, so the list is reloaded
+each time it reconnects.
+
+## What in the API gets in the way
 
 - **The sidecar has no typed schema.** `/api/sidecar/*` is a proxy to a few
   hundred Hono routes. A Swift client hand-writes types for each screen it
