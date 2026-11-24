@@ -3,8 +3,8 @@ import Observation
 import SwiftUI
 import YarvisClient
 
-/// Enabled MCP servers the chat can't use, as the web's
-/// `useMcpConnectionIssues` finds them.
+/// Enabled MCP servers the chat can't use, so the user can fix them before a
+/// turn reaches for their tools.
 @MainActor @Observable
 final class McpConnectionModel {
     private let client: YarvisClient
@@ -72,8 +72,7 @@ final class McpConnectionModel {
     /// for the server to report it done.
     private func authorize(_ id: String) async throws {
         let url = try await client.authorizeMcpServer(id: id)
-        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { throw YarvisError.badResponse }
-        NSWorkspace.shared.open(url)
+        openWebLink(url)
         for _ in 0..<60 {
             try await Task.sleep(for: .seconds(2))
             if try await client.mcpServerStatus(id: id).oauth?.authorized == true { return }

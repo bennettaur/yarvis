@@ -49,6 +49,11 @@ public indirect enum MarkdownBlock: Equatable, Sendable {
                 // An unclosed fence is still streaming; what's there shows as code.
                 blocks.append(.code(code.joined(separator: "\n")))
                 i += 1
+            } else if trimmed.isEmpty {
+                // Paragraphs are separate blocks, so a parse can be split at
+                // any blank line outside a fence and give the same blocks.
+                flushText()
+                i += 1
             } else if let heading = headingText(line) {
                 flushText()
                 blocks.append(.heading(heading))
@@ -165,5 +170,50 @@ public indirect enum MarkdownBlock: Equatable, Sendable {
         if t.hasPrefix("|") { t.removeFirst() }
         if t.hasSuffix("|") { t.removeLast() }
         return t.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+}
+
+/// Parses a reply as it streams in. Everything up to the last blank line
+/// outside a code fence is settled and kept; only what follows it, the block
+/// still being written, is parsed again on each update.
+public struct MarkdownStream: Sendable {
+    private var settledSource = ""
+    private var settled: [MarkdownBlock] = []
+    public private(set) var blocks: [MarkdownBlock] = []
+
+    public init() {}
+
+    /// Takes the whole reply so far. A source that doesn't extend the last
+    /// one starts over.
+    @discardableResult
+    public mutating func update(_ source: String) -> [MarkdownBlock] {
+        if !source.hasPrefix(settledSource) {
+            settledSource = ""
+            settled = []
+        }
+        let utf8 = source.utf8
+        let restStart = utf8.index(utf8.startIndex, offsetBy: settledSource.utf8.count)
+        let rest = source[restStart...]
+        var split: Substring.Index?
+        var inFence = false
+        var lineStart = rest.startIndex
+        while let newline = rest[lineStart...].firstIndex(of: "\n") {
+            let line = rest[lineStart..<newline].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") {
+                inFence.toggle()
+            } else if line.isEmpty, !inFence {
+                split = rest.index(after: newline)
+            }
+            lineStart = rest.index(after: newline)
+        }
+        var tail = rest
+        if let split {
+            let chunk = String(rest[..<split])
+            settled += MarkdownBlock.parse(chunk)
+            settledSource += chunk
+            tail = rest[split...]
+        }
+        blocks = settled + MarkdownBlock.parse(String(tail))
+        return blocks
     }
 }

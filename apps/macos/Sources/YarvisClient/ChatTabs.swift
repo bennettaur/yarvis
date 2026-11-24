@@ -1,7 +1,8 @@
 import Foundation
 
-// The Chat page's rules apart from any UI, as the web's `chatTabs.ts`,
-// `chat.ts`, `useChatThread.ts` and `TurnActivity.tsx` apply them.
+// The Chat page's rules apart from any UI. They match the web client's
+// (`chatTabs.ts`, `chat.ts`, `useChatThread.ts`, `TurnActivity.tsx`) so a
+// chat behaves the same whichever client the user picks up.
 
 // MARK: - Tabs
 
@@ -254,4 +255,31 @@ private func linkMentions(in text: String, names: [String: String]) -> String {
     }
     out += ns.substring(from: last)
     return out
+}
+
+// MARK: - Links
+
+/// What following a link in a reply or an artifact does.
+public enum ChatLinkAction: Equatable, Sendable {
+    case openInBrowser(URL)
+    case openArtifact(id: String)
+    /// A `yarvis://` place the app's router opens.
+    case openPlace(URL)
+    case ignore
+}
+
+/// Only http(s) leaves the app, since another scheme could launch something.
+/// In-app links from an untrusted artifact are ignored: its content came from
+/// outside the chat, so it doesn't get to move the app around.
+public func chatLinkAction(_ url: URL, fromUntrusted: Bool = false) -> ChatLinkAction {
+    switch url.scheme?.lowercased() {
+    case "http", "https":
+        return .openInBrowser(url)
+    case "yarvis":
+        guard !fromUntrusted, let place = YarvisPlace(url) else { return .ignore }
+        if case .artifact(let id) = place { return .openArtifact(id: id) }
+        return .openPlace(url)
+    default:
+        return .ignore
+    }
 }

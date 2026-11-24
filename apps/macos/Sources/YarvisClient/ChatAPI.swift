@@ -68,9 +68,9 @@ extension YarvisClient {
     }
 }
 
-/// Picks the provider and model for a new turn, as the web does: the saved
-/// choice when the provider still offers it, else the first available
-/// provider and its first model.
+/// Picks the provider and model for a new turn: the saved choice when the
+/// provider still offers it, else the first available provider and its
+/// first model.
 public func defaultChatModel(_ providers: [ProviderInfo], savedProvider: String?,
                              savedModel: String?) -> (provider: String, model: String)? {
     let chosen = providers.first { $0.id == savedProvider }

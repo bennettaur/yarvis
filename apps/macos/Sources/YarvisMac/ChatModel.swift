@@ -2,8 +2,8 @@ import Foundation
 import Observation
 import YarvisClient
 
-/// The Chat page: its tabs, each with its own thread, the shared session
-/// list and model choices, and the artifact pane, as the web's `ChatTabs` keeps them.
+/// The Chat page: its tabs, each with its own thread so background tabs keep
+/// streaming, the shared session list and model choices, and the artifact pane.
 @MainActor @Observable
 final class ChatModel {
     unowned let app: AppModel
@@ -11,6 +11,8 @@ final class ChatModel {
 
     var sessions: [ChatSession] = []
     var sessionsError: String?
+    /// Why the provider list couldn't be read, shown by the model picker.
+    var providersError: String?
     private(set) var providers: [ProviderInfo] = []
     private(set) var tabs: ChatTabsState {
         didSet { UserDefaults.standard.set(try? JSONEncoder().encode(tabs), forKey: Self.tabsKey) }
@@ -151,9 +153,10 @@ final class ChatModel {
         Task {
             do {
                 providers = try await client.chatProviders()
+                providersError = nil
                 for thread in threads.values { thread.adoptDefaultModel(defaultPick) }
             } catch {
-                sessionsError = error.localizedDescription
+                providersError = error.localizedDescription
             }
         }
     }
@@ -178,22 +181,13 @@ final class ChatModel {
 
     // MARK: Links and artifacts
 
-    /// Follows a link in a reply. http(s) goes to the browser, an artifact
-    /// link opens the side pane, and other `yarvis://` links go through the
-    /// app's router. Anything else stays inert.
-    func follow(_ url: URL, fromUntrusted: Bool = false) -> Bool {
-        switch url.scheme?.lowercased() {
-        case "http", "https":
-            return true
-        case "yarvis":
-            guard !fromUntrusted else { return false }
-            if case .artifact(let id) = YarvisPlace(url) {
-                openArtifact(id)
-                return true
-            }
-            return app.open(link: url)
-        default:
-            return false
+    /// Follows a link in a reply or an artifact, by the rule in `chatLinkAction`.
+    func follow(_ url: URL, fromUntrusted: Bool = false) {
+        switch chatLinkAction(url, fromUntrusted: fromUntrusted) {
+        case .openInBrowser(let url): openWebLink(url)
+        case .openArtifact(let id): openArtifact(id)
+        case .openPlace(let url): app.open(link: url)
+        case .ignore: break
         }
     }
 

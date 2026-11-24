@@ -3,7 +3,7 @@ import SwiftUI
 import YarvisClient
 
 /// The Chat page: the "Chats" history, a strip of tabs, the front tab's
-/// thread and an optional artifact pane, laid out as the web's `ChatTabs`.
+/// thread and an optional artifact pane.
 struct ChatView: View {
     @Bindable var chat: ChatModel
 
@@ -223,7 +223,7 @@ private struct ChatConversation: View {
                              folded: !live.reply.isEmpty || !thread.busy)
             }
             if !live.reply.isEmpty {
-                MarkdownText(live.reply)
+                MarkdownText(blocks: thread.liveBlocks)
             } else if thread.busy && live.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -364,6 +364,10 @@ private struct ChatComposer: View {
                 Toggle("Thinking", isOn: $chat.reasoningOn).toggleStyle(.checkbox).font(.caption)
                     .help("Ask the model to show its reasoning, when it can")
                 ModelPicker(thread: thread, providers: chat.providers)
+                if let error = chat.providersError {
+                    Label("Couldn't load models", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.red).help(error)
+                }
                 Spacer()
                 if thread.busy {
                     Button("Queue") { thread.enqueueDraft() }.disabled(!hasText)

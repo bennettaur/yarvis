@@ -211,8 +211,10 @@ struct ToolCard: View {
     }
 }
 
-/// The front of the approval queue, like the web's `ToolApprovalBar`. A and
-/// D answer it from the keyboard while no text field has focus; the bar is
+/// How long a new approval request ignores clicks and keys.
+private let approvalArmingDelay: Duration = .milliseconds(400)
+
+/// The front of the approval queue. A and D answer it from the keyboard while no text field has focus; the bar is
 /// only on screen for the visible tab, so the keys can't answer a hidden one.
 struct ToolApprovalBar: View {
     let request: ToolApprovalRequest
@@ -237,7 +239,7 @@ struct ToolApprovalBar: View {
                     Button("Deny") { answer(false) }.help("Deny (D)")
                     if isMcp {
                         Button("Always allow") { alwaysAllow() }
-                            .help("Approve this call and stop asking about this tool")
+                            .help("Approve this call and stop asking about \(request.toolId ?? request.name)")
                     }
                     Button("Approve") { answer(true) }.buttonStyle(.borderedProminent).help("Approve (A)")
                 }
@@ -270,7 +272,7 @@ struct ToolApprovalBar: View {
         .task(id: request.id) {
             keys.onKey = answer
             keys.armed = false
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: approvalArmingDelay)
             keys.armed = !Task.isCancelled
         }
     }
@@ -328,8 +330,8 @@ private struct WindowReader: NSViewRepresentable {
 
 extension View {
     /// Disables approve and deny buttons for a moment after a new request
-    /// takes their place, as the web's bar arms its keys, so a double click
-    /// can't answer one the user never saw.
+    /// takes their place, so a double click or a key press meant for the
+    /// last one can't answer one the user never saw.
     func armedAfterAppearing(id: String) -> some View {
         modifier(ArmedAfterAppearing(id: id))
     }
@@ -344,7 +346,7 @@ private struct ArmedAfterAppearing: ViewModifier {
             .disabled(!armed)
             .task(id: id) {
                 armed = false
-                try? await Task.sleep(for: .milliseconds(400))
+                try? await Task.sleep(for: approvalArmingDelay)
                 armed = true
             }
     }

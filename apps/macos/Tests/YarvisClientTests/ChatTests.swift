@@ -382,3 +382,86 @@ import Testing
             == "[\(id)](yarvis://workspace/\(id))")
     }
 }
+
+@Suite struct ChatLinkActionTests {
+    let artifactId = "3f2a8c1e-0b7d-4e5f-9a6b-1c2d3e4f5a6b"
+
+    @Test func webLinksOpenInTheBrowserFromAnywhere() {
+        let url = URL(string: "https://example.com/a")!
+        #expect(chatLinkAction(url) == .openInBrowser(url))
+        #expect(chatLinkAction(url, fromUntrusted: true) == .openInBrowser(url))
+    }
+
+    @Test func inAppLinksRouteByPlace() {
+        #expect(chatLinkAction(URL(string: "yarvis://artifact/\(artifactId)")!) == .openArtifact(id: artifactId))
+        let settings = URL(string: "yarvis://settings/devices")!
+        #expect(chatLinkAction(settings) == .openPlace(settings))
+        #expect(chatLinkAction(URL(string: "yarvis://nowhere/at/all")!) == .ignore)
+    }
+
+    @Test func anUntrustedArtifactCantMoveTheApp() {
+        #expect(chatLinkAction(URL(string: "yarvis://settings/devices")!, fromUntrusted: true) == .ignore)
+        #expect(chatLinkAction(URL(string: "yarvis://artifact/\(artifactId)")!, fromUntrusted: true) == .ignore)
+    }
+
+    @Test func otherSchemesAreIgnored() {
+        for link in ["file:///etc/passwd", "mailto:a@b.c", "javascript:alert(1)", "ssh://host"] {
+            #expect(chatLinkAction(URL(string: link)!) == .ignore)
+        }
+    }
+}
+
+@Suite struct MinimalTurnTests {
+    @Test func aPlainTurnSendsNoReasoningOrRewind() async throws {
+        let (session, id) = StubProtocol.session { _, _ in (200, json("data: {\"type\":\"done\"}\n\n")) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        for try await _ in try client.sendChat(ChatTurn(sessionId: "s1", message: "hi", provider: "p", model: "m")) {}
+        let (_, body) = try #require(StubProtocol.recorded(id).first)
+        #expect(bodyJSON(body) == .object([
+            "sessionId": .string("s1"), "message": .string("hi"), "provider": .string("p"), "model": .string("m"),
+        ]))
+    }
+}
+
+@Suite struct MarkdownStreamTests {
+    static let reply = """
+        Here's the plan:
+
+        1. Check the router
+        2. Restart it
+
+        ```sh
+        ping 10.0.0.1
+
+        traceroute 10.0.0.1
+        ```
+
+        | Host | Up |
+        |---|---|
+        | nas | yes |
+
+        > Note: **reboot** first.
+
+        Done.
+        """
+
+    @Test func everyPrefixParsesAsAWholeParseWould() {
+        var stream = MarkdownStream()
+        var prefix = ""
+        for ch in Self.reply {
+            prefix.append(ch)
+            #expect(stream.update(prefix) == MarkdownBlock.parse(prefix), "at \(prefix.count) characters")
+        }
+    }
+
+    @Test func aSourceThatDoesntExtendTheLastStartsOver() {
+        var stream = MarkdownStream()
+        stream.update("First\n\nsecond")
+        #expect(stream.update("Other") == [.text("Other")])
+        #expect(stream.update("") == [])
+    }
+
+    @Test func paragraphsAreSeparateBlocks() {
+        #expect(MarkdownBlock.parse("one\n\ntwo") == [.text("one"), .text("two")])
+    }
+}

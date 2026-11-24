@@ -1,10 +1,9 @@
 import SwiftUI
 import YarvisClient
 
-/// Decides what a link in model output does. True lets an http(s) link open
-/// in the browser; an in-app link is followed by the router itself.
+/// Follows a link in model output: opens it in the browser, in the app, or not at all.
 struct ChatLinkRouter: Sendable {
-    let follow: @MainActor @Sendable (URL) -> Bool
+    let follow: @MainActor @Sendable (URL) -> Void
 }
 
 private struct ChatLinkRouterKey: EnvironmentKey {
@@ -16,7 +15,7 @@ private struct WorkspaceNamesKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// Without a router only http(s) links open.
+    /// Without a router a link only opens when it's http(s).
     var chatLinkRouter: ChatLinkRouter? {
         get { self[ChatLinkRouterKey.self] }
         set { self[ChatLinkRouterKey.self] = newValue }
@@ -39,7 +38,7 @@ struct MarkdownText: View {
     @Environment(\.workspaceNames) private var workspaceNames
 
     init(_ source: String) {
-        blocks = MarkdownBlock.parse(source)
+        blocks = MarkdownCache.blocks(source)
     }
 
     init(blocks: [MarkdownBlock]) {
@@ -52,11 +51,13 @@ struct MarkdownText: View {
                 view(for: block)
             }
         }
+        // Every link goes through the router or `openWebLink`, never the
+        // system's handler, which would open any scheme.
         .environment(\.openURL, OpenURLAction { url in
-            let web = ["http", "https"].contains(url.scheme?.lowercased() ?? "")
-            guard let router else { return web ? .systemAction : .discarded }
-            let followed = MainActor.assumeIsolated { router.follow(url) }
-            return followed && web ? .systemAction : .discarded
+            MainActor.assumeIsolated {
+                if let router { router.follow(url) } else { openWebLink(url) }
+            }
+            return .handled
         })
     }
 
@@ -114,9 +115,42 @@ struct MarkdownText: View {
     }
 
     private func inline(_ s: String) -> AttributedString {
-        let source = linkWorkspaceMentions(MarkdownBlock.replacingImages(in: s), names: workspaceNames)
-        return (try? AttributedString(markdown: source,
-                                      options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(s)
+        MarkdownCache.inline(s, names: workspaceNames)
+    }
+}
+
+/// Parsed markdown by source, so a view redrawn for some other reason (a
+/// hover, a new message below) doesn't parse its text again. Cleared when it
+/// grows past `limit`: a stream adds an entry per update for the block still
+/// being written, and those are never asked for again.
+@MainActor
+private enum MarkdownCache {
+    private struct InlineKey: Hashable {
+        var text: String
+        var names: [String: String]
+    }
+
+    private static let limit = 2000
+    private static var parsed: [String: [MarkdownBlock]] = [:]
+    private static var inlined: [InlineKey: AttributedString] = [:]
+
+    static func blocks(_ source: String) -> [MarkdownBlock] {
+        if let hit = parsed[source] { return hit }
+        if parsed.count >= limit { parsed.removeAll() }
+        let blocks = MarkdownBlock.parse(source)
+        parsed[source] = blocks
+        return blocks
+    }
+
+    static func inline(_ text: String, names: [String: String]) -> AttributedString {
+        let key = InlineKey(text: text, names: names)
+        if let hit = inlined[key] { return hit }
+        if inlined.count >= limit { inlined.removeAll() }
+        let source = linkWorkspaceMentions(MarkdownBlock.replacingImages(in: text), names: names)
+        let attributed = (try? AttributedString(markdown: source,
+                                                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+        inlined[key] = attributed
+        return attributed
     }
 }

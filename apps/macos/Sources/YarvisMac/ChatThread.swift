@@ -9,9 +9,8 @@ struct FinishedReasoning: Equatable {
     var seconds: Int?
 }
 
-/// One chat tab's thread and its turn in flight, as the web's
-/// `useChatThread` keeps them. Each tab has its own, so background tabs keep
-/// streaming.
+/// One chat tab's thread and its turn in flight. Each tab has its own, so
+/// background tabs keep streaming.
 @MainActor @Observable
 final class ChatThread: Identifiable {
     let id: String
@@ -23,6 +22,13 @@ final class ChatThread: Identifiable {
     private(set) var messages: [ChatMessage] = []
     /// The turn on screen: streaming, or failed with its tool activity kept.
     private(set) var live = LiveTurn()
+    /// The live reply parsed for display, kept current by `flush`.
+    private(set) var liveBlocks: [MarkdownBlock] = []
+    /// The turn as it streams. `live` copies it at most every
+    /// `deltaFlushInterval`, so a fast stream doesn't redraw on every token.
+    @ObservationIgnored private var streaming = LiveTurn()
+    @ObservationIgnored private var markdown = MarkdownStream()
+    @ObservationIgnored private var flushPending = false
     /// True while the live turn's activity is on screen.
     private(set) var showsLive = false
     var busy: Bool { turn != nil }
@@ -51,6 +57,8 @@ final class ChatThread: Identifiable {
         if let sessionId { Task { await loadMessages(sessionId) } }
     }
 
+    private static let deltaFlushInterval: Duration = .milliseconds(50)
+
     var approvals: [ToolApprovalRequest] { live.approvals }
     var awaitingApproval: Bool { !live.approvals.isEmpty }
     var queueHeld: Bool { queue.held && !busy && !queue.items.isEmpty }
@@ -64,7 +72,7 @@ final class ChatThread: Identifiable {
         turnId = UUID()
         sessionId = id
         messages = []
-        live = LiveTurn()
+        resetLive()
         showsLive = false
         error = nil
         notice = nil
@@ -183,7 +191,7 @@ final class ChatThread: Identifiable {
     private func runTurn(id: UUID, text: String, provider: String, model: String, reasoning: Bool,
                          rewindTo: String?, resend: Bool) async {
         defer { if turnId == id { turn = nil } }
-        live = LiveTurn()
+        resetLive()
         showsLive = true
         var sessionId = self.sessionId
         do {
@@ -200,7 +208,7 @@ final class ChatThread: Identifiable {
             let stream = try client.sendChat(ChatTurn(sessionId: sessionId, message: text, provider: provider,
                                                       model: model, reasoning: reasoning, rewindTo: rewindTo))
             for try await event in stream where turnId == id {
-                live.apply(event)
+                applyStreamed(event)
             }
             // Cancelling the consumer ends the stream without an error, so a
             // stop is told apart here.
@@ -211,7 +219,8 @@ final class ChatThread: Identifiable {
             finish(id: id, sessionId: sessionId, cancelled: true, rewound: rewindTo != nil)
         } catch {
             guard turnId == id else { return }
-            live.fail(TurnFailure(error))
+            streaming.fail(TurnFailure(error))
+            flush()
             ended(failed: true, sessionId: sessionId, rewound: rewindTo != nil)
             self.error = TurnFailure(error)
         }
@@ -219,7 +228,9 @@ final class ChatThread: Identifiable {
 
     private func finish(id: UUID, sessionId: String?, cancelled: Bool, rewound: Bool) {
         guard turnId == id else { return }
-        switch live.finish(cancelled: cancelled) {
+        let outcome = streaming.finish(cancelled: cancelled)
+        flush()
+        switch outcome {
         case .stopped:
             notice = "Turn stopped. Nothing was saved for it."
             ended(failed: true, sessionId: sessionId, rewound: rewound)
@@ -237,7 +248,7 @@ final class ChatThread: Identifiable {
         queue.turnEnded(failed: failed)
         turn = nil
         guard let sessionId else { return }
-        let finished = live
+        let finished = streaming
         let id = turnId
         Task {
             // A failed rewind may have left the screen and the sidecar
@@ -249,7 +260,7 @@ final class ChatThread: Identifiable {
                 if !finished.reasoning.isEmpty, let reply = messages.last(where: { $0.role == "assistant" }) {
                     reasoning[reply.id] = FinishedReasoning(text: finished.reasoning, seconds: finished.reasoningSeconds)
                 }
-                live = LiveTurn()
+                resetLive()
                 showsLive = false
             }
             chat?.turnFinished(sessionId: sessionId)
@@ -257,10 +268,43 @@ final class ChatThread: Identifiable {
         }
     }
 
+    // MARK: Showing the live turn
+
+    /// Text arrives in small pieces, so it waits for the next flush. Anything
+    /// else, an approval most of all, shows at once.
+    private func applyStreamed(_ event: ChatStreamEvent) {
+        streaming.apply(event)
+        switch event {
+        case .delta, .reasoning:
+            guard !flushPending else { return }
+            flushPending = true
+            Task {
+                try? await Task.sleep(for: Self.deltaFlushInterval)
+                flushPending = false
+                flush()
+            }
+        default:
+            flush()
+        }
+    }
+
+    private func flush() {
+        if live.reply != streaming.reply { liveBlocks = markdown.update(streaming.reply) }
+        live = streaming
+    }
+
+    private func resetLive() {
+        streaming = LiveTurn()
+        markdown = MarkdownStream()
+        liveBlocks = []
+        live = streaming
+    }
+
     // MARK: Approvals
 
     func answer(_ request: ToolApprovalRequest, approved: Bool) {
-        live.answered(request.id)
+        streaming.answered(request.id)
+        flush()
         guard let app = chat?.app else { return }
         Task {
             do {
@@ -277,7 +321,8 @@ final class ChatThread: Identifiable {
     /// approved even when saving the preference fails, since the user said yes.
     func alwaysAllow(_ request: ToolApprovalRequest) {
         guard let toolId = request.toolId, toolId.hasPrefix("mcp:") else { return answer(request, approved: true) }
-        live.answered(request.id)
+        streaming.answered(request.id)
+        flush()
         guard let app = chat?.app else { return }
         Task {
             do {
