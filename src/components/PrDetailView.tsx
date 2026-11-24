@@ -170,7 +170,7 @@ export default function PrDetailView({
   const { data: detail, error, loading, refreshing } = usePrDetail(prRef);
   // The same request the diffs below render, so a merge is pinned to the
   // commit on screen rather than to a detail that may have reloaded since.
-  const diffHeadSha = usePrFiles(prRef).data?.headSha ?? null;
+  const fileSet = usePrFiles(prRef).data;
   // Null for a provider with no stacks (Azure), and a one-entry stack for a PR
   // that simply isn't stacked — the section renders for neither.
   const { data: fetchedStack } = usePrStack(prRef);
@@ -213,7 +213,8 @@ export default function PrDetailView({
       <PrFloatingHeader
         pr={pr}
         detail={detail}
-        diffHeadSha={diffHeadSha}
+        diffHeadSha={fileSet?.headSha ?? null}
+        diffIncomplete={fileSet?.incomplete ?? false}
         loading={loading}
         refreshing={refreshing}
         onBack={onBack}

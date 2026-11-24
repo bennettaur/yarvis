@@ -38,11 +38,18 @@ export function setPrFileContent(text: string | null): void {
  */
 export function setPrFiles(
   data: PrFile[] | null,
-  over: Partial<Omit<FilesResource, "data">> & { headSha?: string | null } = {},
+  over: Partial<Omit<FilesResource, "data">> & {
+    headSha?: string | null;
+    incomplete?: boolean;
+  } = {},
 ): void {
   stubPrFiles();
   filesResource = {
-    data: data && { headSha: over.headSha ?? null, files: data },
+    data: data && {
+      headSha: over.headSha ?? null,
+      files: data,
+      incomplete: over.incomplete ?? false,
+    },
     error: over.error ?? null,
     loading: over.loading ?? false,
     refreshing: over.refreshing ?? false,

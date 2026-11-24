@@ -182,7 +182,7 @@ describe("github files route", () => {
       )) as unknown as typeof fetch;
     const res = await configured.request("/api/github/pr/octo/repo/1/files", { headers: auth });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ headSha, files: [file] });
+    expect(await res.json()).toEqual({ headSha, files: [file], incomplete: false });
   });
 });
 

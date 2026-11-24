@@ -239,6 +239,25 @@ describe("PrFloatingHeader merge pinning", () => {
     unmount();
   });
 
+  it("refuses to merge when the diff stops short of the PR's last file", async () => {
+    merges.length = 0;
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail({ headSha: "e".repeat(40) }),
+        diffHeadSha: "d".repeat(40),
+        diffIncomplete: true,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+    await merge(host);
+    await waitFor(() => (host.textContent ?? "").includes("first 3,000 changed files"));
+    expect(merges).toEqual([]);
+    unmount();
+  });
+
   it("refuses to merge while the diff's commit is unknown", async () => {
     merges.length = 0;
     const { host, unmount } = await mountForInteraction(

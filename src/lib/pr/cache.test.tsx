@@ -19,7 +19,7 @@ stubPrApi({
     if (loadMs > 0) await new Promise((resolve) => setTimeout(resolve, loadMs));
     return { draft, number: ref.provider === "github" ? ref.number : ref.prId } as PrDetail;
   },
-  fetchPrFiles: async () => ({ headSha: null, files: [] }),
+  fetchPrFiles: async () => ({ headSha: null, files: [], incomplete: false }),
   fetchPrStatus: async () => ({}) as PrStatus,
   fetchPrFileDiff: async () => {
     diffFetchCount++;

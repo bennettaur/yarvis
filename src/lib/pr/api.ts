@@ -64,7 +64,7 @@ export const fetchPrDetail = (ref: PrRef): Promise<PrDetail> =>
 export const fetchPrFiles = (ref: PrRef): Promise<PrFileSet> =>
   ref.provider === "github"
     ? ghPrFiles(ref)
-    : azPrFiles(ref).then((files) => ({ headSha: null, files }));
+    : azPrFiles(ref).then((files) => ({ headSha: null, files, incomplete: false }));
 
 /**
  * One file's diff. GitHub returns patches in the file list, so the file is

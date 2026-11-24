@@ -2145,19 +2145,19 @@ export class GitHubClient {
    * commit, so the head is read before it and again after, one request at a
    * time: a head read that overlapped the list could see a push the list
    * missed. When the two reads differ a push landed mid-read, and `headSha`
-   * is null.
+   * is null. `incomplete` is set when GitHub stopped listing at 3,000 files.
    */
   async prFilesAtHead(
     owner: string,
     repo: string,
     number: number,
-  ): Promise<{ headSha: string | null; files: PrFile[] }> {
+  ): Promise<{ headSha: string | null; files: PrFile[]; incomplete: boolean }> {
     const readHeadSha = async (): Promise<string | null> =>
       (await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`)).head?.sha ?? null;
     const before = await readHeadSha();
-    const files = await this.prFiles(owner, repo, number);
+    const { files, incomplete } = await this.allPrFiles(owner, repo, number);
     const after = await readHeadSha();
-    return { headSha: before && before === after ? before : null, files };
+    return { headSha: before && before === after ? before : null, files, incomplete };
   }
 
   /**

@@ -316,11 +316,21 @@ function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState
  * head the surface is showing, which a review records as where the user
  * reviewed.
  */
+const TOO_MANY_FILES =
+  "GitHub lists only the first 3,000 changed files, so not all of this PR is shown here. Merge it on GitHub.";
+
 export function usePrActions(
   prRef: PrRef,
   seen?: SeenCommits,
   // The commit a merge is pinned to, when it isn't the one reviews record.
-  { mergeHeadSha = seen?.headSha }: { mergeHeadSha?: string | null } = {},
+  {
+    mergeHeadSha = seen?.headSha,
+    mergeRefusal,
+  }: {
+    mergeHeadSha?: string | null;
+    /** Why there's no commit to pin to, when it isn't that none is known yet. */
+    mergeRefusal?: string;
+  } = {},
 ) {
   // Publishing, approving or merging changes both how this pull request reads
   // and how its layer reads in a stack, so the two caches are dropped together.
@@ -368,7 +378,7 @@ export function usePrActions(
     // loading) it refuses rather than merge unpinned.
     const headSha = mergeHeadSha;
     if (!headSha) {
-      setError("There's no reviewed commit to merge yet.");
+      setError(mergeRefusal ?? "There's no reviewed commit to merge yet.");
       return;
     }
     setMergePending(true);
@@ -589,6 +599,7 @@ export default function PrFloatingHeader({
   pr,
   detail,
   diffHeadSha = null,
+  diffIncomplete = false,
   loading = false,
   refreshing = false,
   onBack,
@@ -602,6 +613,8 @@ export default function PrFloatingHeader({
    * refused while it's unknown (still loading, or a push landed mid-read).
    */
   diffHeadSha?: string | null;
+  /** Whether the diff on screen stops short of the PR's last file. Merge is refused then. */
+  diffIncomplete?: boolean;
   /**
    * Whether the detail behind this header is still on its way. Clicking a layer
    * of a stack swaps the pull request instantly and then waits on a provider
@@ -617,11 +630,14 @@ export default function PrFloatingHeader({
 }) {
   const prRef: PrRef = pr.ref;
   // Reviews record the diff's commit, or the detail's where the provider
-  // doesn't name one (Azure). Merge takes only the diff's.
+  // doesn't name one (Azure). Merge takes only the diff's, and only when the
+  // diff holds every file.
   const actions = usePrActions(
     prRef,
     { headSha: diffHeadSha ?? detail?.headSha },
-    { mergeHeadSha: diffHeadSha },
+    diffIncomplete
+      ? { mergeHeadSha: null, mergeRefusal: TOO_MANY_FILES }
+      : { mergeHeadSha: diffHeadSha },
   );
   const [starPending, setStarPending] = useState(false);
   // The summary's title can be empty when the entry came from the workspace

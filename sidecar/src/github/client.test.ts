@@ -823,6 +823,30 @@ describe("github client", () => {
       expect(order).toEqual(["head", "files", "head"]);
     });
 
+    it("reads every page of files, and says when GitHub stopped listing", async () => {
+      const head = "c".repeat(40);
+      const page = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({ ...file, filename: `f${i}.ts` }));
+      // Full pages forever, unless capped: GitHub stops at page 30 (3,000 files).
+      const listing = (lastPage: number) =>
+        (async (url: string) => {
+          const match = String(url).match(/\/files\?.*page=(\d+)/);
+          const body = match
+            ? page(Number(match[1]) < lastPage ? 100 : 1)
+            : { head: { sha: head } };
+          return new Response(JSON.stringify(body), { status: 200 });
+        }) as unknown as typeof fetch;
+
+      const two = await new GitHubClient("t", listing(2)).prFilesAtHead("o", "r", 1);
+      expect(two.files).toHaveLength(101);
+      expect(two.incomplete).toBe(false);
+      expect(two.headSha).toBe(head);
+
+      const capped = await new GitHubClient("t", listing(99)).prFilesAtHead("o", "r", 1);
+      expect(capped.files).toHaveLength(3000);
+      expect(capped.incomplete).toBe(true);
+    });
+
     it("names no commit when the PR reports no head", async () => {
       const gh = new GitHubClient("t", pushingFetch([]));
       expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();

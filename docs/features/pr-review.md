@@ -95,6 +95,8 @@ On GitHub, **Merge** and auto-merge in the PR's header are pinned to the
 commit the diff on screen was loaded at. If someone has pushed since, GitHub
 refuses the merge; reload the PR and look again. While the diff is still
 loading, or a push landed as it loaded, merging is refused until it reloads.
+GitHub lists at most 3,000 changed files. A bigger PR shows those and says
+the rest aren't shown, and you merge it on GitHub instead.
 
 ### Comment on a PR
 
