@@ -57,6 +57,13 @@ public struct LivePass: Sendable, Equatable {
     }
 }
 
+/// The first non-blank line, without reading past it: a thought can run long
+/// and is folded on every streamed token.
+public func firstLine(of text: String) -> Substring {
+    let start = text.drop(while: \.isWhitespace)
+    return start.prefix(while: { !$0.isNewline })
+}
+
 /// Follows the page's stream: the pass in flight, and whether the lists need reading again.
 public struct HeadsDownLive: Sendable, Equatable {
     public private(set) var pass: LivePass?
@@ -83,8 +90,9 @@ public struct HeadsDownLive: Sendable, Equatable {
         return false
     }
 
-    /// The stream dropped: a pass that finished meanwhile told nobody, so the
-    /// lists are read again rather than trusting what was live.
+    /// Forgets the pass in flight. Call it when the stream drops: a pass that
+    /// finishes while it is down tells nobody, so the caller reads the lists
+    /// again instead.
     public mutating func reset() {
         pass = nil
     }
@@ -148,17 +156,28 @@ public enum NextPass: Sendable, Equatable {
     }
 }
 
+/// Hour and minute from "HH:MM" (one-digit parts allowed). Nil when malformed or out of range.
+public func parseHHMM(_ value: String) -> (hour: Int, minute: Int)? {
+    let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+          (0..<24).contains(hour), (0..<60).contains(minute) else { return nil }
+    return (hour, minute)
+}
+
 /// The next time the clock reads `hhmm` ("19:00"), as an ISO timestamp:
 /// today, or tomorrow once today's has passed. Nil for a malformed time.
+/// Tomorrow is a calendar day, so a DST change overnight keeps the wall time.
 public func nextOccurrence(_ hhmm: String, now: Date = Date(), calendar: Calendar = .current) -> String? {
-    let parts = hhmm.split(separator: ":").compactMap { Int($0) }
-    guard parts.count == 2, (0..<24).contains(parts[0]), (0..<60).contains(parts[1]),
-          var at = calendar.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: now)
+    guard let time = parseHHMM(hhmm),
+          var at = calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: now)
     else { return nil }
-    if at <= now, let tomorrow = calendar.date(byAdding: .day, value: 1, to: at) { at = tomorrow }
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return f.string(from: at)
+    if at <= now {
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now)),
+              let next = calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: tomorrow)
+        else { return nil }
+        at = next
+    }
+    return ISO8601DateFormatter().string(from: at)
 }
 
 /// "HH:MM" for a time of day, as the stop-time and working-hours fields send it.
@@ -169,9 +188,8 @@ public func hhmm(_ date: Date, calendar: Calendar = .current) -> String {
 
 /// A date on `reference`'s day at "HH:MM", for a time picker. Nil when malformed.
 public func dateForHHMM(_ value: String, on reference: Date = Date(), calendar: Calendar = .current) -> Date? {
-    let parts = value.split(separator: ":").compactMap { Int($0) }
-    guard parts.count == 2 else { return nil }
-    return calendar.date(bySettingHour: parts[0], minute: parts[1], second: 0, of: reference)
+    guard let time = parseHHMM(value) else { return nil }
+    return calendar.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: reference)
 }
 
 // MARK: - Passes
@@ -392,18 +410,30 @@ extension MergeReview {
         prs.first.map { "\($0.repo)#\($0.number)" } ?? "a PR"
     }
 
-    /// Where Review goes after denying: the first PR, or the Heads down page
-    /// when there is no PR it could name.
-    public var reviewTarget: JSONValue {
-        if let pr = prs.first {
-            let parts = pr.repo.split(separator: "/", maxSplits: 1).map(String.init)
-            if parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty {
-                return .object(["type": .string("pr"), "owner": .string(parts[0]), "repo": .string(parts[1]),
-                                "number": .number(Double(pr.number))])
-            }
-        }
-        return .object(["type": .string("heads-down")])
+    /// The PR Review opens after denying, or nil when there is none it can
+    /// name; the Heads down page has the merge then.
+    public var reviewURL: URL? {
+        prs.first.flatMap { gitHubPullRequestURL(repo: $0.repo, number: $0.number) }
     }
+}
+
+/// A GitHub PR's page. Merge feedback is only read for GitHub PRs
+/// (`headsDown/mergeFeedback.ts`), so a PR it names lives there.
+public func gitHubPullRequestURL(repo: String, number: Int) -> URL? {
+    let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+    guard parts.count == 2, parts.allSatisfy({ !$0.isEmpty }),
+          let owner = parts.first.map({ encodePathSegment(String($0)) }),
+          let name = parts.last.map({ encodePathSegment(String($0)) })
+    else { return nil }
+    return URL(string: "https://github.com/\(owner)/\(name)/pull/\(number)")
+}
+
+/// The page of an attention item's `{"type":"pr"}` target.
+public func gitHubPullRequestURL(navTarget: JSONValue?) -> URL? {
+    guard navTarget?["type"]?.stringValue == "pr", let owner = navTarget?["owner"]?.stringValue,
+          let repo = navTarget?["repo"]?.stringValue, case .number(let n)? = navTarget?["number"]
+    else { return nil }
+    return gitHubPullRequestURL(repo: "\(owner)/\(repo)", number: Int(n))
 }
 
 extension FeedbackThread {
@@ -424,29 +454,109 @@ public enum MentionSegment: Equatable, Sendable {
     case workspace(id: String, name: String)
 }
 
-private let standaloneId = try! NSRegularExpression(
-    pattern: #"(?<![\w/\-])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\w/\-])"#,
-    options: [.caseInsensitive])
-
-/// Splits plain text around the ids of known workspaces. An id inside a path
-/// or URL is part of that, not a mention.
+/// Splits plain text around the ids of known workspaces.
 public func splitWorkspaceMentions(_ text: String, names: [String: String]) -> [MentionSegment] {
-    guard !names.isEmpty else { return text.isEmpty ? [] : [.text(text)] }
-    let lowered = Dictionary(names.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
     let ns = text as NSString
     var segments: [MentionSegment] = []
     var last = 0
-    for match in standaloneId.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-        let id = ns.substring(with: match.range).lowercased()
-        guard let name = lowered[id] else { continue }
-        if match.range.location > last {
-            segments.append(.text(ns.substring(with: NSRange(location: last, length: match.range.location - last))))
+    for mention in WorkspaceMentionMatcher.plain.mentions(in: text, names: names) {
+        if mention.range.location > last {
+            segments.append(.text(ns.substring(with: NSRange(location: last, length: mention.range.location - last))))
         }
-        segments.append(.workspace(id: id, name: name))
-        last = match.range.location + match.range.length
+        segments.append(.workspace(id: mention.id, name: mention.name))
+        last = mention.range.location + mention.range.length
     }
     if last < ns.length { segments.append(.text(ns.substring(from: last))) }
     return segments
+}
+
+// MARK: - Links in pass text
+
+/// What a link in agent-written text does. The text can quote what a pass read
+/// (an issue, a PR comment), so it doesn't get to move the app around: only
+/// workspace links, which the app writes for ids it knows and which only
+/// navigate, open in the app. http(s) opens in the browser; anything else is inert.
+public func headsDownLinkAction(_ url: URL) -> ChatLinkAction {
+    if case .workspace? = YarvisPlace(url) { return .openPlace(url) }
+    return chatLinkAction(url, fromUntrusted: true)
+}
+
+// MARK: - Pop-ups
+
+/// What heads-down mode shows over the current page. A held merge goes first,
+/// since it waits on the user's answer; then merges it made, newest first;
+/// then the questions dialog the user opened.
+public enum HeadsDownPopup: Identifiable, Equatable, Sendable {
+    case review(AttentionItem, MergeReview, remaining: Int)
+    case merge(AttentionItem, MergeAnnouncement, remaining: Int)
+    case questions
+
+    public var id: String {
+        switch self {
+        case .review(let item, _, _): return "review:\(item.id)"
+        case .merge(let item, _, _): return "merge:\(item.id)"
+        case .questions: return "questions"
+        }
+    }
+
+    /// `items` are the bell's pending items, newest first. Held merges the
+    /// user put away (`deferred`) are skipped.
+    public static func choose(items: [AttentionItem], deferred: Set<String>, questionsOpen: Bool) -> HeadsDownPopup? {
+        let reviews = items.compactMap { item in
+            deferred.contains(item.id) ? nil : mergeReview(of: item).map { (item, $0) }
+        }
+        if let (item, review) = reviews.first { return .review(item, review, remaining: reviews.count - 1) }
+        let merges = items.compactMap { item in mergeAnnouncement(of: item).map { (item, $0) } }
+        if let (item, merge) = merges.first { return .merge(item, merge, remaining: merges.count - 1) }
+        return questionsOpen ? .questions : nil
+    }
+}
+
+// MARK: - The question dialog
+
+/// The question dialog's list: the clicked question first, then each other
+/// open one, until none are left.
+public struct HeadsDownQuestionFlow: Equatable, Sendable {
+    /// The question the user clicked.
+    public let firstId: String?
+    /// Nil until the first load lands.
+    public private(set) var questions: [HeadsDownQuestion]?
+    public private(set) var error: String?
+    /// The front question was answered and the list is being read again; its
+    /// card stays on screen, inert, until then.
+    public private(set) var reloading = false
+
+    public enum Load: Equatable, Sendable {
+        case loaded([HeadsDownQuestion])
+        case failed(String)
+    }
+
+    public init(firstId: String?) {
+        self.firstId = firstId
+    }
+
+    public var current: HeadsDownQuestion? { questions?.first }
+
+    public mutating func answered() {
+        reloading = true
+    }
+
+    /// Applies a load. True when an answer left nothing open, so the dialog closes.
+    public mutating func apply(_ load: Load) -> Bool {
+        let afterAnswer = reloading
+        reloading = false
+        switch load {
+        case .loaded(let open):
+            questions = orderQuestions(open, first: firstId)
+            error = nil
+            return afterAnswer && open.isEmpty
+        case .failed(let message):
+            error = message
+            // At least stop offering the question just answered.
+            if afterAnswer, questions?.isEmpty == false { questions?.removeFirst() }
+            return false
+        }
+    }
 }
 
 // MARK: - Settings

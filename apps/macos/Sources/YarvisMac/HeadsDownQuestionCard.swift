@@ -61,12 +61,13 @@ struct HeadsDownQuestionCard: View {
                     .buttonStyle(.borderedProminent)
                 Button("Deny") { run { try await $0.answerHeadsDownQuestion(id: id, choice: "deny") } }
                 if let tool = question.mcpTool {
-                    Button("Always allow this tool in heads-down mode") {
+                    Button("Always allow \(question.mcpToolName ?? tool) in heads-down mode") {
                         run {
                             try await $0.setHeadsDownToolAllowed(tool, allowed: true)
                             try await $0.answerHeadsDownQuestion(id: id, choice: "approve")
                         }
                     }
+                    .help("Lets heads-down mode call \(tool) without asking, and approves this call")
                 }
             } else {
                 ForEach(question.options, id: \.self) { option in
@@ -81,11 +82,13 @@ struct HeadsDownQuestionCard: View {
 
     private func answerInWords() {
         let text = trimmed
-        guard !text.isEmpty else { return }
+        guard !busy, !text.isEmpty else { return }
         let id = question.id
         run { try await $0.answerHeadsDownQuestion(id: id, answer: text) }
     }
 
+    /// Calls the client itself rather than `perform`, since what to read
+    /// again is the caller's: the page reads its lists, the dialog its next question.
     private func run(_ action: @escaping @Sendable (YarvisClient) async throws -> Void) {
         busy = true
         error = nil

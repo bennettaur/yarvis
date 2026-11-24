@@ -112,7 +112,7 @@ final class AttentionModel {
         navigate(item.navTarget)
     }
 
-    func navigate(_ target: JSONValue?) {
+    private func navigate(_ target: JSONValue?) {
         switch target?["type"]?.stringValue {
         case "chat":
             if let id = target?["sessionId"]?.stringValue { app.openChat(sessionId: id) } else { app.section = .chat }

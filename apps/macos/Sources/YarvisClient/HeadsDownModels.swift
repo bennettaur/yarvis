@@ -50,7 +50,7 @@ public struct HeadsDownPass: Codable, Sendable, Identifiable, Equatable {
     /// Only on the pass list.
     public var failedCalls: [HeadsDownFailedCall]?
 
-    public init(id: String, runId: String = "r", startedAt: String, finishedAt: String? = nil,
+    public init(id: String, runId: String, startedAt: String, finishedAt: String? = nil,
                 notes: String? = nil, sleepMinutes: Double? = nil, sleepReason: String? = nil,
                 error: String? = nil, callCount: Int? = nil, failedCalls: [HeadsDownFailedCall]? = nil) {
         self.id = id
@@ -125,6 +125,11 @@ public struct HeadsDownQuestion: Codable, Sendable, Identifiable, Equatable {
         guard isApproval, let action, action.hasPrefix("mcp:") else { return nil }
         return action
     }
+
+    /// The tool part of `mcpTool`'s `mcp:<server>:<tool>`.
+    public var mcpToolName: String? {
+        mcpTool.map { $0.split(separator: ":", maxSplits: 2).last.map(String.init) ?? $0 }
+    }
 }
 
 public struct HeadsDownMessage: Codable, Sendable, Identifiable, Equatable {
@@ -165,9 +170,10 @@ public struct HeadsDownConfig: Codable, Sendable, Equatable {
     /// 0 turns routines off.
     public var maxRoutinesPerPass: Int
 
-    public init(minSleepMinutes: Int = 5, maxSleepMinutes: Int = 60, idleSleepMinutes: Int = 30,
-                workingHours: WorkingHours? = .standard, userAwayAfterMinutes: Int = 15,
-                passTimeoutMinutes: Int = 30, provider: String? = nil, model: String? = nil,
+    /// The defaults are the sidecar's (`DEFAULT_HEADS_DOWN_CONFIG`).
+    public init(minSleepMinutes: Int = 5, maxSleepMinutes: Int = 120, idleSleepMinutes: Int = 60,
+                workingHours: WorkingHours? = .standard, userAwayAfterMinutes: Int = 120,
+                passTimeoutMinutes: Int = 20, provider: String? = nil, model: String? = nil,
                 guidance: String? = nil, maxRoutinesPerPass: Int = 2) {
         self.minSleepMinutes = minSleepMinutes
         self.maxSleepMinutes = maxSleepMinutes

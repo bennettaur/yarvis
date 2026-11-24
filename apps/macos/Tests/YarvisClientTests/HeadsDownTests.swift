@@ -135,7 +135,7 @@ private var utc: Calendar {
         #expect(NextPass(state: .init(run: paused), run: paused, working: true) == .paused)
         var stopping = run
         stopping.stopAt = "y"
-        let last = HeadsDownPass(id: "p", startedAt: "x")
+        let last = HeadsDownPass(id: "p", runId: "r", startedAt: "x")
         #expect(NextPass(state: .init(run: stopping, lastPass: last), run: stopping, working: false) == .noneBeforeStop)
         #expect(NextPass(state: .init(run: run), run: run, working: false) == .starting)
     }
@@ -151,25 +151,27 @@ private var utc: Calendar {
 
     @Test func aStopTimeIsTodayOrTomorrow() {
         let now = parseISODate("2026-11-24T12:30:00Z")!
-        #expect(nextOccurrence("19:00", now: now, calendar: utc) == "2026-11-24T19:00:00.000Z")
-        #expect(nextOccurrence("12:30", now: now, calendar: utc) == "2026-11-25T12:30:00.000Z")
-        #expect(nextOccurrence("9:5", now: now, calendar: utc) == "2026-11-25T09:05:00.000Z")
+        #expect(nextOccurrence("19:00", now: now, calendar: utc) == "2026-11-24T19:00:00Z")
+        #expect(nextOccurrence("12:30", now: now, calendar: utc) == "2026-11-25T12:30:00Z")
+        #expect(nextOccurrence("9:5", now: now, calendar: utc) == "2026-11-25T09:05:00Z")
         #expect(nextOccurrence("25:00", now: now, calendar: utc) == nil)
+        #expect(nextOccurrence("12:60", now: now, calendar: utc) == nil)
+        #expect(nextOccurrence("12", now: now, calendar: utc) == nil)
         #expect(hhmm(now, calendar: utc) == "12:30")
     }
 }
 
 @Suite struct HeadsDownTextTests {
     @Test func sleepAndCalls() {
-        #expect(describeSleep(HeadsDownPass(id: "p", startedAt: "", sleepMinutes: 12, sleepReason: "idle"))
+        #expect(describeSleep(HeadsDownPass(id: "p", runId: "r", startedAt: "", sleepMinutes: 12, sleepReason: "idle"))
             == "Then slept 12 min (idle)")
-        #expect(describeSleep(HeadsDownPass(id: "p", startedAt: "", sleepMinutes: 5, sleepReason: "stopped by you"))
+        #expect(describeSleep(HeadsDownPass(id: "p", runId: "r", startedAt: "", sleepMinutes: 5, sleepReason: "stopped by you"))
             == "Stopped by you")
-        #expect(describeSleep(HeadsDownPass(id: "p", startedAt: "")) == nil)
+        #expect(describeSleep(HeadsDownPass(id: "p", runId: "r", startedAt: "")) == nil)
         let calls = [HeadsDownFailedCall(name: "a", server: "gh", error: "boom"),
                      HeadsDownFailedCall(name: "b", server: nil, error: nil, noResult: true)]
-        #expect(describeCalls(HeadsDownPass(id: "p", startedAt: "", callCount: 1)) == "1 tool call")
-        #expect(describeCalls(HeadsDownPass(id: "p", startedAt: "", callCount: 4, failedCalls: calls))
+        #expect(describeCalls(HeadsDownPass(id: "p", runId: "r", startedAt: "", callCount: 1)) == "1 tool call")
+        #expect(describeCalls(HeadsDownPass(id: "p", runId: "r", startedAt: "", callCount: 4, failedCalls: calls))
             == "4 tool calls · 1 failed · 1 with no result")
         #expect(describeFailedCall(calls[0]) == "gh/a: boom")
         #expect(describeFailedCall(calls[1]) == "b: no result")
@@ -247,9 +249,13 @@ private var utc: Calendar {
         #expect(review.prs[0].handoffNote == "No workspace has this PR, so nobody was asked to address it.")
         #expect(review.prs[0].moreThreadsNote == "2 more unresolved threads on the PR.")
         #expect(review.prs[0].threads[0].heading == "Reviewer comment from bob on a.ts:4 (outdated) · 2 replies")
-        #expect(review.reviewTarget["type"]?.stringValue == "pr")
-        #expect(review.reviewTarget["owner"]?.stringValue == "o")
-        #expect(MergeReview(questionId: "q", prs: [], unchecked: "no token").reviewTarget["type"]?.stringValue == "heads-down")
+        #expect(review.reviewURL == URL(string: "https://github.com/o/r/pull/3"))
+        #expect(MergeReview(questionId: "q", prs: [], unchecked: "no token").reviewURL == nil)
+        #expect(gitHubPullRequestURL(repo: "no-slash", number: 1) == nil)
+        #expect(gitHubPullRequestURL(repo: "o/r/x", number: 1) == nil)
+        let target = try JSONDecoder().decode(JSONValue.self, from: json(#"{"type":"pr","owner":"o","repo":"r","number":9}"#))
+        #expect(gitHubPullRequestURL(navTarget: target) == URL(string: "https://github.com/o/r/pull/9"))
+        #expect(gitHubPullRequestURL(navTarget: .object(["type": .string("workspace")])) == nil)
         #expect(mergeReview(of: try item(sessionKey: "heads-down:q9", kind: "info", payload:
             #"{"headsDownMergeReview":{"questionId":"q9","prs":[]}}"#)) == nil)
     }
@@ -331,5 +337,217 @@ private var utc: Calendar {
           {"id":"m","role":"assistant","content":"done","toolCalls":null,"createdAt":"x"}]}
         """#)
         #expect(try await c.headsDownPassMessages(id: "p").map(\.content) == ["done"])
+    }
+}
+
+@Suite struct HeadsDownReviewFixTests {
+    @Test func aStopTimeAcrossASpringForwardKeepsItsWallTime() throws {
+        var toronto = Calendar(identifier: .gregorian)
+        toronto.timeZone = try #require(TimeZone(identifier: "America/Toronto"))
+        // 20:00 EST on 7 March 2026; clocks go forward that night.
+        let now = parseISODate("2026-03-08T01:00:00Z")!
+        #expect(nextOccurrence("19:00", now: now, calendar: toronto) == "2026-03-08T23:00:00Z")
+        // 02:30 doesn't exist that night; the calendar moves it on rather than failing.
+        #expect(nextOccurrence("02:30", now: now, calendar: toronto) != nil)
+        #expect(parseHHMM("07:05")! == (7, 5))
+        #expect(parseHHMM("7:") == nil)
+        #expect(dateForHHMM("24:00") == nil)
+    }
+
+    @Test func retryingFollowsTheStreamsOwnOrder() throws {
+        var live = HeadsDownLive()
+        let frames = [
+            #"{"type":"pass-started","passId":"p"}"#,
+            #"{"type":"pass-event","passId":"p","event":{"type":"reasoning","text":"plan"}}"#,
+            #"{"type":"pass-event","passId":"p","event":{"type":"error","message":"overloaded","transient":true}}"#,
+            #"{"type":"pass-retrying","passId":"p","retryAt":"2026-11-24T10:00:00Z"}"#,
+        ]
+        for frame in frames { _ = live.apply(try HeadsDownStreamEvent.decode(json(frame))) }
+        #expect(live.pass?.error == "overloaded" && live.pass?.retrying == true && live.pass?.isThinking == false)
+        _ = live.apply(try HeadsDownStreamEvent.decode(json(
+            #"{"type":"pass-event","passId":"p","event":{"type":"delta","text":"back"}}"#)))
+        #expect(live.pass?.error == nil && live.pass?.retrying == false && live.pass?.text == "back")
+    }
+
+    @Test func theFirstLineSkipsLeadingBlanks() {
+        #expect(firstLine(of: "\n  first\nsecond") == "first")
+        #expect(firstLine(of: "") == "")
+    }
+
+    @Test func onlyWorkspaceLinksMoveTheAppFromPassText() {
+        let ws = URL(string: "yarvis://workspace/0f8fad5b-d9cb-469f-a165-70867728950e")!
+        #expect(headsDownLinkAction(ws) == .openPlace(ws))
+        #expect(headsDownLinkAction(URL(string: "yarvis://settings/devices")!) == .ignore)
+        #expect(headsDownLinkAction(URL(string: "yarvis://artifact/0f8fad5b-d9cb-469f-a165-70867728950e")!) == .ignore)
+        let web = URL(string: "https://example.com")!
+        #expect(headsDownLinkAction(web) == .openInBrowser(web))
+        #expect(headsDownLinkAction(URL(string: "file:///etc/passwd")!) == .ignore)
+    }
+
+    @Test func anMcpApprovalNamesItsTool() {
+        let q = HeadsDownQuestion(id: "q", kind: "approval", question: "", action: "mcp:github:merge_pr", createdAt: "")
+        #expect(q.mcpToolName == "merge_pr")
+    }
+}
+
+@Suite struct HeadsDownQuestionFlowTests {
+    private func q(_ id: String, _ at: String) -> HeadsDownQuestion {
+        HeadsDownQuestion(id: id, question: id, createdAt: at)
+    }
+
+    @Test func anAnswerShowsTheNextAndTheLastCloses() {
+        var flow = HeadsDownQuestionFlow(firstId: "b")
+        let closes1 = flow.apply(.loaded([q("a", "1"), q("b", "2")]))
+        #expect(!closes1)
+        #expect(flow.current?.id == "b")
+        flow.answered()
+        #expect(flow.reloading)
+        let closes2 = flow.apply(.loaded([q("a", "1")]))
+        #expect(!closes2)
+        #expect(flow.current?.id == "a" && !flow.reloading)
+        flow.answered()
+        let closes3 = flow.apply(.loaded([]))
+        #expect(closes3)
+    }
+
+    @Test func aFailedReloadDropsTheAnsweredQuestionAndClearsReloading() {
+        var flow = HeadsDownQuestionFlow(firstId: nil)
+        _ = flow.apply(.loaded([q("a", "1"), q("b", "2")]))
+        flow.answered()
+        let closes4 = flow.apply(.failed("offline"))
+        #expect(!closes4)
+        #expect(flow.current?.id == "b" && flow.error == "offline" && !flow.reloading)
+    }
+
+    @Test func aLoadNotAfterAnAnswerNeverCloses() {
+        var flow = HeadsDownQuestionFlow(firstId: nil)
+        let closes5 = flow.apply(.loaded([]))
+        #expect(!closes5)
+        #expect(flow.questions == [])
+        // A failed first load keeps nothing to drop.
+        var empty = HeadsDownQuestionFlow(firstId: nil)
+        let closes6 = empty.apply(.failed("x"))
+        #expect(!closes6)
+        #expect(empty.questions == nil)
+    }
+}
+
+@Suite struct HeadsDownPopupTests {
+    private let review = #"{"headsDownMergeReview":{"questionId":"q","unchecked":"no token","prs":[]}}"#
+    private let merge = #"{"headsDownMerge":{"repo":"o/r","number":1,"risk":"low","why":"green"}}"#
+
+    @Test func aHeldMergeWinsThenMergesThenQuestions() throws {
+        let items = [
+            try item(id: "m1", sessionKey: "heads-down-merge:1", kind: "info", payload: merge),
+            try item(id: "r1", sessionKey: "heads-down:q1", payload: review),
+            try item(id: "r2", sessionKey: "heads-down:q2", payload: review),
+            try item(id: "m2", sessionKey: "heads-down-merge:2", kind: "info", payload: merge),
+        ]
+        guard case .review(let first, _, let remaining)? = HeadsDownPopup.choose(items: items, deferred: [], questionsOpen: true)
+        else { Issue.record("expected a review"); return }
+        #expect(first.id == "r1" && remaining == 1)
+        guard case .merge(let m, _, let left)? = HeadsDownPopup.choose(items: items, deferred: ["r1", "r2"], questionsOpen: true)
+        else { Issue.record("expected a merge"); return }
+        #expect(m.id == "m1" && left == 1)
+        #expect(HeadsDownPopup.choose(items: [], deferred: [], questionsOpen: true) == .questions)
+        #expect(HeadsDownPopup.choose(items: [], deferred: [], questionsOpen: false) == nil)
+    }
+}
+
+@Suite struct HeadsDownRoutesTests {
+    private let fixtures: [String: String] = [
+        "/api/sidecar/api/heads-down": #"{"run":null,"lastPass":null,"nextPassAt":null,"openQuestionCount":0}"#,
+        "/api/sidecar/api/heads-down/config": #"""
+            {"minSleepMinutes":5,"maxSleepMinutes":120,"idleSleepMinutes":60,
+             "workingHours":{"days":[1,2,3,4,5],"start":"09:00","end":"17:00"},"userAwayAfterMinutes":120,
+             "passTimeoutMinutes":20,"provider":null,"model":null,"guidance":null,"maxRoutinesPerPass":2}
+            """#,
+        "/api/sidecar/api/heads-down/routines": #"""
+            {"routines":[{"name":"triage","description":"Sort new issues","everyMinutes":180,"workingHoursOnly":true,
+              "enabled":true,"source":"builtin","lastDoneAt":null}],
+             "problems":[{"path":"/u/.yarvis/routines/bad.md","message":"no description"}],
+             "userDir":"/u/.yarvis/routines"}
+            """#,
+        "/api/sidecar/api/heads-down/routines/reload": #"{"routines":[],"problems":[],"userDir":"/u"}"#,
+        "/api/sidecar/api/heads-down/allowed-tools": #"[{"id":"mcp:gh:merge","name":"merge"}]"#,
+        "/api/sidecar/api/heads-down/passes/p": #"{"pass":{"id":"p","runId":"r","startedAt":"x"},"messages":[]}"#,
+        "/api/sidecar/api/work-streams": "[]",
+        "/api/sidecar/api/heads-down/questions": "[]",
+        "/api/sidecar/api/heads-down/auto-approvals": "[]",
+        "/api/sidecar/api/heads-down/passes": "[]",
+        "/api/sidecar/api/heads-down/messages": "[]",
+    ]
+
+    private func client() -> (YarvisClient, String) {
+        let fixtures = fixtures
+        let (session, id) = StubProtocol.session { req, _ in
+            let path = req.url?.path ?? ""
+            return (200, json(req.httpMethod == "GET" || path.hasSuffix("/reload") ? fixtures[path] ?? "{}" : "{}"))
+        }
+        return (YarvisClient(baseURL: base, token: "tok", session: session), id)
+    }
+
+    @Test func realResponsesDecode() async throws {
+        let (c, _) = client()
+        let config = try await c.headsDownConfig()
+        #expect(config == HeadsDownConfig())
+        let routines = try await c.headsDownRoutines()
+        #expect(routines.routines.first?.everyMinutes == 180 && routines.problems.count == 1)
+        #expect(try await c.headsDownAllowedTools() == [HeadsDownAllowedTool(id: "mcp:gh:merge", name: "merge")])
+    }
+
+    @Test func everyRouteUsesItsMethodAndPath() async throws {
+        let (c, id) = client()
+        _ = try await c.headsDownState()
+        try await c.startHeadsDown(focus: "")
+        try await c.stopHeadsDown()
+        try await c.pauseHeadsDown()
+        try await c.resumeHeadsDown()
+        try await c.clearHeadsDown()
+        try await c.setHeadsDownStopAt(nil)
+        _ = try await c.headsDownConfig()
+        try await c.saveHeadsDownConfig(HeadsDownConfig())
+        _ = try await c.headsDownAllowedTools()
+        try await c.setHeadsDownToolAllowed("t", allowed: true)
+        _ = try await c.headsDownRoutines()
+        _ = try await c.reloadHeadsDownRoutines()
+        _ = try await c.headsDownPasses()
+        _ = try await c.headsDownPassMessages(id: "p")
+        _ = try await c.headsDownMessages()
+        try await c.sendHeadsDownMessage("hi")
+        _ = try await c.headsDownQuestions()
+        _ = try await c.headsDownAutoApprovals()
+        try await c.answerHeadsDownQuestion(id: "q", choice: "approve")
+        try await c.dismissHeadsDownQuestion(id: "q")
+        _ = try await c.workStreams()
+        try await c.updateWorkStream(id: "s", status: "done")
+        let hd = "/api/sidecar/api/heads-down"
+        let got = StubProtocol.recorded(id).map { "\($0.0.httpMethod ?? "") \($0.0.url?.path ?? "")" }
+        #expect(got == [
+            "GET \(hd)", "POST \(hd)/start", "POST \(hd)/stop", "POST \(hd)/pause", "POST \(hd)/resume",
+            "POST \(hd)/clear", "PUT \(hd)/stop-at", "GET \(hd)/config", "PUT \(hd)/config",
+            "GET \(hd)/allowed-tools", "PUT \(hd)/allowed-tools/t", "GET \(hd)/routines", "POST \(hd)/routines/reload",
+            "GET \(hd)/passes", "GET \(hd)/passes/p", "GET \(hd)/messages", "POST \(hd)/messages",
+            "GET \(hd)/questions", "GET \(hd)/auto-approvals", "POST \(hd)/questions/q/answer",
+            "POST \(hd)/questions/q/dismiss", "GET /api/sidecar/api/work-streams", "PATCH /api/sidecar/api/work-streams/s",
+        ])
+    }
+
+    @Test func aLoadKeepsWhatItReadWhenOneListFails() async throws {
+        let fixtures = fixtures
+        let (session, _) = StubProtocol.session { req, _ in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/work-streams") || path.hasSuffix("/auto-approvals") {
+                return (500, json(#"{"error":"down"}"#))
+            }
+            if path.hasSuffix("/routines") { return (503, json(#"{"error":"no db"}"#)) }
+            return (200, json(fixtures[path] ?? "{}"))
+        }
+        let load = await HeadsDownLoad.read(YarvisClient(baseURL: base, token: "tok", session: session))
+        #expect(load.state != nil && load.questions == [] && load.passes == [] && load.messages == [])
+        #expect(load.streams == nil && load.failure == "down")
+        // A failed auto-approvals read isn't a page error.
+        #expect(load.autoApprovals == nil)
+        #expect(load.routines == nil && load.routinesFailure == "no db")
     }
 }

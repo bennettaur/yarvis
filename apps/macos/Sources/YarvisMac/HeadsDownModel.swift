@@ -25,14 +25,22 @@ final class HeadsDownModel {
     private(set) var providers: [ProviderInfo]?
     /// Why the main lists last failed to load.
     private(set) var error: String?
-    var refreshing: Bool { loadsInFlight > 0 }
-    private var loadsInFlight = 0
-    /// Bumped per reload, so an older answer that lands last is dropped.
-    private var generation = 0
-    private var loaded = false
+    private(set) var settingsError: String?
+    private(set) var refreshing = false
+    /// A reload was asked for while one ran, so one more runs after it.
+    @ObservationIgnored private var reloadAgain = false
+    /// True while the page is on screen and following the live stream.
+    @ObservationIgnored private var following = false
 
-    /// The pass in flight, from the live stream. Only followed while the page is on screen.
-    private(set) var live = HeadsDownLive()
+    /// A pass is running now. Flips only when that changes, so the header
+    /// doesn't redraw on every streamed token.
+    private(set) var working = false
+    /// The pass in flight; only the live pass view reads it.
+    private(set) var livePass: LivePass?
+    /// The live pass's text, parsed as it streams.
+    private(set) var liveBlocks: [MarkdownBlock] = []
+    @ObservationIgnored private var live = HeadsDownLive()
+    @ObservationIgnored private var markdown = MarkdownStream()
     var settingsOpen = false
 
     init(app: AppModel, client: YarvisClient) {
@@ -41,16 +49,18 @@ final class HeadsDownModel {
     }
 
     func stop() {
-        questionDialog = nil
+        closeQuestions()
     }
 
+    /// The sidecar restarted. The page reads again only while it's on screen;
+    /// coming back to it reads everything anyway.
     func handle(_ event: ServerEvent) {
-        if event.kind == "sidecar.started", loaded { reload() }
+        if event.kind == "sidecar.started", following { reload() }
     }
 
     func resync() {
-        if loaded { reload() }
-        if questionDialog != nil { Task { await loadDialog() } }
+        if following { reload() }
+        if questionFlow != nil { loadDialog() }
     }
 
     var workspaceNames: [String: String] {
@@ -60,70 +70,74 @@ final class HeadsDownModel {
 
     // MARK: Loading
 
-    /// Reads every list the page shows.
+    /// Reads every list the page shows. Calls that land while a read runs
+    /// are folded into one more read after it.
     func reload() {
-        generation += 1
-        let generation = generation
-        loaded = true
-        loadsInFlight += 1
-        let client = client
+        guard !refreshing else {
+            reloadAgain = true
+            return
+        }
+        refreshing = true
         Task {
-            defer { loadsInFlight -= 1 }
-            async let state = attempt { try await client.headsDownState() }
-            async let questions = attempt { try await client.headsDownQuestions() }
-            async let streams = attempt { try await client.workStreams() }
-            async let passes = attempt { try await client.headsDownPasses() }
-            async let messages = attempt { try await client.headsDownMessages() }
-            async let approvals = attempt { try await client.headsDownAutoApprovals() }
-            async let routines = attempt { try await client.headsDownRoutines() }
-            async let config = attempt { try await client.headsDownConfig() }
-            async let tools = attempt { try await client.headsDownAllowedTools() }
-            let results = await (state, questions, streams, passes, messages, approvals, routines, config, tools)
-            guard generation == self.generation else { return }
-            var failure: Error?
-            func take<T>(_ r: Result<T, Error>, into slot: inout T?) {
-                switch r {
-                case .success(let v): slot = v
-                case .failure(let e): failure = failure ?? e
-                }
-            }
-            take(results.0, into: &self.state)
-            take(results.1, into: &self.questions)
-            take(results.2, into: &self.streams)
-            take(results.3, into: &self.passes)
-            take(results.4, into: &self.messages)
-            error = failure?.localizedDescription
-            if case .success(let v) = results.5 { autoApprovals = v }
-            switch results.6 {
-            case .success(let v):
-                self.routines = v
-                routinesError = nil
-            case .failure(let e):
-                routinesError = e.localizedDescription
-            }
-            if case .success(let v) = results.7 { self.config = v }
-            if case .success(let v) = results.8 { allowedTools = v }
+            repeat {
+                reloadAgain = false
+                apply(await HeadsDownLoad.read(client))
+            } while reloadAgain
+            refreshing = false
         }
     }
 
-    func loadProviders() async {
-        guard providers == nil else { return }
+    private func apply(_ load: HeadsDownLoad) {
+        update(\.state, load.state)
+        update(\.questions, load.questions)
+        update(\.streams, load.streams)
+        update(\.passes, load.passes)
+        update(\.messages, load.messages)
+        update(\.autoApprovals, load.autoApprovals)
+        update(\.routines, load.routines)
+        if error != load.failure { error = load.failure }
+        if routinesError != load.routinesFailure { routinesError = load.routinesFailure }
+    }
+
+    /// Sets a list only when a fresh one came back and differs, so views
+    /// showing it don't redraw for an identical read.
+    private func update<T: Equatable>(_ key: ReferenceWritableKeyPath<HeadsDownModel, T?>, _ fresh: T?) {
+        if let fresh, self[keyPath: key] != fresh { self[keyPath: key] = fresh }
+    }
+
+    /// The settings panel's data: the config, the allowed tools and the chat
+    /// catalogue. Read when the panel opens and after a settings change.
+    func loadSettings() async {
         do {
-            providers = try await client.chatProviders().filter { !$0.models.isEmpty }
+            async let config = client.headsDownConfig()
+            async let tools = client.headsDownAllowedTools()
+            update(\.config, try await config)
+            update(\.allowedTools, try await tools)
+            if providers == nil { providers = try await client.chatProviders().filter { !$0.models.isEmpty } }
+            settingsError = nil
         } catch {
-            self.error = error.localizedDescription
+            settingsError = error.localizedDescription
         }
     }
 
-    /// Follows the live stream while the page is on screen, re-reading the
-    /// lists on each connect since the stream doesn't replay what it missed.
+    /// Follows the live stream while the page is on screen, reading the lists
+    /// again on each connect since the stream doesn't replay what it missed.
     func follow() async {
+        following = true
+        defer {
+            following = false
+            live.reset()
+            setLive(nil)
+        }
         while !Task.isCancelled {
             live.reset()
+            setLive(nil)
             reload()
             do {
-                for try await event in try client.headsDownStream() where live.apply(event) {
-                    reload()
+                for try await event in try client.headsDownStream() {
+                    let changed = live.apply(event)
+                    setLive(live.pass)
+                    if changed { reload() }
                 }
             } catch YarvisError.unauthorized {
                 return
@@ -131,8 +145,16 @@ final class HeadsDownModel {
                 // Dropped: reconnect below.
             }
             live.reset()
+            setLive(nil)
             try? await Task.sleep(for: .seconds(5))
         }
+    }
+
+    private func setLive(_ pass: LivePass?) {
+        if pass?.passId != livePass?.passId { markdown = MarkdownStream() }
+        if pass?.text != livePass?.text { liveBlocks = pass.map { markdown.update($0.text) } ?? [] }
+        if pass != livePass { livePass = pass }
+        if (pass != nil) != working { working = pass != nil }
     }
 
     // MARK: Actions
@@ -141,6 +163,19 @@ final class HeadsDownModel {
     func perform(_ action: @Sendable (YarvisClient) async throws -> Void) async throws {
         try await action(client)
         reload()
+    }
+
+    /// A question on the page was answered. Its card may have allowed a tool,
+    /// so open settings read their list again too.
+    func questionAnswered() {
+        reload()
+        if settingsOpen { Task { await loadSettings() } }
+    }
+
+    /// Runs a settings change, then reads the settings again.
+    func performSetting(_ action: @Sendable (YarvisClient) async throws -> Void) async throws {
+        try await action(client)
+        await loadSettings()
     }
 
     func passMessages(_ id: String) async throws -> [HeadsDownPassMessage] {
@@ -156,42 +191,31 @@ final class HeadsDownModel {
         app.openWorkspace(id: id)
     }
 
-    /// A link in a pass's notes or a question: `yarvis://` places open in the
-    /// app (anything it doesn't know stays inert), web links in the browser.
+    /// A link in text a pass or a question wrote. See `headsDownLinkAction`.
     func openLink(_ url: URL) {
-        if url.scheme == "yarvis" {
-            app.open(link: url)
-        } else {
-            openWebLink(url)
+        switch headsDownLinkAction(url) {
+        case .openInBrowser(let url): openWebLink(url)
+        case .openPlace(let url): app.open(link: url)
+        case .openArtifact, .ignore: break
         }
     }
 
     // MARK: The question dialog
 
-    /// Open over any page from a heads-down item in the bell. It starts with
-    /// that item's question, walks through every other open one, and closes
-    /// once none are left.
-    private(set) var questionDialog: QuestionDialogState?
-    private var dialogGeneration = 0
-
-    struct QuestionDialogState: Equatable {
-        var item: AttentionItem
-        /// Nil while the first load runs.
-        var questions: [HeadsDownQuestion]?
-        var error: String?
-        /// While the list reloads after an answer, the answered card is still on screen.
-        var reloading = false
-    }
+    /// Open over any page from a heads-down item in the bell.
+    private(set) var questionFlow: HeadsDownQuestionFlow?
+    /// Bumped per dialog load and on close, so a late answer for an older
+    /// list, or one after the dialog closed, is dropped.
+    @ObservationIgnored private var dialogGeneration = 0
 
     func openQuestions(from item: AttentionItem) {
-        dialogGeneration += 1
-        questionDialog = QuestionDialogState(item: item)
-        Task { await loadDialog() }
+        questionFlow = HeadsDownQuestionFlow(firstId: headsDownQuestionId(item))
+        loadDialog()
     }
 
     func closeQuestions() {
         dialogGeneration += 1
-        questionDialog = nil
+        questionFlow = nil
     }
 
     func openPageFromDialog() {
@@ -199,40 +223,26 @@ final class HeadsDownModel {
         app.section = .headsDown
     }
 
-    private enum DialogLoad { case loaded, failed, replaced }
-
-    @discardableResult
-    private func loadDialog() async -> DialogLoad {
-        dialogGeneration += 1
-        let generation = dialogGeneration
-        guard let item = questionDialog?.item else { return .replaced }
-        do {
-            let open = try await client.headsDownQuestions()
-            guard generation == dialogGeneration else { return .replaced }
-            questionDialog?.questions = orderQuestions(open, first: headsDownQuestionId(item))
-            questionDialog?.error = nil
-            return .loaded
-        } catch {
-            guard generation == dialogGeneration else { return .replaced }
-            questionDialog?.error = error.localizedDescription
-            return .failed
-        }
-    }
-
     /// The front question was answered or dismissed: show the next, or close.
     func dialogAnswered() {
-        questionDialog?.reloading = true
-        if loaded { reload() }
+        questionFlow?.answered()
+        if following { reload() }
+        loadDialog()
+    }
+
+    private func loadDialog() {
+        dialogGeneration += 1
+        let generation = dialogGeneration
         Task {
-            let result = await loadDialog()
-            guard result != .replaced, questionDialog != nil else { return }
-            questionDialog?.reloading = false
-            if result == .failed {
-                // At least stop offering the question just answered.
-                if questionDialog?.questions?.isEmpty == false { questionDialog?.questions?.removeFirst() }
-            } else if questionDialog?.questions?.isEmpty == true {
-                closeQuestions()
+            let load: HeadsDownQuestionFlow.Load
+            do {
+                load = .loaded(try await client.headsDownQuestions())
+            } catch {
+                load = .failed(error.localizedDescription)
             }
+            // A newer load replaced this one and applies its own answer.
+            guard generation == dialogGeneration else { return }
+            if questionFlow?.apply(load) == true { closeQuestions() }
         }
     }
 
@@ -245,19 +255,9 @@ final class HeadsDownModel {
         deferredReviews.insert(item.id)
     }
 
-    /// Merges held back for open review feedback, waiting on the user.
-    var mergeReviews: [(item: AttentionItem, review: MergeReview)] {
-        (app.attention?.items ?? []).compactMap { item in
-            guard !deferredReviews.contains(item.id), let review = mergeReview(of: item) else { return nil }
-            return (item, review)
-        }
-    }
-
-    /// Merges heads-down mode made, newest first.
-    var mergeAnnouncements: [(item: AttentionItem, merge: MergeAnnouncement)] {
-        (app.attention?.items ?? []).compactMap { item in
-            mergeAnnouncement(of: item).map { (item, $0) }
-        }
+    var popup: HeadsDownPopup? {
+        HeadsDownPopup.choose(items: app.attention?.items ?? [], deferred: deferredReviews,
+                              questionsOpen: questionFlow != nil)
     }
 
     /// Answers a held merge. Review denies it and opens the PR, so the user
@@ -265,23 +265,31 @@ final class HeadsDownModel {
     func answer(_ review: MergeReview, approve: Bool) async throws {
         try await client.answerHeadsDownQuestion(id: review.questionId, choice: approve ? "approve" : "deny")
         app.attention?.reload()
-        if loaded { reload() }
-        if !approve { app.attention?.navigate(review.reviewTarget) }
+        if following { reload() }
+        guard !approve else { return }
+        if let url = review.reviewURL {
+            openWebLink(url)
+        } else {
+            app.section = .headsDown
+        }
     }
 
+    /// Opens what a merge announcement points at. A PR opens on GitHub, since
+    /// the app has no PR page of its own and the web UI wouldn't open on it.
     func openMerge(_ item: AttentionItem) {
-        app.attention?.open(item)
+        guard let url = gitHubPullRequestURL(navTarget: item.navTarget) else {
+            app.attention?.open(item)
+            return
+        }
+        openWebLink(url)
+        let client = client
+        Task {
+            try? await client.setAttentionStatus(id: item.id, "read")
+            app.attention?.reload()
+        }
     }
 
     func dismissMerge(_ item: AttentionItem) {
         app.attention?.dismiss(item)
-    }
-}
-
-private func attempt<T: Sendable>(_ body: @Sendable () async throws -> T) async -> Result<T, Error> {
-    do {
-        return .success(try await body())
-    } catch {
-        return .failure(error)
     }
 }

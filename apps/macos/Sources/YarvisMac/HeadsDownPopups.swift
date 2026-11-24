@@ -9,34 +9,22 @@ extension View {
     }
 }
 
-/// What the one heads-down sheet shows. A held merge goes first, since it
-/// waits on the user's answer; then merges it made, newest first; then the
-/// questions the user opened.
-private enum HeadsDownPopup: Identifiable {
-    case review(AttentionItem, MergeReview, more: Int)
-    case merge(AttentionItem, MergeAnnouncement, more: Int)
-    case questions
-
-    var id: String {
-        switch self {
-        case .review(let item, _, _): return "review:\(item.id)"
-        case .merge(let item, _, _): return "merge:\(item.id)"
-        case .questions: return "questions"
-        }
-    }
-}
-
+/// One sheet for all of them, since a window shows one sheet at a time;
+/// `HeadsDownPopup.choose` picks which.
 private struct HeadsDownPopups: ViewModifier {
     @Environment(AppModel.self) private var app
 
     func body(content: Content) -> some View {
-        content.sheet(item: Binding(get: { popup }, set: { if $0 == nil { closed() } })) { popup in
+        content.sheet(item: Binding(get: { app.headsDown?.popup }, set: { if $0 == nil { closed() } })) { popup in
             if let model = app.headsDown {
                 switch popup {
-                case .review(let item, let review, let more):
-                    HeadsDownMergeReviewSheet(model: model, item: item, review: review, more: more)
-                case .merge(let item, let merge, let more):
-                    HeadsDownMergeAlertSheet(model: model, item: item, merge: merge, more: more)
+                case .review(let item, let review, let remaining):
+                    // Keyed on the item, so the next held merge arms afresh.
+                    HeadsDownMergeReviewSheet(model: model, item: item, review: review, remaining: remaining)
+                        .id(item.id)
+                case .merge(let item, let merge, let remaining):
+                    HeadsDownMergeAlertSheet(model: model, item: item, merge: merge, remaining: remaining)
+                        .id(item.id)
                 case .questions:
                     HeadsDownQuestionDialog(model: model)
                 }
@@ -44,18 +32,9 @@ private struct HeadsDownPopups: ViewModifier {
         }
     }
 
-    private var popup: HeadsDownPopup? {
-        guard let model = app.headsDown else { return nil }
-        let reviews = model.mergeReviews
-        if let first = reviews.first { return .review(first.item, first.review, more: reviews.count - 1) }
-        let merges = model.mergeAnnouncements
-        if let first = merges.first { return .merge(first.item, first.merge, more: merges.count - 1) }
-        return model.questionDialog == nil ? nil : .questions
-    }
-
     /// The sheet went away without one of its buttons; only the question dialog closes that way.
     private func closed() {
-        if case .questions? = popup { app.headsDown?.closeQuestions() }
+        if case .questions? = app.headsDown?.popup { app.headsDown?.closeQuestions() }
     }
 }
 
@@ -67,8 +46,8 @@ private struct HeadsDownQuestionDialog: View {
     let model: HeadsDownModel
 
     var body: some View {
-        let dialog = model.questionDialog
-        let current = dialog?.questions?.first
+        let dialog = model.questionFlow
+        let current = dialog?.current
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Heads down").font(.headline)
@@ -119,9 +98,9 @@ private struct HeadsDownQuestionDialog: View {
 
 // MARK: - Merges
 
-/// How long a held merge's buttons stay disabled after it pops up over
-/// whatever the user is doing, so a click already on its way can't approve it.
-private let mergeReviewArmingDelay: Duration = .milliseconds(1200)
+/// How long a merge pop-up ignores clicks and Return after it appears over
+/// whatever the user is doing, so input already on its way can't answer it.
+private let mergePopupArmingDelay: Duration = .milliseconds(1200)
 
 /// Pops up over any page when heads-down mode merges a PR. The merge doesn't
 /// wait on the user; this makes sure they notice it. Got it, or Escape,
@@ -130,7 +109,8 @@ private struct HeadsDownMergeAlertSheet: View {
     let model: HeadsDownModel
     let item: AttentionItem
     let merge: MergeAnnouncement
-    let more: Int
+    let remaining: Int
+    @State private var armed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -147,8 +127,8 @@ private struct HeadsDownMergeAlertSheet: View {
                     HeadsDownRiskBadge(risk: merge.risk)
                 }
                 Text(merge.why).textSelection(.enabled)
-                if more > 0 {
-                    Text("\(more) more merge\(more > 1 ? "s" : "") to look at.").font(.caption).foregroundStyle(.secondary)
+                if remaining > 0 {
+                    Text("\(remaining) more merge\(remaining > 1 ? "s" : "") to look at.").font(.caption).foregroundStyle(.secondary)
                 }
             }
             .padding(20)
@@ -156,12 +136,18 @@ private struct HeadsDownMergeAlertSheet: View {
             HStack {
                 Spacer()
                 Button(openLabel) { model.openMerge(item) }
+                // Return answers only once armed: the alert pops up over whatever
+                // the user is typing in.
                 Button("Got it") { model.dismissMerge(item) }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(armed ? .defaultAction : nil)
             }
             .padding()
         }
         .onExitCommand { model.dismissMerge(item) }
+        .task {
+            try? await Task.sleep(for: mergePopupArmingDelay)
+            armed = true
+        }
         .frame(width: 520)
         .accessibilityLabel("Heads down is merging \(merge.label)")
     }
@@ -204,7 +190,7 @@ private struct HeadsDownMergeReviewSheet: View {
     let model: HeadsDownModel
     let item: AttentionItem
     let review: MergeReview
-    let more: Int
+    let remaining: Int
     @State private var armed = false
     @State private var busy = false
     @State private var error: String?
@@ -220,8 +206,8 @@ private struct HeadsDownMergeReviewSheet: View {
                     }
                     ForEach(review.prs, id: \.number) { HeadsDownPrFeedbackView(pr: $0) }
                     if let error { Text(error).foregroundStyle(.red) }
-                    if more > 0 {
-                        Text("\(more) more merge\(more > 1 ? "s" : "") waiting on you.").font(.caption).foregroundStyle(.secondary)
+                    if remaining > 0 {
+                        Text("\(remaining) more merge\(remaining > 1 ? "s" : "") waiting on you.").font(.caption).foregroundStyle(.secondary)
                     }
                 }
                 .padding(20)
@@ -249,7 +235,7 @@ private struct HeadsDownMergeReviewSheet: View {
         .frame(minHeight: 260, maxHeight: 700)
         .accessibilityLabel("Heads down wants to merge \(review.label)")
         .task {
-            try? await Task.sleep(for: mergeReviewArmingDelay)
+            try? await Task.sleep(for: mergePopupArmingDelay)
             armed = true
             reviewFocused = true
         }

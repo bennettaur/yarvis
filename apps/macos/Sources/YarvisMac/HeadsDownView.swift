@@ -19,9 +19,14 @@ struct HeadsDownView: View {
                     }
                     if let questions = model.questions, !questions.isEmpty {
                         HeadsDownSection("Needs you (\(questions.count))") {
-                            ForEach(questions) { q in
-                                HeadsDownQuestionCard(model: model, question: q) { model.reload() }
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(questions) { q in
+                                    HeadsDownQuestionCard(model: model, question: q) { model.questionAnswered() }
+                                }
                             }
+                            // Every card goes inert for a moment when one comes or goes, so a
+                            // card that moved under the pointer can't take a click meant for another.
+                            .armedAfterAppearing(id: questions.map(\.id).joined(separator: ","))
                         }
                     }
                     if let approvals = model.autoApprovals, !approvals.isEmpty {
@@ -38,8 +43,17 @@ struct HeadsDownView: View {
                     HeadsDownSection("Pace and working hours") {
                         Button(model.settingsOpen ? "Hide settings" : "Show settings") { model.settingsOpen.toggle() }
                             .buttonStyle(.link)
-                        if model.settingsOpen, let config = model.config {
-                            HeadsDownSettingsView(model: model, config: config)
+                        if model.settingsOpen {
+                            Group {
+                                if let config = model.config {
+                                    HeadsDownSettingsView(model: model, config: config)
+                                } else if let error = model.settingsError {
+                                    Text(error).font(.caption).foregroundStyle(.red)
+                                } else {
+                                    Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .task { await model.loadSettings() }
                         }
                     }
                 }
@@ -56,7 +70,7 @@ struct HeadsDownView: View {
             MainActor.assumeIsolated { model.openLink(url) }
             return .handled
         })
-        // The stream runs only while the page is on screen, as the web page's does.
+        // The stream runs only while the page is on screen.
         .task { await model.follow() }
     }
 }
@@ -183,7 +197,7 @@ struct HeadsDownRunHeader: View {
     }
 
     private func running(_ state: HeadsDownState, _ run: HeadsDownRun) -> some View {
-        let working = model.live.pass != nil
+        let working = model.working
         let agent = HeadsDownAgentState(state: state, working: working)
         let paused = run.pausedAt != nil
         return HStack(alignment: .top, spacing: 16) {
@@ -242,6 +256,7 @@ struct HeadsDownRunHeader: View {
     }
 
     private func start() {
+        guard !busy else { return }
         let focus = focus.trimmingCharacters(in: .whitespacesAndNewlines)
         let stopAt = stopEnabled ? nextOccurrence(hhmm(stopTime)) : nil
         act {
@@ -359,7 +374,7 @@ struct HeadsDownMessageBox: View {
 
     private func send() {
         let text = trimmed
-        guard !text.isEmpty else { return }
+        guard !busy, !text.isEmpty else { return }
         busy = true
         error = nil
         Task {

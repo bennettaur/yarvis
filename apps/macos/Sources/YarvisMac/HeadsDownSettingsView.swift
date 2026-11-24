@@ -49,7 +49,6 @@ struct HeadsDownSettingsView: View {
             }
         }
         .font(.callout)
-        .task { await model.loadProviders() }
         .onChange(of: config) { _, fresh in
             draft = fresh
             if let hours = fresh.workingHours { lastHours = hours }
@@ -195,7 +194,7 @@ struct HeadsDownSettingsView: View {
         error = nil
         Task {
             do {
-                try await model.perform { try await $0.setHeadsDownToolAllowed(id, allowed: false) }
+                try await model.performSetting { try await $0.setHeadsDownToolAllowed(id, allowed: false) }
             } catch {
                 self.error = error.localizedDescription
             }
@@ -209,7 +208,7 @@ struct HeadsDownSettingsView: View {
         Task {
             defer { saving = false }
             do {
-                try await model.perform { try await $0.saveHeadsDownConfig(draft) }
+                try await model.performSetting { try await $0.saveHeadsDownConfig(draft) }
             } catch {
                 self.error = error.localizedDescription
             }

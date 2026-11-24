@@ -79,7 +79,7 @@ private struct HeadsDownStreamCard: View {
             case .workspace(let id)?:
                 Button(label) { model.openWorkspace(id) }.buttonStyle(.link)
             case .web(let url)?:
-                Button(label) { openWebLink(url) }.buttonStyle(.link)
+                Button(label) { openWebLink(url) }.buttonStyle(.link).help(url.absoluteString)
             case nil:
                 Text(label)
             }
@@ -129,8 +129,8 @@ struct HeadsDownPassList: View {
     var body: some View {
         let finished = finishedPasses(model.passes ?? [])
         VStack(alignment: .leading, spacing: 8) {
-            if let live = model.live.pass { HeadsDownLivePassView(live: live) }
-            if finished.isEmpty, model.live.pass == nil {
+            if model.working { HeadsDownLivePassView(model: model) }
+            if finished.isEmpty, !model.working {
                 Text(model.passes == nil ? "Loading…" : "No passes yet.").foregroundStyle(.secondary)
             } else {
                 ForEach(finished) { HeadsDownPassRow(model: model, pass: $0) }
@@ -139,10 +139,16 @@ struct HeadsDownPassList: View {
     }
 }
 
+/// The pass in flight. The only view that reads it, so a streamed token
+/// redraws this card and not the page.
 private struct HeadsDownLivePassView: View {
-    let live: LivePass
+    let model: HeadsDownModel
 
     var body: some View {
+        if let live = model.livePass { card(live) }
+    }
+
+    private func card(_ live: LivePass) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 HeadsDownAgentMark(state: .working, size: 20)
@@ -157,7 +163,7 @@ private struct HeadsDownLivePassView: View {
             }
             if !live.thought.isEmpty { HeadsDownLatestThought(text: live.thought, isThinking: live.isThinking) }
             ForEach(live.activity) { ToolCard(tool: $0) }
-            if !live.text.isEmpty { MarkdownText(live.text).textSelection(.enabled) }
+            if !model.liveBlocks.isEmpty { MarkdownText(blocks: model.liveBlocks).textSelection(.enabled) }
         }
         .headsDownCard(tint: .indigo)
     }
@@ -176,7 +182,7 @@ private struct HeadsDownLatestThought: View {
                     Image(systemName: open ? "chevron.down" : "chevron.right").font(.caption2)
                     Text(isThinking ? "Thinking:" : "Last thought:")
                     if !open {
-                        Text(text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first ?? "")
+                        Text(firstLine(of: text))
                             .lineLimit(1)
                     }
                 }

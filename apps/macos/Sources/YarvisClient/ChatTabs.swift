@@ -229,29 +229,61 @@ public struct MessageQueue: Equatable, Sendable {
 /// known ids are linked, and never one inside a URL, a path or inline code.
 public func linkWorkspaceMentions(_ text: String, names: [String: String]) -> String {
     guard !names.isEmpty else { return text }
-    let lowered = Dictionary(names.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
     // Split on backticks so inline code spans (the odd segments) are left alone.
     let parts = text.components(separatedBy: "`")
     return parts.enumerated().map { i, part in
-        i % 2 == 1 ? part : linkMentions(in: part, names: lowered)
+        i % 2 == 1 ? part : linkMentions(in: part, names: names)
     }.joined(separator: "`")
 }
 
-private let mentionPattern = try! NSRegularExpression(
-    pattern: #"(?<![\w/\-\[])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![\w/\-\]])"#,
-    options: [.caseInsensitive])
+/// A known workspace id found standing alone in text.
+public struct WorkspaceMention: Equatable, Sendable {
+    public var range: NSRange
+    /// Lowercased.
+    public var id: String
+    public var name: String
+}
+
+/// Finds the ids of known workspaces in text. An id next to a word
+/// character, `/` or `-` is part of a path, URL or longer token, not a mention.
+public struct WorkspaceMentionMatcher: Sendable {
+    private let pattern: NSRegularExpression
+
+    /// `alsoBefore` and `alsoAfter` are more characters that rule an id out
+    /// when they touch it, as regex class members.
+    public init(alsoBefore: String = "", alsoAfter: String = "") {
+        let id = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+        pattern = try! NSRegularExpression(
+            pattern: #"(?<![\w/\-"# + alsoBefore + "])" + id + #"(?![\w/\-"# + alsoAfter + "])",
+            options: [.caseInsensitive])
+    }
+
+    /// For plain text.
+    public static let plain = WorkspaceMentionMatcher()
+    /// For markdown, where an id already inside `[…]` is a link's text.
+    public static let markdown = WorkspaceMentionMatcher(alsoBefore: #"\["#, alsoAfter: #"\]"#)
+
+    /// `names` is keyed by id in any case.
+    public func mentions(in text: String, names: [String: String]) -> [WorkspaceMention] {
+        guard !names.isEmpty else { return [] }
+        let lowered = Dictionary(names.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
+        let ns = text as NSString
+        return pattern.matches(in: text, range: NSRange(location: 0, length: ns.length)).compactMap { match in
+            let id = ns.substring(with: match.range).lowercased()
+            return lowered[id].map { WorkspaceMention(range: match.range, id: id, name: $0) }
+        }
+    }
+}
 
 private func linkMentions(in text: String, names: [String: String]) -> String {
     let ns = text as NSString
     var out = ""
     var last = 0
-    for match in mentionPattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-        let id = ns.substring(with: match.range).lowercased()
-        guard let name = names[id] else { continue }
-        out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
-        let label = name.replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
-        out += "[\(label)](yarvis://workspace/\(id))"
-        last = match.range.location + match.range.length
+    for mention in WorkspaceMentionMatcher.markdown.mentions(in: text, names: names) {
+        out += ns.substring(with: NSRange(location: last, length: mention.range.location - last))
+        let label = mention.name.replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+        out += "[\(label)](yarvis://workspace/\(mention.id))"
+        last = mention.range.location + mention.range.length
     }
     out += ns.substring(from: last)
     return out
