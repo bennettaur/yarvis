@@ -899,7 +899,7 @@ describe("github client", () => {
     expect(await new GitHubClient("t", failing).lookupInvolvement([], "me")).toEqual([]);
   });
 
-  it("looks PRs up as review candidates, with their review decision", async () => {
+  it("looks PRs up as review candidates, with their review decision, in the order asked", async () => {
     let query = "";
     const answering = (async (_url: string, init?: RequestInit) => {
       query = JSON.parse(String(init?.body)).query;
@@ -924,15 +924,21 @@ describe("github client", () => {
                 latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }] },
               },
             },
+            pr1: null,
           },
         }),
         { status: 200 },
       );
     }) as unknown as typeof fetch;
-    const [pr] = await new GitHubClient("t", answering).lookupReviewCandidates(
-      [{ owner: "o", repo: "r", number: 7 }],
+    const [pr, gone] = await new GitHubClient("t", answering).lookupReviewCandidates(
+      [
+        { owner: "o", repo: "r", number: 7 },
+        { owner: "gone", repo: "r", number: 8 },
+      ],
       "me",
     );
+    // In the order asked, with null for what didn't resolve.
+    expect(gone).toBeNull();
     expect(query).toContain("reviewDecision");
     expect(pr).toMatchObject({
       reviewDecision: "approved",

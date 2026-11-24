@@ -10,7 +10,7 @@ export interface ReviewPrepConfig {
   /**
    * How many PRs may be prepared or being prepared at once, so the user gets
    * a steady stream of reviews rather than a pile. Further PRs wait in a
-   * queue. A stack is started whole even past this.
+   * backlog. A stack is started whole even past this.
    */
   maxReady: number;
 }

@@ -514,7 +514,7 @@ export default function HeadsDownPanel() {
         </Section>
 
         {reviewStream.data &&
-          reviewStream.data.slots.length + reviewStream.data.queue.length > 0 && (
+          reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
             <Section title="Review stream">
               <ReviewStream data={reviewStream.data} />
             </Section>

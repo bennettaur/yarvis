@@ -116,11 +116,21 @@ export function countByCategory(groups: AttentionGroup[]): Record<AttentionCateg
 }
 
 const RISK_RANK: Record<RiskLevel, number> = { high: 0, medium: 1, low: 2 };
+/** Items with no risk level sort after every level. */
+const NO_RISK_RANK = 3;
 
-/** High-risk PRs first, so the user can go to them first; otherwise newest-first as given. */
+/**
+ * High-risk PRs first, so the user can go to them first. The sort is stable,
+ * so each rank stays newest-first as given.
+ */
 function byRisk(groups: AttentionGroup[]): AttentionGroup[] {
-  const rank = (g: AttentionGroup) => (g.lead.risk ? RISK_RANK[g.lead.risk] : 3);
+  const rank = (g: AttentionGroup) => (g.lead.risk ? RISK_RANK[g.lead.risk] : NO_RISK_RANK);
   return [...groups].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Review is ordered by risk; every other category keeps its order. */
+function ordered(category: AttentionCategory | null, groups: AttentionGroup[]): AttentionGroup[] {
+  return category === "review" ? byRisk(groups) : groups;
 }
 
 /**
@@ -139,12 +149,15 @@ export function arrangeAttention(
     : groups;
   if (!view.groupByCategory) {
     if (shown.length === 0) return [];
-    return [{ category: null, groups: view.categoryFilter === "review" ? byRisk(shown) : shown }];
+    return [{ category: null, groups: ordered(view.categoryFilter, shown) }];
   }
-  return ATTENTION_CATEGORIES.map((category) => {
-    const inCategory = shown.filter((g) => g.lead.category === category);
-    return { category, groups: category === "review" ? byRisk(inCategory) : inCategory };
-  }).filter((section) => section.groups.length > 0);
+  return ATTENTION_CATEGORIES.map((category) => ({
+    category,
+    groups: ordered(
+      category,
+      shown.filter((g) => g.lead.category === category),
+    ),
+  })).filter((section) => section.groups.length > 0);
 }
 
 /**

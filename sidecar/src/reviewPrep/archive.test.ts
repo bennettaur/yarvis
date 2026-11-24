@@ -69,6 +69,7 @@ beforeEach(async () => {
     },
     donePrs: async () => done,
   };
+  deps.prep.notNeedingReview = async () => done;
 });
 
 afterEach(async () => {
@@ -275,12 +276,12 @@ describe("runReviewPrepUpkeep", () => {
 });
 
 describe("the review stream's upkeep", () => {
-  const queue = async (r: PrRef, minutesAgo: number) =>
+  const backlog = async (r: PrRef, minutesAgo: number) =>
     db.insert(reviewPreps).values({
       refKey: refKey(r),
       ref: r,
-      state: "waiting",
-      queuedAt: new Date(Date.now() - minutesAgo * 60_000),
+      state: "backlog",
+      backloggedAt: new Date(Date.now() - minutesAgo * 60_000),
       attentionKey: prepAttentionKey(refKey(r)),
     });
   const stateOf = async (r: PrRef) =>
@@ -295,46 +296,68 @@ describe("the review stream's upkeep", () => {
     deps.prep.prepConfig = async () => ({ maxConcurrentVerifications: 1, maxReady: 1 });
   });
 
-  it("frees the slot of a PR whose item the user dismissed, and takes up the queue", async () => {
+  it("frees the slot of a PR whose item the user dismissed, and takes up the backlog", async () => {
     await workspace([ref(1)], "user");
-    await queue(ref(2), 10);
+    await backlog(ref(2), 10);
     const [item] = await pending();
     await updateAttentionStatus(db, item?.id ?? "", "dismissed");
-    // No workspace can be opened in this test, so the queued PR's repo is
-    // unregistered and it leaves the queue rather than starting.
+    // No workspace can be opened in this test, so the backlogged PR's repo is
+    // unregistered and it leaves the backlog rather than starting.
     deps.prep.kickoff.isRegistered = async () => false;
 
     const result = await runReviewPrepUpkeep(db, config, deps);
     expect(result.released).toBe(1);
     expect(await stateOf(ref(1))).toBe("released");
-    const [queued] = await db
+    const [backlogged] = await db
       .select()
       .from(reviewPreps)
       .where(eq(reviewPreps.refKey, refKey(ref(2))));
-    expect(queued).toMatchObject({ state: "done", note: "Its repo is no longer registered." });
+    expect(backlogged).toMatchObject({ state: "done", note: "Its repo is no longer registered." });
   });
 
-  it("keeps the queue while every slot is in use", async () => {
+  it("keeps the backlog while every slot is in use", async () => {
     await workspace([ref(1)], "user");
-    await queue(ref(2), 10);
+    await backlog(ref(2), 10);
     expect(await runReviewPrepUpkeep(db, config, deps)).toMatchObject({ released: 0, started: 0 });
-    expect(await stateOf(ref(2))).toBe("waiting");
+    expect(await stateOf(ref(2))).toBe("backlog");
   });
 
-  it("drops queued PRs that no longer need the user's review", async () => {
+  it("drops backlogged PRs that no longer need the user's review", async () => {
     await workspace([ref(1)], "user");
-    await queue(ref(2), 10);
-    await queue(ref(3), 5);
-    deps.prep.noLongerNeeded = async () => new Set([refKey(ref(3))]);
+    await backlog(ref(2), 10);
+    await backlog(ref(3), 5);
+    deps.prep.notNeedingReview = async (refs) =>
+      new Set(refs.map(refKey).filter((k) => k === refKey(ref(3))));
     expect((await runReviewPrepUpkeep(db, config, deps)).dropped).toBe(1);
-    expect(await stateOf(ref(2))).toBe("waiting");
+    expect(await stateOf(ref(2))).toBe("backlog");
     expect(await stateOf(ref(3))).toBe("done");
   });
 
-  it("never marks a queued PR done for having no workspace", async () => {
-    await queue(ref(2), 10);
+  it("never marks a backlogged PR done for having no workspace", async () => {
+    await backlog(ref(2), 10);
     deps.prep.prepConfig = async () => ({ maxConcurrentVerifications: 1, maxReady: 0 });
     await runReviewPrepUpkeep(db, config, deps);
-    expect(await stateOf(ref(2))).toBe("waiting");
+    expect(await stateOf(ref(2))).toBe("backlog");
+  });
+
+  it("frees the slot of a PR the user reviewed, and resolves its item", async () => {
+    await workspace([ref(1)], "user");
+    done = new Set([refKey(ref(1))]);
+    expect((await runReviewPrepUpkeep(db, config, deps)).released).toBe(1);
+    expect(await stateOf(ref(1))).toBe("released");
+    expect(await pending()).toEqual([]);
+  });
+
+  it("doesn't release a prep for a dismissal from before it last changed", async () => {
+    await workspace([ref(1)], "user");
+    const [item] = await pending();
+    await updateAttentionStatus(db, item?.id ?? "", "dismissed");
+    // Prepared again since: the old round's dismissal says nothing about this one.
+    await db
+      .update(reviewPreps)
+      .set({ updatedAt: new Date(Date.now() + 1000) })
+      .where(eq(reviewPreps.refKey, refKey(ref(1))));
+    expect((await runReviewPrepUpkeep(db, config, deps)).released).toBe(0);
+    expect(await stateOf(ref(1))).toBe("ready");
   });
 });

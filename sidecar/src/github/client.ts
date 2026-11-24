@@ -851,11 +851,6 @@ export interface PrNumberRef {
   number: number;
 }
 
-/**
- * Builds a single GraphQL operation that fetches every ref by alias, so N PRs
- * cost one request rather than N. Aliases and variable names are index-derived
- * (never caller-supplied), so nothing from a ref reaches the query text.
- */
 function lookupVariables(refs: PrNumberRef[], viewerLogin: string): Record<string, unknown> {
   const variables: Record<string, unknown> = { viewer: viewerLogin };
   refs.forEach((ref, i) => {
@@ -866,6 +861,11 @@ function lookupVariables(refs: PrNumberRef[], viewerLogin: string): Record<strin
   return variables;
 }
 
+/**
+ * Builds a single GraphQL operation that fetches every ref by alias, so N PRs
+ * cost one request rather than N. Aliases and variable names are index-derived
+ * (never caller-supplied), so nothing from a ref reaches the query text.
+ */
 function buildPrLookupQuery(count: number, fields: string = PR_INVOLVEMENT_FIELDS): string {
   const varDecls = Array.from(
     { length: count },
@@ -1577,22 +1577,23 @@ export class GitHubClient {
   }
 
   /**
-   * The named PRs as review candidates, in one request. Refs that no longer
-   * resolve are dropped, as in {@link lookupInvolvement}.
+   * The named PRs as review candidates, in one request, in the order asked:
+   * null for a ref that no longer resolves (repo gone, PR deleted, access
+   * lost), so callers can match answers to what they asked about.
    */
   async lookupReviewCandidates(
     refs: PrNumberRef[],
     viewerLogin: string,
-  ): Promise<ReviewCandidate[]> {
+  ): Promise<(ReviewCandidate | null)[]> {
     if (refs.length === 0) return [];
     const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
       buildPrLookupQuery(refs.length, REVIEW_CANDIDATE_FIELDS),
       lookupVariables(refs, viewerLogin),
       { allowPartial: true },
     );
-    return refs.flatMap((_ref, i) => {
+    return refs.map((_ref, i) => {
       const node = data[`pr${i}`]?.pullRequest;
-      return node?.number ? [toReviewCandidate(node)] : [];
+      return node?.number ? toReviewCandidate(node) : null;
     });
   }
 

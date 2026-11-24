@@ -21,7 +21,8 @@ async function prep(number: number, state: ReviewPrepState, extra: { minutesAgo?
     ref: ref(number),
     state,
     risk: state === "ready" ? "high" : null,
-    queuedAt: state === "waiting" ? new Date(Date.now() - (extra.minutesAgo ?? 0) * 60_000) : null,
+    backloggedAt:
+      state === "backlog" ? new Date(Date.now() - (extra.minutesAgo ?? 0) * 60_000) : null,
     attentionKey: prepAttentionKey(key),
   });
 }
@@ -35,13 +36,13 @@ afterAll(async () => {
 });
 
 describe("GET /stream", () => {
-  it("lists what holds a slot and the queue, oldest first, leaving the rest out", async () => {
+  it("lists what holds a slot and the backlog, oldest first, leaving the rest out", async () => {
     await prep(1, "ready");
     await prep(2, "needs-go-ahead");
     await prep(3, "failed");
     await prep(4, "released");
-    await prep(5, "waiting", { minutesAgo: 1 });
-    await prep(6, "waiting", { minutesAgo: 10 });
+    await prep(5, "backlog", { minutesAgo: 1 });
+    await prep(6, "backlog", { minutesAgo: 10 });
 
     const res = await createReviewPrepRoutes(config).request("/stream");
     expect(res.status).toBe(200);
@@ -51,6 +52,6 @@ describe("GET /stream", () => {
       ["r#1", "ready", "high"],
       ["r#2", "needs-go-ahead", null],
     ]);
-    expect(body.queue.map((q) => q.pr)).toEqual(["r#6", "r#5"]);
+    expect(body.backlog.map((b) => b.pr)).toEqual(["r#6", "r#5"]);
   });
 });

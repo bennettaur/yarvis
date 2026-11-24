@@ -1,7 +1,7 @@
-import { and, asc, count, eq, inArray } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull } from "drizzle-orm";
 import { agentRunRegistry } from "../agentRuns/service.ts";
 import { subscribe } from "../attention/hub.ts";
-import { raiseAttention, raisedSessionKey, resolveRaisedAttention } from "../attention/raise.ts";
+import { raiseAttention, raisedDedupeKey, resolveRaisedAttention } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
@@ -12,7 +12,7 @@ import {
   reviewWorkspacePrs,
   reviewWorkspaces,
 } from "../db/schema.ts";
-import { createGitHubClient } from "../github/client.ts";
+import { createGitHubClient, type ReviewCandidate } from "../github/client.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
 import { openStackRefs } from "../pr/startReviewTools.ts";
@@ -52,13 +52,15 @@ import { prepBody, summarizePrep } from "./summary.ts";
  * one over budget, or an unregistered repo); those wait for the user too.
  *
  * At most `maxReady` PRs hold a slot at once (see {@link SLOT_STATES}).
- * Further PRs wait in the queue as `waiting` rows, oldest first, with no
- * workspace yet, and start as slots free up. A stack starts whole, every open
- * layer at once, even past the limit; each layer holds a slot.
+ * Further PRs go into the backlog (`backlog` rows), oldest first, with no
+ * workspace yet, and start as slots free up. A stack starts whole, its open
+ * layers at once, even past the limit; each layer holds a slot. A backlogged
+ * row is distinct from a `queued` one, which has started and is waiting for a
+ * verification slot.
  *
- * The verification queue below that is per process, like the one it builds
- * on. A prep left mid-way by a restart is picked up again by the
- * `review-prep` job.
+ * Verification itself runs through a per-process queue (below), like the
+ * verification queue it builds on. A prep left mid-way by a restart is picked
+ * up again by the `review-prep` job.
  */
 
 export interface ReviewPrepDeps {
@@ -67,11 +69,25 @@ export interface ReviewPrepDeps {
   loadStack?: (ref: PrRef) => Promise<PrRef[]>;
   prepConfig?: () => Promise<ReviewPrepConfig>;
   /**
-   * Which of `refs` no longer need the user's review, by refKey: merged,
-   * closed, reviewed by the user, or approved. A queued PR in the answer
-   * leaves the queue. Null when the provider can't be asked.
+   * Which of `refs` don't need the user's review, by refKey: see
+   * {@link needsNoReview}. A backlogged PR in the answer leaves the backlog,
+   * and a stack layer in it isn't started. Null when the provider can't be asked.
    */
-  noLongerNeeded?: (refs: PrRef[]) => Promise<Set<string> | null>;
+  notNeedingReview?: (refs: PrRef[]) => Promise<Set<string> | null>;
+}
+
+/**
+ * Merged, closed or approved, the user's own, or one the user already
+ * approved or asked changes on. A comment alone doesn't count as a review.
+ */
+export function needsNoReview(pr: ReviewCandidate, viewer: string): boolean {
+  return (
+    pr.merged ||
+    pr.summary.state === "closed" ||
+    pr.reviewDecision === "approved" ||
+    pr.summary.author === viewer ||
+    pr.myReviewStates.some((st) => st === "approved" || st === "changes_requested")
+  );
 }
 
 export function defaultPrepDeps(db: Db, config: Config): ReviewPrepDeps {
@@ -81,30 +97,20 @@ export function defaultPrepDeps(db: Db, config: Config): ReviewPrepDeps {
       verification: defaultVerificationDeps(config),
     },
     loadStack: (ref) => openStackRefs(config, ref),
-    async noLongerNeeded(refs) {
+    async notNeedingReview(refs) {
       const token = config.secrets?.githubToken;
       if (!token) return null;
       const gh = createGitHubClient(config, token);
       const { login } = await gh.viewer();
       const github = refs.flatMap((r) => (r.provider === "github" ? [r] : []));
       const found = await gh.lookupReviewCandidates(github, login);
+      // Keyed by the ref asked about, not the name GitHub answers with, which
+      // differs after a rename or in case.
       return new Set(
-        found
-          .filter(
-            (pr) =>
-              pr.merged ||
-              pr.summary.state === "closed" ||
-              pr.reviewDecision === "approved" ||
-              pr.myReviewStates.some((st) => st === "approved" || st === "changes_requested"),
-          )
-          .map((pr) =>
-            refKey({
-              provider: "github",
-              owner: pr.summary.owner,
-              repo: pr.summary.repo,
-              number: pr.summary.number,
-            }),
-          ),
+        github.flatMap((ref, i) => {
+          const pr = found[i];
+          return pr && needsNoReview(pr, login) ? [refKey(ref)] : [];
+        }),
       );
     },
   };
@@ -122,8 +128,8 @@ export type PrepResult =
       /** For queued: the other layers of its stack started with it. */
       stack?: string[];
     }
-  /** In the queue: `maxReady` PRs are already prepared or being prepared. */
-  | { status: "waiting"; pr: string; position: number }
+  /** In the backlog: `maxReady` PRs are already prepared or being prepared. */
+  | { status: "backlogged"; pr: string; position: number }
   /** Not started: the repo isn't one the user registered, and registering it is the user's call. */
   | { status: "needs-go-ahead"; pr: string; reason: "unregistered-repo" }
   | { status: "error"; pr: string; error: string };
@@ -143,6 +149,16 @@ export const RELEASABLE_STATES: ReviewPrepState[] = ["ready", "needs-go-ahead"];
 /** A prep that ended and whose workspace is still open is left alone; the user re-runs it there. */
 const SETTLED_STATES: ReviewPrepState[] = ["ready", "failed", "needs-go-ahead", "released"];
 
+/**
+ * Most other layers of a stack started along with the PR picked. Stacks in
+ * practice are a handful of layers; this keeps someone pushing a long chain on
+ * top of a PR from starting a paid report for each. The rest are backlogged.
+ */
+const MAX_STACK_LAYERS_STARTED = 10;
+
+/** Most backlogged PRs asked about in one provider call. */
+const BACKLOG_LOOKUP_BATCH = 25;
+
 /** The dedupe key of a PR's attention item. */
 export const prepAttentionKey = (key: string) => `review-prep:${key}`;
 
@@ -160,8 +176,8 @@ export function whileNoPrepPlaces<T>(fn: () => Promise<T>): Promise<T> {
 
 /**
  * Prepares `ref` for review, or says why it won't. Answers once the workspace
- * exists and the PR is queued for verification, or once it is in the queue
- * for a slot; verification and the attention item follow in the background.
+ * exists and the PR is queued for verification, or once it is in the backlog;
+ * verification and the attention item follow in the background.
  */
 export function prepReview(
   db: Db,
@@ -175,8 +191,9 @@ export function prepReview(
     const [existing] = await db.select().from(reviewPreps).where(eq(reviewPreps.refKey, key));
     const found = await findReviewWorkspacePr(db, ref);
 
-    if (existing?.state === "waiting") {
-      return { status: "waiting", pr: name, position: await queuePosition(db, existing) };
+    if (existing?.state === "backlog") {
+      startBackloggedSoon(db, config, deps);
+      return { status: "backlogged", pr: name, position: await backlogPosition(db, existing) };
     }
     if (existing && IN_FLIGHT_STATES.includes(existing.state)) {
       // Left alone: if a restart dropped it from the queue, the review-prep job requeues it.
@@ -191,9 +208,9 @@ export function prepReview(
       return {
         status: "already-prepared",
         pr: name,
-        workspaceId: existing?.workspaceId ?? null,
+        workspaceId: existing.workspaceId,
         createdWorkspace: false,
-        state: existing?.state,
+        state: existing.state,
       };
     }
     if (!found && !(await isRegistered(db, ref, deps))) {
@@ -201,18 +218,21 @@ export function prepReview(
     }
 
     const { maxReady } = await (deps.prepConfig ?? getReviewPrepConfig)();
-    if ((await slotsInUse(db)) >= maxReady) {
-      const row = await addToQueue(db, ref);
-      return { status: "waiting", pr: name, position: await queuePosition(db, row) };
+    const full = (await slotsInUse(db)) >= maxReady;
+    // Behind older backlogged PRs even when a slot is free, so a new pick can't jump them.
+    if (full || (await backlogPreps(db)).length > 0) {
+      const row = await addToBacklog(db, ref, { requested: true });
+      if (!full) startBackloggedSoon(db, config, deps);
+      return { status: "backlogged", pr: name, position: await backlogPosition(db, row) };
     }
-    return startWithStack(db, config, ref, deps);
+    return startWithStack(db, config, ref, deps, { requested: true });
   });
 }
 
 function isSettledIn(
   existing: ReviewPrepRow | undefined,
   found: { workspaceId: string } | null,
-): boolean {
+): existing is ReviewPrepRow {
   return Boolean(
     existing &&
       found &&
@@ -237,19 +257,33 @@ export async function slotsInUse(db: Db): Promise<number> {
   return row?.n ?? 0;
 }
 
-async function addToQueue(db: Db, ref: PrRef): Promise<ReviewPrepRow> {
+/**
+ * `requested` is set when `prepReview` was called for this PR, as opposed to
+ * a stack layer coming along with one: only those count toward a heads-down
+ * pass's prep limit.
+ */
+interface StartOptions {
+  requested?: boolean;
+}
+
+async function addToBacklog(
+  db: Db,
+  ref: PrRef,
+  { requested = false }: StartOptions = {},
+): Promise<ReviewPrepRow> {
   const key = refKey(ref);
   const now = new Date();
   const values = {
+    ...(requested ? { requestedAt: now } : {}),
     ref,
     workspaceId: null,
     prId: null,
-    state: "waiting" as const,
+    state: "backlog" as const,
     verdict: null,
     risk: null,
     note: null,
     headSha: null,
-    queuedAt: now,
+    backloggedAt: now,
     updatedAt: now,
   };
   const [row] = await db
@@ -257,49 +291,58 @@ async function addToQueue(db: Db, ref: PrRef): Promise<ReviewPrepRow> {
     .values({ ...values, refKey: key, attentionKey: prepAttentionKey(key) })
     .onConflictDoUpdate({ target: reviewPreps.refKey, set: values })
     .returning();
-  if (!row) throw new Error("the queued PR couldn't be recorded");
+  if (!row) throw new Error("the backlogged PR couldn't be recorded");
   return row;
 }
 
-/** The queue, oldest first. */
-export async function queuedPreps(db: Db): Promise<ReviewPrepRow[]> {
+/** The `backlog` rows, oldest first, which is the order they start in. */
+export async function backlogPreps(db: Db): Promise<ReviewPrepRow[]> {
   return db
     .select()
     .from(reviewPreps)
-    .where(eq(reviewPreps.state, "waiting"))
-    .orderBy(asc(reviewPreps.queuedAt), asc(reviewPreps.createdAt));
+    .where(eq(reviewPreps.state, "backlog"))
+    .orderBy(asc(reviewPreps.backloggedAt), asc(reviewPreps.createdAt));
 }
 
 /** 1 for the next to start. */
-async function queuePosition(db: Db, row: ReviewPrepRow): Promise<number> {
-  const queue = await queuedPreps(db);
-  const index = queue.findIndex((q) => q.id === row.id);
-  return index === -1 ? queue.length : index + 1;
+async function backlogPosition(db: Db, row: ReviewPrepRow): Promise<number> {
+  const backlog = await backlogPreps(db);
+  const index = backlog.findIndex((b) => b.id === row.id);
+  return index === -1 ? backlog.length : index + 1;
 }
 
 /**
- * Starts `ref`, then every other open layer of its stack that review prep
- * hasn't already started, so the stack is reviewed together. A layer waiting
- * in the queue starts with it. Runs under the prep lock.
+ * Starts `ref`, then the other open layers of its stack, so the stack is
+ * reviewed together. A layer starts only if review prep has no row for it or
+ * has it in the backlog: one the user already finished with stays finished.
+ * Layers that don't need the user's review are skipped, since the scout never
+ * vetted them. Runs under the prep lock.
  */
 async function startWithStack(
   db: Db,
   config: Config,
   ref: PrRef,
   deps: ReviewPrepDeps,
+  options: StartOptions = {},
 ): Promise<PrepResult> {
   const layers = await readStack(ref, deps);
-  const result = await startPrep(db, config, ref, layers, deps);
+  const result = await startPrep(db, config, ref, layers, deps, options);
   if (result.status !== "queued") return result;
+  const others = layers.filter((layer) => refKey(layer) !== refKey(ref));
+  if (others.length === 0) return result;
+  const skip = await whichNeedNoReview(others, deps);
   const stack: string[] = [];
-  for (const layer of layers) {
-    if (refKey(layer) === refKey(ref)) continue;
+  for (const layer of others) {
+    if (skip.has(refKey(layer))) continue;
     const [existing] = await db
       .select()
       .from(reviewPreps)
       .where(eq(reviewPreps.refKey, refKey(layer)));
-    if (existing && IN_FLIGHT_STATES.includes(existing.state)) continue;
-    if (isSettledIn(existing, await findReviewWorkspacePr(db, layer))) continue;
+    if (existing && existing.state !== "backlog") continue;
+    if (stack.length >= MAX_STACK_LAYERS_STARTED) {
+      if (!existing) await addToBacklog(db, layer);
+      continue;
+    }
     const started = await startPrep(db, config, layer, layers, deps);
     if (started.status === "queued") stack.push(started.pr);
   }
@@ -318,6 +361,26 @@ async function readStack(ref: PrRef, deps: ReviewPrepDeps): Promise<PrRef[]> {
   }
 }
 
+/**
+ * The refKeys of `refs` the provider says don't need the user's review, asked
+ * in batches. An answer it can't give counts as needing review, so nothing is
+ * dropped on a guess.
+ */
+export async function whichNeedNoReview(refs: PrRef[], deps: ReviewPrepDeps): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (!deps.notNeedingReview) return found;
+  for (let i = 0; i < refs.length; i += BACKLOG_LOOKUP_BATCH) {
+    try {
+      const answer = await deps.notNeedingReview(refs.slice(i, i + BACKLOG_LOOKUP_BATCH));
+      for (const key of answer ?? []) found.add(key);
+    } catch (e) {
+      console.error("[review-prep] could not read the PRs' review state:", describeError(e));
+      break;
+    }
+  }
+  return found;
+}
+
 /** Opens or picks `ref`'s workspace and queues its verification. Runs under the prep lock. */
 async function startPrep(
   db: Db,
@@ -325,6 +388,7 @@ async function startPrep(
   ref: PrRef,
   layers: PrRef[],
   deps: ReviewPrepDeps,
+  { requested = false }: StartOptions = {},
 ): Promise<PrepResult> {
   const name = shortPrName(ref);
   const key = refKey(ref);
@@ -360,7 +424,9 @@ async function startPrep(
     risk: null,
     note: null,
     headSha: null,
+    backloggedAt: null,
     updatedAt: new Date(),
+    ...(requested ? { requestedAt: new Date() } : {}),
   };
   const [row] = await db
     .insert(reviewPreps)
@@ -395,67 +461,99 @@ async function stackHost(db: Db, ref: PrRef, layers: PrRef[]): Promise<string | 
   return row?.id ?? null;
 }
 
+export interface BacklogResult {
+  started: number;
+  dropped: number;
+}
+
 /**
- * Starts queued PRs, oldest first, while slots are free. A PR that no longer
- * needs the user's review, or whose repo is no longer registered, leaves the
- * queue instead. Returns how many it started, stack layers not counted.
+ * Drops backlogged PRs that don't need the user's review any more, then
+ * starts the rest, oldest first, while slots are free. One whose repo is no
+ * longer registered leaves the backlog too. `started` doesn't count stack
+ * layers started along with a PR.
  */
-export function startQueuedPreps(db: Db, config: Config, deps: ReviewPrepDeps): Promise<number> {
+export async function startBackloggedPreps(
+  db: Db,
+  config: Config,
+  deps: ReviewPrepDeps,
+): Promise<BacklogResult> {
+  const backlog = await backlogPreps(db);
+  if (backlog.length === 0) return { started: 0, dropped: 0 };
+  // Asked before taking the lock, so a slow provider doesn't hold up a prep the user asked for.
+  const skip = await whichNeedNoReview(
+    backlog.map((row) => row.ref),
+    deps,
+  );
   return withPrepLock(PREP_LOCK, async () => {
+    let dropped = 0;
+    for (const row of backlog) {
+      if (!skip.has(row.refKey)) continue;
+      if (await dropFromBacklog(db, row.id, "It no longer needed your review.")) dropped++;
+    }
     const { maxReady } = await (deps.prepConfig ?? getReviewPrepConfig)();
     let started = 0;
-    for (const queued of await queuedPreps(db)) {
+    for (const next of await backlogPreps(db)) {
       if ((await slotsInUse(db)) >= maxReady) break;
-      // A layer of a stack started earlier in this loop has already left the queue.
-      const [row] = await db.select().from(reviewPreps).where(eq(reviewPreps.id, queued.id));
-      if (row?.state !== "waiting") continue;
-      const name = shortPrName(row.ref);
+      // Claimed by moving it to `queued`, so another instance sharing the
+      // database can't start it too. A stack layer started earlier in this
+      // loop has already left the backlog.
+      const [row] = await db
+        .update(reviewPreps)
+        .set({ state: "queued", updatedAt: new Date() })
+        .where(and(eq(reviewPreps.id, next.id), eq(reviewPreps.state, "backlog")))
+        .returning();
+      if (!row) continue;
       try {
-        const gone = await noLongerNeeded(row.ref, deps);
-        if (gone) {
-          await dropFromQueue(db, row.id, "It no longer needed your review.");
-          continue;
-        }
         if (
           !(await findReviewWorkspacePr(db, row.ref)) &&
           !(await isRegistered(db, row.ref, deps))
         ) {
-          await dropFromQueue(db, row.id, "Its repo is no longer registered.");
+          await leaveBacklog(db, row.id, "Its repo is no longer registered.");
+          dropped++;
           continue;
         }
         const result = await startWithStack(db, config, row.ref, deps);
         if (result.status === "error") {
-          await dropFromQueue(db, row.id, result.error);
+          await leaveBacklog(db, row.id, result.error);
+          dropped++;
           continue;
         }
         started++;
       } catch (e) {
-        // Left in the queue: the next free slot or the review-prep job tries again.
-        console.error(`[review-prep] could not start ${name}:`, describeError(e));
+        // To the back, so a PR that fails every time can't hold up the rest.
+        // Stopping here means a provider that is down is tried once per drain.
+        console.error(`[review-prep] could not start ${shortPrName(row.ref)}:`, describeError(e));
+        await db
+          .update(reviewPreps)
+          .set({ state: "backlog", backloggedAt: new Date(), updatedAt: new Date() })
+          .where(
+            and(
+              eq(reviewPreps.id, row.id),
+              eq(reviewPreps.state, "queued"),
+              isNull(reviewPreps.workspaceId),
+            ),
+          );
         break;
       }
     }
-    return started;
+    return { started, dropped };
   });
 }
 
-/** True only when the provider says so; an answer it can't give keeps the PR queued. */
-async function noLongerNeeded(ref: PrRef, deps: ReviewPrepDeps): Promise<boolean> {
-  if (!deps.noLongerNeeded) return false;
-  try {
-    return (await deps.noLongerNeeded([ref]))?.has(refKey(ref)) ?? false;
-  } catch (e) {
-    console.error("[review-prep] could not read a queued PR's state:", describeError(e));
-    return false;
-  }
+/** Ends a PR claimed from the backlog that couldn't start. */
+async function leaveBacklog(db: Db, id: string, note: string): Promise<void> {
+  await db
+    .update(reviewPreps)
+    .set({ state: "done", note, backloggedAt: null, updatedAt: new Date() })
+    .where(and(eq(reviewPreps.id, id), isNull(reviewPreps.workspaceId)));
 }
 
-/** Takes a PR out of the queue. Only while it is still waiting, so a PR started since stays started. */
-export async function dropFromQueue(db: Db, id: string, note: string): Promise<boolean> {
+/** Takes a PR out of the backlog. Only while it is still there, so a PR started since stays started. */
+export async function dropFromBacklog(db: Db, id: string, note: string): Promise<boolean> {
   const [row] = await db
     .update(reviewPreps)
-    .set({ state: "done", note, queuedAt: null, updatedAt: new Date() })
-    .where(and(eq(reviewPreps.id, id), eq(reviewPreps.state, "waiting")))
+    .set({ state: "done", note, backloggedAt: null, updatedAt: new Date() })
+    .where(and(eq(reviewPreps.id, id), eq(reviewPreps.state, "backlog")))
     .returning({ id: reviewPreps.id });
   return Boolean(row);
 }
@@ -481,20 +579,20 @@ export async function releasePrep(
   return true;
 }
 
-/** Starts queued PRs in the background; failures are logged. */
-export function startQueuedSoon(db: Db, config: Config, deps: ReviewPrepDeps): void {
-  const work = startQueuedPreps(db, config, deps)
+/** Starts backlogged PRs in the background; failures are logged. */
+export function startBackloggedSoon(db: Db, config: Config, deps: ReviewPrepDeps): void {
+  const work = startBackloggedPreps(db, config, deps)
     .then(() => undefined)
-    .catch((e) => console.error("[review-prep] could not start queued PRs:", describeError(e)))
+    .catch((e) => console.error("[review-prep] could not start backlogged PRs:", describeError(e)))
     .finally(() => background.delete(work));
   background.add(work);
 }
 
 /**
  * Frees a prepared PR's slot as soon as the user dismisses its attention
- * item, and starts the next queued PR. Opening the item only marks it read,
- * which keeps the slot. The `review-prep` job does
- * the same for a dismissal this process didn't see.
+ * item, and starts the next backlogged PR. Opening the item only marks it
+ * read, which keeps the slot. The `review-prep` job does the same for a
+ * dismissal this process didn't see.
  */
 export function watchPrepDismissals(
   db: Db,
@@ -502,9 +600,9 @@ export function watchPrepDismissals(
   deps: () => ReviewPrepDeps = () => defaultPrepDeps(db, config),
 ): () => void {
   return subscribe((item) => {
-    if (item.status !== "dismissed") return;
-    if (!item.sessionKey?.startsWith(raisedSessionKey(prepAttentionKey("")))) return;
-    const attentionKey = item.sessionKey.slice(raisedSessionKey("").length);
+    if (item.status !== "dismissed" || !item.sessionKey) return;
+    const attentionKey = raisedDedupeKey(item.sessionKey);
+    if (!attentionKey?.startsWith(prepAttentionKey(""))) return;
     void (async () => {
       const [row] = await db
         .select({ id: reviewPreps.id })
@@ -512,7 +610,7 @@ export function watchPrepDismissals(
         .where(eq(reviewPreps.attentionKey, attentionKey));
       if (!row) return;
       if (await releasePrep(db, row.id, "You dismissed it.", { resolveItem: false })) {
-        startQueuedSoon(db, config, deps());
+        startBackloggedSoon(db, config, deps());
       }
     })().catch((e) =>
       console.error("[review-prep] could not release a dismissed prep:", describeError(e)),
@@ -574,7 +672,7 @@ async function pump(): Promise<void> {
           background.delete(work);
           void pump();
           // A prep that failed or found its workspace closed frees its slot.
-          startQueuedSoon(next.db, next.config, next.deps);
+          startBackloggedSoon(next.db, next.config, next.deps);
         });
       background.add(work);
     }

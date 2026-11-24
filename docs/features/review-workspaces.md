@@ -862,28 +862,36 @@ The [review-prep routine](heads-down.md#routines) runs it for the PRs the
 `review-scout` specialist picks, and the assistant runs it when you ask it to
 get a PR ready.
 
-**The review stream.** Review prep keeps at most five PRs ready for you, or
-being prepared, at once, so you get a steady stream rather than a pile. The
-number is `maxReady` in the `reviewPrep` section of `~/.yarvis/settings.json`.
-Further PRs go into a queue, oldest first, and get no workspace until their
-turn. The queue is kept in the database, so it survives a restart.
+**The review stream.** Review prep keeps at most five PRs (by default) ready
+for you, or being prepared, at once, so you get a steady stream rather than a
+pile. The number is `maxReady` in the `reviewPrep` section of
+`~/.yarvis/settings.json`. Further PRs go into a backlog, oldest first, and
+get no workspace until their turn. The backlog is kept in the database, so it
+survives a restart.
 
 - A PR holds its place from when its prep starts until you're done with it:
-  you approve it, it merges or closes, you dismiss its item, or its workspace
-  is archived. A PR waiting for your go-ahead holds its place too. One whose
-  prep failed doesn't.
-- A stack is prepared whole, every open layer at once, even past the limit.
+  you approve it or ask for changes on GitHub, someone else's approval
+  settles it, it merges or closes, you dismiss its item, or its workspace is
+  archived. Opening the item doesn't count, since you may come back to it. A
+  PR waiting for your go-ahead holds its place too. One whose prep failed
+  doesn't.
+- A stack is prepared whole, its open layers at once, even past the limit.
   Each layer counts, so with three PRs ready and a four-layer stack next, all
   four layers are prepared (seven of five) and nothing else starts until you
-  are below five again.
-- When a place frees up, the oldest queued PR starts straight away: as soon as
-  you dismiss an item or a prep fails, or on the next 15-minute check for a
-  PR you approved or that merged or closed.
-- A queued PR that merged, closed, was approved or that you already reviewed
-  leaves the queue instead of starting.
-- The **Review stream** box on the [Heads down](heads-down.md) page shows how
-  many PRs are ready, each one's state and risk, and the queue in the order
-  it will start.
+  are below five again. Layers you already finished with, your own, and ones
+  that are approved, merged or closed are skipped. At most ten layers start
+  with the PR picked; the rest go to the backlog.
+- When a place frees up, the oldest backlogged PR starts straight away when
+  you dismiss an item or a prep fails, and within 15 minutes when you review
+  a PR on GitHub or it merges or closes. A PR asked for while others are
+  backlogged goes behind them.
+- A backlogged PR that merged, closed, was approved, that you already
+  reviewed, or whose repo you unregistered leaves the backlog instead of
+  starting.
+- While anything is ready or backlogged, the **Review stream** box on the
+  [Heads down](heads-down.md) page shows how many PRs are ready against the
+  limit (noting when a stack started past it), each one's state and risk,
+  and the backlog in the order it will start.
 
 Each **Ready for review** item carries the risk the verification report
 assessed, **High**, **Medium** or **Low**, as a coloured badge, and high-risk

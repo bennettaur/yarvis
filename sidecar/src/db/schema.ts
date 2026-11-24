@@ -2280,7 +2280,7 @@ export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
 
 export const REVIEW_PREP_STATES = [
-  "waiting",
+  "backlog",
   "queued",
   "verifying",
   "ready",
@@ -2301,8 +2301,8 @@ export type RiskLevel = (typeof RISK_LEVELS)[number];
 /**
  * A pull request review prep got ready for the user: the review workspace it
  * went into, how its verification ended, and the attention item it raised.
- * One row per PR; preparing the same PR again reuses it. `waiting` means it
- * is in the queue for a slot (`reviewPrep.maxReady`) and has no workspace yet.
+ * One row per PR; preparing the same PR again reuses it. `backlog` means it
+ * is in the backlog for a slot (`reviewPrep.maxReady`) and has no workspace yet.
  * `released` means the user is done with it (reviewed it, or dismissed its
  * item) while its workspace stays open, so it no longer holds a slot. `done`
  * means its workspace is gone (archived, or closed before it ran) and its
@@ -2325,8 +2325,13 @@ export const reviewPreps = pgTable(
     verdict: text("verdict").$type<ReviewPrepVerdict>(),
     /** The verification report's risk level; null when no report finished. */
     risk: text("risk").$type<RiskLevel>(),
-    /** When it joined the queue; the queue starts the oldest first. */
-    queuedAt: timestamp("queued_at", { withTimezone: true }),
+    /** When it joined the backlog; the backlog starts the oldest first. */
+    backloggedAt: timestamp("backlogged_at", { withTimezone: true }),
+    /**
+     * When something last asked to prepare this PR, as opposed to it coming
+     * along as a layer of a stack. A heads-down pass's prep limit counts these.
+     */
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
     /** Why it failed or waits for the user, in Yarvis's words. */
     note: text("note"),
     /** The attention item's dedupe key, raised with source `system`. */

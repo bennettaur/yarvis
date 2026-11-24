@@ -46,7 +46,21 @@ export interface RaiseAttentionInput {
  * app itself raised.
  */
 export function raisedSessionKey(dedupeKey: string, source: AttentionSource = "system"): string {
-  return `raise:${source}:${dedupeKey}`;
+  return `${raisedSessionKeyPrefix(source)}${dedupeKey}`;
+}
+
+/** What every session key raised by `source` starts with, for matching them in SQL. */
+export function raisedSessionKeyPrefix(source: AttentionSource = "system"): string {
+  return `raise:${source}:`;
+}
+
+/** The dedupe key an item raised by `source` was raised under, or null for any other item. */
+export function raisedDedupeKey(
+  sessionKey: string,
+  source: AttentionSource = "system",
+): string | null {
+  const prefix = raisedSessionKeyPrefix(source);
+  return sessionKey.startsWith(prefix) ? sessionKey.slice(prefix.length) : null;
 }
 
 /** Raises (or refreshes) an item and publishes it to connected clients. */

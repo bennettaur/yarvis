@@ -164,11 +164,14 @@ Yarvis ships with three:
   are open in repos, by people or for teams you watch), and
   [prepares each one](review-workspaces.md#review-prep): a review workspace, a
   verification report, and then an item in the attention stream. It prepares
-  at most five per run, keeps at most five PRs ready for you at once and
-  [queues the rest](review-workspaces.md#review-prep), and never comments
-  on, approves or requests anything on a PR. Preparing spends a verification report on each PR, within your
-  report budget. A large or over-budget PR is checked out but waits for you
-  to run the checks; a PR in a repo you haven't registered is skipped.
+  at most five per run, keeps at most five PRs ready for you at once (you
+  can change that) and [backlogs the rest](review-workspaces.md#review-prep),
+  and never comments on, approves or requests anything on a PR. Preparing
+  spends a verification report on each PR, within your report budget. A
+  large or over-budget PR is checked out but waits for you to run the
+  checks; a PR in a repo you haven't registered is skipped. While review
+  prep has PRs ready or backlogged, a **Review stream** box on the Heads down
+  page shows them.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a
@@ -271,7 +274,8 @@ routine's config lists repos, authors or teams, put them in the task as the
 repos, authors and teams to watch.
 
 For each PR the scout picks, call prep_pr_review with its owner, repo and
-number. Prepare at most five PRs per run. Don't comment on, approve or
+number. A PR that comes back backlogged starts on its own once you have
+fewer PRs to review, so don't try it again. Prepare at most five PRs per run. Don't comment on, approve or
 request changes on any PR, and don't message anyone about them. If the scout
 found nothing to prepare, or GitHub isn't signed in, count the routine as
 done.

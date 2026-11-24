@@ -1,5 +1,5 @@
 {
-  "id": "99778d59-8f81-4f4c-9372-5ad12ee41eab",
+  "id": "abddabdb-0c4b-4abd-8593-53942d530f7b",
   "prevId": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
   "version": "7",
   "dialect": "postgresql",
@@ -4139,8 +4139,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "queued_at": {
-          "name": "queued_at",
+        "backlogged_at": {
+          "name": "backlogged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_at": {
+          "name": "requested_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

@@ -2,18 +2,17 @@ import { inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { reviewPreps } from "../db/schema.ts";
-import type { PrRef } from "../pr/types.ts";
+import { type ReviewPrepState, type RiskLevel, reviewPreps } from "../db/schema.ts";
 import { shortPrName } from "../reviewWorkspaces/kickoff.ts";
 import { getReviewPrepConfig } from "./config.ts";
-import { queuedPreps, SLOT_STATES } from "./service.ts";
+import { backlogPreps, SLOT_STATES } from "./service.ts";
 
-/** What the review stream holds: the PRs holding a slot, and the queue behind them. */
+/** What the review stream holds: the PRs holding a slot, and the backlog behind them. */
 export interface ReviewStream {
   maxReady: number;
-  slots: { pr: string; ref: PrRef; state: string; risk: string | null }[];
+  slots: { pr: string; state: ReviewPrepState; risk: RiskLevel | null }[];
   /** Oldest first, which is the order they start in. */
-  queue: { pr: string; ref: PrRef; queuedAt: string | null }[];
+  backlog: { pr: string; backloggedAt: string | null }[];
 }
 
 export function createReviewPrepRoutes(config: Config): Hono {
@@ -27,23 +26,21 @@ export function createReviewPrepRoutes(config: Config): Hono {
   const db = () => getDb(config.databaseUrl as string).db;
 
   router.get("/stream", async (c) => {
-    const [{ maxReady }, slots, queue] = await Promise.all([
+    const [{ maxReady }, slots, backlog] = await Promise.all([
       getReviewPrepConfig(),
       db().select().from(reviewPreps).where(inArray(reviewPreps.state, SLOT_STATES)),
-      queuedPreps(db()),
+      backlogPreps(db()),
     ]);
     const body: ReviewStream = {
       maxReady,
       slots: slots.map((row) => ({
         pr: shortPrName(row.ref),
-        ref: row.ref,
         state: row.state,
         risk: row.risk,
       })),
-      queue: queue.map((row) => ({
+      backlog: backlog.map((row) => ({
         pr: shortPrName(row.ref),
-        ref: row.ref,
-        queuedAt: row.queuedAt?.toISOString() ?? null,
+        backloggedAt: row.backloggedAt?.toISOString() ?? null,
       })),
     };
     return c.json(body);

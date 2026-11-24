@@ -17,6 +17,7 @@ const RISK_LABEL: Record<RiskLevel, string> = {
 export const RISK_ACCENT: Record<RiskLevel, string> = {
   high: "border-l-2 border-l-red-500",
   medium: "border-l-2 border-l-amber-400",
+  // Same width as the others, so every prepared PR's text lines up.
   low: "border-l-2 border-l-transparent",
 };
 
