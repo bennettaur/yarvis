@@ -363,12 +363,20 @@ extension YarvisClient {
     }
 
     /// GitHub only: Azure's detail lists no merge methods, so the UI never offers it.
-    public func mergePr(_ ref: PrRef, method: MergeMethod) async throws {
-        try await send("POST", Self.prPath(ref, "/merge"), body: .object(["method": .string(method.rawValue)]))
+    /// `headSha` is the commit the user reviewed; GitHub refuses the merge once
+    /// the branch has moved past it.
+    public func mergePr(_ ref: PrRef, method: MergeMethod, headSha: String?) async throws {
+        try await send("POST", Self.prPath(ref, "/merge"), body: Self.mergeBody(method, headSha))
     }
 
-    public func enableAutoMerge(_ ref: PrRef, method: MergeMethod) async throws {
-        try await send("POST", Self.prPath(ref, "/auto-merge"), body: .object(["method": .string(method.rawValue)]))
+    public func enableAutoMerge(_ ref: PrRef, method: MergeMethod, headSha: String?) async throws {
+        try await send("POST", Self.prPath(ref, "/auto-merge"), body: Self.mergeBody(method, headSha))
+    }
+
+    private static func mergeBody(_ method: MergeMethod, _ headSha: String?) -> JSONValue {
+        var body = SeenCommits(headSha: headSha).fields
+        body["method"] = .string(method.rawValue)
+        return .object(body)
     }
 
     public func disableAutoMerge(_ ref: PrRef) async throws {

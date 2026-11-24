@@ -174,6 +174,18 @@ private let workspaceJSON = #"""
         #expect(path(try only(id).0) == "/api/sidecar/api/azure/pr/Proj%20X/web/7/ready")
     }
 
+    @Test func aMergeIsPinnedToTheReviewedHead() async throws {
+        let (c, id) = client(200, #"{"ok":true}"#)
+        try await c.mergePr(gh, method: .squash, headSha: sha)
+        var (req, body) = try only(id)
+        #expect(path(req) == "/api/sidecar/api/github/pr/o/api/12/merge")
+        #expect(body == .object(["method": .string("SQUASH"), "headSha": .string(sha)]))
+        try await c.enableAutoMerge(gh, method: .merge, headSha: "short")
+        (req, body) = try only(id)
+        #expect(path(req) == "/api/sidecar/api/github/pr/o/api/12/auto-merge")
+        #expect(body == .object(["method": .string("MERGE")]))
+    }
+
     @Test func anAzureReplyNamesANumericParent() async throws {
         let (c, id) = client(200, #"{"ok":true}"#)
         let thread = PrThread(id: "9", path: nil, line: nil, comments: [PrComment(id: "3", author: "a", body: "b", createdAt: "")])

@@ -122,11 +122,13 @@ final class ReviewPrBarModel {
     }
 
     func merge(_ method: MergeMethod) {
-        run({ client, ref, _ in try await client.mergePr(ref, method: method) }, afterReview: false)
+        run({ client, ref, seen in try await client.mergePr(ref, method: method, headSha: seen.headSha) },
+            afterReview: false)
     }
 
     func enableAutoMerge(_ method: MergeMethod) {
-        run({ client, ref, _ in try await client.enableAutoMerge(ref, method: method) }, afterReview: false)
+        run({ client, ref, seen in try await client.enableAutoMerge(ref, method: method, headSha: seen.headSha) },
+            afterReview: false)
     }
 
     func disableAutoMerge() {
