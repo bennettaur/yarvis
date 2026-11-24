@@ -60,6 +60,8 @@ final class TerminalAppearance {
         view.nativeBackgroundColor = nsColor(theme.background)
         view.nativeForegroundColor = nsColor(theme.foreground)
         view.caretColor = nsColor(theme.cursor)
+        // The character under a block cursor, as the web's cursorAccent draws it.
+        view.caretTextColor = nsColor(theme.background)
         view.selectedTextBackgroundColor = nsColor(theme.selection)
         view.installColors(theme.ansi.map(terminalColor))
     }
