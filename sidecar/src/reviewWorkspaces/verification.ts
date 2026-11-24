@@ -1558,7 +1558,7 @@ interface RunInputs {
   /** The model or effort the caller picked for every section it starts. */
   override: RunChoice;
   /** Resolved once for every section, since the secret store may prompt. */
-  harness: { id: string; runDeps?: ClaudeRunDeps };
+  harness: { id: string; kind: HarnessRunEnv["kind"]; runDeps?: ClaudeRunDeps };
   pr: ReviewWorkspacePr;
   headSha: string;
   sources: Awaited<ReturnType<typeof reviewPatchSources>>["sources"];
@@ -1676,16 +1676,16 @@ export async function startVerification(
 
 /**
  * The run dependencies for `harness`: the configured Claude Code build for the
- * built-in agent, or a saved harness's program and environment from the core,
- * which refuses one that isn't Claude Code. Read once for every section a call
- * starts, since the secret store may prompt.
+ * built-in agent, or a saved harness's kind, program and environment from the
+ * core, which refuses one that isn't Claude Code, OpenCode or Pi. Read once for
+ * every section a call starts, since the secret store may prompt.
  */
 async function harnessRun(
   deps: VerificationDeps,
   harness: string | undefined,
 ): Promise<RunInputs["harness"]> {
   if (!harness || harness === BUILTIN_HARNESS_ID) {
-    return { id: BUILTIN_HARNESS_ID, runDeps: deps.run };
+    return { id: BUILTIN_HARNESS_ID, kind: "claude-code", runDeps: deps.run };
   }
   let runEnv: HarnessRunEnv;
   try {
@@ -1696,7 +1696,38 @@ async function harnessRun(
       400,
     );
   }
-  return { id: harness, runDeps: { ...deps.run, program: runEnv.program, env: runEnv.env } };
+  return {
+    id: harness,
+    kind: runEnv.kind,
+    runDeps: { ...deps.run, program: runEnv.program, env: runEnv.env },
+  };
+}
+
+/** The CLIs a harness maps tiers to models for, as their names are written. */
+const TIER_CLI_NAMES: Record<Exclude<RunInputs["harness"]["kind"], "claude-code">, string> = {
+  opencode: "OpenCode",
+  pi: "Pi",
+};
+
+/**
+ * The model a section's run is started with: the Claude Code alias itself, or
+ * the OpenCode or Pi model the harness's settings give that alias. Throws when
+ * such a harness has none for it, naming what to set.
+ */
+function harnessModel(
+  harness: RunInputs["harness"],
+  settings: VerificationRunConfig,
+  model: VerificationModel,
+): string {
+  if (harness.kind === "claude-code") return model;
+  const mapped = settings.harnessModels?.[harness.id]?.[model];
+  if (!mapped) {
+    throw new ReviewWorkspaceError(
+      `harness "${harness.id}" has no ${TIER_CLI_NAMES[harness.kind]} model for the ${model} tier; pick one under Settings → PR review → Review models`,
+      400,
+    );
+  }
+  return mapped;
 }
 
 /**
@@ -1739,7 +1770,8 @@ async function startSectionRun(
   deps: VerificationDeps,
 ): Promise<string> {
   const sections = [section];
-  const { model, effort } = sectionRunChoice(section, settings, override);
+  const { model: tier, effort } = sectionRunChoice(section, settings, override);
+  const model = harnessModel(harness, settings, tier);
   const contextDir = mkdtempSync(join(tmpdir(), VERIFICATION_CONTEXT_DIR_PREFIX));
   const removeContext = () => rmSync(contextDir, { recursive: true, force: true });
   try {
@@ -1813,6 +1845,7 @@ async function startSectionRun(
           };
         },
         plugins: ["yarvis-review"],
+        backend: harness.kind,
         allowedTools: ALLOWED_TOOLS,
         disallowedTools: DISALLOWED_TOOLS,
         model,
@@ -1834,7 +1867,10 @@ async function startSectionRun(
           ...(TICKET_SECTIONS.includes(section) && { namedTickets }),
           sections,
           model,
-          effort,
+          // The section's Claude Code alias, which an OpenCode or Pi harness maps to `model`.
+          tier,
+          // Neither OpenCode nor Pi takes an effort: the model's `#variant` or `:thinking` stands in.
+          effort: harness.kind === "claude-code" ? effort : null,
           harness: harness.id,
           format: RUN_FORMAT,
         },

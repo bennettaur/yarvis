@@ -42,6 +42,10 @@ export interface HeadsDownState {
   lastPass: HeadsDownPass | null;
   nextPassAt: string | null;
   openQuestionCount: number;
+  /** Passes started since local midnight, in any run. */
+  passesToday: number;
+  /** The daily pass limit; null for none. */
+  maxPassesPerDay: number | null;
 }
 
 export interface HeadsDownQuestion {
@@ -89,6 +93,18 @@ export interface HeadsDownConfig {
   guidance: string | null;
   /** The most routines one pass takes on. 0 turns them off. */
   maxRoutinesPerPass: number;
+  /** Start a run whenever none is going, including after a restart. Stopping turns it off. */
+  alwaysOn: boolean;
+  /** Hours every day when passes are rarer and routines can opt out. Null for none. */
+  nightShift: NightShift | null;
+  nightShiftMinSleepMinutes: number;
+  /** The most passes in one day. Null for no limit. */
+  maxPassesPerDay: number | null;
+}
+
+export interface NightShift {
+  start: string;
+  end: string;
 }
 
 export type MergeRisk = "low" | "medium" | "high" | "unknown";
@@ -328,8 +344,10 @@ export const setHeadsDownStopAt = (stopAt: string | null) =>
 
 export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-down/config");
 
-export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
-  request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+/** `alwaysOn` left out keeps what is stored. */
+export const saveHeadsDownConfig = (
+  config: Omit<HeadsDownConfig, "alwaysOn"> & { alwaysOn?: boolean },
+) => request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
 
 /** A recurring job a pass takes on beside the work streams, read from a markdown file. */
 export interface Routine {
@@ -337,6 +355,8 @@ export interface Routine {
   description: string;
   everyMinutes: number;
   workingHoursOnly: boolean;
+  /** What it does during night shift. */
+  nightShift: "run" | "slow" | "skip";
   enabled: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";

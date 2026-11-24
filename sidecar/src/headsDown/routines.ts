@@ -1,5 +1,8 @@
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 import {
   asBoolean,
   asList,
@@ -10,6 +13,7 @@ import {
   readMarkdownDir,
 } from "../agents/frontmatter.ts";
 import type { RegistryTool } from "../agentTools/store.ts";
+import { hasInvisibleChars } from "../web/extract.ts";
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
 
@@ -49,11 +53,24 @@ export interface Routine {
   tools: string[];
   /** The file's `config:` map, handed to the pass as data beside the body. */
   config: RoutineConfig;
+  /** What it does during night shift. */
+  nightShift: NightShiftMode;
   source: RoutineSource;
 }
 
 /** A routine's settings: each value is text or a list of text. */
 export type RoutineConfig = Record<string, string | string[]>;
+
+/**
+ * `run` keeps the routine's cadence at night, `slow` stretches it by
+ * `NIGHT_SLOW_FACTOR`, and `skip` holds it until night shift ends.
+ */
+export type NightShiftMode = (typeof NIGHT_SHIFT_MODES)[number];
+
+export const NIGHT_SHIFT_MODES = ["run", "slow", "skip"] as const;
+
+/** How much longer a `nightShift: slow` routine waits between runs at night. */
+export const NIGHT_SLOW_FACTOR = 4;
 
 export interface RoutineProblem {
   path: string;
@@ -78,7 +95,7 @@ export function routinesDir(): string {
 }
 
 /** A name is a filename and what `finish_pass` reports back, so it stays to the shape of both. */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] as const;
 
@@ -125,7 +142,7 @@ export function parseEvery(value: string): number | null {
 
 export function parseRoutine(path: string, content: string, source: RoutineSource): Routine {
   const { data, body } = parseDocument(path, content);
-  assertKnownKeys(path, data, [...KNOWN_KEYS, ...PASS_INPUT_KEYS]);
+  assertKnownKeys(path, data, [...KNOWN_KEYS, ...PASS_INPUT_KEYS, "nightShift"]);
 
   const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
@@ -170,6 +187,7 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
     enabled: asBoolean(path, data, "enabled") ?? true,
     tools: parseTools(path, data),
     config: parseConfig(path, data.config),
+    nightShift: parseNightShift(path, data),
     source,
   };
 }
@@ -249,6 +267,15 @@ function parseConfig(path: string, value: unknown): RoutineConfig {
   return config;
 }
 
+function parseNightShift(path: string, data: Record<string, unknown>): NightShiftMode {
+  const value = data.nightShift;
+  if (value === undefined) return "run";
+  if (!NIGHT_SHIFT_MODES.includes(value as NightShiftMode)) {
+    throw new FrontmatterError(path, "'nightShift' must be run, slow or skip", 1);
+  }
+  return value as NightShiftMode;
+}
+
 /** Loads every routine. A user file replaces a shipped one of the same name outright. */
 export async function loadRoutines(): Promise<RoutineCatalog> {
   const problems: RoutineProblem[] = [];
@@ -294,6 +321,71 @@ export function reloadRoutines(): Promise<RoutineCatalog> {
   return cached;
 }
 
+export interface NewRoutine {
+  name: string;
+  description: string;
+  every: string;
+  workingHours?: boolean;
+  nightShift?: NightShiftMode;
+  body: string;
+}
+
+/**
+ * Writes a routine the user approved to `~/.yarvis/routines/<name>.md` and
+ * reloads the catalogue, so the next pass can be given it. Refuses a name
+ * already in use, shipped or the user's, rather than replacing it: the user
+ * approved a new routine, not a change to one they have.
+ */
+export async function writeRoutineFile(
+  input: NewRoutine,
+): Promise<{ path: string } | { error: string }> {
+  const frontmatter: Record<string, unknown> = {
+    name: input.name,
+    description: input.description,
+    every: input.every,
+  };
+  if (input.workingHours) frontmatter.workingHours = true;
+  if (input.nightShift && input.nightShift !== "run") frontmatter.nightShift = input.nightShift;
+  const content = `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
+  const dir = routinesDir();
+  const path = join(dir, `${input.name}.md`);
+  // A routine is read by every pass unfenced; invisible text would reach them unseen.
+  if (hasInvisibleChars(`${input.description}\n${input.body}`)) {
+    return { error: "the description or body contains invisible characters" };
+  }
+  try {
+    parseRoutine(path, content, "user");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  if ((await routineCatalog()).routines.some((r) => r.name === input.name)) {
+    return { error: `a routine named '${input.name}' already exists` };
+  }
+  await mkdir(dir, { recursive: true });
+  // The loader refuses a symlinked folder, so writing through one would only hide the file.
+  if ((await lstat(dir)).isSymbolicLink()) return { error: `${dir} is a symlink` };
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      return { error: `${path} already exists` };
+    }
+    throw e;
+  }
+  try {
+    await handle.writeFile(content);
+  } finally {
+    await handle.close();
+  }
+  await reloadRoutines();
+  return { path };
+}
+
 /**
  * How long a routine a pass was given but didn't finish waits before it is
  * given again, at most. Without it a routine that keeps failing would be given
@@ -309,6 +401,8 @@ export interface DueInput {
   lastOffered: ReadonlyMap<string, Date>;
   now: Date;
   withinWorkingHours: boolean;
+  /** Whether it is night shift now; each routine's `nightShift` decides what that means for it. */
+  duringNightShift?: boolean;
   /** The most routines one pass takes on. */
   limit: number;
 }
@@ -325,9 +419,13 @@ export interface DueInput {
  */
 export function dueRoutines(input: DueInput): Routine[] {
   const minutesSince = (at: Date) => (input.now.getTime() - at.getTime()) / 60_000;
+  const cadence = (routine: Routine): number =>
+    input.duringNightShift && routine.nightShift === "slow"
+      ? routine.everyMinutes * NIGHT_SLOW_FACTOR
+      : routine.everyMinutes;
   const cadencesSinceDone = (routine: Routine): number => {
     const last = input.lastDone.get(routine.name);
-    return last ? minutesSince(last) / routine.everyMinutes : Number.POSITIVE_INFINITY;
+    return last ? minutesSince(last) / cadence(routine) : Number.POSITIVE_INFINITY;
   };
   const waitingToRetry = (routine: Routine): boolean => {
     const offered = input.lastOffered.get(routine.name);
@@ -337,6 +435,7 @@ export function dueRoutines(input: DueInput): Routine[] {
   };
   return input.routines
     .filter((r) => r.enabled && (input.withinWorkingHours || !r.workingHoursOnly))
+    .filter((r) => !(input.duringNightShift && r.nightShift === "skip"))
     .filter((r) => !waitingToRetry(r))
     .map((routine) => ({ routine, overdue: cadencesSinceDone(routine) }))
     .filter(({ overdue }) => overdue >= 1)
