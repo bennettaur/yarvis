@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
@@ -7,13 +7,17 @@ import postgres from "postgres";
 import { getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { HashEmbedder } from "../memory/embedder.ts";
+import { PgVectorMemoryStore } from "../memory/index.ts";
+import { listPendingWakes, scheduleTask } from "../scheduledTasks/service.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
-import { saveHeadsDownConfig } from "./config.ts";
+import { DEFAULT_HEADS_DOWN_CONFIG, saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
-import { reloadRoutines } from "./routines.ts";
+import { reloadRoutines, routineCatalog } from "./routines.ts";
 import {
   addMessage,
+  answerQuestion,
   listPasses,
   passCallSummaries,
   pauseRun,
@@ -121,6 +125,7 @@ beforeEach(async () => {
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
   // Any time counts as working hours, so the sleep doesn't depend on when the test runs.
   await saveHeadsDownConfig({
+    ...DEFAULT_HEADS_DOWN_CONFIG,
     minSleepMinutes: 5,
     maxSleepMinutes: 120,
     idleSleepMinutes: 60,
@@ -361,6 +366,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the user's guidance, and shows the merge it announces", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -527,6 +533,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the routines that are due, and records the ones it reports done", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -591,6 +598,7 @@ describe("a heads-down pass", () => {
       const run = await startRun(db, null);
       const passWith = async (maxRoutinesPerPass: number) => {
         await saveHeadsDownConfig({
+          ...DEFAULT_HEADS_DOWN_CONFIG,
           minSleepMinutes: 5,
           maxSleepMinutes: 120,
           idleSleepMinutes: 60,
@@ -641,6 +649,7 @@ describe("a heads-down pass", () => {
     `;
     try {
       await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
         minSleepMinutes: 5,
         maxSleepMinutes: 120,
         idleSleepMinutes: 60,
@@ -697,6 +706,7 @@ describe("a heads-down pass", () => {
 
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -737,5 +747,149 @@ describe("a heads-down pass", () => {
     const later = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: later });
     expect(offered(later)).toBe(true);
+  });
+});
+
+describe("an always-on pass", () => {
+  const alwaysOn = (on: boolean) =>
+    saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
+      workingHours: null,
+      maxRoutinesPerPass: 0,
+      alwaysOn: on,
+    });
+  const toolNames = (model: MockLanguageModelV3) =>
+    (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+  const done = () =>
+    streamingModel([
+      toolCall("f", "finish_pass", { sleepMinutes: 10, reason: "done" }),
+      finish("tool-calls"),
+    ]);
+
+  it("can schedule wake-ups and propose routines, which a pass without always-on can't", async () => {
+    await alwaysOn(false);
+    const off = done();
+    await runPass(config, db, await startRun(db, null), { model: off });
+    expect(toolNames(off)).not.toContain("create_routine");
+    expect(JSON.stringify(off.doStreamCalls[0]?.prompt)).not.toContain("Coming back later");
+
+    await alwaysOn(true);
+    const on = done();
+    await runPass(config, db, (await startRun(db, null))!, { model: on });
+    expect(toolNames(on)).toEqual(expect.arrayContaining(["create_routine", "schedule_task"]));
+    expect(JSON.stringify(on.doStreamCalls[0]?.prompt)).toContain("Coming back later");
+  });
+
+  it("is given the wake-ups that came due, and leaves the rest pending", async () => {
+    await alwaysOn(true);
+    const run = await startRun(db, null);
+    const wake = async (title: string) => {
+      const session = await sql`INSERT INTO chat_sessions (title) VALUES ('x') RETURNING id`;
+      const result = await scheduleTask(db, {
+        sessionId: session[0]!.id,
+        title,
+        prompt: `look at ${title}`,
+        delayMinutes: 30,
+        origin: "heads-down",
+        provider: null,
+        model: null,
+        attempt: 1,
+        parentId: null,
+        wakesPass: true,
+      });
+      if ("error" in result) throw new Error(result.error);
+      return result.scheduledTask;
+    };
+    const due = await wake("PR 42");
+    await wake("PR 43");
+    await sql`UPDATE chat_scheduled_tasks SET due_at = now() - interval '1 minute' WHERE id = ${due.id}`;
+
+    const model = done();
+    await runPass(config, db, run, { model });
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("woken for these reminders");
+    expect(prompt).toContain("look at PR 42");
+    expect(prompt).toContain("Wake-ups already scheduled");
+    expect((await listPendingWakes(db)).map((w) => w.title)).toEqual(["PR 43"]);
+  });
+
+  it("leaves due wake-ups for a later pass when the run was paused before it started", async () => {
+    await alwaysOn(true);
+    const run = await startRun(db, null);
+    const session = await sql`INSERT INTO chat_sessions (title) VALUES ('x') RETURNING id`;
+    await scheduleTask(db, {
+      sessionId: session[0]!.id,
+      title: "PR 42",
+      prompt: "look at PR 42",
+      delayMinutes: 30,
+      origin: "heads-down",
+      provider: null,
+      model: null,
+      attempt: 1,
+      parentId: null,
+      wakesPass: true,
+    });
+    await sql`UPDATE chat_scheduled_tasks SET due_at = now() - interval '1 minute'`;
+    await pauseRun(db);
+
+    await runPass(config, db, run, { model: done() });
+    expect(await listPendingWakes(db)).toHaveLength(1);
+  });
+
+  it("writes a routine it proposes only after the user approves those exact arguments", async () => {
+    await alwaysOn(true);
+    const routinesDir = join(mkdtempSync(join(tmpdir(), "proposed-routines-")), "routines");
+    const originalDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    await reloadRoutines();
+    try {
+      const run = await startRun(db, null);
+      // The longest body a pass may propose, with the quotes and newlines JSON escapes.
+      const body = `Check "#releases" for today's build.\n${"x".repeat(2500)}`.slice(0, 2500);
+      const proposal = {
+        name: "release-check",
+        description: "Checks the release channel each morning",
+        every: "1d",
+        nightShift: "skip",
+        body,
+        callReason: "the user asks for this every morning",
+      };
+      const propose = () =>
+        streamingModel(
+          [
+            toolCall("c1", "create_routine", proposal),
+            toolCall("f", "finish_pass", { sleepMinutes: 10, reason: "done" }),
+            finish("tool-calls"),
+          ],
+          [finish("stop")],
+        );
+      const file = join(routinesDir, "release-check.md");
+
+      await runPass(config, db, run, { model: propose() });
+      const [approval] =
+        await sql`SELECT id, kind, action, status FROM heads_down_questions WHERE action = 'create_routine'`;
+      expect(approval).toMatchObject({ kind: "approval", status: "open" });
+      expect(existsSync(file)).toBe(false);
+
+      const memory = new PgVectorMemoryStore(db, new HashEmbedder());
+      await answerQuestion(db, memory, approval!.id, { choice: "approve" });
+
+      const second = propose();
+      await runPass(config, db, run, { model: second });
+      expect(JSON.stringify(second.doStreamCalls[0]?.prompt)).toContain("Calls the user approved");
+      expect(existsSync(file)).toBe(true);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(
+        (await routineCatalog()).routines.find((r) => r.name === "release-check"),
+      ).toMatchObject({
+        source: "user",
+        nightShift: "skip",
+        prompt: expect.stringContaining("#releases"),
+      });
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
   });
 });
