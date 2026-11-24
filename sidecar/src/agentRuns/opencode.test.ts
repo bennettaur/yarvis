@@ -3,17 +3,15 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  jsonAnswer,
   makeOpenCodeDirs,
   OpenCodeEventParser,
   openCodeActions,
   openCodeCommand,
   openCodeConfig,
   openCodeEnv,
-  openCodeSandboxProfile,
   removeOpenCodeDirs,
-  SANDBOX_EXEC,
 } from "./opencode.ts";
+import { jsonAnswer, SANDBOX_EXEC, sandboxProfile } from "./sandboxedCli.ts";
 import { FIXTURES, makeTempDir } from "./testSupport.ts";
 
 function parseFixture(name: string) {
@@ -281,15 +279,20 @@ describe("an OpenCode process's setup", () => {
     ).toThrow("can't start with -");
   });
 
-  it("denies the home folder but what it may read, writes outside its folder, and other programs", () => {
-    const profile = openCodeSandboxProfile({
+  it("denies the home, temp and shared folders but what it may read, writes outside its folder, and other programs", () => {
+    const profile = sandboxProfile({
       root: "/private/tmp/run",
       readable: ["/Users/someone/dev/checkout"],
       programs: ["/opt/bin/opencode"],
       secretPaths: [".ssh"],
       home: "/Users/someone",
+      temp: "/private/var/folders/x/T",
     });
-    expect(profile).toContain('(deny file-read* (subpath "/Users/someone"))');
+    // Other runs' context folders sit in the temp folder, and the shared folders aren't the user's alone.
+    expect(profile).toContain(
+      '(deny file-read* (subpath "/Users/someone") (subpath "/private/var/folders/x/T") (subpath "/private/tmp") (subpath "/Users/Shared") (subpath "/Volumes"))',
+    );
+    expect(profile).toContain('(subpath "/Users/someone/.pi/agent")');
     expect(profile).toContain('(subpath "/Users/someone/dev/checkout")');
     expect(profile).toContain('(subpath "/Users/someone/.ssh")');
     expect(profile).toContain('(subpath "/Users/someone/.claude")');
@@ -316,7 +319,7 @@ describe("an OpenCode process's setup", () => {
       // A program it put in its own folder, as OpenCode does with the ripgrep it downloads.
       writeFileSync(join(dirs.root, "own.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
       try {
-        const profile = openCodeSandboxProfile({
+        const profile = sandboxProfile({
           root: dirs.root,
           readable: [checkout],
           // macOS's sh runs bash as itself.

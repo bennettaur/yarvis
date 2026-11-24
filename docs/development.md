@@ -110,7 +110,9 @@ Code only. An OpenCode run's lockdown (`agentRuns/opencode.ts`) is checked by
 the tests against a fake `opencode` and, for the sandbox profile, the real
 `sandbox-exec`; check it against a real OpenCode by hand after upgrading
 OpenCode, with a checkout whose `opencode.json` and `.opencode/plugins` try
-to run code.
+to run code. A Pi run (`agentRuns/pi.ts`) is the same: a fake `pi` in the
+tests, the real `sandbox-exec` running Node under its profile, and a real Pi
+by hand after upgrading it.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
@@ -525,7 +527,7 @@ sidecar/        Bun + TS service (Hono)
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision
                    specialists (decide.ts) and their playground route
-  src/agentRuns/   headless Claude Code and OpenCode runs streamed to the UI,
+  src/agentRuns/   headless Claude Code, OpenCode and Pi runs streamed to the UI,
                    the Claude Code plugins shipped to them, and the models.dev
                    catalog OpenCode runs read
   src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in

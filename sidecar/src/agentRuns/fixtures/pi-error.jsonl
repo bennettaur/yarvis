@@ -1,0 +1,8 @@
+{"type": "session", "version": 3, "id": "7f1d2c3b-0000-4000-8000-000000000001", "timestamp": "2026-11-21T10:00:00.000Z", "cwd": "/tmp/project"}
+{"type": "agent_start"}
+{"type": "turn_start"}
+{"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "529 overloaded"}
+{"type": "message_end", "message": {"role": "assistant", "content": [], "api": "anthropic-messages", "provider": "anthropic", "model": "claude-sonnet-5-5", "usage": {"input": 100, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 120, "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": "error", "timestamp": 1795240000000, "errorMessage": "No API key found for anthropic"}}
+{"type": "turn_end", "message": {"role": "assistant", "content": [], "api": "anthropic-messages", "provider": "anthropic", "model": "claude-sonnet-5-5", "usage": {"input": 100, "output": 20, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 120, "cost": {"input": 0.0, "output": 0.0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}, "stopReason": "error", "timestamp": 1795240000000}, "toolResults": []}
+{"type": "agent_end", "messages": [], "willRetry": false}
+{"type": "agent_settled", "aborted": false}

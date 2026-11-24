@@ -46,10 +46,10 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
 }
 
 /**
- * The verification report runs on Claude Code or OpenCode rather than on a chat
- * provider, so it takes Claude Code model aliases and a budget instead of a
- * provider/model pair. On an OpenCode harness each alias is a tier that
- * `harnessModels` maps to an OpenCode model. Kept under its own
+ * The verification report runs on Claude Code, OpenCode or Pi rather than on a
+ * chat provider, so it takes Claude Code model aliases and a budget instead of
+ * a provider/model pair. On an OpenCode or Pi harness each alias is a tier
+ * that `harnessModels` maps to one of that CLI's models. Kept under its own
  * `prVerification` key.
  *
  * Each section runs on a model and effort matched to its job
@@ -79,24 +79,33 @@ const VERIFICATION_BUDGET_MIN_USD = 0.25;
 export const verificationBudgetSchema = z.number().min(VERIFICATION_BUDGET_MIN_USD);
 
 /**
- * An OpenCode model, `provider/model` with an optional `#variant` (which is how
- * OpenCode takes a reasoning effort). `OPENCODE_MODEL_PATTERN` in
- * `src/lib/pr/models.ts` mirrors it.
+ * An OpenCode or Pi model, `provider/model`. The effort rides on the model:
+ * OpenCode takes a `#variant`, Pi a `:thinking` level (`provider/model:high`).
+ * `HARNESS_MODEL_PATTERN` in `src/lib/pr/models.ts` mirrors it.
  */
-export const openCodeModelSchema = z
+export const harnessModelSchema = z
   .string()
   .max(200)
   .regex(/^[A-Za-z0-9][\w.-]*\/[^\s#]+(#[\w.-]+)?$/);
 
 /**
- * The OpenCode models one harness runs each tier on. A section's model is a
- * Claude Code alias, so an OpenCode harness says what it means by each one:
+ * Whether `model` is written the way a harness of `kind` takes it: Pi has no
+ * `#variant`, so a `#` would be read as part of the model's id.
+ * `modelFitsHarness` in `src/lib/pr/models.ts` mirrors it.
+ */
+export function modelFitsHarness(kind: string, model: string): boolean {
+  return kind !== "pi" || !model.includes("#");
+}
+
+/**
+ * The models one OpenCode or Pi harness runs each tier on. A section's model is
+ * a Claude Code alias, so such a harness says what it means by each one:
  * `opus` for the hardest checks, `haiku` for the lightest.
  */
 export const harnessModelsSchema = z.object({
-  opus: openCodeModelSchema.optional(),
-  sonnet: openCodeModelSchema.optional(),
-  haiku: openCodeModelSchema.optional(),
+  opus: harnessModelSchema.optional(),
+  sonnet: harnessModelSchema.optional(),
+  haiku: harnessModelSchema.optional(),
 });
 
 export type HarnessModels = z.infer<typeof harnessModelsSchema>;
@@ -107,11 +116,11 @@ export interface VerificationRunConfig {
   sections: Record<string, RunChoice>;
   /**
    * The agent harness the checks run with, by id; left out, the built-in
-   * agent. It must be a Claude Code or OpenCode harness: the settings route checks on
+   * agent. It must be a Claude Code, OpenCode or Pi harness: the settings route checks on
    * save, and the core again when it hands over the harness's environment.
    */
   harness?: string;
-  /** By harness id: the OpenCode models an OpenCode harness runs each tier on. */
+  /** By harness id: the models an OpenCode or Pi harness runs each tier on. */
   harnessModels?: Record<string, HarnessModels>;
 }
 
@@ -148,7 +157,7 @@ function harnessModelsFrom(stored: unknown): Record<string, HarnessModels> {
     const fields = (value ?? {}) as Record<string, unknown>;
     const tiers: HarnessModels = {};
     for (const tier of VERIFICATION_MODELS) {
-      const model = openCodeModelSchema.safeParse(fields[tier]).data;
+      const model = harnessModelSchema.safeParse(fields[tier]).data;
       if (model) tiers[tier] = model;
     }
     if (Object.keys(tiers).length > 0) models[harness] = tiers;

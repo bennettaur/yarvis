@@ -5,8 +5,8 @@
 //! GitHub token into the secrets blob, and ringing an alarm the sidecar found
 //! due (`alarm.fire`) or stopping one (`alarm.release`). It also starts and
 //! ends the locked-down session over a review workspace's PR checkouts
-//! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code or
-//! OpenCode harness's program and environment to a verification run
+//! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code,
+//! OpenCode or Pi harness's program and environment to a verification run
 //! (`harness.runEnv`).
 //!
 //! Security model: the socket lives in the server's private data dir, or
@@ -33,8 +33,8 @@
 //! can only reach the `oauth` subtree of one MCP server's entry, and
 //! `github.saveToken` only the `github_token` key, never a provider key, the
 //! database URL, or another server's headers. `harness.runEnv` is the one
-//! method that reads a secret back: it answers with one Claude Code or
-//! OpenCode harness's kind, program and environment, that harness's secret
+//! method that reads a secret back: it answers with one Claude Code, OpenCode
+//! or Pi harness's kind, program and environment, that harness's secret
 //! variables included, for a headless verification run the sidecar starts with
 //! it. It refuses any other kind, and never answers with another harness's
 //! values or anything else in the store. Like every method here it trusts any

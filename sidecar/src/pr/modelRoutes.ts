@@ -10,6 +10,7 @@ import {
   getRereviewRunConfig,
   getVerificationRunConfig,
   harnessModelsSchema,
+  modelFitsHarness,
   rereviewRunConfigSchema,
   runChoiceSchema,
   savePrModelConfig,
@@ -66,7 +67,7 @@ export function createPrModelRoutes(_config: Config): Hono {
   });
 
   // The verification report's budget, each section's model and effort, the
-  // harness, and the OpenCode models an OpenCode harness runs each tier on.
+  // harness, and the models an OpenCode or Pi harness runs each tier on.
   router.get("/verification", async (c) =>
     c.json(await verificationView(await getVerificationRunConfig())),
   );
@@ -76,11 +77,22 @@ export function createPrModelRoutes(_config: Config): Hono {
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
     // The core refuses such a harness at run time too; checking here fails the save instead.
     const { harness } = parsed.data;
-    if (harness && !(await listVerificationHarnesses()).some((h) => h.id === harness)) {
+    const harnesses = await listVerificationHarnesses();
+    if (harness && !harnesses.some((h) => h.id === harness)) {
       return c.json(
-        { error: `"${harness}" isn't a Claude Code or OpenCode harness a check can run with` },
+        { error: `"${harness}" isn't a Claude Code, OpenCode or Pi harness a check can run with` },
         400,
       );
+    }
+    for (const [id, models] of Object.entries(parsed.data.harnessModels ?? {})) {
+      const kind = harnesses.find((h) => h.id === id)?.kind ?? "";
+      const wrong = Object.values(models ?? {}).find((m) => m && !modelFitsHarness(kind, m));
+      if (wrong) {
+        return c.json(
+          { error: `"${wrong}" isn't how ${id} takes a model: Pi has no #variant` },
+          400,
+        );
+      }
     }
     return c.json(await verificationView(await saveVerificationRunConfig(parsed.data)));
   });

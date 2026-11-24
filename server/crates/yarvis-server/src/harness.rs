@@ -190,7 +190,7 @@ impl ResolvedHarness {
 
 /// The program a headless run, such as a verification check, starts for
 /// `harness`. The sidecar drives those runs with flags of its own, which only
-/// Claude Code and OpenCode take, so any other kind is refused. Only the
+/// Claude Code, OpenCode and Pi take, so any other kind is refused. Only the
 /// program is used: the command's flags and any `VAR=value` words before it
 /// were written for an interactive session, so a variable the run needs
 /// belongs in the harness's environment instead.
@@ -198,9 +198,10 @@ pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
     let binary = match harness.kind {
         HarnessKind::ClaudeCode => "claude",
         HarnessKind::Opencode => "opencode",
-        HarnessKind::Pi | HarnessKind::Custom => {
+        HarnessKind::Pi => "pi",
+        HarnessKind::Custom => {
             return Err(format!(
-                "\"{}\" isn't a Claude Code or OpenCode harness, so it can't run verification checks",
+                "\"{}\" isn't a Claude Code, OpenCode or Pi harness, so it can't run verification checks",
                 harness.name
             ));
         }
@@ -213,8 +214,8 @@ pub fn headless_program(harness: &ResolvedHarness) -> Result<String, String> {
 /// Variables a headless run refuses from a harness. A run over a PR checkout
 /// is kept from reading credentials by rules written against the home folder
 /// (`Read(~/.ssh)`) and the CLI's own config, so moving either one, or
-/// loading code into the CLI itself, would quietly undo them. An OpenCode run
-/// gets folders of its own through the `XDG_*` variables. The sidecar sets its
+/// loading code into the CLI itself, would quietly undo them. An OpenCode or
+/// Pi run gets folders of its own through the `XDG_*` variables. The sidecar sets its
 /// own values over a harness's anyway; refusing them says so on save rather
 /// than letting a setting silently not apply.
 const HEADLESS_REFUSED_ENV: [&str; 8] = [
@@ -229,17 +230,20 @@ const HEADLESS_REFUSED_ENV: [&str; 8] = [
 ];
 
 /// Prefixes every headless run refuses: Claude Code and OpenCode are Bun
-/// builds, so `BUN_*` can load code into them.
+/// builds, so `BUN_*` can load code into them. Pi runs on Node, whose
+/// `NODE_OPTIONS` is in [`HEADLESS_REFUSED_ENV`].
 const HEADLESS_REFUSED_PREFIXES: [&str; 1] = ["BUN_"];
 
 /// Prefixes a headless run refuses for one kind. OpenCode reads many
 /// `OPENCODE_*` variables (config, a model catalog, a home folder, its Claude
 /// Code compatibility, experimental features); a list of names would miss the
-/// next one added.
+/// next one added. Pi's `PI_*` variables move its config folder (with its
+/// extensions and logins) and its sessions, and turn its downloads back on.
 fn kind_refused_prefixes(kind: HarnessKind) -> &'static [&'static str] {
     match kind {
         HarnessKind::Opencode => &["OPENCODE_"],
-        HarnessKind::ClaudeCode | HarnessKind::Pi | HarnessKind::Custom => &[],
+        HarnessKind::Pi => &["PI_"],
+        HarnessKind::ClaudeCode | HarnessKind::Custom => &[],
     }
 }
 
@@ -277,7 +281,7 @@ pub fn headless_run_env(
         .find(|key| refused_in_headless_run(harness.kind, key))
     {
         return Err(format!(
-            "\"{}\" sets {key}, which a verification run can't take: it would move the files the run is kept from reading",
+            "\"{}\" sets {key}, which a verification run can't take: it could move what the run may read or change how the CLI runs",
             harness.name
         ));
     }
@@ -700,7 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn a_headless_run_takes_only_a_claude_code_or_opencode_harness_and_only_its_program() {
+    fn a_headless_run_takes_only_a_claude_code_opencode_or_pi_harness_and_only_its_program() {
         assert_eq!(headless_program(&claude()).as_deref(), Ok("claude"));
         let bedrock = resolve_stored(&stored(
             "bedrock",
@@ -710,10 +714,12 @@ mod tests {
         .unwrap();
         assert_eq!(headless_program(&bedrock).as_deref(), Ok("/opt/bin/claude"));
         let pi = resolve_stored(&stored("pi", HarnessKind::Pi, "pi")).unwrap();
+        assert_eq!(headless_program(&pi).as_deref(), Ok("pi"));
+        let custom = resolve_stored(&stored("c", HarnessKind::Custom, "aider")).unwrap();
         assert!(
-            headless_program(&pi)
+            headless_program(&custom)
                 .unwrap_err()
-                .contains("isn't a Claude Code or OpenCode harness")
+                .contains("isn't a Claude Code, OpenCode or Pi harness")
         );
         let opencode = resolve_stored(&stored(
             "oc",
@@ -782,6 +788,19 @@ mod tests {
         let mut claude = stored("cc", HarnessKind::ClaudeCode, "claude");
         claude.env = BTreeMap::from([("OPENCODE_CONFIG".to_string(), "/x".to_string())]);
         assert!(headless_run_env(&resolve_stored(&claude).unwrap(), || unreachable!()).is_ok());
+
+        let mut pi_dir = stored("pi", HarnessKind::Pi, "pi");
+        pi_dir.env = BTreeMap::from([("PI_CODING_AGENT_DIR".to_string(), "/x".to_string())]);
+        assert!(headless_run_env(&resolve_stored(&pi_dir).unwrap(), || unreachable!()).is_err());
+        // Each kind's prefix is its own: OpenCode's config variables mean nothing to Pi.
+        let mut pi_opencode = stored("pi-oc", HarnessKind::Pi, "pi");
+        pi_opencode.env = BTreeMap::from([("OPENCODE_CONFIG".to_string(), "/x".to_string())]);
+        assert!(
+            headless_run_env(&resolve_stored(&pi_opencode).unwrap(), || unreachable!()).is_ok()
+        );
+        let mut claude_pi = stored("cc-pi", HarnessKind::ClaudeCode, "claude");
+        claude_pi.env = BTreeMap::from([("PI_CODING_AGENT_DIR".to_string(), "/x".to_string())]);
+        assert!(headless_run_env(&resolve_stored(&claude_pi).unwrap(), || unreachable!()).is_ok());
     }
 
     #[test]
@@ -794,10 +813,10 @@ mod tests {
         };
         let root = serde_json::json!({ SECRET_ENV_SUBTREE: { "bedrock": { "API_KEY": "sk" } } });
 
-        let pi = with_secret("pi", HarnessKind::Pi, "pi");
+        let custom = with_secret("custom", HarnessKind::Custom, "aider");
         let mut read = false;
         assert!(
-            headless_run_env(&pi, || {
+            headless_run_env(&custom, || {
                 read = true;
                 Ok(root.clone())
             })
