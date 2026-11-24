@@ -4,6 +4,7 @@ import { dirname, join, relative } from "node:path";
 import { SECTION_AGENTS } from "../reviewWorkspaces/verification.ts";
 import {
   INPUTS_AND_TRUST_MARKER,
+  pluginAgentPrompt,
   REREVIEW_INPUTS_AND_TRUST_MARKER,
   withInputsAndTrust,
   writePluginCopy,
@@ -127,5 +128,21 @@ describe("writing out a shipped plugin", () => {
   it("refuses a listed path that leaves the plugin folder, leaving nothing behind", () => {
     expect(() => writePluginCopy("yarvis-review", { "../x.md": "no" })).toThrow("escapes");
     expect(() => writePluginCopy("yarvis-review", { "/etc/x.md": "no" })).toThrow("escapes");
+  });
+});
+
+describe("a plugin agent's prompt, for a harness that can't load the plugin", () => {
+  it("is the agent's body, trust section included, without its frontmatter", () => {
+    const prompt = pluginAgentPrompt("yarvis-review:risk-reviewer");
+    expect(prompt).toStartWith("You assess the risk of merging one pull request.");
+    expect(prompt).toContain("## Inputs and trust");
+    expect(prompt).not.toContain("tools: Read");
+    expect(prompt).not.toContain("<!-- yarvis-review:inputs-and-trust -->");
+  });
+
+  it("refuses an agent or plugin that isn't shipped", () => {
+    expect(() => pluginAgentPrompt("yarvis-review:nope")).toThrow("no such plugin agent");
+    expect(() => pluginAgentPrompt("nope")).toThrow("no such plugin agent");
+    expect(() => pluginAgentPrompt("other:risk-reviewer")).toThrow("no such plugin agent");
   });
 });

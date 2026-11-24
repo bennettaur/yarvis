@@ -83,9 +83,17 @@ export const PASS_REFUSED_TOOLS: ReadonlySet<string> = new Set([
   "take_note",
 ]);
 
+/**
+ * A pass's own tools that always wait for the user. A routine's body reaches
+ * every later pass as the user's own words, so one a pass wrote has to be one
+ * the user read and approved.
+ */
+export const PASS_APPROVAL_TOOLS: ReadonlySet<string> = new Set(["create_routine"]);
+
 /** The built-ins a pass routes through `decideCall` rather than running directly. */
 export const PASS_CONFIRMED_TOOLS: ReadonlySet<string> = new Set([
   ...ALWAYS_CONFIRM_BUILTIN_TOOLS,
+  ...PASS_APPROVAL_TOOLS,
   ...DESTRUCTIVE_BUILTIN_TOOLS,
   ...PASS_REFUSED_TOOLS,
 ]);

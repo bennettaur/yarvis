@@ -45,6 +45,15 @@ from one source. Every agent here runs as a run's main thread, so its
 `tools:` line lists `StructuredOutput`, the tool a run started with
 `--json-schema` answers through.
 
+The same agents also run on OpenCode and Pi, for a verification run on such
+a harness. Neither can load this plugin, so `pluginAgentPrompt` in
+`plugins.ts` takes each agent's body without its frontmatter, and
+`agentRuns/opencode.ts` or `agentRuns/pi.ts` gives it to the CLI as the
+agent's prompt, with the answer's JSON schema added and the tools fixed at
+read, grep and glob (Pi's find and ls standing in for glob). An
+agent's body therefore can't rely on anything only its frontmatter or Claude
+Code provides.
+
 To add an agent, put its file here in Claude Code's plugin layout
 (`agents/<name>.md`) and add it to the plugin's file list in `plugins.ts`. A
 file that isn't listed there never reaches the run.

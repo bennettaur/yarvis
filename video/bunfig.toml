@@ -1,0 +1,4 @@
+# Bun doesn't read the root bunfig.toml from here, so this repeats its install
+# settings: only install versions published at least 7 days ago (in seconds).
+[install]
+minimumReleaseAge = 604800
