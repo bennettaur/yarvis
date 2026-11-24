@@ -2145,19 +2145,34 @@ export class GitHubClient {
    * commit, so the head is read before it and again after, one request at a
    * time: a head read that overlapped the list could see a push the list
    * missed. When the two reads differ a push landed mid-read, and `headSha`
-   * is null. `incomplete` is set when GitHub stopped listing at 3,000 files.
+   * is null. `incomplete` is set when the list is shorter than the PR's own
+   * file count, which happens past GitHub's 3,000-file listing cap.
    */
   async prFilesAtHead(
     owner: string,
     repo: string,
     number: number,
   ): Promise<{ headSha: string | null; files: PrFile[]; incomplete: boolean }> {
-    const readHeadSha = async (): Promise<string | null> =>
-      (await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`)).head?.sha ?? null;
-    const before = await readHeadSha();
-    const { files, incomplete } = await this.allPrFiles(owner, repo, number);
-    const after = await readHeadSha();
-    return { headSha: before && before === after ? before : null, files, incomplete };
+    const readHead = async () => {
+      const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
+      const changedFiles: unknown = pr.changed_files;
+      return {
+        sha: (pr.head?.sha as string | undefined) ?? null,
+        changedFiles: typeof changedFiles === "number" ? changedFiles : null,
+      };
+    };
+    const before = await readHead();
+    const listed = await this.allPrFiles(owner, repo, number);
+    const after = await readHead();
+    const files = listed.files;
+    // A full last page alone can't tell a PR of exactly 3,000 files from a cut-off list.
+    const incomplete =
+      before.changedFiles === null ? listed.incomplete : files.length < before.changedFiles;
+    return {
+      headSha: before.sha && before.sha === after.sha ? before.sha : null,
+      files,
+      incomplete,
+    };
   }
 
   /**

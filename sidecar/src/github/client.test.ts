@@ -827,22 +827,35 @@ describe("github client", () => {
       const head = "c".repeat(40);
       const page = (n: number) =>
         Array.from({ length: n }, (_, i) => ({ ...file, filename: `f${i}.ts` }));
-      // Full pages forever, unless capped: GitHub stops at page 30 (3,000 files).
-      const listing = (lastPage: number) =>
+      // Lists `total` files, 100 a page, but never more than GitHub's 3,000,
+      // and records each request in order.
+      const listing = (total: number, order: string[] = []) =>
         (async (url: string) => {
           const match = String(url).match(/\/files\?.*page=(\d+)/);
+          order.push(match ? "files" : "head");
+          const listed = Math.min(total, 3000);
           const body = match
-            ? page(Number(match[1]) < lastPage ? 100 : 1)
-            : { head: { sha: head } };
+            ? page(Math.max(0, Math.min(100, listed - (Number(match[1]) - 1) * 100)))
+            : { head: { sha: head }, changed_files: total };
           return new Response(JSON.stringify(body), { status: 200 });
         }) as unknown as typeof fetch;
 
-      const two = await new GitHubClient("t", listing(2)).prFilesAtHead("o", "r", 1);
+      const order: string[] = [];
+      const two = await new GitHubClient("t", listing(101, order)).prFilesAtHead("o", "r", 1);
       expect(two.files).toHaveLength(101);
       expect(two.incomplete).toBe(false);
       expect(two.headSha).toBe(head);
+      expect(order).toEqual(["head", "files", "files", "head"]);
 
-      const capped = await new GitHubClient("t", listing(99)).prFilesAtHead("o", "r", 1);
+      const even = await new GitHubClient("t", listing(200)).prFilesAtHead("o", "r", 1);
+      expect(even.files).toHaveLength(200);
+      expect(even.incomplete).toBe(false);
+
+      const exact = await new GitHubClient("t", listing(3000)).prFilesAtHead("o", "r", 1);
+      expect(exact.files).toHaveLength(3000);
+      expect(exact.incomplete).toBe(false);
+
+      const capped = await new GitHubClient("t", listing(3001)).prFilesAtHead("o", "r", 1);
       expect(capped.files).toHaveLength(3000);
       expect(capped.incomplete).toBe(true);
     });

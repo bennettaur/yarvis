@@ -530,7 +530,7 @@ export default function PrFileDiffs({
       <div className="flex items-center gap-2 text-xs text-zinc-500">
         <span>
           {data.length} {data.length === 1 ? "file" : "files"}
-          {fileSet.data?.incomplete && " (GitHub lists no more; the rest aren't shown)"}
+          {fileSet.data?.incomplete && " (GitHub lists at most 3,000 files; the rest aren't shown)"}
         </span>
         <div className="ml-auto flex overflow-hidden rounded border border-zinc-700">
           <button

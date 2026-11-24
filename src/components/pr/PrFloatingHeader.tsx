@@ -305,6 +305,9 @@ function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState
   return action === "approve" ? "approved" : "changes_requested";
 }
 
+const TOO_MANY_FILES =
+  "GitHub lists only the first 3,000 changed files, so not all of this PR is shown here. Merge it on GitHub.";
+
 /**
  * The review and merge actions a PR offers — publish, approve, request changes,
  * merge, auto-merge — with the in-flight and error state they share. A hook so
@@ -316,9 +319,6 @@ function reviewStateFor(action: Exclude<ReviewAction, "publish">): ReviewerState
  * head the surface is showing, which a review records as where the user
  * reviewed.
  */
-const TOO_MANY_FILES =
-  "GitHub lists only the first 3,000 changed files, so not all of this PR is shown here. Merge it on GitHub.";
-
 export function usePrActions(
   prRef: PrRef,
   seen?: SeenCommits,
