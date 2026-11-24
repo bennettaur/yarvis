@@ -4,10 +4,17 @@ import type { Db } from "../db/client.ts";
 import { getDb } from "../db/client.ts";
 import type { AttentionItemRow, HeadsDownRun } from "../db/schema.ts";
 import { claimJob, finishJob } from "../jobs/store.ts";
-import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
+import { listPendingWakes } from "../scheduledTasks/service.ts";
+import {
+  DEFAULT_HEADS_DOWN_CONFIG,
+  getHeadsDownConfig,
+  type HeadsDownConfig,
+  startOfLocalDay,
+} from "./config.ts";
 import { PASS_LEASE_NAME, stopHeadsDown } from "./control.ts";
+import { publish } from "./hub.ts";
 import { type PassResult, runPass } from "./pass.ts";
-import { getActiveRun, msUntilStop } from "./service.ts";
+import { getActiveRun, msUntilStop, passLimitReached, startRun } from "./service.ts";
 import { setRescheduleHandler, setWakeHandler } from "./wake.ts";
 
 /**
@@ -35,6 +42,24 @@ export interface LoopDeps {
   minSleepMs: () => Promise<number>;
   passTimeoutMs: () => Promise<number>;
   setTimer: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  /** Always-on and the daily pass limit. Defaults to the stored settings. */
+  config?: () => Promise<HeadsDownConfig>;
+}
+
+async function readConfig(): Promise<HeadsDownConfig> {
+  // A settings file that won't parse mustn't stop the loop.
+  try {
+    return await getHeadsDownConfig();
+  } catch {
+    return DEFAULT_HEADS_DOWN_CONFIG;
+  }
+}
+
+/** How long until the next local midnight, when the daily pass count starts over. */
+export function msUntilNextDay(now = new Date()): number {
+  const next = startOfLocalDay(now);
+  next.setDate(next.getDate() + 1);
+  return next.getTime() - now.getTime();
 }
 
 async function readMinSleepMs(): Promise<number> {
@@ -98,13 +123,25 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
     let nextMs = IDLE_CHECK_MS;
     let untilStop = Infinity;
     try {
-      const run = await getActiveRun(db);
+      // The run before the settings: Stop turns always-on off before it stops
+      // the run, so a cycle that finds no run then reads always-on as off.
+      let run = await getActiveRun(db);
+      const hd = await (deps.config ?? readConfig)();
+      if (!run && hd.alwaysOn) {
+        run = await startRun(db, null);
+        publish({ type: "changed" });
+      }
+      let ranPass = false;
       if (run && msUntilStop(run) === 0) {
         await stopHeadsDown(db);
+      } else if (run && !run.pausedAt && (await passLimitReached(db, hd))) {
+        // A wake or message can't start a pass before the count starts over.
+        nextMs = msUntilNextDay() + 1000;
       } else if (run && !run.pausedAt) {
         // Read once, so the lease and the pass agree even if the setting changes mid-pass.
         const timeoutMs = await deps.passTimeoutMs();
         if (await claimJob(db, PASS_LEASE_NAME, timeoutMs + LEASE_MARGIN_MS)) {
+          ranPass = true;
           let status: "ok" | "error" = "ok";
           try {
             nextMs = (await deps.runPass(run, timeoutMs)).sleepMinutes * 60_000;
@@ -118,6 +155,17 @@ export function createHeadsDownLoop(deps: LoopDeps): HeadsDownLoop {
       }
       // Woken during the pass: something changed that the pass may not have seen.
       if (wakeRequested) nextMs = Math.min(nextMs, await deps.minSleepMs());
+      // A wake-up a pass scheduled ends the sleep early. Only after a pass, so
+      // one that is due but can't run yet (another instance holds the lease)
+      // doesn't spin the loop, and never sooner than the shortest sleep, so a
+      // pass can't keep the loop running every minute with wake-ups.
+      if (ranPass) {
+        const [wake] = await listPendingWakes(db);
+        if (wake) {
+          const untilWake = Math.max(wake.dueAt.getTime() - Date.now(), await deps.minSleepMs());
+          nextMs = Math.min(nextMs, untilWake);
+        }
+      }
       // Read again: the stop time may have changed while the pass ran.
       untilStop = msUntilStop(await getActiveRun(db));
     } catch (e) {
