@@ -105,7 +105,12 @@ test that writes settings should still set its own path per test.
 The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
 against the real Claude Code by `bun run sidecar/src/agentRuns/canary.ts`, which
 needs a signed-in `claude` and network access, so no suite runs it. Run it after
-upgrading Claude Code or changing how those runs are started.
+upgrading Claude Code or changing how those runs are started. It covers Claude
+Code only. An OpenCode run's lockdown (`agentRuns/opencode.ts`) is checked by
+the tests against a fake `opencode` and, for the sandbox profile, the real
+`sandbox-exec`; check it against a real OpenCode by hand after upgrading
+OpenCode, with a checkout whose `opencode.json` and `.opencode/plugins` try
+to run code.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
@@ -520,8 +525,9 @@ sidecar/        Bun + TS service (Hono)
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision
                    specialists (decide.ts) and their playground route
-  src/agentRuns/   headless Claude Code runs streamed to the UI, and the
-                   Claude Code plugins shipped to them
+  src/agentRuns/   headless Claude Code and OpenCode runs streamed to the UI,
+                   the Claude Code plugins shipped to them, and the models.dev
+                   catalog OpenCode runs read
   src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in
                    an empty folder, with no workspace
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with

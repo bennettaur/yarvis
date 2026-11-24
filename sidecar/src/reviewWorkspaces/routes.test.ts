@@ -21,7 +21,7 @@ import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { lockedDownSettings, ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
-import { ControlTimeoutError } from "../core/controlClient.ts";
+import { ControlTimeoutError, type HarnessRunEnv } from "../core/controlClient.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
@@ -922,6 +922,7 @@ ${printAgentAnswer(fakeDir)}`,
               REPORT_SECTIONS.map((s) => [s, { model: "haiku" as const }]),
             ),
             ...(savedHarness && { harness: savedHarness }),
+            harnessModels: { oc: { haiku: "opencode/beam-free" } },
           }),
           run: {
             get program(): string {
@@ -932,11 +933,15 @@ ${printAgentAnswer(fakeDir)}`,
             instance: "test",
             // Its own, so a fake a test leaves running can't hold another test's slot.
             slots: new ProcessSlots(12),
+            // For an OpenCode harness: no sandbox-exec on CI, and no catalog download.
+            sandboxExec: fakeClaude(fakeDir, "sandbox", 'shift 2\nexec "$@"'),
+            loadCatalog: async () => null,
           },
-          loadHarnessRunEnv: async (harness) => {
+          loadHarnessRunEnv: async (harness): Promise<HarnessRunEnv> => {
             harnessesAsked.push(harness);
+            if (harness === "oc") return { kind: "opencode", program, env: {} };
             if (harness !== "bedrock") throw new Error(`"${harness}" isn't a Claude Code harness`);
-            return { program, env: { YARVIS_TEST_HARNESS_KEY: "sk-test" } };
+            return { kind: "claude-code", program, env: { YARVIS_TEST_HARNESS_KEY: "sk-test" } };
           },
         },
       }),
@@ -1263,6 +1268,27 @@ ${printAgentAnswer(fakeDir)}`,
     // The environment can hold credentials, so it is never kept on the run.
     expect(JSON.stringify(row?.meta)).not.toContain("sk-test");
     release();
+  });
+
+  it("runs an OpenCode harness on the model Settings gives the section's tier", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    expect((await verify("POST", wsId, prId, ["tests"], undefined, "oc")).status).toBe(202);
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    expect(args.slice(0, 2)).toEqual(["run", "--standalone"]);
+    expect(args[args.indexOf("--model") + 1]).toBe("opencode/beam-free");
+    expect(args[args.indexOf("--agent") + 1]).toBe("test-reviewer");
+    const [row] = await db.select().from(agentRuns);
+    expect(row?.meta).toMatchObject({ harness: "oc", model: "opencode/beam-free", tier: "haiku" });
+    release();
+  });
+
+  it("says which tier an OpenCode harness has no model for, and starts nothing", async () => {
+    const { wsId, prId } = await readyWorkspace();
+    const res = await verify("POST", wsId, prId, ["tests"], { model: "opus" }, "oc");
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain("no OpenCode model for the opus tier");
+    expect(await db.select().from(agentRuns)).toHaveLength(0);
   });
 
   it("runs the built-in agent without asking the core, and says why a harness can't run", async () => {

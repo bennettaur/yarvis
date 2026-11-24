@@ -46,9 +46,11 @@ export async function savePrModelConfig(input: Partial<PrModelConfig>): Promise<
 }
 
 /**
- * The verification report runs on Claude Code rather than on a chat provider,
- * so it takes Claude Code model aliases and a budget instead of a
- * provider/model pair. Kept under its own `prVerification` key.
+ * The verification report runs on Claude Code or OpenCode rather than on a chat
+ * provider, so it takes Claude Code model aliases and a budget instead of a
+ * provider/model pair. On an OpenCode harness each alias is a tier that
+ * `harnessModels` maps to an OpenCode model. Kept under its own
+ * `prVerification` key.
  *
  * Each section runs on a model and effort matched to its job
  * (`SECTION_RUN_DEFAULTS` in `reviewWorkspaces/verification.ts`); `sections`
@@ -76,21 +78,47 @@ const VERIFICATION_BUDGET_MIN_USD = 0.25;
 
 export const verificationBudgetSchema = z.number().min(VERIFICATION_BUDGET_MIN_USD);
 
+/**
+ * An OpenCode model, `provider/model` with an optional `#variant` (which is how
+ * OpenCode takes a reasoning effort). `OPENCODE_MODEL_PATTERN` in
+ * `src/lib/pr/models.ts` mirrors it.
+ */
+export const openCodeModelSchema = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z0-9][\w.-]*\/[^\s#]+(#[\w.-]+)?$/);
+
+/**
+ * The OpenCode models one harness runs each tier on. A section's model is a
+ * Claude Code alias, so an OpenCode harness says what it means by each one:
+ * `opus` for the hardest checks, `haiku` for the lightest.
+ */
+export const harnessModelsSchema = z.object({
+  opus: openCodeModelSchema.optional(),
+  sonnet: openCodeModelSchema.optional(),
+  haiku: openCodeModelSchema.optional(),
+});
+
+export type HarnessModels = z.infer<typeof harnessModelsSchema>;
+
 export interface VerificationRunConfig {
   maxBudgetUsd: number;
   /** Overrides by section name. The route checks the names; one stored by hand that names no section is never read. */
   sections: Record<string, RunChoice>;
   /**
    * The agent harness the checks run with, by id; left out, the built-in
-   * agent. It must be a Claude Code harness: the settings route checks on
+   * agent. It must be a Claude Code or OpenCode harness: the settings route checks on
    * save, and the core again when it hands over the harness's environment.
    */
   harness?: string;
+  /** By harness id: the OpenCode models an OpenCode harness runs each tier on. */
+  harnessModels?: Record<string, HarnessModels>;
 }
 
 export const DEFAULT_VERIFICATION_RUN_CONFIG: VerificationRunConfig = {
   maxBudgetUsd: 2,
   sections: {},
+  harnessModels: {},
 };
 
 const VERIFICATION_SETTINGS_KEY = "prVerification";
@@ -111,6 +139,23 @@ function sectionsFrom(stored: unknown): Record<string, RunChoice> {
   return sections;
 }
 
+/** Each stored harness's tiers that still validate, with empty entries dropped. */
+function harnessModelsFrom(stored: unknown): Record<string, HarnessModels> {
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) return {};
+  const models: Record<string, HarnessModels> = {};
+  for (const [harness, value] of Object.entries(stored)) {
+    if (!harnessIdSchema.safeParse(harness).success) continue;
+    const fields = (value ?? {}) as Record<string, unknown>;
+    const tiers: HarnessModels = {};
+    for (const tier of VERIFICATION_MODELS) {
+      const model = openCodeModelSchema.safeParse(fields[tier]).data;
+      if (model) tiers[tier] = model;
+    }
+    if (Object.keys(tiers).length > 0) models[harness] = tiers;
+  }
+  return models;
+}
+
 /**
  * The stored verification settings over the defaults. A stored field that no
  * longer validates (a hand edit, an alias since dropped) falls back to its
@@ -126,6 +171,7 @@ function verificationConfigFrom(
     maxBudgetUsd: budget.success ? budget.data : DEFAULT_VERIFICATION_RUN_CONFIG.maxBudgetUsd,
     sections: sectionsFrom(stored?.sections),
     ...(harness && { harness }),
+    harnessModels: harnessModelsFrom(stored?.harnessModels),
   };
 }
 
@@ -139,6 +185,8 @@ interface VerificationRunConfigPatch {
   sections?: Record<string, RunChoice>;
   /** `null` goes back to the built-in agent. */
   harness?: string | null;
+  /** Replaces each named harness's tiers; `null` (or an empty object) clears them. */
+  harnessModels?: Record<string, HarnessModels | null>;
 }
 
 /** Merges the given fields onto the stored settings and writes them back. */
@@ -154,6 +202,7 @@ export async function saveVerificationRunConfig(
         maxBudgetUsd: input.maxBudgetUsd ?? before.maxBudgetUsd,
         sections: sectionsFrom({ ...before.sections, ...input.sections }),
         ...(harness && { harness }),
+        harnessModels: harnessModelsFrom({ ...before.harnessModels, ...input.harnessModels }),
       };
       return { next, result: next };
     },
