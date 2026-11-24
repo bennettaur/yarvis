@@ -55,6 +55,29 @@ export interface HeadsDownConfig {
    */
   shipMonitorWindowMinutes: number;
   shipCheckEveryMinutes: number;
+  /**
+   * Keep a run going without being asked: start one when none is active, on
+   * startup and whenever the loop looks. Stopping the run turns it off.
+   */
+  alwaysOn: boolean;
+  /**
+   * Hours every day when the user is asleep, so passes can be rarer and
+   * routines can opt out (`nightShift` in a routine's frontmatter). Null for none.
+   */
+  nightShift: NightShift | null;
+  /** The least the loop sleeps between passes during night shift, in minutes. */
+  nightShiftMinSleepMinutes: number;
+  /**
+   * The most passes the loop starts in one local calendar day, across runs.
+   * Null for no limit.
+   */
+  maxPassesPerDay: number | null;
+}
+
+export interface NightShift {
+  /** Start and end as local "HH:MM". An end at or before the start runs past midnight. */
+  start: string;
+  end: string;
 }
 
 /**
@@ -76,6 +99,10 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   maxRoutinesPerPass: 2,
   shipMonitorWindowMinutes: 60,
   shipCheckEveryMinutes: 15,
+  alwaysOn: false,
+  nightShift: null,
+  nightShiftMinSleepMinutes: 120,
+  maxPassesPerDay: null,
 };
 
 /**
@@ -129,7 +156,37 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
       MAX_SHIP_CHECK_MINUTES,
       DEFAULT_HEADS_DOWN_CONFIG.shipCheckEveryMinutes,
     ),
+    alwaysOn: config.alwaysOn === true,
+    nightShift: validNightShift(config.nightShift),
+    nightShiftMinSleepMinutes: positiveInteger(
+      config.nightShiftMinSleepMinutes,
+      DEFAULT_HEADS_DOWN_CONFIG.nightShiftMinSleepMinutes,
+    ),
+    maxPassesPerDay:
+      config.maxPassesPerDay === null ? null : positiveInteger(config.maxPassesPerDay, null),
   };
+}
+
+export const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function validNightShift(value: unknown): NightShift | null {
+  const shift = value as Partial<NightShift> | null | undefined;
+  if (typeof shift?.start !== "string" || typeof shift.end !== "string") return null;
+  return HHMM.test(shift.start) && HHMM.test(shift.end)
+    ? { start: shift.start, end: shift.end }
+    : null;
+}
+
+function positiveInteger<T>(value: unknown, fallback: T): number | T {
+  return Number.isInteger(value) && (value as number) >= 1 ? (value as number) : fallback;
+}
+
+/** Turns always-on off, for when the user stops the run: otherwise the loop would start another. */
+export async function disableAlwaysOn(): Promise<void> {
+  await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => ({
+    next: { ...stored, alwaysOn: false },
+    result: undefined,
+  }));
 }
 
 export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {
@@ -162,6 +219,19 @@ export function isWithinWorkingHours(now: Date, hours: WorkingHours | null): boo
   );
 }
 
+/** Whether `now` falls in night shift, in the machine's local time. The same window as working hours, every day. */
+export function isNightShift(now: Date, nightShift: NightShift | null): boolean {
+  if (!nightShift) return false;
+  return isWithinWorkingHours(now, { days: [0, 1, 2, 3, 4, 5, 6], ...nightShift });
+}
+
+/** When the local calendar day of `now` started, which is when the daily pass count resets. */
+export function startOfLocalDay(now: Date): Date {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+
 export interface SleepInput {
   /** What the pass asked for, in minutes, if anything. */
   requestedMinutes: number | null;
@@ -171,6 +241,7 @@ export interface SleepInput {
   /** No open stream can be pushed right now: each waits on the user or someone else. */
   allWaiting: boolean;
   userAway: boolean;
+  duringNightShift?: boolean;
 }
 
 /**
@@ -187,11 +258,15 @@ export function chooseSleep(
   if (input.openStreams === 0) quiet.push("nothing to push");
   else if (input.allWaiting) quiet.push("every stream is waiting");
   if (input.userAway) quiet.push("no reply from you lately");
+  if (input.duringNightShift) quiet.push("night shift");
 
-  const floor =
+  const idleFloor =
     quiet.length > 0
       ? Math.max(config.minSleepMinutes, config.idleSleepMinutes)
       : config.minSleepMinutes;
+  const floor = input.duringNightShift
+    ? Math.max(idleFloor, config.nightShiftMinSleepMinutes)
+    : idleFloor;
   const requested = input.requestedMinutes ?? floor;
   const minutes = Math.round(Math.min(config.maxSleepMinutes, Math.max(floor, requested)));
   const reason = quiet.length > 0 ? quiet.join(", ") : "work to push";

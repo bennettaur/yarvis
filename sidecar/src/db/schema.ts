@@ -2138,6 +2138,11 @@ export const chatScheduledTasks = pgTable(
     attempt: integer("attempt").notNull().default(1),
     /** The task whose run scheduled this one; null for the first in a chain. */
     parentId: uuid("parent_id"),
+    /**
+     * Set by a heads-down pass that wants a full pass at `dueAt` rather than a
+     * read-only turn: the loop wakes for it and the pass reads the prompt.
+     */
+    wakesPass: boolean("wakes_pass").notNull().default(false),
     dueAt: timestamp("due_at", { withTimezone: true }).notNull(),
     status: text("status").$type<"pending" | "fired" | "cancelled">().notNull().default("pending"),
     firedAt: timestamp("fired_at", { withTimezone: true }),

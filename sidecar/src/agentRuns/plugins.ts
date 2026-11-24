@@ -120,6 +120,21 @@ const PLUGINS = {
 
 export type PluginName = keyof typeof PLUGINS;
 
+/**
+ * A plugin agent's prompt, without its frontmatter, for a harness that can't
+ * load a Claude Code plugin. `agent` is named as `--agent` takes it, e.g.
+ * `yarvis-review:risk-reviewer`.
+ */
+export function pluginAgentPrompt(agent: string): string {
+  const [plugin, name] = agent.split(":");
+  const files: Record<string, string> | undefined =
+    plugin && plugin in PLUGINS ? PLUGINS[plugin as PluginName] : undefined;
+  const source = name ? files?.[`agents/${name}.md`] : undefined;
+  if (!source) throw new Error(`no such plugin agent: ${agent}`);
+  const body = /^---\n[\s\S]*?\n---\n/.exec(source);
+  return (body ? source.slice(body[0].length) : source).trim();
+}
+
 export interface PluginCopy {
   /** The directory to hand to `--plugin-dir`. */
   dir: string;

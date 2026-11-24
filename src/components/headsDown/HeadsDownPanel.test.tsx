@@ -119,7 +119,14 @@ const CONFIG = {
   maxRoutinesPerPass: 2,
   shipMonitorWindowMinutes: 60,
   shipCheckEveryMinutes: 15,
+  alwaysOn: false,
+  nightShift: null,
+  nightShiftMinSleepMinutes: 120,
+  maxPassesPerDay: null,
 };
+
+/** What the settings form sends: always-on only when the user changed it. */
+const { alwaysOn: _alwaysOn, ...SENT } = CONFIG;
 
 const ROUTINES = {
   routines: [
@@ -128,6 +135,7 @@ const ROUTINES = {
       description: "Sets an alarm for each meeting",
       everyMinutes: 180,
       workingHoursOnly: false,
+      nightShift: "run",
       enabled: true,
       source: "builtin",
       tools: [],
@@ -139,6 +147,7 @@ const ROUTINES = {
       description: "Drafts my standup",
       everyMinutes: 24 * 60,
       workingHoursOnly: true,
+      nightShift: "run",
       enabled: true,
       source: "user",
       tools: [],
@@ -150,6 +159,7 @@ const ROUTINES = {
       description: "Triages my inbox",
       everyMinutes: 45,
       workingHoursOnly: false,
+      nightShift: "skip",
       enabled: true,
       source: "user",
       tools: ["slack_read_channel", "post_message"],
@@ -161,6 +171,7 @@ const ROUTINES = {
       description: "Reads meeting notes",
       everyMinutes: 240,
       workingHoursOnly: true,
+      nightShift: "run",
       enabled: false,
       source: "builtin",
       tools: [],
@@ -196,6 +207,7 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
 
 /** The run the page loads; a test may replace it. */
 let currentRun: typeof RUN | null = RUN;
+let passCounts = { passesToday: 4, maxPassesPerDay: null as number | null };
 
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
@@ -246,6 +258,7 @@ stubSidecarApi({
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
+        ...passCounts,
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
@@ -304,6 +317,7 @@ afterEach(() => {
   streamFrames = [];
   savedConfig = CONFIG;
   currentRun = RUN;
+  passCounts = { passesToday: 4, maxPassesPerDay: null };
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
 });
@@ -337,6 +351,17 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Posts the review request the user asked for");
   });
 
+  it("counts today's passes, against the daily limit when there is one", async () => {
+    const host = await mount();
+    await waitForText(host, "Passes today: 4");
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    passCounts = { passesToday: 40, maxPassesPerDay: 40 };
+    const limited = await mount();
+    await waitForText(limited, "Passes today: 40 of 40");
+    expect(limited.textContent).toContain("Reached today's pass limit");
+  });
+
   it("lists the routines, and a file that failed to load", async () => {
     const host = await mount();
     await waitForText(host, "meeting-alarms");
@@ -346,7 +371,7 @@ describe("HeadsDownPanel", () => {
 
     expect(
       [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
-    ).toEqual(["every 3h", "every 1d, working hours", "every 45m", "off"]);
+    ).toEqual(["every 3h", "every 1d, working hours", "every 45m, skip at night", "off"]);
     expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
     expect(routine("meeting-alarms")).not.toContain("(yours)");
     expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
@@ -680,7 +705,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+      body: { ...SENT, provider: "anthropic", model: "claude-haiku-5-5" },
     });
   });
 
@@ -703,7 +728,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, guidance: "Don't merge during market hours" },
+      body: { ...SENT, guidance: "Don't merge during market hours" },
     });
   });
 
@@ -735,7 +760,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
+      body: { ...SENT, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
     });
   });
 
@@ -760,10 +785,52 @@ describe("HeadsDownSettings", () => {
     };
     await type("0");
     await type("-1");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 0 });
     await type("10");
     await type("11");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 10 });
+  });
+
+  it("saves always-on, a daily pass limit and night-shift hours", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+    const checkbox = (label: string) => {
+      const input = [...host.querySelectorAll("label")]
+        .find((l) => l.textContent?.startsWith(label))
+        ?.querySelector<HTMLInputElement>("input[type=checkbox]");
+      if (!input) throw new Error(`no ${label} checkbox`);
+      return input;
+    };
+    checkbox("Always on").click();
+    checkbox("Limit passes per day").click();
+    checkbox("Night shift").click();
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: {
+        ...SENT,
+        alwaysOn: true,
+        maxPassesPerDay: 100,
+        nightShift: { start: "23:00", end: "07:00" },
+      },
+    });
+  });
+
+  it("doesn't send always-on unless it was changed, so a stale form can't turn it back on", async () => {
+    // Stop turned it off on the server after this form loaded it as on.
+    savedConfig = { ...CONFIG, alwaysOn: true };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+    buttonNamed(host, "Save").click();
+    await settle();
+    const body = writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    expect(body).not.toHaveProperty("alwaysOn");
   });
 
   it("goes back to the default chat model", async () => {
@@ -788,7 +855,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: null, model: null },
+      body: { ...SENT, provider: null, model: null },
     });
   });
 
@@ -811,7 +878,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: savedConfig,
+      body: { ...SENT, provider: "openai", model: "gpt-x" },
     });
   });
 });

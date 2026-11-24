@@ -36,12 +36,14 @@ Built:
 - The web UI as a server client: sign-in, a vault unlock screen, Settings →
   Devices, and an approvals list.
 - The thin Tauri app, which starts a local server or connects to a remote one.
+- A first native macOS app (`apps/macos/`): chat, attention and approvals,
+  and terminals natively, the rest in a web view. See
+  [native-macos.md](native-macos.md).
 - An end-to-end test (`bun run e2e`, `e2e/`) that drives the real server and
   the built UI in Chromium, signing in with TOTP codes it computes.
 
 Not yet:
 
-- The native macOS app. [native-macos.md](native-macos.md) maps the API to it.
 - A phone app.
 - Porting sidecar modules to Rust.
 - Passkeys, as an optional second way to sign in beside the passphrase.
@@ -486,13 +488,22 @@ history, alarm takeovers and notifications. It either starts a local
 connects to a server URL. It keeps its device token in the Keychain. It doesn't
 spawn the sidecar or own any PTYs.
 
-**Native macOS app (later).** A SwiftUI app over the same API. See
-[native-macos.md](native-macos.md) for each API surface's Swift counterpart
-and what in the API would get in its way.
+**Native macOS app.** A SwiftUI app over the same API, in `apps/macos/`.
+See [native-macos.md](native-macos.md) for what it builds natively, each API
+surface's Swift counterpart, and what in the API gets in its way.
 
 To keep that possible, the API has to stay plain: JSON bodies, typed error
 bodies (`{ "error": "...", "detail": "..." }`), and WebSocket messages as
 tagged JSON (`{"type": "...", ...}`).
+
+**Android app.** A Kotlin and Jetpack Compose app in `apps/android/`, scoped to
+chat and the attention stream: answering tool approvals, permission prompts,
+questions and server approvals from a phone. It signs in with the passphrase
+and a code, keeps its token encrypted with a Keystore key, and needs an HTTPS
+origin, normally a `tailscale serve` name. It follows the sidecar's attention
+SSE stream for the bell's items and `/api/events` for server approvals. It has
+no push, so it notifies only while open or shortly after. See
+[apps/android/README.md](../apps/android/README.md).
 
 ## API contract
 

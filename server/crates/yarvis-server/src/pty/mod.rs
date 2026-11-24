@@ -177,6 +177,13 @@ pub struct SessionHarness {
     name: String,
 }
 
+/// What [`PtyManager::headless_harness`] answers: which CLI it is, its program, and its environment.
+pub struct HeadlessHarness {
+    pub kind: harness::HarnessKind,
+    pub program: String,
+    pub env: Vec<(String, String)>,
+}
+
 /// One row of `GET /api/pty`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -358,12 +365,18 @@ impl PtyManager {
         Ok((harness, env))
     }
 
-    /// The program and full environment, secrets included, a headless Claude
-    /// Code run uses for harness `id`. See [`harness::headless_run_env`].
-    pub fn headless_harness(&self, id: &str) -> Result<(String, Vec<(String, String)>), String> {
+    /// The kind, program and full environment, secrets included, a headless
+    /// run uses for harness `id`. See [`harness::headless_run_env`].
+    pub fn headless_harness(&self, id: &str) -> Result<HeadlessHarness, String> {
         let (builtin, stored, default_id) = self.harness_settings();
         let harness = harness::resolve(builtin, &stored, default_id.as_deref(), Some(id))?;
-        harness::headless_run_env(&harness, || self.inner.secrets.read_root())
+        let (program, env) =
+            harness::headless_run_env(&harness, || self.inner.secrets.read_root())?;
+        Ok(HeadlessHarness {
+            kind: harness.kind,
+            program,
+            env,
+        })
     }
 
     /// Refuses a harness the sidecar names on the assistant's behalf that the

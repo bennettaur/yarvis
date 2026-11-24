@@ -1,5 +1,5 @@
 {
-  "id": "fcae4508-ec35-46c1-93d1-23ad1a350e67",
+  "id": "97fff628-6baf-46c6-a140-5904a4888715",
   "prevId": "6763aa9e-6b6a-4541-8b06-ca6436cb5ceb",
   "version": "7",
   "dialect": "postgresql",
@@ -1197,6 +1197,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "wakes_pass": {
+          "name": "wakes_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "due_at": {
           "name": "due_at",
@@ -5128,12 +5135,6 @@
         "paused_at": {
           "name": "paused_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ship": {
-          "name": "ship",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
