@@ -214,6 +214,10 @@ the start of what the assistant found. Click it to open that chat in its tab on 
 Chat tab, or in a new tab, reloading it if it was already open. A task the [heads-down](heads-down.md) loop
 scheduled opens the **Heads down** page instead, since its passes run in chats
 you don't see.
+With always-on, a heads-down pass can schedule a
+[wake-up](heads-down.md#coming-back-later) instead: at that time a full
+heads-down pass runs with the reminder, rather than a read-only turn, and the
+bell doesn't ring for it. Only a pass can schedule one, never a scheduled task.
 
 - Task messages show in the chat as **Yarvis · scheduled task**, so you can
   tell them from what you typed.

@@ -216,6 +216,76 @@ describe("PrModelSection", () => {
     expect(saves).toEqual([{ harness: "bedrock" }, { harness: null }]);
   });
 
+  it("asks an OpenCode harness for a model per tier, saving only one that reads as provider/model", async () => {
+    const tierInput = (host: HTMLElement, tier: string) =>
+      host.querySelector(
+        `[aria-label="OpenCode model for the ${tier} tier"]`,
+      ) as HTMLInputElement | null;
+    let mounted = await mountForInteraction(createElement(PrModelSection));
+    await settle();
+    // Not for a Claude Code harness, whose tiers are Claude's own models.
+    expect(tierInput(mounted.host, "Opus")).toBeNull();
+    mounted.unmount();
+
+    verification = {
+      ...VERIFICATION_DEFAULTS,
+      harness: "oc",
+      harnesses: [
+        { id: "claude", name: "Claude", kind: "claude-code" },
+        { id: "oc", name: "OpenCode", kind: "opencode" },
+      ],
+      harnessModels: { oc: { haiku: "opencode/beam-free" } },
+    };
+    mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(tierInput(mounted.host, "Haiku")?.value).toBe("opencode/beam-free");
+    const opus = tierInput(mounted.host, "Opus") as HTMLInputElement;
+    enter(opus, "not a model", "input");
+    opus.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    enter(opus, "anthropic/claude-opus-5-5#high", "input");
+    opus.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([
+      {
+        harnessModels: {
+          oc: { haiku: "opencode/beam-free", opus: "anthropic/claude-opus-5-5#high" },
+        },
+      },
+    ]);
+  });
+
+  it("asks a Pi harness for a model per tier, with its thinking level on the model", async () => {
+    verification = {
+      ...VERIFICATION_DEFAULTS,
+      harness: "pi",
+      harnesses: [
+        { id: "claude", name: "Claude", kind: "claude-code" },
+        { id: "pi", name: "Pi", kind: "pi" },
+      ],
+    };
+    const mounted = await mountForInteraction(createElement(PrModelSection));
+    unmount = mounted.unmount;
+    await settle();
+    expect(mounted.host.textContent).toContain(":level");
+    const sonnet = mounted.host.querySelector(
+      '[aria-label="Pi model for the Sonnet tier"]',
+    ) as HTMLInputElement;
+    enter(sonnet, "anthropic/claude-sonnet-5-5:high", "input");
+    sonnet.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    await settle();
+    const saves = calls
+      .filter((c) => c.url === "/api/pr-models/verification" && c.method === "PATCH")
+      .map((c) => JSON.parse(c.body ?? "{}"));
+    expect(saves).toEqual([
+      { harnessModels: { pi: { sonnet: "anthropic/claude-sonnet-5-5:high" } } },
+    ]);
+  });
+
   it("shows a saved harness that is gone, so it can be changed", async () => {
     verification = { ...VERIFICATION_DEFAULTS, harness: "deleted" };
     const mounted = await mountForInteraction(createElement(PrModelSection));

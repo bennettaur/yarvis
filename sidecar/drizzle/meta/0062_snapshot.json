@@ -1,6 +1,6 @@
 {
-  "id": "52f1a2bf-f1b9-4f6e-87d0-8380a34e2893",
-  "prevId": "fdbda103-6edf-424f-be62-2709b3e132d9",
+  "id": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
+  "prevId": "97fff628-6baf-46c6-a140-5904a4888715",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1197,6 +1197,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "wakes_pass": {
+          "name": "wakes_pass",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "due_at": {
           "name": "due_at",
@@ -3618,55 +3625,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.pr_update_watches": {
-      "name": "pr_update_watches",
-      "schema": "",
-      "columns": {
-        "ref_key": {
-          "name": "ref_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "seen_head_sha": {
-          "name": "seen_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seen_at": {
-          "name": "seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "alerted_head_sha": {
-          "name": "alerted_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerting_at": {
-          "name": "alerting_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerted_at": {
-          "name": "alerted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.project_items": {
       "name": "project_items",
       "schema": "",
@@ -4713,56 +4671,6 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.stall_reminders": {
-      "name": "stall_reminders",
-      "schema": "",
-      "columns": {
-        "item_key": {
-          "name": "item_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "waiting_since": {
-          "name": "waiting_since",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_reminded_at": {
-          "name": "last_reminded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stopped_at": {
-          "name": "stopped_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

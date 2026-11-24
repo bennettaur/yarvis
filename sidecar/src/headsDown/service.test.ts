@@ -16,6 +16,7 @@ import {
   isMergeInstruction,
   MAX_PREPS_PER_PASS,
   mergeCallTarget,
+  PASS_CONFIRMED_TOOLS,
   passApprovalHooks,
 } from "./policy.ts";
 import {
@@ -195,6 +196,13 @@ describe("what a pass may do", () => {
     await sql`INSERT INTO workspaces (id, name, slug, status, root_path, created_at)
               VALUES (${workspaceId}, 'billing', 'billing', 'active', '/tmp/ws', ${createdAt.toISOString()})`;
   }
+
+  it("asks the user before writing a routine it proposes", async () => {
+    const run = await startRun(db, null);
+    expect(PASS_CONFIRMED_TOOLS.has("create_routine")).toBe(true);
+    const routine = { name: "inbox", description: "x", every: "1d", body: "Triage my inbox." };
+    expect(await decideCall(db, run, "create_routine", routine)).toBe("ask");
+  });
 
   it("files tickets without asking", async () => {
     const run = await startRun(db, null);
