@@ -92,13 +92,15 @@ final class SettingsModel {
     func stop() {
         vaultTask?.cancel()
         clearSecrets()
+        newBackupCodes = nil
     }
 
     /// Drops everything secret the page holds, so it doesn't outlive the
-    /// screen that showed it.
+    /// screen that showed it. New backup codes stay until Done: the old ones
+    /// stopped working when these were made, so losing them to a tab switch
+    /// could lock the user out.
     func clearSecrets() {
         mintedToken = nil
-        newBackupCodes = nil
         enrollment = nil
         enrollmentCode = ""
         currentPassphrase = ""

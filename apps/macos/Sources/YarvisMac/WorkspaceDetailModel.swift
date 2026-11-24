@@ -351,6 +351,9 @@ final class WorkspaceDetailModel {
             ? [PinnedTerminalTab(key: "agent", title: liveHarness?.name ?? agentConfig.name, sessionId: agentSessionId)]
             : []
         if surface.pinned != pinned { surface.pinned = pinned }
+        // An agent restarted between two checks keeps the same pin, so its
+        // ended terminal is replaced here rather than only on the next click.
+        if let active = surface.activePinned { surface.attach(active) }
         guard let key = pendingFocus else { return }
         if surface.focus(sessionKey: key) { selectedTab = .terminals }
         // Tried once the agent's state is known: a key the surface still

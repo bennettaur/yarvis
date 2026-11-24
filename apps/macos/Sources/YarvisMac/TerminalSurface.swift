@@ -85,11 +85,17 @@ final class TerminalSurfaceModel {
     }
 
     func stop() {
+        stopped = true
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         controllers.values.forEach { $0.stop() }
         controllers = [:]
+        pinnedAttach = [:]
     }
+
+    /// Set by `stop()`, so a liveness check still running can't open a
+    /// terminal on a surface nothing will stop again.
+    private var stopped = false
 
     // MARK: What's shown
 
@@ -144,12 +150,12 @@ final class TerminalSurfaceModel {
             existing.stop()
             controllers[id] = nil
         }
-        guard pinnedAttach[id] != .checking else { return }
+        guard !stopped, pinnedAttach[id] != .checking else { return }
         pinnedAttach[id] = .checking
         Task {
             let running = (try? await client.ptyExists(id)) ?? false
             // The tab may have gone while the check ran.
-            guard pinnedAttach[id] == .checking, self.pinned.contains(where: { $0.sessionId == id }) else { return }
+            guard !stopped, pinnedAttach[id] == .checking, self.pinned.contains(where: { $0.sessionId == id }) else { return }
             if running {
                 // A pinned session already runs, so its attach never needs a folder.
                 _ = controller(for: id, cwd: nil)

@@ -211,14 +211,22 @@ final class WorkspacesModel {
 
     func startNewWorkspace(name: String? = nil, taskId: String? = nil, startWork: Bool? = nil) {
         newWorkspace?.stop()
+        newWorkspaceForms += 1
+        let form = newWorkspaceForms
         newWorkspace = NewWorkspaceModel(app: app, client: client, name: name ?? "", taskId: taskId,
                                          startWork: startWork) { [weak self] id in
             guard let self else { return }
             await self.refresh(background: true)
+            // The user may have opened something else while the list loaded.
+            guard self.newWorkspaceForms == form, self.newWorkspace != nil else { return }
             self.newWorkspace = nil
             self.selectedId = id
         }
     }
+
+    /// Counts new-workspace forms opened, so a create that finishes after its
+    /// form was replaced doesn't take over the page.
+    private var newWorkspaceForms = 0
 
     func cancelNewWorkspace() {
         newWorkspace?.stop()
