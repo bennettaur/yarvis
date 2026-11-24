@@ -46,6 +46,22 @@ final class TerminalsModel {
         Task { await refresh() }
     }
 
+    func handle(_ event: ServerEvent) {
+        // These two can arrive in either order, so read the list again
+        // rather than patch it from them.
+        if event.kind == "pty.started" || event.kind == "pty.exited" { reload() }
+    }
+
+    func resync() {
+        reload()
+    }
+
+    /// Brings a `tab:terminal/…` pane into view, for an attention item.
+    @discardableResult
+    func focus(sessionKey: String) -> Bool {
+        select(sessionKey)
+    }
+
     private var refreshes = 0
 
     func refresh() async {

@@ -43,6 +43,19 @@ final class ChatModel {
         turn?.cancel()
     }
 
+    func handle(_ event: ServerEvent) {
+        if event.kind == "sidecar.started" { reloadSessions() }
+    }
+
+    func resync() {
+        reloadSessions()
+    }
+
+    /// Opens a thread asked for from another page, such as an attention item.
+    func openSession(_ id: String) {
+        open(id)
+    }
+
     func reloadSessions() {
         Task {
             do {

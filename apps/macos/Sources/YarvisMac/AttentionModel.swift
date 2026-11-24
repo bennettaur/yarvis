@@ -114,22 +114,22 @@ final class AttentionModel {
     private func navigate(_ target: JSONValue?) {
         switch target?["type"]?.stringValue {
         case "chat":
-            app.section = .chat
-            if let id = target?["sessionId"]?.stringValue { app.chat?.open(id) }
-        case "workspace-claude":
-            if let ws = target?["workspaceId"]?.stringValue {
-                app.section = .terminals
-                app.terminals?.select(WorkspaceSummary.agentSessionId(workspaceId: ws))
-            }
+            if let id = target?["sessionId"]?.stringValue { app.openChat(sessionId: id) } else { app.section = .chat }
+        case "workspace-claude", "workspace":
+            if let ws = target?["workspaceId"]?.stringValue { app.openWorkspace(id: ws) } else { app.section = .workspaces }
         case "terminal":
-            if let key = target?["sessionKey"]?.stringValue, app.terminals?.select(key) == true {
-                app.section = .terminals
+            let key = target?["sessionKey"]?.stringValue
+            if let key, app.openTerminalSession(key) { break }
+            // A session no page owns lands on its workspace, which is at least nearby.
+            if let ws = target?["workspaceId"]?.stringValue {
+                app.openWorkspace(id: ws, focusSessionKey: key)
             } else {
                 app.showWebUI()
             }
         default:
             app.showWebUI()
         }
+        app.attentionOpen = false
     }
 
     /// Called after a question or prompt is answered elsewhere in the app.
