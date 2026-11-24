@@ -1,14 +1,19 @@
-import { and, eq, inArray, isNull, lt, ne, or } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import {
   type AgentRunSummary,
   agentRunRegistry,
   getAgentRunSummary,
   ProcessSlots,
 } from "../agentRuns/service.ts";
-import { raiseAttention } from "../attention/raise.ts";
+import { raiseAttention, raisedSessionKey } from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { type PrUpdateWatch, prUpdateWatches, type ReviewWorkspacePr } from "../db/schema.ts";
+import {
+  attentionItems,
+  type PrUpdateWatch,
+  prUpdateWatches,
+  type ReviewWorkspacePr,
+} from "../db/schema.ts";
 import { createGitHubClient, POLL_BATCH_SIZE } from "../github/client.ts";
 import type { JobDefinition } from "../jobs/scheduler.ts";
 import { describeError } from "../llm/errors.ts";
@@ -36,6 +41,7 @@ import {
   type ReviewWorkspacePrSummary,
   refreshReviewPr,
 } from "../reviewWorkspaces/service.ts";
+import type { ReviewCommit } from "../reviewWorkspaces/sinceReview.ts";
 import { defaultPrepDeps } from "./service.ts";
 
 /**
@@ -308,7 +314,9 @@ async function alertUpdate(
   const since = onNewCommits ? await sinceSummary(db, config, pr, deps) : null;
   if (since) lines.push(since.line);
 
-  const rereview = onNewCommits ? await whatsChanged(db, config, pr, deps) : null;
+  const rereview = onNewCommits
+    ? await whatsChanged(db, config, pr, since?.commits ?? null, deps)
+    : null;
   if (rereview?.answerLines) {
     lines.push(...rereview.answerLines);
   } else {
@@ -334,7 +342,7 @@ async function sinceSummary(
   config: Config,
   pr: ReviewWorkspacePr,
   deps: PrUpdateDeps,
-): Promise<{ line: string; changedPaths: Set<string> } | null> {
+): Promise<{ line: string; changedPaths: Set<string>; commits: ReviewCommit[] } | null> {
   try {
     const since = await reviewSinceReview(db, config, pr.workspaceId, pr.id, deps.review);
     const changedPaths = new Set(
@@ -347,6 +355,7 @@ async function sinceSummary(
     return {
       line: `${plural(newCommits, "new commit")} and ${plural(since.files.length, "file")} changed since your review${how}.`,
       changedPaths,
+      commits: since.commits,
     };
   } catch (e) {
     console.warn(
@@ -438,12 +447,15 @@ const usd = (amount: number) => `$${amount.toFixed(2)}`;
  * Runs "What's changed" over the new commits and waits for its answer, or
  * reuses a run that already covers them. The rules are the Since last review
  * tab's: a run over its budget waits for the user's go-ahead, and one past
- * what an agent can read doesn't run at all.
+ * what an agent can read doesn't run at all. After a run it started, it
+ * starts no other for the PR until the user has looked, so an author pushing
+ * small commits can't keep paid runs going.
  */
 async function whatsChanged(
   db: Db,
   config: Config,
   pr: ReviewWorkspacePr,
+  commits: ReviewCommit[] | null,
   deps: PrUpdateDeps,
 ): Promise<WhatsChanged> {
   if (pr.worktreeStatus !== "ready") {
@@ -489,9 +501,11 @@ async function whatsChanged(
           `What's changed didn't run: it needs your go-ahead, since it would cost about ${usd(size.estimatedCostUsd)}, over its ${usd(size.budgetUsd)} budget.`,
         );
       }
+      const unseen = await unseenUnattendedRun(db, pr.refKey);
+      if (unseen) return noAnswer(moreCommitsNote(commits, unseen.headSha, pr.headSha));
       const release = (await rereviewSlots.acquire(neverAborts)) as () => void;
       try {
-        const { runId } = await startRereview(
+        const started = await startRereview(
           db,
           config,
           pr.workspaceId,
@@ -499,7 +513,8 @@ async function whatsChanged(
           deps.review,
           deps.rereview,
         );
-        run = await waitForRunEnd(db, runId, registry);
+        if (!started.existing) await recordUnattendedRun(db, pr.refKey, started.toHeadSha);
+        run = await waitForRunEnd(db, started.runId, registry);
       } finally {
         release();
       }
@@ -521,6 +536,52 @@ async function whatsChanged(
     console.error("[pr-updates] What's changed failed:", describeError(e));
     return noAnswer("What's changed failed. See Settings → Diagnostics.");
   }
+}
+
+/**
+ * The job's last "What's changed" run for the PR, when the user hasn't opened
+ * the Since last review tab or read the PR's item since it started.
+ */
+async function unseenUnattendedRun(db: Db, key: string): Promise<{ headSha: string } | null> {
+  const [watch] = await db.select().from(prUpdateWatches).where(eq(prUpdateWatches.refKey, key));
+  const ranAt = watch?.unattendedRunAt;
+  if (!ranAt || !watch.unattendedHeadSha) return null;
+  if (watch.tabOpenedAt && watch.tabOpenedAt > ranAt) return null;
+  const [read] = await db
+    .select({ id: attentionItems.id })
+    .from(attentionItems)
+    .where(
+      and(
+        eq(attentionItems.sessionKey, raisedSessionKey("system", prUpdatedAttentionKey(key))),
+        gt(attentionItems.readAt, ranAt),
+      ),
+    )
+    .limit(1);
+  return read ? null : { headSha: watch.unattendedHeadSha };
+}
+
+async function recordUnattendedRun(db: Db, key: string, headSha: string): Promise<void> {
+  await db
+    .update(prUpdateWatches)
+    .set({ unattendedRunAt: new Date(), unattendedHeadSha: headSha })
+    .where(eq(prUpdateWatches.refKey, key));
+}
+
+/** How many commits the head is past the last run's, along first parents; null when it isn't an ancestor. */
+function commitsPast(commits: ReviewCommit[], from: string, to: string | null): number | null {
+  const bySha = new Map(commits.map((c) => [c.sha, c]));
+  let count = 0;
+  for (let sha = to; sha && sha !== from; sha = bySha.get(sha)?.parents[0] ?? null) {
+    if (!bySha.has(sha)) return null;
+    count++;
+  }
+  return to ? count : null;
+}
+
+function moreCommitsNote(commits: ReviewCommit[] | null, from: string, to: string | null): string {
+  const count = commits ? commitsPast(commits, from, to) : null;
+  const what = count ? plural(count, "more commit") : "More commits";
+  return `${what} since the last What's changed. Open it to re-run.`;
 }
 
 /**
@@ -546,7 +607,7 @@ async function waitForRunEnd(
 function answerLines(answer: Rereview): string[] {
   const lines = [
     answer.verdict === "ready_to_approve"
-      ? "What's changed: ready to approve."
+      ? "What's changed suggests it's ready to approve."
       : "What's changed: needs another look.",
   ];
   const { comments } = answer;

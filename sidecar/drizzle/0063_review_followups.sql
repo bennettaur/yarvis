@@ -4,7 +4,10 @@ CREATE TABLE "pr_update_watches" (
 	"seen_at" timestamp with time zone NOT NULL,
 	"alerted_head_sha" text,
 	"alerting_at" timestamp with time zone,
-	"alerted_at" timestamp with time zone
+	"alerted_at" timestamp with time zone,
+	"unattended_run_at" timestamp with time zone,
+	"unattended_head_sha" text,
+	"tab_opened_at" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "stall_reminders" (

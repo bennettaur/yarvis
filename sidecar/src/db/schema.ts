@@ -2349,6 +2349,15 @@ export const prUpdateWatches = pgTable("pr_update_watches", {
   /** When that alert was claimed, and when it was raised: null while it is still being prepared. */
   alertingAt: timestamp("alerting_at", { withTimezone: true }),
   alertedAt: timestamp("alerted_at", { withTimezone: true }),
+  /**
+   * The last "What's changed" run the job started, and the head it covered.
+   * The job starts no other until the user has looked since (`tabOpenedAt`,
+   * or the item read).
+   */
+  unattendedRunAt: timestamp("unattended_run_at", { withTimezone: true }),
+  unattendedHeadSha: text("unattended_head_sha"),
+  /** When the user last opened the PR's Since last review tab. */
+  tabOpenedAt: timestamp("tab_opened_at", { withTimezone: true }),
 });
 
 export type PrUpdateWatch = typeof prUpdateWatches.$inferSelect;

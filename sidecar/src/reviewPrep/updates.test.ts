@@ -22,6 +22,7 @@ import {
   type ReviewDeps,
 } from "../reviewWorkspaces/service.ts";
 import { createTestRemote, type TestRemote } from "../reviewWorkspaces/testRepo.ts";
+import { noteSinceReviewTabOpened } from "./seen.ts";
 import {
   type ProviderHead,
   type PrUpdateDeps,
@@ -381,5 +382,47 @@ describe("runPrUpdateWatch", () => {
     const [item] = await items();
     expect(item?.body).toContain("Your threads: 1 of 1 touched by the new commits, 1 still open.");
     expect(item?.body).toContain("What's changed failed. See Settings → Diagnostics.");
+  });
+
+  /** Pushes another commit and runs the watch until its alert is raised. */
+  async function pushAgain(path: string): Promise<void> {
+    const pushed = remote.pushToPr(path, `export const x = "${path}";\n`);
+    heads.set("gh:o/r/1", { open: true, headSha: pushed });
+    await runPrUpdateWatch(db, config, deps);
+    later(11);
+    expect((await runPrUpdateWatch(db, config, deps)).started).toEqual(["gh:o/r/1"]);
+    await prUpdatesSettled();
+  }
+
+  const runCount = async () => (await db.select().from(agentRuns)).length;
+  const latestBody = async () =>
+    (await db.select().from(attentionItems).orderBy(attentionItems.updatedAt)).at(-1)?.body;
+
+  it("starts no second run of its own until the user has looked", async () => {
+    await reviewedWorkspace();
+    await pushAndAlert();
+    expect(await runCount()).toBe(1);
+
+    await pushAgain("src/b.ts");
+    await pushAgain("src/c.ts");
+    expect(await runCount()).toBe(1);
+    expect(await latestBody()).toContain(
+      "2 more commits since the last What's changed. Open it to re-run.",
+    );
+
+    // Opening the Since last review tab lets the next push run it again.
+    await noteSinceReviewTabOpened(db, "gh:o/r/1");
+    await pushAgain("src/d.ts");
+    expect(await runCount()).toBe(2);
+    expect(await latestBody()).toContain("What's changed: needs another look.");
+  });
+
+  it("counts reading the item as having looked", async () => {
+    await reviewedWorkspace();
+    await pushAndAlert();
+    await db.update(attentionItems).set({ status: "read", readAt: new Date() });
+
+    await pushAgain("src/b.ts");
+    expect(await runCount()).toBe(2);
   });
 });

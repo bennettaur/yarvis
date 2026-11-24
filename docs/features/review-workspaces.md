@@ -769,11 +769,17 @@ last push. Then it:
    more than its agent can read, the item says so. When the new commits
    couldn't be fetched or the checkout isn't ready, nothing runs and the item
    asks you to refresh the PR yourself.
+
+   After it runs What's changed for a PR, it starts no other for that PR
+   until you've opened its **Since last review** tab or read its item. Until
+   then, later pushes only update the item, for example "2 more commits since
+   the last What's changed. Open it to re-run." That way an author pushing
+   small commits can't keep paid runs going while you're away.
 4. Adds a **PR updated since your review** item under Review, which opens the
-   PR's **Since last review** tab. It says whether you can approve, how many
-   of your comments are addressed or resolved and how many are still open,
-   and how many other changes need reading. The agent's own words stay in the
-   tab.
+   PR's **Since last review** tab. It says whether What's changed suggests
+   it's ready to approve, how many of your comments are addressed or resolved
+   and how many are still open, and how many other changes need reading. The
+   agent's own words stay in the tab.
 
    When there's no answer (the run didn't start, failed, or is still going),
    the item says why. It then counts which of your review threads the new

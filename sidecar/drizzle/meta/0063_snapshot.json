@@ -1,5 +1,5 @@
 {
-  "id": "1faed64e-e336-4b46-9789-5b078cd6b6e0",
+  "id": "ef6a799f-a198-4c2f-8d25-d687c2b09e7f",
   "prevId": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
   "version": "7",
   "dialect": "postgresql",
@@ -3661,6 +3661,24 @@
         },
         "alerted_at": {
           "name": "alerted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unattended_run_at": {
+          "name": "unattended_run_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unattended_head_sha": {
+          "name": "unattended_head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tab_opened_at": {
+          "name": "tab_opened_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
