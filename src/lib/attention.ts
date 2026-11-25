@@ -42,6 +42,8 @@ export type AttentionNavTarget =
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string }
   | { type: "heads-down" }
+  /** An artifact, opened beside the Chat tab. */
+  | { type: "artifact"; id: string }
   /** A PR in a review workspace, opened on one of its tabs. */
   | {
       type: "review-workspace";
