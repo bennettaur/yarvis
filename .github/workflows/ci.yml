@@ -23,15 +23,19 @@ env:
   RUST_BACKTRACE: short
 
 jobs:
-  # Which app folders a pull request touches, so each app job runs only when
-  # its own folder (or this workflow) changed. Pushes to main and manual runs
-  # build every app, and the nightly workflow builds them all either way.
+  # Which self-contained folders a pull request touches, so the jobs for the
+  # native apps and the two Rust workspaces run only when their own folder
+  # (or this workflow) changed. Neither Rust workspace depends on the other or
+  # includes files from outside its folder. Pushes to main and manual runs
+  # run everything, and the nightly workflow builds both apps either way.
   changes:
-    name: Changed apps
+    name: Changed folders
     runs-on: ubuntu-latest
     outputs:
       macos: ${{ steps.diff.outputs.macos }}
       android: ${{ steps.diff.outputs.android }}
+      tauri: ${{ steps.diff.outputs.tauri }}
+      server: ${{ steps.diff.outputs.server }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -41,15 +45,19 @@ jobs:
           persist-credentials: false
       - id: diff
         run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "macos=true" >> "$GITHUB_OUTPUT"
-            echo "android=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            changed="$(git diff --name-only HEAD^1 HEAD)"
           fi
-          changed="$(git diff --name-only HEAD^1 HEAD)"
-          touched() { printf '%s\n' "$changed" | grep -qE "$1" && echo true || echo false; }
-          echo "macos=$(touched '^(apps/macos/|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
-          echo "android=$(touched '^(apps/android/|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
+          for entry in macos:apps/macos/ android:apps/android/ tauri:src-tauri/ server:server/; do
+            name="${entry%%:*}"
+            folder="${entry#*:}"
+            if [ "$GITHUB_EVENT_NAME" != pull_request ] ||
+              printf '%s\n' "$changed" | grep -qE "^(${folder}|\.github/workflows/ci\.yml$)"; then
+              echo "$name=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$name=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
 
   bun-lint-and-format:
     name: Lint & format (Biome)
@@ -202,8 +210,13 @@ jobs:
           --ignore=GHSA-c6gr-qvv4-5v3f
           --ignore=GHSA-fc5q-39xc-vjpf
 
+  # The gated jobs below run unless the changes job said "false", so a failed
+  # changes job runs them rather than skipping required checks, which GitHub
+  # would count as passing.
   rust-fmt:
     name: Rust formatting
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.tauri != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -216,6 +229,8 @@ jobs:
 
   rust-clippy:
     name: Rust clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.tauri != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -242,6 +257,8 @@ jobs:
 
   rust-test:
     name: Rust tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.tauri != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -296,6 +313,8 @@ jobs:
   # the webkit packages the src-tauri jobs install.
   server-rust:
     name: Server (fmt, clippy, test)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.server != 'false' }}
     runs-on: ubuntu-latest
     # The server keeps its state in Postgres; each test gets its own schema.
     services:
@@ -335,7 +354,7 @@ jobs:
   macos-app:
     name: macOS app (swift build, swift test)
     needs: changes
-    if: needs.changes.outputs.macos == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -356,7 +375,7 @@ jobs:
   android:
     name: Android app (unit tests, build, lint)
     needs: changes
-    if: needs.changes.outputs.android == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.android != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

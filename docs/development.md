@@ -148,9 +148,13 @@ bun run test:affected
 bun run sidecar:test:affected     # needs the test database, as above
 ```
 
-The native macOS and Android app jobs run on a pull request only when it
-changes `apps/macos/` or `apps/android/`. The nightly workflow builds and tests
-both every night.
+Cargo has nothing like `--changed`, so the Rust jobs are gated by folder
+instead: the `src-tauri` jobs (fmt, clippy, tests) run on a pull request only
+when it changes `src-tauri/`, and the server job only when it changes
+`server/`. The native macOS and Android app jobs work the same way for
+`apps/macos/` and `apps/android/`, and the nightly workflow builds and tests
+both apps every night. `cargo audit` always runs, since a new advisory doesn't
+need a code change.
 
 ## Verifying a PR for merge
 

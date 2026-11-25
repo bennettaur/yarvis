@@ -143,8 +143,9 @@ sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
 `cargo clippy`, `cargo test`, `cargo audit`). On a pull request the frontend
 and sidecar jobs run only the tests a change can reach
 (`scripts/affected-tests.ts`; `bun run test:affected` and
-`bun run sidecar:test:affected` do the same locally), and the native app jobs
-run only when `apps/macos/` or `apps/android/` changed; pushes to main run
+`bun run sidecar:test:affected` do the same locally), and the Rust and native
+app jobs run only when their own folder (`src-tauri/`, `server/`,
+`apps/macos/`, `apps/android/`) changed; pushes to main run
 everything, and `nightly.yml` builds both apps. A file that tests read from
 disk rather than import is invisible to that selection. Add it to the suite's
 `fullRunOn` list in `scripts/affected-tests.ts`. Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
