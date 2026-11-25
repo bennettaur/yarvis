@@ -11,8 +11,13 @@ import { linkRef } from "./tools.ts";
 export const QUICK_TASK_KINDS = ["general", "ship", "watch"] as const;
 export type QuickTaskKind = (typeof QUICK_TASK_KINDS)[number];
 
-// Under the 8000 the route accepts, so a slightly long screen is cut rather than rejected.
+// The client's own context cap, so the model sees what Omni Chat would send.
+// The route rejects anything past 8000 before this applies.
 const MAX_SCREEN_CHARS = 7000;
+
+// A title, a focus and up to five PR URLs and tickets: well past a verdict's
+// token budget on Ollama.
+const PROPOSAL_MAX_TOKENS = 1024;
 
 // A PR link found on screen can come from text an attacker wrote, so only the
 // providers' own hosts count. A workspace's PRs are always trusted.
@@ -198,6 +203,7 @@ export async function proposeQuickTask(
       system: SYSTEM,
       prompt: buildPrompt(input.message, workspace, screen),
       schema: modelAnswerSchema,
+      ollamaMaxTokens: PROPOSAL_MAX_TOKENS,
     },
   );
   return {

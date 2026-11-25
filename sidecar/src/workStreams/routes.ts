@@ -30,8 +30,8 @@ const patchSchema = z.object({
 /**
  * Routes for work streams, mounted under /api/work-streams. The UI reads them
  * to show what heads-down mode is pushing forward, and the user can reprioritize,
- * pause or close a stream. Everything else, notes included, is written by the agent
- * through its tools, so a note is always the agent's own.
+ * pause or close a stream, or add one from Omni Chat with its first note.
+ * Everything else, notes included, is written by the agent through its tools.
  */
 export function createWorkStreamRoutes(
   config: Config,
@@ -64,7 +64,9 @@ export function createWorkStreamRoutes(
     try {
       return c.json(await propose(config, db(), parsed.data));
     } catch (e) {
-      return c.json({ error: "could not propose a task", detail: describeError(e) }, 502);
+      const detail = describeError(e);
+      console.error("[work-streams] quick-task propose failed:", detail);
+      return c.json({ error: "could not propose a task", detail }, 502);
     }
   });
 
