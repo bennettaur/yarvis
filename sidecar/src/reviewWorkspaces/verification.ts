@@ -537,8 +537,8 @@ function claimsSchema(audit: ReportAudit) {
  */
 export const CHECK_SECTIONS = [
   "malice",
-  "tests",
   "bugs",
+  "tests",
   "performance",
   "complexity",
   "comments",
@@ -606,7 +606,7 @@ export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = 
   comments: { model: "haiku", effort: "low" },
   observability: { model: "haiku", effort: "low" },
   quality: { model: "sonnet", effort: "medium" },
-  // Tracing values through callers is reasoning-heavy, so bugs gets more effort.
+  // Tracing values through callers takes more reasoning than the other checks' medium.
   bugs: { model: "sonnet", effort: "high" },
   improvements: { model: "sonnet", effort: "medium" },
   approach: { model: "sonnet", effort: "medium" },

@@ -423,8 +423,13 @@ file and line in the report opens the diff there.
   where the selection would do), logic it copies a third time, or a missing
   seam that would make the next change small. A finding can name code
   outside the diff when the root cause is there. These are follow-ups, not
-  reasons to hold the PR: they never block, never change the suggested
-  decision, and start unticked in a drafted review.
+  reasons to hold the PR: they never block or change the suggested decision,
+  the suggestion doesn't wait for the check to run, and they start unticked
+  in a drafted review. Their severity says how much each is worth.
+
+A drafted review puts a finding on its line only when the PR changes that
+file. One that cites another file, such as an existing bug the change now
+reaches, goes into the review's summary instead.
 - **Risk** scores the PR's impact from 1 (minimal) to 5 (very high): how far
   a mistake could spread. The agent classifies each change by what it does
   (a comment edit, a move, an addition, a changed interface or changed

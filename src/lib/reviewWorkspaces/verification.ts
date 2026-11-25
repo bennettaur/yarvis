@@ -299,8 +299,8 @@ export interface VerificationTripwire {
 /** The checks shown as one row each, in the order the report lists them. */
 export const VERIFICATION_CHECKS = [
   "malice",
-  "tests",
   "bugs",
+  "tests",
   "complexity",
   "performance",
   "comments",

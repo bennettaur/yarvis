@@ -30,31 +30,37 @@ other places that do the same job (Grep for them).
   should live in one place, another flag to a function that already switches
   on several, or another caller that reaches past a layer. Say what the one
   place, the split or the layer would be.
-- **A missing seam.** Code that can't be tested or reused without a change
-  like this one, where an interface, a parameter or a module boundary would
-  make the next change small. Name it.
+- **A missing seam.** Code that can't be reused or changed in isolation,
+  where an interface, a parameter or a module boundary would make the next
+  change small. Name it. This is about the design; a missing test is the
+  tests check's.
 - **A sharper data model.** Two fields that must agree, a string standing in
   for a type, a list that should be a map: where changing the shape removes a
   class of mistakes.
 
 Not improvements, because another check in the same report has it: whether
 the PR as a whole had a simpler way to its goal (approach); code harder to
-follow than it needs to be, line by line (complexity); naming and practice
-(quality); bugs (bugs). Also not improvements: style, preference, renames,
-and anything that would not pay back the time it takes.
+follow than it needs to be, line by line, including a function with too many
+flags (complexity); naming and practice (quality); bugs (bugs); missing tests
+(tests); slow code (performance); logging (observability); security (risk).
+Also not improvements: style, preference, renames, and anything that would
+not pay back the time it takes.
 
 ## Output rules
 
-- Every finding cites `path` and head `line` of the code to change, which
-  may be outside the diff when the root cause is.
+- Every finding cites `path` and head `line` of a changed line: the one
+  that works around or deepens the design. When the code to change is
+  elsewhere, name that file in `detail`.
 - `title` at most 12 words, naming the improvement: "Capture the selection,
   not the whole screen, as chat context".
-- `detail` at most 40 words: what the current design costs (bugs it invites,
-  work it repeats, changes it makes hard), and the change you would make.
-- Severity: `high` when the current design is already causing bugs or
-  this PR's workarounds; `medium` when it will make the next change in this
-  area noticeably harder; `low` for a smaller clean-up worth doing while
-  someone is here. Drop anything smaller.
+- `detail` at most 40 words and 280 characters: the change you would make,
+  then what the current design costs (bugs it invites, work it repeats,
+  changes it makes hard).
+- Severity ranks how much the improvement is worth, since these never block:
+  `high` when the current design is already causing bugs, or is the only
+  reason for this PR's workarounds; `medium` when it will make the next
+  change in this area noticeably harder; `low` for a smaller clean-up worth
+  doing while someone is here. Drop anything smaller.
 - At most 5 findings, most valuable first. No praise, no restating the
   change.
 - If nothing is worth the time, return `{"status":"pass","findings":[]}`.

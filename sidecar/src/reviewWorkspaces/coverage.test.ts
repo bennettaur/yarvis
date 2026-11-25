@@ -205,7 +205,10 @@ describe("coverage from a run's reads", () => {
     expect(gaps.Performance).toEqual(["src/core.test.ts", "docs/x.md"]);
     // A check that read nothing missed every patch; skimmed bulk is never owed a whole read.
     expect(gaps.Risk).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
-    expect(Object.keys(gaps)).toHaveLength(7);
+    // A lane per check that reads every patch, the bug and improvement hunts included.
+    expect(gaps.Bugs).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
+    expect(gaps.Improvements).toEqual(["src/core.ts", "src/core.test.ts", "docs/x.md"]);
+    expect(Object.keys(gaps)).toHaveLength(9);
     // A check the run wasn't asked for has no lane to miss.
     const picked = coverageOf(index, activity, {
       ...where,

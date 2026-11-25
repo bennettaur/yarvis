@@ -7,10 +7,10 @@ This folder is the source. The sidecar embeds every file listed in
 `sidecar/src/agentRuns/plugins.ts` into its binary and writes a fresh copy to a
 private temp directory for each run, removed when the run ends.
 
-The verification report has one run per section (summary, change map, claims,
-risk, malicious intent, tests, bugs, complexity, performance, comments,
-observability, quality, improvements, approach, and the flow diagram), so each can be re-run
-on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
+The verification report has one run per section (summary, change map,
+claims, risk, malicious intent, bugs, tests, complexity, performance,
+comments, observability, quality, improvements, approach, and the flow
+diagram), so each can be re-run on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
 together from each section's newest answer. A run starts from
 `sidecar/src/reviewWorkspaces/verification.ts`, which writes the PR's context,
 an `index.md` of every changed file and one numbered patch per file

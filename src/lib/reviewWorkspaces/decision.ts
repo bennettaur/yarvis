@@ -49,7 +49,9 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 /**
  * Checks whose findings are follow-ups, not reasons to hold the PR: they never
- * block or change the suggestion, and never start ticked in a drafted review.
+ * block, change the suggestion or start ticked in a drafted review, and a run
+ * of one that hasn't happened isn't waited on. They are still listed, marked
+ * on the diff and exported like any finding; their severity ranks value.
  */
 const FOLLOW_UP_CHECKS: ReadonlySet<VerificationCheckKey> = new Set(["improvements"]);
 
@@ -93,7 +95,11 @@ export function assessReview(
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
-  const judged = items.filter((i) => DEFAULT_SECTIONS.includes(i.section));
+  const judged = items.filter(
+    (i) =>
+      DEFAULT_SECTIONS.includes(i.section) &&
+      !FOLLOW_UP_CHECKS.has(i.section as VerificationCheckKey),
+  );
   const notRun = judged.filter((i) => !i.result?.current).map((i) => i.label);
 
   ciReasons(evidence, blockers, concerns);
@@ -208,16 +214,20 @@ interface DraftInput {
  * unfinished work, high and medium findings, risk concerns, and failing CI.
  * Only results for the PR's head go on a line, since an older head's line
  * numbers may point at different code now; `currentSections` names those.
+ * So do only lines in `changedPaths`, when given: GitHub refuses a comment on
+ * a file the PR doesn't change, which a bug or improvement can cite.
  */
 export function draftComments(
   report: VerificationReport | null,
   evidence: readonly EvidenceItem[] | null,
   currentSections: ReadonlySet<string>,
+  changedPaths?: ReadonlySet<string>,
 ): DraftComment[] {
   const drafts: DraftComment[] = [];
   const ids = new Set<string>();
   const add = ({ section, source, path, line, pickedByDefault, ...f }: DraftInput) => {
-    const located = currentSections.has(section) && path && line;
+    const located =
+      currentSections.has(section) && path && line && (!changedPaths || changedPaths.has(path));
     let id = `${section}:${path ?? ""}:${line ?? ""}:${f.title}`;
     // Two identical results would share an id; the second gets a suffix.
     for (let n = 2; ids.has(id); n++) id = `${id}#${n}`;

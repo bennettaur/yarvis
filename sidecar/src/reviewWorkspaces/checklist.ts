@@ -76,7 +76,7 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     theme: "correctness",
     label: "Bugs",
     description:
-      "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next change, and existing bugs it now reaches.",
+      "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next likely change, and existing bugs it now reaches.",
   },
   performance: {
     theme: "correctness",
@@ -118,7 +118,7 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     theme: "maintainability",
     label: "Improvements",
     description:
-      "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups rather than blockers.",
+      "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups that never block.",
   },
   approach: {
     theme: "maintainability",
