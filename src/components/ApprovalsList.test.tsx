@@ -86,6 +86,17 @@ const buttonNamed = (host: HTMLElement, text: string) =>
     | HTMLButtonElement
     | undefined;
 
+const customMinutesField = (host: HTMLElement) =>
+  host.querySelector<HTMLInputElement>('input[aria-label="Custom minutes"]');
+
+/** Types into the custom minutes field the way React sees a keystroke. */
+const typeMinutes = async (host: HTMLElement, text: string) => {
+  const field = customMinutesField(host);
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, text);
+  field?.dispatchEvent(new Event("input", { bubbles: true }));
+  await waitFor(() => customMinutesField(host)?.value === text, `the field to read ${text}`);
+};
+
 describe("ApprovalsList", () => {
   it("renders nothing in the shell while nothing waits", async () => {
     approvals = [];
@@ -167,7 +178,7 @@ describe("ApprovalsList", () => {
     const mounted = await mountForInteraction(createElement(ApprovalsList));
     unmount = mounted.unmount;
     await waitFor(() => buttonNamed(mounted.host, "15 min") !== undefined, "the durations");
-    expect(buttonNamed(mounted.host, "5 min")).toBeDefined();
+    expect(buttonNamed(mounted.host, "30 min")).toBeUndefined();
     expect(buttonNamed(mounted.host, "1 hour")).toBeUndefined();
   });
 
@@ -189,9 +200,9 @@ describe("ApprovalsList", () => {
     approvals = [{ ...signing, maxAllowForSecs: 60 * 60 }];
     const mounted = await mountForInteraction(createElement(ApprovalsList));
     unmount = mounted.unmount;
-    await waitFor(() => buttonNamed(mounted.host, "5 min") !== undefined, "the durations");
+    await waitFor(() => buttonNamed(mounted.host, "30 min") !== undefined, "the durations");
 
-    buttonNamed(mounted.host, "5 min")?.click();
+    buttonNamed(mounted.host, "30 min")?.click();
 
     await waitFor(
       () => server.calls.some((c) => c.route === "POST /api/approvals/ap-1"),
@@ -199,9 +210,45 @@ describe("ApprovalsList", () => {
     );
     expect(server.calls.find((c) => c.route === "POST /api/approvals/ap-1")?.body).toEqual({
       approve: true,
-      allowForSecs: 300,
+      allowForSecs: 1800,
     });
     await waitFor(() => mounted.host.textContent?.includes("without asking") ?? false, "the grant");
+  });
+
+  it("sends a custom number of minutes in seconds", async () => {
+    approvals = [{ ...signing, maxAllowForSecs: 60 * 60 }];
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => customMinutesField(mounted.host) !== null, "the custom field");
+
+    await typeMinutes(mounted.host, "20");
+    buttonNamed(mounted.host, "Allow")?.click();
+
+    await waitFor(
+      () => server.calls.some((c) => c.route === "POST /api/approvals/ap-1"),
+      "the answer",
+    );
+    expect(server.calls.find((c) => c.route === "POST /api/approvals/ap-1")?.body).toEqual({
+      approve: true,
+      allowForSecs: 1200,
+    });
+    await waitFor(() => mounted.host.textContent?.includes("without asking") ?? false, "the grant");
+  });
+
+  it("won't send a custom time the approval doesn't allow", async () => {
+    approvals = [{ ...signing, maxAllowForSecs: 15 * 60 }];
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => customMinutesField(mounted.host) !== null, "the custom field");
+    expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(true);
+
+    for (const typed of ["16", "0", "2.5"]) {
+      await typeMinutes(mounted.host, typed);
+      expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(true);
+    }
+    await typeMinutes(mounted.host, "15");
+    expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(false);
+    expect(server.calls.some((c) => c.route === "POST /api/approvals/ap-1")).toBe(false);
   });
 
   it("approves for a while, shows until when, and stops on request", async () => {
