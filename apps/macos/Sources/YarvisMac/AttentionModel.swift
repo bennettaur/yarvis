@@ -102,8 +102,9 @@ final class AttentionModel {
             answering = item
             return
         }
-        if item.isHeadsDown {
-            app.showWebUI()
+        if item.isHeadsDown, let headsDown = app.headsDown {
+            headsDown.openQuestions(from: item)
+            app.attentionOpen = false
             return
         }
         inbox.remove(itemId: item.id)
@@ -114,22 +115,37 @@ final class AttentionModel {
     private func navigate(_ target: JSONValue?) {
         switch target?["type"]?.stringValue {
         case "chat":
-            app.section = .chat
-            if let id = target?["sessionId"]?.stringValue { app.chat?.open(id) }
-        case "workspace-claude":
-            if let ws = target?["workspaceId"]?.stringValue {
-                app.section = .terminals
-                app.terminals?.select(WorkspaceSummary.agentSessionId(workspaceId: ws))
+            if let id = target?["sessionId"]?.stringValue { app.openChat(sessionId: id) } else { app.section = .chat }
+        case "workspace-claude", "workspace":
+            guard let ws = target?["workspaceId"]?.stringValue else {
+                app.section = .workspaces
+                break
             }
+            // An item from the workspace's agent opens on the agent's tab.
+            let agent = target?["type"]?.stringValue == "workspace-claude"
+            app.openWorkspace(id: ws, focusSessionKey: agent ? WorkspaceSummary.agentSessionId(workspaceId: ws) : nil)
+        case "review-workspace":
+            guard let ws = target?["workspaceId"]?.stringValue else {
+                app.section = .review
+                break
+            }
+            let tab = target?["tab"]?.stringValue.flatMap(ReviewTabSpec.Kind.init(rawValue:))
+            app.openReview(OpenReviewRequest(workspaceId: ws, prId: target?["prId"]?.stringValue, tab: tab))
         case "terminal":
-            if let key = target?["sessionKey"]?.stringValue, app.terminals?.select(key) == true {
-                app.section = .terminals
+            let key = target?["sessionKey"]?.stringValue
+            if let key, app.openTerminalSession(key) { break }
+            // A session no page owns lands on its workspace, which is at least nearby.
+            if let ws = target?["workspaceId"]?.stringValue {
+                app.openWorkspace(id: ws, focusSessionKey: key)
             } else {
                 app.showWebUI()
             }
+        case "heads-down":
+            app.section = .headsDown
         default:
             app.showWebUI()
         }
+        app.attentionOpen = false
     }
 
     /// Called after a question or prompt is answered elsewhere in the app.

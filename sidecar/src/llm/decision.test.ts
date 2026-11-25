@@ -186,6 +186,25 @@ describe("decide through Ollama", () => {
     });
   });
 
+  it("caps the reply at a verdict's length unless the caller allows more", async () => {
+    const selection = await ollamaSelection();
+    const caps: unknown[] = [];
+    const fetchImpl = (async (_url: string, init: RequestInit) => {
+      caps.push(JSON.parse(init.body as string).options.num_predict);
+      return Response.json({ message: { content: '{"ok":true}' } });
+    }) as unknown as typeof fetch;
+
+    await decide(config, selection, { system: "s", prompt: "p", schema, fetchImpl });
+    await decide(config, selection, {
+      system: "s",
+      prompt: "p",
+      schema,
+      ollamaMaxTokens: 1024,
+      fetchImpl,
+    });
+    expect(caps).toEqual([256, 1024]);
+  });
+
   it("throws when the answer does not match the schema", async () => {
     const selection = await ollamaSelection();
     const fetchImpl = (async () =>

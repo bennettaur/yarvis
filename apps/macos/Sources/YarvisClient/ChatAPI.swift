@@ -6,12 +6,20 @@ public struct ChatTurn: Sendable {
     public var message: String
     public var provider: String
     public var model: String
+    /// Asks a capable model for its reasoning, sent back as `reasoning` events.
+    public var reasoning: Bool
+    /// A saved user message to restart from: it and everything after it are
+    /// dropped before this turn runs.
+    public var rewindTo: String?
 
-    public init(sessionId: String, message: String, provider: String, model: String) {
+    public init(sessionId: String, message: String, provider: String, model: String,
+                reasoning: Bool = false, rewindTo: String? = nil) {
         self.sessionId = sessionId
         self.message = message
         self.provider = provider
         self.model = model
+        self.reasoning = reasoning
+        self.rewindTo = rewindTo
     }
 }
 
@@ -37,12 +45,15 @@ extension YarvisClient {
     /// Runs one turn and streams it. Cancel the consuming task to stop the
     /// turn: the sidecar sees the request end and saves nothing for it.
     public func sendChat(_ turn: ChatTurn) throws -> AsyncThrowingStream<ChatStreamEvent, Error> {
-        let req = try request("POST", Self.sidecar("/api/chat"), body: .object([
+        var body: [String: JSONValue] = [
             "sessionId": .string(turn.sessionId),
             "message": .string(turn.message),
             "provider": .string(turn.provider),
             "model": .string(turn.model),
-        ]))
+        ]
+        if turn.reasoning { body["reasoning"] = .bool(true) }
+        if let rewindTo = turn.rewindTo { body["rewindTo"] = .string(rewindTo) }
+        let req = try request("POST", Self.sidecar("/api/chat"), body: .object(body))
         return decodedEventStream(req, ChatStreamEvent.decode)
     }
 
@@ -57,9 +68,9 @@ extension YarvisClient {
     }
 }
 
-/// Picks the provider and model for a new turn, as the web does: the saved
-/// choice when the provider still offers it, else the first available
-/// provider and its first model.
+/// Picks the provider and model for a new turn: the saved choice when the
+/// provider still offers it, else the first available provider and its
+/// first model.
 public func defaultChatModel(_ providers: [ProviderInfo], savedProvider: String?,
                              savedModel: String?) -> (provider: String, model: String)? {
     let chosen = providers.first { $0.id == savedProvider }

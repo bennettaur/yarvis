@@ -43,6 +43,7 @@ import { createPrRoutes } from "./pr/routes.ts";
 import { createProjectRoutes } from "./projects/routes.ts";
 import { createQuestionRoutes } from "./questions/routes.ts";
 import { createReadiness, type Readiness } from "./readiness.ts";
+import { createRevertInvestigationRoutes } from "./revertInvestigation/routes.ts";
 import { createReviewPrepRoutes } from "./reviewPrep/routes.ts";
 import { createMutationTestingConfigRoutes } from "./reviewWorkspaces/mutationConfig.ts";
 import { createReviewWorkspaceRoutes } from "./reviewWorkspaces/routes.ts";
@@ -189,6 +190,7 @@ export function createApp(config: Config, readiness: Readiness = createReadiness
   app.route("/api/artifacts", createArtifactRoutes(config));
   app.route("/api/work-streams", createWorkStreamRoutes(config));
   app.route("/api/heads-down", createHeadsDownRoutes(config));
+  app.route("/api/revert-investigations", createRevertInvestigationRoutes(config));
   app.route("/api/specialists", createSpecialistRoutes(config));
   app.route("/api/jobs", createJobRoutes(config));
   app.route("/api/agent-runs", createAgentRunRoutes(config));

@@ -132,15 +132,18 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
     /// `user`, `assistant` or `tool`.
     public var role: String
     public var content: String
+    /// Where the message came from, when not typed in a chat tab.
+    public var metadata: ChatMessageMetadata?
     public var toolCalls: [ToolActivity]?
     public var createdAt: String
 
     public init(id: String, sessionId: String, role: String, content: String,
-                toolCalls: [ToolActivity]? = nil, createdAt: String) {
+                metadata: ChatMessageMetadata? = nil, toolCalls: [ToolActivity]? = nil, createdAt: String) {
         self.id = id
         self.sessionId = sessionId
         self.role = role
         self.content = content
+        self.metadata = metadata
         self.toolCalls = toolCalls
         self.createdAt = createdAt
     }
@@ -149,13 +152,18 @@ public struct ChatMessage: Codable, Sendable, Identifiable, Equatable {
 public struct ModelInfo: Codable, Sendable, Equatable, Hashable {
     public var id: String
     public var capabilities: [String]
+    /// The context size at which the sidecar compacts this model's chats.
+    public var compactAtTokens: Double?
 }
 
 public struct ProviderInfo: Codable, Sendable, Identifiable, Equatable, Hashable {
     public var id: String
     public var label: String
     public var models: [ModelInfo]
+    /// False when the provider has no key set.
     public var available: Bool
+    /// A provider the user added in Settings.
+    public var custom: Bool?
 }
 
 /// A tool call waiting for the user inside a chat turn.
@@ -200,8 +208,9 @@ public enum ChatStreamEvent: Sendable, Equatable {
         case "delta": return .delta(string("text") ?? "")
         case "reasoning": return .reasoning(string("text") ?? "")
         case "tool_call":
+            let id = string("id") ?? ""
             return .toolCall(ToolActivity(
-                id: string("id") ?? "", name: string("name") ?? "", server: string("server"),
+                id: id, name: string("name") ?? id, server: string("server"),
                 args: v["args"], status: "pending"))
         case "tool_result":
             return .toolResult(id: string("id") ?? "", status: string("status") ?? "ok",
@@ -238,7 +247,7 @@ public struct AttentionItem: Codable, Sendable, Identifiable, Equatable {
     public var updatedAt: String
 
     /// A heads-down pass's question. It has its own kind and its own answer
-    /// routes, on the web's Heads down page, so it isn't a `question` item.
+    /// routes on the Heads down page, so it isn't a `question` item.
     public var isHeadsDown: Bool {
         source == "system" && kind != "question" && (sessionKey?.hasPrefix("heads-down:") ?? false)
     }
@@ -376,37 +385,16 @@ public struct PtySession: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 }
 
-/// A session's name in a list: the workspace for an agent or one of its
-/// panes, the folder for a shell, and whether it has exited.
-public func terminalTitle(_ s: PtySession, workspaceNames: [String: String]) -> String {
-    let workspace = s.workspaceId.flatMap { workspaceNames[$0] }
-    var title: String
-    switch s.kind {
-    case "agent": title = workspace ?? "Agent"
-    case "review": title = "Review: \(workspace ?? s.workspaceId ?? s.id)"
-    default:
-        // An empty path would resolve against this process's own folder.
-        let folder = s.cwd.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0).lastPathComponent }
-        title = [workspace, folder].compactMap { $0 }.joined(separator: " · ")
-        if title.isEmpty { title = "Terminal" }
-    }
-    if !s.running {
-        title += s.exitCode.map { " (exited \($0))" } ?? " (exited)"
-    }
-    return title
-}
-
 // MARK: - Workspaces
 
 public let agentSessionPrefix = "ws-claude:"
+public let reviewSessionPrefix = "review-claude:"
 
-/// True for a terminal pane's PTY id: `tab:terminal/<tab>/<pane>` (the
-/// Terminal tab's), or `ws:<workspace>/<tab>/<pane>` for one of `workspaceIds`.
-public func isTerminalPaneId(_ id: String, workspaceIds: [String]) -> Bool {
-    let parts = id.split(separator: "/", omittingEmptySubsequences: false)
-    guard parts.count == 3, !parts[1].isEmpty, !parts[2].isEmpty else { return false }
-    if parts[0] == "tab:terminal" { return true }
-    return workspaceIds.contains { parts[0] == "ws:\($0)" }
+/// True for a session the server starts itself (a workspace agent or a
+/// review session). Attaching to one with nothing running would spawn a plain
+/// shell under its id, so a terminal reconnects to it only while it runs.
+public func isServerStartedSession(_ id: String) -> Bool {
+    id.hasPrefix(agentSessionPrefix) || id.hasPrefix(reviewSessionPrefix)
 }
 
 public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hashable {
@@ -416,9 +404,43 @@ public struct WorkspaceSummary: Codable, Sendable, Identifiable, Equatable, Hash
     public var status: String
     public var rootPath: String
     public var repoNames: [String]?
-
-    public var agentSessionId: String { Self.agentSessionId(workspaceId: id) }
+    public var slug: String?
+    public var summary: String?
+    public var mergedPrUrl: String?
+    public var error: String?
+    public var archivedAt: String?
+    /// One per linked PR, the main one first. Absent on a create's answer.
+    public var prs: [WorkspaceSummaryPr]?
+    /// When the workspace was last opened or its agent last did something;
+    /// null once archived.
+    public var lastActiveAt: String?
 
     /// The PTY id of a workspace's agent session.
     public static func agentSessionId(workspaceId: String) -> String { "\(agentSessionPrefix)\(workspaceId)" }
+}
+
+/// A PR as the workspace list shows it: enough for one glyph.
+public struct WorkspaceSummaryPr: Codable, Sendable, Equatable, Hashable {
+    public var repoName: String
+    public var prNumber: Int
+    /// Free-form from the provider: `open`, `closed`, `merged`, or nil.
+    public var prState: String?
+    public var isDraft: Bool?
+    /// Free-form: `clean`, `dirty`, `conflicting`, `blocked`, and so on.
+    public var mergeable: String?
+    /// `success`, `failure`, `pending` or `none`.
+    public var checkRollup: String?
+    /// `approved`, `changes_requested`, `review_required` or nil.
+    public var reviewDecision: String?
+
+    public init(repoName: String, prNumber: Int, prState: String? = nil, isDraft: Bool? = nil,
+                mergeable: String? = nil, checkRollup: String? = nil, reviewDecision: String? = nil) {
+        self.repoName = repoName
+        self.prNumber = prNumber
+        self.prState = prState
+        self.isDraft = isDraft
+        self.mergeable = mergeable
+        self.checkRollup = checkRollup
+        self.reviewDecision = reviewDecision
+    }
 }

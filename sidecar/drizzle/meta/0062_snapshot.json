@@ -1,5 +1,5 @@
 {
-  "id": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
+  "id": "98111662-c3ea-4cb3-89f8-8fdeb594541a",
   "prevId": "97fff628-6baf-46c6-a140-5904a4888715",
   "version": "7",
   "dialect": "postgresql",
@@ -4073,8 +4073,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.review_preps": {
-      "name": "review_preps",
+    "public.revert_investigations": {
+      "name": "revert_investigations",
       "schema": "",
       "columns": {
         "id": {
@@ -4084,17 +4084,60 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "ref_key": {
-          "name": "ref_key",
+        "repo_id": {
+          "name": "repo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_number": {
+          "name": "original_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_title": {
+          "name": "original_title",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "ref": {
-          "name": "ref",
-          "type": "jsonb",
+        "original_url": {
+          "name": "original_url",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "revert_kind": {
+          "name": "revert_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_ref": {
+          "name": "revert_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_title": {
+          "name": "revert_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_url": {
+          "name": "revert_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'detected'"
         },
         "workspace_id": {
           "name": "workspace_id",
@@ -4102,70 +4145,38 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pr_id": {
-          "name": "pr_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'queued'"
-        },
-        "head_sha": {
-          "name": "head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "verdict": {
-          "name": "verdict",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "note": {
-          "name": "note",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "attention_key": {
-          "name": "attention_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
+        "detected_at": {
+          "name": "detected_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
-        "updated_at": {
-          "name": "updated_at",
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
         },
-        "raised_at": {
-          "name": "raised_at",
+        "ready_at": {
+          "name": "ready_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         }
       },
       "indexes": {
-        "review_preps_ref_key_idx": {
-          "name": "review_preps_ref_key_idx",
+        "revert_investigations_original_idx": {
+          "name": "revert_investigations_original_idx",
           "columns": [
             {
-              "expression": "ref_key",
+              "expression": "repo_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "original_number",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4175,43 +4186,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "review_preps_workspace_idx": {
-          "name": "review_preps_workspace_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
-        "review_preps_workspace_id_review_workspaces_id_fk": {
-          "name": "review_preps_workspace_id_review_workspaces_id_fk",
-          "tableFrom": "review_preps",
-          "tableTo": "review_workspaces",
+        "revert_investigations_repo_id_repos_id_fk": {
+          "name": "revert_investigations_repo_id_repos_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "repos",
           "columnsFrom": [
-            "workspace_id"
+            "repo_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "set null",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "review_preps_pr_id_review_workspace_prs_id_fk": {
-          "name": "review_preps_pr_id_review_workspace_prs_id_fk",
-          "tableFrom": "review_preps",
-          "tableTo": "review_workspace_prs",
+        "revert_investigations_workspace_id_workspaces_id_fk": {
+          "name": "revert_investigations_workspace_id_workspaces_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "workspaces",
           "columnsFrom": [
-            "pr_id"
+            "workspace_id"
           ],
           "columnsTo": [
             "id"
@@ -4468,13 +4464,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "opened_by": {
-          "name": "opened_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'user'"
         }
       },
       "indexes": {},
