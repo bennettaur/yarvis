@@ -212,10 +212,10 @@ app when you open it from the Dock or Finder. So a server under launchd needs
 rule 1 or 2, and the desktop app fills in rule 2 for you when 1Password's
 agent is running.
 
-### Work laptop: sign with 1Password
+### Sign with 1Password's agent
 
 Keep the key in 1Password and let 1Password's agent sign. 1Password asks you
-to approve each use on the laptop itself.
+to approve each use on the Mac it runs on, so someone has to be at that Mac.
 
 1. In 1Password, open **Settings → Developer** and turn on **Use the SSH
    agent**. Check the socket exists:
@@ -494,11 +494,11 @@ Each sign-in adds a device to **Settings → Devices** on the server, named
 after the phone. Revoke it there if you lose the phone. **Sign out** in the
 app revokes it too.
 
-## Example: a personal Mac you check on from work
+## Example: an always-on Mac reached from another computer
 
-Here Yarvis runs on a personal Mac that stays logged in. At home you use the
-desktop app or a browser on it. During the day you check on it from a browser
-on a work laptop, with nobody at the personal Mac.
+Here Yarvis runs on a Mac that stays logged in. When you're at it, you use the
+desktop app or a browser on it. When you're away, you reach it from a browser
+on another computer, with nobody at the Mac.
 
 This example uses the vault backend and the server's own agent:
 
@@ -552,28 +552,27 @@ This example uses the vault backend and the server's own agent:
    the server waits, locked, until you unlock the vault from a browser.
 7. **Publish it on Tailscale** as in
    [Reach it over Tailscale](#reach-it-over-tailscale), including its step
-   that adds the `ts.net` address to `auth.origins`. Caddy only reaches your home network,
-   so it doesn't help from work.
+   that adds the `ts.net` address to `auth.origins`. Caddy only reaches your
+   local network, so it doesn't help from elsewhere.
 8. **Point the desktop app at it** as in step 7, so the app doesn't start a
    second server on the same database.
 
-From the work laptop, open the `ts.net` address in a browser and sign in with
-your passphrase and an authenticator code. Approve commits there, or in the
-Android app on your phone. The work laptop has to run Tailscale signed in to
-your personal tailnet, which some companies don't allow on their machines. If
-yours doesn't, use the [Android app](#connect-the-android-app) over Tailscale
-instead.
+From the other computer, open the `ts.net` address in a browser and sign in
+with your passphrase and an authenticator code. Approve commits there, or in
+the Android app on your phone. That computer has to run Tailscale signed in to
+your tailnet. If it can't, use the [Android app](#connect-the-android-app)
+over Tailscale instead.
 
-Think about what the work laptop then holds. A browser sign-in gets every
-scope, the terminal included, so that browser can open a shell on your
-personal Mac. Your passphrases are typed on a machine your company manages
-and may monitor. To keep that small:
+Think about what the other computer then holds. A browser sign-in gets every
+scope, the terminal included, so that browser can open a shell on the Mac. If
+someone else manages or monitors that computer, they may also see the
+passphrases you type there. To keep that small:
 
-- Use a separate browser profile for Yarvis, and **Sign out** at the end of
-  the day. Signing out revokes that device.
-- Unlock the vault from your phone or at the Mac rather than from the work
-  laptop.
-- Limit what the work laptop can reach in your tailnet. By default a new
+- Use a separate browser profile for Yarvis, and **Sign out** when you're
+  done. Signing out revokes that device.
+- Unlock the vault from your phone or at the Mac rather than from the other
+  computer.
+- Limit what the other computer can reach in your tailnet. By default a new
   device can reach every device and port. Add an access rule in the
   [Tailscale admin console](https://login.tailscale.com/admin/acls) that lets
   it reach only port 443 on the Mac, or share just the Mac with it through

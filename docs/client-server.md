@@ -400,10 +400,10 @@ The three deployments differ in where secrets and the signing key live:
   is reached through `tailscale serve`. Every signature waits for an approval
   from any device with `approve`. Locking the vault stops the sidecar and the
   agent until the next unlock.
-- **The work laptop, with 1Password and no server agent.** Secrets and the
+- **A Mac with 1Password and no server agent.** Secrets and the
   signing key stay in 1Password, and the server never holds a key. Commits
-  are signed by 1Password's agent, which asks on the laptop. While you're
-  away from the laptop, workspace sessions can run but can't sign commits;
+  are signed by 1Password's agent, which asks on that Mac. While you're
+  away from it, workspace sessions can run but can't sign commits;
   nothing in the server works around that.
 
 ## Clients

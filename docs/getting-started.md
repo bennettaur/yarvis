@@ -241,7 +241,7 @@ Each integration is independent. Set up the ones you need, in any order.
 | Transcript digest | Turn on the transcript digest under **Settings → Assistant** so the assistant learns what happened in your Claude Code sessions. | [The assistant](features/assistant.md) |
 | Your phone, or another computer | Set up the server's account, then reach the server over Tailscale or a Caddy reverse proxy. | [Running the server](server.md) |
 | An always-on server | Run `yarvis-server` on its own under launchd, so it keeps running with the app closed. | [Running the server](server.md#run-the-server-on-its-own) |
-| Signing commits with 1Password | Turn on 1Password's SSH agent. The app's server passes it to workspace terminals. | [Running the server](server.md#work-laptop-sign-with-1password) |
+| Signing commits with 1Password | Turn on 1Password's SSH agent. The app's server passes it to workspace terminals. | [Running the server](server.md#sign-with-1passwords-agent) |
 
 Once you have a provider and GitHub set up, read
 [The assistant](features/assistant.md). It explains the weekly workflow the

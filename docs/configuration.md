@@ -203,7 +203,7 @@ enabled = true   # the server signs git commits with a key in the vault
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
-**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+**Keep signing in 1Password.** Leave the vault off and keep the
 key where it is:
 
 ```toml
@@ -218,7 +218,7 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
-for approval on the laptop itself. [Running the server](server.md#commit-signing-and-the-ssh-agent)
+for approval on the Mac it runs on. [Running the server](server.md#commit-signing-and-the-ssh-agent)
 explains how the server picks the socket and walks through both setups.
 
 ### `PATH` for a server launchd starts
