@@ -43,6 +43,7 @@ import type {
   PostedCommentResult,
   PrDetail,
   PrFile,
+  PrFileSet,
   PrRef,
   PrStatus,
   PrSummary,
@@ -60,8 +61,10 @@ export const fetchPrStatus = (ref: PrRef): Promise<PrStatus> =>
 export const fetchPrDetail = (ref: PrRef): Promise<PrDetail> =>
   ref.provider === "github" ? ghPrDetail(ref) : azPrDetail(ref);
 
-export const fetchPrFiles = (ref: PrRef): Promise<PrFile[]> =>
-  ref.provider === "github" ? ghPrFiles(ref) : azPrFiles(ref);
+export const fetchPrFiles = (ref: PrRef): Promise<PrFileSet> =>
+  ref.provider === "github"
+    ? ghPrFiles(ref)
+    : azPrFiles(ref).then((files) => ({ headSha: null, files, incomplete: false }));
 
 /**
  * One file's diff. GitHub returns patches in the file list, so the file is
@@ -179,14 +182,22 @@ function requireGithub(ref: PrRef): void {
   }
 }
 
-export function mergePr(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+export function mergePr(
+  ref: PrRef,
+  method: MergeMethod,
+  headSha: string,
+): Promise<{ ok: boolean }> {
   requireGithub(ref);
-  return ghMergePr(ref, method);
+  return ghMergePr(ref, method, headSha);
 }
 
-export function enableAutoMerge(ref: PrRef, method: MergeMethod): Promise<{ ok: boolean }> {
+export function enableAutoMerge(
+  ref: PrRef,
+  method: MergeMethod,
+  headSha: string,
+): Promise<{ ok: boolean }> {
   requireGithub(ref);
-  return ghEnableAutoMerge(ref, method);
+  return ghEnableAutoMerge(ref, method, headSha);
 }
 
 export function disableAutoMerge(ref: PrRef): Promise<{ ok: boolean }> {

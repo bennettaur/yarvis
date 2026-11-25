@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { act, createElement, useState } from "react";
-import type { PrDetail, PrSummary } from "../../lib/pr/types";
+import type { MergeMethod, PrDetail, PrRef, PrSummary } from "../../lib/pr/types";
+import { resetPrApi, stubPrApi } from "../../test/prApi";
 import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import PrFloatingHeader from "./PrFloatingHeader";
@@ -199,6 +200,80 @@ describe("PrFloatingHeader star", () => {
 
     expect(html).toContain('title="Unstar"');
     expect(html).toContain('aria-pressed="true"');
+  });
+});
+
+describe("PrFloatingHeader merge pinning", () => {
+  const merges: string[] = [];
+  stubPrApi({
+    mergePr: async (_ref: PrRef, _method: MergeMethod, headSha: string) => {
+      merges.push(headSha);
+      return { ok: true };
+    },
+  });
+  afterAll(resetPrApi);
+
+  // Opens the Merge menu and picks its first method.
+  const merge = async (host: HTMLElement) => {
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent === "Merge");
+    await act(async () => button?.click());
+    await act(async () => (host.querySelector(".absolute button") as HTMLButtonElement).click());
+  };
+
+  it("pins the merge to the diff's commit, not the detail's", async () => {
+    merges.length = 0;
+    const diffHead = "d".repeat(40);
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail({ headSha: "e".repeat(40) }),
+        diffHeadSha: diffHead,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+    await merge(host);
+    await waitFor(() => merges.length === 1);
+    expect(merges).toEqual([diffHead]);
+    unmount();
+  });
+
+  it("refuses to merge when the diff stops short of the PR's last file", async () => {
+    merges.length = 0;
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail({ headSha: "e".repeat(40) }),
+        diffHeadSha: "d".repeat(40),
+        diffIncomplete: true,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+    await merge(host);
+    await waitFor(() => (host.textContent ?? "").includes("first 3,000 changed files"));
+    expect(merges).toEqual([]);
+    unmount();
+  });
+
+  it("refuses to merge while the diff's commit is unknown", async () => {
+    merges.length = 0;
+    const { host, unmount } = await mountForInteraction(
+      createElement(PrFloatingHeader, {
+        pr: summary(),
+        detail: detail({ headSha: "e".repeat(40) }),
+        diffHeadSha: null,
+        onBack: () => {},
+        starred: false,
+        onToggleStar: async () => {},
+      }),
+    );
+    await merge(host);
+    await waitFor(() => (host.textContent ?? "").includes("no reviewed commit"));
+    expect(merges).toEqual([]);
+    unmount();
   });
 });
 

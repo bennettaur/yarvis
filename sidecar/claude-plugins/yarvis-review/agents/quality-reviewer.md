@@ -40,7 +40,9 @@ neighbours is not wrong because a style guide says otherwise.
   plain code would read in one pass. Structure and control flow belong to the
   complexity check.
 
-Not quality, because another check in the same report has it: complexity,
+Not quality, because another check in the same report has it: a floating
+promise, race, leak or swallowed failure you can show producing a wrong
+result (bugs); complexity,
 over-abstraction and duplicating an existing helper (complexity); code
 comments (comments); logging, and a failure nobody can see because it was
 caught with no log or result (observability); input reaching a query, shell,

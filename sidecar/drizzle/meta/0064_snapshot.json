@@ -1,6 +1,6 @@
 {
-  "id": "994a60dd-8e07-49e2-ac15-eedd9506e00d",
-  "prevId": "1f16d5f7-0d2a-4d78-87a8-b8186b9497bc",
+  "id": "814cc45f-8564-40ed-8ca9-7c9a7359ba95",
+  "prevId": "17db24f8-b472-4e7a-b07d-56573d811ed5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3625,73 +3625,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.pr_update_watches": {
-      "name": "pr_update_watches",
-      "schema": "",
-      "columns": {
-        "ref_key": {
-          "name": "ref_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "seen_head_sha": {
-          "name": "seen_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seen_at": {
-          "name": "seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "alerted_head_sha": {
-          "name": "alerted_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerting_at": {
-          "name": "alerting_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerted_at": {
-          "name": "alerted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "unattended_run_at": {
-          "name": "unattended_run_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "unattended_head_sha": {
-          "name": "unattended_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tab_opened_at": {
-          "name": "tab_opened_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.project_items": {
       "name": "project_items",
       "schema": "",
@@ -4894,56 +4827,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.stall_reminders": {
-      "name": "stall_reminders",
-      "schema": "",
-      "columns": {
-        "item_key": {
-          "name": "item_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "waiting_since": {
-          "name": "waiting_since",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_reminded_at": {
-          "name": "last_reminded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stopped_at": {
-          "name": "stopped_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.suggestion_dismissals": {
       "name": "suggestion_dismissals",
       "schema": "",
@@ -5188,6 +5071,156 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.verification_feedback": {
+      "name": "verification_feedback",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "ref_key": {
+          "name": "ref_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "section": {
+          "name": "section",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_key": {
+          "name": "item_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item": {
+          "name": "item",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rating": {
+          "name": "rating",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actions": {
+          "name": "actions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "verification_feedback_item_idx": {
+          "name": "verification_feedback_item_idx",
+          "columns": [
+            {
+              "expression": "ref_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "section",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "item_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "verification_feedback_updated_idx": {
+          "name": "verification_feedback_updated_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
