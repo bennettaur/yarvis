@@ -42,20 +42,22 @@ same command (the `android` job in `.github/workflows/ci.yml`).
 
 The app needs Android 8.0 (API 26) or later.
 
-## Connect over Tailscale
+## Connect to a server
 
-The app only talks HTTPS, since the device token goes with every request.
-The expected setup is a server on your Mac reached through
-[`tailscale serve`](https://tailscale.com/kb/1312/serve):
+The app only talks HTTPS, since the device token goes with every request, and
+it trusts only the certificate authorities that ship with Android. Two setups
+give a server that:
 
-1. On the server's machine, run `tailscale serve --bg 7878`, using the port in
-   `[server] bind` (7878 by default). That gives it a name like
-   `https://my-mac.tail1234.ts.net`.
-2. Add that origin to the server's `auth.origins`, so its host check lets
-   the requests in (see `docs/client-server.md`).
-3. Install Tailscale on the phone and sign in to the same tailnet.
-4. In the app, enter `my-mac.tail1234.ts.net`, your passphrase, and a code
-   from your authenticator app (or a backup code).
+- [`tailscale serve`](https://tailscale.com/kb/1312/serve) on the server's
+  Mac, which gives it a name like `https://my-mac.tail1234.ts.net`.
+- A Caddy reverse proxy on your home network, with a Let's Encrypt
+  certificate for a domain you own.
+
+[Running the server](../../docs/server.md) has the steps for both, including
+the `auth.origins` entry the server needs and setting up the account the app
+signs in to. In the app, enter the server's name (such as
+`my-mac.tail1234.ts.net`), your passphrase, and a code from your
+authenticator app (or a backup code).
 
 Each sign-in creates a device on the server, named after the phone unless you
 change it. Sign out revokes that device on the server, with no code needed.
