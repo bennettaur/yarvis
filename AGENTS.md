@@ -140,7 +140,14 @@ CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
 tests, the server tests and the e2e against a `pgvector/pgvector:pg16`
 service container, the frontend,
 sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
-`cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+`cargo clippy`, `cargo test`, `cargo audit`). On a pull request the frontend
+and sidecar jobs run only the tests a change can reach
+(`scripts/affected-tests.ts`; `bun run test:affected` and
+`bun run sidecar:test:affected` do the same locally), and the native app jobs
+run only when `apps/macos/` or `apps/android/` changed; pushes to main run
+everything, and `nightly.yml` builds both apps. A file tests read from disk
+rather than import is invisible to that selection, so add it to the suite's
+`fullRunOn` list. Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a

@@ -133,6 +133,23 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
 
+On a pull request, the frontend and sidecar jobs run only the test files that
+import a changed file, directly or not (`scripts/affected-tests.ts`, built on
+`bun test --changed`). A change Bun can't trace through imports runs the whole
+suite instead: the lockfile, `package.json`, the test preloads and config, the
+sidecar's migrations, or `ci.yml` itself. Pushes to main always run every test.
+To run the same selection locally, against where your branch left
+`origin/main`:
+
+```bash
+bun run test:affected
+bun run sidecar:test:affected     # needs the test database, as above
+```
+
+The native macOS and Android app jobs run on a pull request only when it
+changes `apps/macos/` or `apps/android/`. The nightly workflow builds and tests
+both every night.
+
 ## Verifying a PR for merge
 
 The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
@@ -404,6 +421,9 @@ Workspaces are shared too: both instances create worktrees under
 
 `.github/workflows/nightly.yml` publishes a `.dmg` to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly).
+It also tests and builds the native clients and attaches them: the macOS app
+from `apps/macos/scripts/make-app.sh`, zipped, and a debug APK of the Android
+app.
 
 Build a release locally with `bun run tauri:build`, not `bun run tauri build`.
 It layers `src-tauri/tauri.release.conf.json` over the main config, which

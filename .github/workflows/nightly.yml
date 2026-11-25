@@ -34,6 +34,13 @@ jobs:
           Settings → Privacy & Security → Open Anyway**.
 
           See "Nightly builds" in docs/development.md for the details.
+
+          ### Native clients
+
+          `Yarvis-native-macos.zip` is the native macOS client (apps/macos),
+          signed the same ad-hoc way. `yarvis-android-debug.apk` is a debug
+          build of the Android client (apps/android); install it with
+          `adb install -r yarvis-android-debug.apk`.
           NOTES
           gh release create nightly --prerelease --title "Nightly Release" --notes-file release-notes.md
 
@@ -155,3 +162,64 @@ jobs:
             echo "Uploading $file..."
             gh release upload nightly "$file" --clobber
           done
+
+  # CI builds the native apps only on pull requests that change them, so this
+  # is where every night's main gets built and tested for both.
+  macos-app:
+    name: Native macOS app
+    needs: create-release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # SwiftTerm's manifest needs Swift 6.2, which the runner's default Xcode
+      # may predate, so the newest installed Xcode is picked.
+      - name: Select the newest Xcode
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          swift --version
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      # make-app.sh copies Mermaid out of the root node_modules.
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: swift test
+        working-directory: apps/macos
+        run: swift test
+      - name: Build Yarvis.app
+        working-directory: apps/macos
+        run: scripts/make-app.sh
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/macos
+        # ditto keeps the bundle's code signature intact, which zip does not.
+        run: |
+          ditto -c -k --keepParent build/Yarvis.app Yarvis-native-macos.zip
+          gh release upload nightly Yarvis-native-macos.zip --clobber
+
+  android:
+    name: Android app
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Also checks gradle-wrapper.jar against Gradle's published checksums.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+      - name: Test, build and lint
+        working-directory: apps/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lint
+      # A debug build, since there's no release signing key. It installs with
+      # adb the same way apps/android/README.md describes.
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: apps/android
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk yarvis-android-debug.apk
+          gh release upload nightly yarvis-android-debug.apk --clobber
