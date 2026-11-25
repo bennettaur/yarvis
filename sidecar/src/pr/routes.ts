@@ -106,6 +106,8 @@ const askSchema = z
     /** The selected lines as the reviewer sees them, quoted into the question. */
     selection: z.string().max(60_000).default(""),
     question: z.string().min(1).max(2000),
+    /** A verification report's item the question follows up on; model-written, so it is fenced. */
+    about: z.string().max(4000).optional(),
     provider: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
   })
@@ -268,7 +270,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
   router.post("/insight", async (c) => {
     const parsed = askSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { ref, path, startLine, endLine, selection, question } = parsed.data;
+    const { ref, path, startLine, endLine, selection, question, about } = parsed.data;
 
     const source = sourceFor(ref);
     if ("error" in source) return c.json({ error: source.error }, 400);
@@ -291,6 +293,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
         endLine,
         selection,
         question,
+        about,
         signal: c.req.raw.signal,
       });
       const insight = await saveInsight(dbh, {

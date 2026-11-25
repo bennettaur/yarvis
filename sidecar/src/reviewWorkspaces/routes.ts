@@ -21,6 +21,7 @@ import {
   startReviewClaudeSession,
 } from "./claudeSession.ts";
 import { isValidSymbol } from "./definitions.ts";
+import { feedbackForPr, feedbackInputSchema, saveFeedback } from "./feedback.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -568,6 +569,28 @@ export function createReviewWorkspaceRoutes(
       return fail(c, e);
     }
   });
+  // The reviewer's feedback on the PR's report items, newest first.
+  router.get("/:id/prs/:prId/verification/feedback", async (c) => {
+    try {
+      return c.json({
+        feedback: await feedbackForPr(db(), c.req.param("id"), c.req.param("prId")),
+      });
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Records the reviewer's verdict on one report item, or what they did with it.
+  router.put("/:id/prs/:prId/verification/feedback", async (c) => {
+    const parsed = feedbackInputSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(await saveFeedback(db(), c.req.param("id"), c.req.param("prId"), parsed.data));
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
   // What other tools already said about the PR: CI checks and their
   // annotations, code scanning alerts and bot comments, read from its provider.
   router.get("/:id/prs/:prId/evidence", async (c) => {

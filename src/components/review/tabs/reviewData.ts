@@ -25,6 +25,12 @@ import {
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
 import {
+  type FeedbackInput,
+  type ReportFeedback,
+  saveVerificationFeedback,
+  verificationFeedback,
+} from "../../../lib/reviewWorkspaces/feedback";
+import {
   getMutationTesting,
   type MutationTestingState,
 } from "../../../lib/reviewWorkspaces/mutation";
@@ -135,6 +141,29 @@ export function useVerificationEvidence(
     () => verificationEvidence(workspaceId, prId),
     PROVIDER_FRESHNESS,
   );
+}
+
+/** The reviewer's feedback on the PR's report items. */
+export const feedbackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}verification-feedback`;
+
+export function useVerificationFeedback(workspaceId: string, prId: string) {
+  const key = feedbackKey(prId);
+  const resource = useCachedResource(
+    key,
+    () => verificationFeedback(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+  const save = useCallback(
+    async (input: FeedbackInput) => {
+      const saved = await saveVerificationFeedback(workspaceId, prId, input);
+      primeCache<ReportFeedback[]>(key, (current) => [
+        saved,
+        ...(current ?? []).filter((f) => f.id !== saved.id),
+      ]);
+    },
+    [workspaceId, prId, key],
+  );
+  return { feedback: resource.data ?? [], save };
 }
 
 export const upstackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}upstack`;

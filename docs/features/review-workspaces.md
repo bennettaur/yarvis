@@ -415,17 +415,19 @@ the same problem in results for the same head, it is shown once, under the
 check that comes first: test quality before code quality, for example.
 
 Under each must-read file, the report lists anything in it that already looks
-off or unclear, such as a branch that looks inverted or a value that seems to
-be ignored, each linking to its line. These are questions to check while you
-read, not findings. They are also marked on the file's diff.
+off or unclear, marked **Looks off**, such as a branch that looks inverted or a
+value that seems to be ignored, each linking to its line. These are questions
+to check while you read. They are also marked on the file's diff, and like a
+finding they can be posted, rejected or asked about.
 
 The report doubles as a to-do list. Once you mark a file viewed (in its diff,
 the Changed files tree or the PRs tab), every must-read, risk concern and
 finding in that file is struck through, and **Must read** counts how many of
 its files you've viewed.
 
-A risk concern or finding that names a file and line can be sent on once you've
-read it. **Post to PR** posts it as a line comment on the PR, marked as coming
+An item that names a file and line (a risk concern, a change that needs
+attention, a finding, a **Looks off** flag, an outlier's question or an unmet
+claim) can be sent on once you've read it. **Post to PR** posts it as a line comment on the PR, marked as coming
 from the verification report, with its text quoted and any `@` mentions
 broken so nobody is notified and no bot takes it as a command. GitHub only
 takes a line comment on a line inside the diff, so a finding on an unchanged
@@ -439,6 +441,27 @@ it as a problem to check rather than as your request. Nothing is sent until
 you click. A check whose result is for an older head offers neither button,
 since its line numbers may point at different code now; re-run it first. Like any comment
 you post, a posted finding records where you reviewed.
+
+**Ask a follow-up** asks about the item's lines, the way **Ask about this
+line** does in a diff, with the item given to the agent as context to check
+rather than as instructions. The answer shows under the item and is kept beside
+the code in the diff.
+
+### Telling the report what it got wrong
+
+Every item in the report can be judged, so the checks can be tuned from what
+you thought of them:
+
+- **Agree**, or **Accept risk** on a change map theme, a risk change or a
+  concern: it is right, or it is a risk you accept.
+- **Reject…**: it is wrong or not useful. A box asks why, in your own words.
+- **Change rating…**: right, but rated too high or too low. A finding moves
+  between low, medium and high; a theme's risk can also go to none.
+
+What you say shows under the item, with **Undo**. It is kept per item and per
+run, along with what you did with the item (posted it to the PR, added it to
+the workspace, asked about it). The weekly review reflection reads it to see
+which checks are noise and which find what you would have flagged.
 
 No file is left out to save room. Each changed file's diff is given to the
 agents on its own, and each check is told to read every one in its area (the
