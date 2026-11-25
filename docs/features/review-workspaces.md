@@ -205,13 +205,13 @@ theme:
 
 - **Understand the change**: a summary with the files that must be read and
   why, the change map, and the flow diagram.
-- **Correctness and tests**: claims, test quality, performance,
+- **Correctness and tests**: claims, test quality, bugs, performance,
   observability, and mutation testing. Mutation testing runs the PR's own
   tests, so it starts from its own tab, where you agree to that: its row shows
   the latest pass's verdict and **Open** takes you there.
 - **Risk and impact**: the risk score and the malicious-intent check.
-- **Maintainability**: complexity, code quality, comment quality, and whether
-  there is a simpler way to do what the PR does.
+- **Maintainability**: complexity, code quality, comment quality,
+  improvements, and whether there is a simpler way to do what the PR does.
 
 At the top, **Decision** sums the checklist up. It opens with what the PR is
 for, suggests a decision, and lists every reason for it:
@@ -325,11 +325,12 @@ under the questions a review answers:
 1. **What is it trying to do?** The summary, the must-read files and the
    change map.
 2. **Does it do what it claims?** The claims.
-3. **Is it safe to ship?** Risk, test quality, performance and observability.
+3. **Is it safe to ship?** Risk, test quality, bugs, performance and
+   observability.
 4. **Anything malicious or unrelated?** The malicious-intent check, and the
    change map's outliers.
 5. **Does it meet the quality bar?** The simpler approach, complexity,
-   comments and code quality.
+   comments, code quality and improvements.
 
 Each question and each section opens with a line saying what it is for. A
 section whose result is from an older head is marked "older head". Every
@@ -410,6 +411,25 @@ file and line in the report opens the diff there.
 - **Code quality** looks for code that goes against the language's or the
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
+- **Bugs** hunts for the input, state or timing that makes the changed code
+  do the wrong thing. It traces values through the code that calls the
+  change and the code it calls, and reports only what it can trigger. It
+  also reports traps the change sets for the next likely change, such as
+  two lists that must stay in step by hand, and existing bugs the change now
+  reaches, saying they were already there. Each finding says how to trigger
+  it and the fix.
+- **Improvements** suggests refactors and design changes the PR points to:
+  a root cause it works around (such as passing a whole screen as context
+  where the selection would do), logic it copies a third time, or a missing
+  seam that would make the next change small. A finding can name code
+  outside the diff when the root cause is there. These are follow-ups, not
+  reasons to hold the PR: they never block or change the suggested decision,
+  the suggestion doesn't wait for the check to run, and they start unticked
+  in a drafted review. Their severity says how much each is worth.
+
+A drafted review puts a finding on its line only when the PR changes that
+file. One that cites another file, such as an existing bug the change now
+reaches, goes into the review's summary instead.
 - **Risk** scores the PR's impact from 1 (minimal) to 5 (very high): how far
   a mistake could spread. The agent classifies each change by what it does
   (a comment edit, a move, an addition, a changed interface or changed

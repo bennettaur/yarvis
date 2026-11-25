@@ -267,6 +267,8 @@ export interface VerificationReport {
   comments?: VerificationCheck;
   observability?: VerificationCheck;
   quality?: VerificationCheck;
+  bugs?: VerificationCheck;
+  improvements?: VerificationCheck;
   approach?: VerificationApproach;
   flow?: VerificationFlow;
   /** Absent on a report from before coverage was counted. */
@@ -297,12 +299,14 @@ export interface VerificationTripwire {
 /** The checks shown as one row each, in the order the report lists them. */
 export const VERIFICATION_CHECKS = [
   "malice",
+  "bugs",
   "tests",
   "complexity",
   "performance",
   "comments",
   "observability",
   "quality",
+  "improvements",
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
@@ -315,6 +319,8 @@ export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   comments: "Comment quality",
   observability: "Observability",
   quality: "Code quality",
+  bugs: "Bugs",
+  improvements: "Improvements",
 };
 
 /**

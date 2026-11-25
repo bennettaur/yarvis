@@ -17,6 +17,7 @@ import {
   findingCommentBody,
   type Severity,
   VERIFICATION_CHECKS,
+  type VerificationCheckKey,
   type VerificationReport,
   type VerificationUpstack,
 } from "./verification";
@@ -46,8 +47,18 @@ const HIGH_IMPACT_BAND = 4;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * Checks whose findings are follow-ups, not reasons to hold the PR: they never
+ * block, change the suggestion or start ticked in a drafted review, and a run
+ * of one that hasn't happened isn't waited on. They are still listed, marked
+ * on the diff and exported like any finding; their severity ranks value.
+ */
+const FOLLOW_UP_CHECKS: ReadonlySet<VerificationCheckKey> = new Set(["improvements"]);
+
 function countFindings(report: VerificationReport, severity: Severity): number {
-  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
+  const inChecks = VERIFICATION_CHECKS.filter((key) => !FOLLOW_UP_CHECKS.has(key)).flatMap(
+    (key) => report[key]?.findings ?? [],
+  );
   const all = [...inChecks, ...(report.claims?.gaps ?? [])];
   return all.filter((f) => f.severity === severity).length;
 }
@@ -84,7 +95,11 @@ export function assessReview(
 ): Assessment {
   const blockers: string[] = [];
   const concerns: string[] = [];
-  const judged = items.filter((i) => DEFAULT_SECTIONS.includes(i.section));
+  const judged = items.filter(
+    (i) =>
+      DEFAULT_SECTIONS.includes(i.section) &&
+      !FOLLOW_UP_CHECKS.has(i.section as VerificationCheckKey),
+  );
   const notRun = judged.filter((i) => !i.result?.current).map((i) => i.label);
 
   ciReasons(evidence, blockers, concerns);
@@ -115,7 +130,9 @@ export function assessReview(
     // only point at where a fix may be. Only results for the current commit
     // have line numbers the layer's can be matched against.
     const current = new Set(items.filter((i) => i.result?.current).map((i) => i.section));
-    const above = VERIFICATION_CHECKS.filter((key) => current.has(key))
+    const above = VERIFICATION_CHECKS.filter(
+      (key) => current.has(key) && !FOLLOW_UP_CHECKS.has(key),
+    )
       .flatMap((key) => report[key]?.findings ?? [])
       .filter((f) => f.severity === "high")
       .flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
@@ -197,16 +214,20 @@ interface DraftInput {
  * unfinished work, high and medium findings, risk concerns, and failing CI.
  * Only results for the PR's head go on a line, since an older head's line
  * numbers may point at different code now; `currentSections` names those.
+ * So do only lines in `changedPaths`, when given: GitHub refuses a comment on
+ * a file the PR doesn't change, which a bug or improvement can cite.
  */
 export function draftComments(
   report: VerificationReport | null,
   evidence: readonly EvidenceItem[] | null,
   currentSections: ReadonlySet<string>,
+  changedPaths?: ReadonlySet<string>,
 ): DraftComment[] {
   const drafts: DraftComment[] = [];
   const ids = new Set<string>();
   const add = ({ section, source, path, line, pickedByDefault, ...f }: DraftInput) => {
-    const located = currentSections.has(section) && path && line;
+    const located =
+      currentSections.has(section) && path && line && (!changedPaths || changedPaths.has(path));
     let id = `${section}:${path ?? ""}:${line ?? ""}:${f.title}`;
     // Two identical results would share an id; the second gets a suffix.
     for (let n = 2; ids.has(id); n++) id = `${id}#${n}`;
@@ -267,7 +288,7 @@ export function draftComments(
           ...f,
           section: key,
           source: CHECK_LABEL[key],
-          pickedByDefault: f.severity === "high",
+          pickedByDefault: f.severity === "high" && !FOLLOW_UP_CHECKS.has(key),
         });
       }
     }
@@ -353,6 +374,7 @@ export function whereToLook(report: VerificationReport | null): Place[] {
   }
   for (const m of report.mustRead) add({ path: m.path, line: m.lines?.start, reason: m.reason });
   for (const key of VERIFICATION_CHECKS) {
+    if (FOLLOW_UP_CHECKS.has(key)) continue;
     for (const f of report[key]?.findings ?? []) {
       if (f.severity === "high" && f.path) {
         add({ path: f.path, line: f.line, reason: `${CHECK_LABEL[key]}: ${f.title}` });

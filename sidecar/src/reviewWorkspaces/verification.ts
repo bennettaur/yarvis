@@ -537,12 +537,14 @@ function claimsSchema(audit: ReportAudit) {
  */
 export const CHECK_SECTIONS = [
   "malice",
+  "bugs",
   "tests",
   "performance",
   "complexity",
   "comments",
   "observability",
   "quality",
+  "improvements",
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
@@ -580,6 +582,8 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   comments: "yarvis-review:comment-reviewer",
   observability: "yarvis-review:observability-reviewer",
   quality: "yarvis-review:quality-reviewer",
+  bugs: "yarvis-review:bug-hunter",
+  improvements: "yarvis-review:improvement-reviewer",
   approach: "yarvis-review:approach-reviewer",
   flow: "yarvis-review:flow-diagram",
 };
@@ -602,6 +606,9 @@ export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = 
   comments: { model: "haiku", effort: "low" },
   observability: { model: "haiku", effort: "low" },
   quality: { model: "sonnet", effort: "medium" },
+  // Tracing values through callers takes more reasoning than the other checks' medium.
+  bugs: { model: "sonnet", effort: "high" },
+  improvements: { model: "sonnet", effort: "medium" },
   approach: { model: "sonnet", effort: "medium" },
   flow: { model: "sonnet", effort: "medium" },
 };
@@ -824,6 +831,8 @@ function answerSchemas(limits: ReportLimits, audit: ReportAudit) {
     comments: checkSchema,
     observability: checkSchema,
     quality: checkSchema,
+    bugs: checkSchema,
+    improvements: checkSchema,
     approach: approachSchema,
     flow: flowSchema,
   };

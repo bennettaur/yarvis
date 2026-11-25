@@ -829,6 +829,8 @@ describe("verification report", () => {
     performance: pass,
     comments: pass,
     observability: pass,
+    bugs: pass,
+    improvements: pass,
     quality: { status: "issues", findings: [at("b is never read", 2)] },
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
   };

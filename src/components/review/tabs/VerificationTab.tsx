@@ -641,6 +641,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   // The report is model-written, so only a path the PR actually has is a link.
   const changed = useReviewChangedFiles(workspaceId, pr);
   const tree = useReviewTree(workspaceId, pr);
+  const changedPaths = useMemo(
+    () => (changed.data ? new Set(changed.data.files.map((f) => f.path)) : undefined),
+    [changed.data],
+  );
   const known = useMemo(
     () => new Set([...(changed.data?.files.map((f) => f.path) ?? []), ...(tree.data?.paths ?? [])]),
     [changed.data, tree.data],
@@ -783,6 +787,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           mutation={mutationRun}
           upstack={upstack}
           currentSections={currentSections}
+          changedPaths={changedPaths}
           onOpen={open}
         />
 

@@ -27,7 +27,8 @@ than tests; tests show how that code is meant to be used.
   would flatten: deep nesting, a long function mixing several jobs, state
   flags tracking what the structure could express.
 - Configuration, flags or extension points for needs the PR doesn't have.
-- Two sources of truth for the same fact.
+- Two sources of truth for the same fact. When you can name the likely
+  change that breaks them, the bugs check reports it instead.
 
 Not complexity: code you would merely have written differently, naming, style,
 formatting, length that comes from genuinely many cases, and code the PR didn't

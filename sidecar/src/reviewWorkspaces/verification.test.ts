@@ -69,6 +69,8 @@ function report(overrides: Record<string, unknown> = {}) {
     performance: pass,
     comments: pass,
     observability: pass,
+    bugs: pass,
+    improvements: pass,
     quality: pass,
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
     ...overrides,
@@ -731,6 +733,31 @@ describe("removing duplicate findings across checks", () => {
         path: "src/a.ts",
         line: 38,
       },
+    ]);
+  });
+
+  it("keeps a bug over the same problem in tests, quality or improvements, which can't block", () => {
+    const audit = emptyAudit();
+    const at = (title: string, line: number) => finding(title, { path: "src/a.ts", line });
+    const issues = (title: string, line: number) => ({
+      status: "issues",
+      findings: [at(title, line)],
+    });
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        bugs: issues("saveFeedback: a second save drops the first", 20),
+        tests: issues("saveFeedback second save has no test", 21),
+        quality: issues("saveFeedback second save is not awaited", 20),
+        improvements: issues("saveFeedback: queue saves so a second save waits", 22),
+      }),
+    );
+    expect(parsed.bugs?.findings.map((f) => f.title)).toEqual([
+      "saveFeedback: a second save drops the first",
+    ]);
+    expect(audit.droppedDuplicates.map((d) => [d.section, d.keptIn])).toEqual([
+      ["tests", "bugs"],
+      ["quality", "bugs"],
+      ["improvements", "bugs"],
     ]);
   });
 

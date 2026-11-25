@@ -365,11 +365,13 @@ type Question = keyof typeof QUESTIONS;
 const CHECK_QUESTION: Record<VerificationCheckKey, Question> = {
   malice: "unrelated",
   tests: "safety",
+  bugs: "safety",
   performance: "safety",
   observability: "safety",
   complexity: "quality",
   comments: "quality",
   quality: "quality",
+  improvements: "quality",
 };
 
 const CHECK_PURPOSE: Record<VerificationCheckKey, string> = {
@@ -380,6 +382,9 @@ const CHECK_PURPOSE: Record<VerificationCheckKey, string> = {
   complexity: "Code harder to follow than the problem needs.",
   comments: "Comments that are wrong, stale, or missing where the code can't explain itself.",
   quality: "Naming, duplication and structure that make the code harder to change.",
+  bugs: "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next likely change, and existing bugs it now reaches.",
+  improvements:
+    "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups that never block.",
 };
 
 function QuestionGroup({ question, children }: { question: Question; children: React.ReactNode }) {
