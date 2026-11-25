@@ -9,6 +9,7 @@ import {
 } from "../../../lib/reviewWorkspaces/story";
 import {
   startVerification,
+  THEME_RISK_LABEL,
   type VerificationReport,
 } from "../../../lib/reviewWorkspaces/verification";
 import { rowClass } from "../../diff/DiffRow";
@@ -355,7 +356,7 @@ export default function StoryTab({ ctx }: { ctx: TabContext }) {
               )}
               {current.risk && (
                 <span className="rounded border border-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400">
-                  {current.risk} risk
+                  {THEME_RISK_LABEL[current.risk]}
                 </span>
               )}
             </div>

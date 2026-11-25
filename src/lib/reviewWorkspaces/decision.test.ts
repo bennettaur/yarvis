@@ -131,6 +131,86 @@ describe("the suggested decision", () => {
     });
   });
 
+  it("still suggests approving beside improvements, which are follow-ups", () => {
+    const idea = (severity: "high" | "medium", line: number) => ({
+      title: `Capture the selection, not the whole screen (${severity})`,
+      detail: "d",
+      severity,
+      path: "src/screen.ts",
+      line,
+    });
+    const withIdeas: VerificationReport = {
+      ...clean,
+      improvements: { status: "issues", findings: [idea("high", 4), idea("medium", 9)] },
+    };
+    // Even on lines a layer above changes, and with no improvements run on this commit.
+    const upstack: VerificationUpstack = {
+      headSha: "h",
+      note: null,
+      layers: [
+        {
+          number: 8,
+          url: "u",
+          stale: false,
+          files: [{ path: "src/screen.ts", ranges: [{ start: 1, end: 10 }] }],
+        },
+      ],
+    };
+    expect(assessReview(withIdeas, green, items(), null, upstack)).toEqual({
+      suggestion: "approve",
+      blockers: [],
+      concerns: [],
+      notRun: [],
+    });
+    expect(assessReview(clean, green, items(["improvements"])).suggestion).toBe("approve");
+    const drafts = draftComments(withIdeas, [], new Set(["improvements"]));
+    expect(drafts.map((d) => [d.source, d.severity, d.pickedByDefault])).toEqual([
+      ["Improvements", "high", false],
+      ["Improvements", "medium", false],
+    ]);
+    expect(whereToLook(withIdeas).map((p) => p.path)).not.toContain("src/screen.ts");
+  });
+
+  it("puts a finding on a file the PR doesn't change into the summary, not on a line", () => {
+    const report: VerificationReport = {
+      ...clean,
+      bugs: {
+        status: "issues",
+        findings: [
+          {
+            title: "Reaches an old bug",
+            detail: "d",
+            severity: "high",
+            path: "src/old.ts",
+            line: 3,
+          },
+          { title: "In the change", detail: "d", severity: "high", path: "src/new.ts", line: 7 },
+        ],
+      },
+    };
+    const drafts = draftComments(report, [], new Set(["bugs"]), new Set(["src/new.ts"]));
+    expect(drafts.map((d) => [d.title, d.path, d.line])).toEqual([
+      ["Reaches an old bug", undefined, undefined],
+      ["In the change", "src/new.ts", 7],
+    ]);
+  });
+
+  it("asks for changes for a high bug, like any other high finding", () => {
+    const buggy: VerificationReport = {
+      ...clean,
+      bugs: {
+        status: "issues",
+        findings: [
+          { title: "A second save drops the first", detail: "d", severity: "high", path: "a.ts" },
+        ],
+      },
+    };
+    expect(assessReview(buggy, green, items())).toMatchObject({
+      suggestion: "request_changes",
+      blockers: ["1 high finding"],
+    });
+  });
+
   it("won't suggest approving until CI has passed on this commit", () => {
     for (const [evidence, concern] of [
       [null, "No CI results for this commit yet"],
@@ -411,7 +491,19 @@ describe("drafting a request for changes", () => {
       level: "medium",
       clientImpact: "",
       mitigations: [],
-      concerns: [{ title: "Stale reads", detail: "d", path: "src/cache.ts", line: 70 }],
+      concerns: [
+        // From before concerns carried a severity: read as medium.
+        { title: "Stale reads", detail: "d", path: "src/cache.ts", line: 70 },
+        {
+          title: "Mic stays live",
+          detail: "Hidden controls leave it recording.",
+          severity: "high",
+          fix: "Stop it on hide.",
+          path: "src/chat.tsx",
+          line: 4,
+        },
+        { title: "Nit", detail: "d", severity: "low", path: "src/chat.tsx", line: 5 },
+      ],
     },
     tests: {
       status: "issues",
@@ -429,7 +521,7 @@ describe("drafting a request for changes", () => {
   };
   const all = new Set(["claims", "changeMap", "tests", "risk"]);
 
-  it("ticks what a reviewer would almost always raise, and leaves low ones out", () => {
+  it("ticks what a reviewer would almost always raise, and leaves low findings out", () => {
     const drafts = draftComments(report, [ci("bad", "1 of 4 failing")], all);
     expect(
       drafts.map((d) => [d.source, d.title, d.severity, d.pickedByDefault, d.path, d.line]),
@@ -440,9 +532,17 @@ describe("drafting a request for changes", () => {
       ["Unfinished work", "TODO in eviction", "medium", false, "src/cache.ts", 50],
       ["Test quality", "No eviction test", "high", true, "src/cache.ts", 12],
       ["Risk", "Stale reads", "medium", false, "src/cache.ts", 70],
+      ["Risk", "Mic stays live", "high", true, "src/chat.tsx", 4],
+      // A low concern is still drafted, unticked: its severity is the agent's call.
+      ["Risk", "Nit", "low", false, "src/chat.tsx", 5],
       ["CI", "tests: failed", "high", true, undefined, undefined],
     ]);
+    // No fix, no "Suggested fix" line.
+    expect(drafts[5]?.body).not.toContain("Suggested fix");
     expect(drafts[2]?.body).toContain("> Why the timeout?");
+    expect(drafts[6]?.body).toContain(
+      "Hidden controls leave it recording.\n> Suggested fix: Stop it on hide.",
+    );
   });
 
   it("names each comment by what it's about, so the name holds when the report changes", () => {
@@ -472,7 +572,7 @@ describe("drafting a request for changes", () => {
     const test = drafts.find((d) => d.title === "No eviction test");
     expect(test?.path).toBeUndefined();
     expect(reviewSummary(drafts.filter((d) => d.pickedByDefault))).toBe(
-      "Requesting changes based on the verification report.\n\n**No eviction test** (verification report: Test quality, high)\n\n> d\n\n2 more comments are on the diff.",
+      "Requesting changes based on the verification report.\n\n**No eviction test** (verification report: Test quality, high)\n\n> d\n\n**Mic stays live** (verification report: Risk, high)\n\n> Hidden controls leave it recording.\n> Suggested fix: Stop it on hide.\n\n2 more comments are on the diff.",
     );
   });
 

@@ -275,7 +275,7 @@ public actor PtyConnection {
             self.socket = nil
             if Task.isCancelled { return }
             continuation.yield(.reconnecting)
-            // A flat second, as the web does: a terminal someone is looking
+            // A flat second: a terminal someone is looking
             // at should come back quickly, and a refusal never retries.
             do { try await sleep(.seconds(1)) } catch { return }
             // Attaching to an id with nothing running spawns a plain shell

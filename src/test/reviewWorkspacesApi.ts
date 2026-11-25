@@ -12,6 +12,7 @@ import { mock } from "bun:test";
 
 type ReviewApi = typeof import("../lib/reviewWorkspaces/api");
 type VerificationApi = typeof import("../lib/reviewWorkspaces/verification");
+type FeedbackApi = typeof import("../lib/reviewWorkspaces/feedback");
 type AgentRunsApi = typeof import("../lib/agentRuns");
 type MutationApi = typeof import("../lib/reviewWorkspaces/mutation");
 type MutationConfigApi = typeof import("../lib/pr/mutationTestingConfig");
@@ -21,6 +22,7 @@ type PrModelsApi = typeof import("../lib/pr/models");
 type Overrides = Partial<
   ReviewApi &
     VerificationApi &
+    FeedbackApi &
     AgentRunsApi &
     MutationApi &
     MutationConfigApi &
@@ -34,6 +36,7 @@ type Overrides = Partial<
 // would call itself.
 const review = { ...(await import("../lib/reviewWorkspaces/api")) };
 const verification = { ...(await import("../lib/reviewWorkspaces/verification")) };
+const feedback = { ...(await import("../lib/reviewWorkspaces/feedback")) };
 const agentRuns = { ...(await import("../lib/agentRuns")) };
 const mutation = { ...(await import("../lib/reviewWorkspaces/mutation")) };
 const mutationConfig = { ...(await import("../lib/pr/mutationTestingConfig")) };
@@ -71,6 +74,7 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
   archiveReviewWorkspace: through(review, "archiveReviewWorkspace"),
   reviewChangedFiles: through(review, "reviewChangedFiles"),
   reviewTree: through(review, "reviewTree"),
+  reviewFileDiff: through(review, "reviewFileDiff"),
 }));
 
 mock.module("../lib/reviewWorkspaces/verification", () => ({
@@ -79,6 +83,12 @@ mock.module("../lib/reviewWorkspaces/verification", () => ({
   verificationChecklist: through(verification, "verificationChecklist"),
   verificationEvidence: through(verification, "verificationEvidence"),
   verificationUpstack: through(verification, "verificationUpstack"),
+}));
+
+mock.module("../lib/reviewWorkspaces/feedback", () => ({
+  ...feedback,
+  verificationFeedback: through(feedback, "verificationFeedback"),
+  saveVerificationFeedback: through(feedback, "saveVerificationFeedback"),
 }));
 
 mock.module("../lib/agentRuns", () => ({

@@ -3,9 +3,16 @@ import YarvisClient
 
 struct AttentionView: View {
     @Bindable var model: AttentionModel
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         List {
+            if let alarms = app.alarms, !alarms.ringing.isEmpty {
+                AlarmRingingSection(model: alarms) {
+                    app.section = .alarms
+                    app.attentionOpen = false
+                }
+            }
             if !model.approvals.isEmpty {
                 SwiftUI.Section("Approvals") {
                     ForEach(model.approvals) { a in
@@ -48,7 +55,8 @@ struct AttentionView: View {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
             }
         }
-        .sheet(item: $model.answering) { item in
+        .sheet(item: Binding(get: { app.alarmTakeoverShowing ? nil : model.answering },
+                             set: { if !app.alarmTakeoverShowing { model.answering = $0 } })) { item in
             AnswerSheet(model: model, item: item)
         }
     }
