@@ -784,6 +784,10 @@ places. It comes back if the author asks you to review again. It also has:
   **Mutation testing**, which opens that tab (see
   [Mutation testing](#mutation-testing)).
 
+**Merge** and auto-merge are pinned to the commit you reviewed, the one the
+checkout is on. If someone has pushed since, GitHub refuses the merge; update
+the checkout and look again.
+
 When the PR conflicts with its base, a red **Conflicts with <base>** banner
 sits under the bar with **Resolve conflicts**, which hands the merge to a
 coding agent in the PR's workspace. It works the same as on the PRs tab; see
