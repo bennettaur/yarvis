@@ -20,8 +20,8 @@ const BUTTON = "rounded-md border px-2.5 py-1 text-xs disabled:opacity-50";
 
 /** How long an approval may cover later requests, when it offers that. */
 const GRANT_DURATIONS = [
-  { secs: 5 * 60, label: "5 min" },
   { secs: 15 * 60, label: "15 min" },
+  { secs: 30 * 60, label: "30 min" },
   { secs: 60 * 60, label: "1 hour" },
 ];
 
@@ -51,6 +51,8 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
   const canStop = myDevice.data?.scopes.includes("approve") ?? false;
   const [busyId, setBusyId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
+  /** What's typed in each approval's custom minutes field, by approval id. */
+  const [customMinutes, setCustomMinutes] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -149,6 +151,10 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
           const busy = busyId === approval.id;
           const maxAllowForSecs = approval.maxAllowForSecs ?? 0;
           const offeredDurations = GRANT_DURATIONS.filter((d) => d.secs <= maxAllowForSecs);
+          const maxMinutes = Math.floor(maxAllowForSecs / 60);
+          const typedMinutes = customMinutes[approval.id] ?? "";
+          const minutes = Number(typedMinutes);
+          const customValid = /^\d+$/.test(typedMinutes) && minutes >= 1 && minutes <= maxMinutes;
           return (
             <li key={approval.id} className="rounded-md border border-zinc-800 px-3 py-2">
               <div className="flex items-center gap-3">
@@ -173,8 +179,15 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
                   Deny
                 </button>
               </div>
-              {offeredDurations.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+              {maxMinutes >= 1 && (
+                <form
+                  className="mt-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    // Enter submits even while Allow is disabled.
+                    if (customValid) void answer(approval, true, minutes * 60);
+                  }}
+                >
                   <span>Approve and stop asking for</span>
                   {offeredDurations.map((d) => (
                     <button
@@ -187,7 +200,30 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
                       {d.label}
                     </button>
                   ))}
-                </div>
+                  <span>or</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={maxMinutes}
+                    step={1}
+                    placeholder={`1–${maxMinutes}`}
+                    aria-label="Custom minutes"
+                    value={typedMinutes}
+                    disabled={busy}
+                    onChange={(e) =>
+                      setCustomMinutes((all) => ({ ...all, [approval.id]: e.target.value }))
+                    }
+                    className="w-16 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-zinc-500"
+                  />
+                  <span>min</span>
+                  <button
+                    type="submit"
+                    className={`${BUTTON} border-zinc-700 text-zinc-300 hover:bg-zinc-800`}
+                    disabled={busy || !customValid}
+                  >
+                    Allow
+                  </button>
+                </form>
               )}
             </li>
           );
