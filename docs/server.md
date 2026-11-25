@@ -536,7 +536,11 @@ This example uses the vault backend and the server's own agent:
    `server/target/release/yarvis-server vault init`. You choose a sign-in
    passphrase in step 5, and the vault refuses to share it, so pick a
    different one here. Write down the recovery key.
-   Add the public key it prints to GitHub as a **signing key**.
+   Add the public key it prints to GitHub as a **signing key**. Then copy
+   your secrets into it with
+   `server/target/release/yarvis-server secrets migrate --from keychain --to vault`
+   (`--from onepassword` if they're in 1Password). See
+   [Moving secrets to another store](configuration.md#moving-secrets-to-another-store).
 4. **Point git at that key.** In `~/.gitconfig`, remove any
    `gpg.ssh.program` line that names 1Password's `op-ssh-sign`, then add the
    three settings from step 3 of
@@ -545,9 +549,8 @@ This example uses the vault backend and the server's own agent:
 5. **Set up the account.** Start the server in a terminal, open
    `http://localhost:7878`, and follow steps 4 and 5 of
    [Run the server on its own](#run-the-server-on-its-own), but before you
-   press Ctrl+C, unlock the vault and enter your provider keys again in
-   **Settings → Credentials**. A new vault starts empty, so nothing comes over
-   from the Keychain on its own.
+   press Ctrl+C, unlock the vault and check **Settings → Credentials** shows
+   the secrets you copied in step 3.
 6. **Keep it running** with the LaunchAgent from step 6. After each restart
    the server waits, locked, until you unlock the vault from a browser.
 7. **Publish it on Tailscale** as in

@@ -8,7 +8,9 @@ use yarvis_server::config::{Config, SecretBackendKind};
 use yarvis_server::database_url::{self, DatabaseUrl, UrlSource};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
-use yarvis_server::secret_blob::Store as SecretStore;
+use yarvis_server::secret_blob::{SecretBlob, Store as SecretStore};
+use yarvis_server::secret_migration::{self, MigrateError, OnConflict};
+use yarvis_server::settings::SettingsStore;
 use yarvis_server::sidecar::SupervisorDeps;
 use yarvis_server::store::Store;
 use yarvis_server::vault::Vault;
@@ -17,7 +19,10 @@ use yarvis_server::{AppState, app};
 const USAGE: &str = "usage: yarvis-server [--config PATH]
        yarvis-server device add --name NAME --scopes read,chat,terminal,approve,admin [--config PATH]
        yarvis-server auth reset [--sign-out-all] [--config PATH]
-       yarvis-server vault init [--passphrase-stdin] [--config PATH]";
+       yarvis-server vault init [--passphrase-stdin] [--config PATH]
+       yarvis-server secrets migrate --from STORE --to STORE [--force-source | --force-dest]
+                     [--passphrase-stdin] [--config PATH]
+         (STORE is keychain, onepassword or vault)";
 
 #[derive(Debug)]
 enum Command {
@@ -31,6 +36,15 @@ enum Command {
     /// Creates the vault and prints its recovery key, once. The vault
     /// passphrase is asked for on the terminal, or read from stdin.
     VaultInit {
+        passphrase_stdin: bool,
+    },
+    /// Copies the secrets from one store into another, leaving the source as
+    /// it was. A vault passphrase, when one is needed, comes from the terminal
+    /// or stdin.
+    SecretsMigrate {
+        from: SecretBackendKind,
+        to: SecretBackendKind,
+        on_conflict: OnConflict,
         passphrase_stdin: bool,
     },
     /// Removes the account and prints a new setup code, for an owner who lost
@@ -82,7 +96,21 @@ async fn main() {
         }
         Command::VaultInit { passphrase_stdin } => {
             wait_for_database(&store, &database).await;
-            vault_init(&config, store, passphrase_stdin).await
+            vault_init(&config, store, passphrase_stdin).await;
+        }
+        Command::SecretsMigrate {
+            from,
+            to,
+            on_conflict,
+            passphrase_stdin,
+        } => {
+            let target = MigrationTarget {
+                config: &config,
+                config_path: &config_path,
+                store,
+                database: &database,
+            };
+            secrets_migrate(target, from, to, on_conflict, passphrase_stdin).await
         }
         Command::AuthReset { sign_out_all } => {
             wait_for_database(&store, &database).await;
@@ -275,8 +303,13 @@ async fn add_device(store: Store, name: &str, scopes: &str) {
 }
 
 /// The recovery key goes to stdout and nowhere else; the rest goes to
-/// stderr, so `vault init > key.txt` captures only the key.
-async fn vault_init(config: &Config, store: Store, passphrase_stdin: bool) {
+/// stderr, so `vault init > key.txt` captures only the key. Returns the
+/// passphrase, for a caller that unlocks the new vault next.
+async fn vault_init(
+    config: &Config,
+    store: Store,
+    passphrase_stdin: bool,
+) -> zeroize::Zeroizing<String> {
     if config.secrets.backend != Some(SecretBackendKind::Vault) {
         eprintln!(
             "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
@@ -305,6 +338,225 @@ async fn vault_init(config: &Config, store: Store, passphrase_stdin: bool) {
     println!("{}", created.recovery_key.expose());
     if let Some(public_key) = created.signing_public_key {
         eprintln!("Git signing key (add it to GitHub as a signing key): {public_key}");
+    }
+    passphrase
+}
+
+/// What `secrets migrate` needs from `main` beyond its own flags.
+struct MigrationTarget<'a> {
+    config: &'a Config,
+    config_path: &'a Path,
+    store: Store,
+    database: &'a DatabaseUrl,
+}
+
+/// Merges the secrets in `from` into `to`. Conflicting keys stop it unless a
+/// `--force-` flag says which side wins. Key names go to stderr; values never
+/// leave the stores.
+async fn secrets_migrate(
+    target: MigrationTarget<'_>,
+    from: SecretBackendKind,
+    to: SecretBackendKind,
+    on_conflict: OnConflict,
+    passphrase_stdin: bool,
+) {
+    let config = target.config;
+    if from == to {
+        fail("--from and --to name the same store");
+    }
+    // A running server holds the vault in memory and writes that copy back on
+    // its next change, which would drop what this adds.
+    if to == SecretBackendKind::Vault
+        && config.secrets.backend == Some(SecretBackendKind::Vault)
+        && server_is_running(config.server.bind)
+    {
+        fail(format!(
+            "the server is running on {}. Stop it first: it keeps its own copy of the vault in \
+             memory and would overwrite what this copies.",
+            config.server.bind
+        ));
+    }
+    let settings = SettingsStore::new(SettingsStore::default_path());
+    let vault = if from == SecretBackendKind::Vault || to == SecretBackendKind::Vault {
+        Some(open_vault(&target, to == SecretBackendKind::Vault, passphrase_stdin).await)
+    } else {
+        None
+    };
+    let source = store_for(from, &settings, vault.as_ref());
+    let destination = store_for(to, &settings, vault.as_ref());
+    let (source_label, destination_label) = (source.label, destination.label);
+
+    // Blocking: the Keychain may prompt, and `op` can take up to a minute.
+    let result = tokio::task::spawn_blocking(move || {
+        let blob = SecretBlob::with_store(destination.clone(), settings);
+        let guard = blob.lock_for_write()?;
+        secret_migration::migrate(&guard, &source, &destination, on_conflict).map_err(|e| match e {
+            MigrateError::Conflicts(keys) => conflict_message(&keys),
+            other => other.to_string(),
+        })
+    })
+    .await
+    .unwrap_or_else(|e| fail(format!("the copy panicked: {e}")));
+    let migrated = result.unwrap_or_else(|e| fail(e));
+
+    let copied = migrated.added.len() + migrated.replaced.len();
+    if copied == 0 && migrated.kept.is_empty() {
+        eprintln!("{destination_label} already holds everything in {source_label}.");
+    } else {
+        eprintln!("Copied {copied} secrets from {source_label} to {destination_label}.");
+    }
+    if !migrated.replaced.is_empty() {
+        eprintln!(
+            "Replaced with {source_label}'s value: {}",
+            migrated.replaced.join(", ")
+        );
+    }
+    if !migrated.kept.is_empty() {
+        eprintln!(
+            "Kept {destination_label}'s value: {}",
+            migrated.kept.join(", ")
+        );
+    }
+    eprintln!("{source_label} still holds its copy. Remove it yourself once you've checked.");
+    if config.secrets.backend != Some(to) {
+        eprintln!(
+            "To use {destination_label}, set `backend = \"{}\"` under [secrets] in {} and \
+             restart the server.",
+            backend_name(to),
+            target.config_path.display()
+        );
+    }
+}
+
+fn conflict_message(keys: &[String]) -> String {
+    let mut message = String::from("Nothing was copied. Both stores hold a different value for:\n");
+    for key in keys {
+        message.push_str(&format!("  {key}\n"));
+    }
+    message.push_str(
+        "Run again with --force-source to take the source's values, or --force-dest to keep \
+         the destination's. Either way, keys only the source has are added.",
+    );
+    message
+}
+
+/// Whether something answers on the server's address.
+fn server_is_running(bind: SocketAddr) -> bool {
+    std::net::TcpStream::connect_timeout(&bind, Duration::from_secs(1)).is_ok()
+}
+
+/// The vault, unlocked. A missing vault is offered to be created when it is
+/// the destination and someone is at the terminal to answer.
+async fn open_vault(
+    target: &MigrationTarget<'_>,
+    is_destination: bool,
+    passphrase_stdin: bool,
+) -> Vault {
+    use std::io::IsTerminal;
+    let data_dir = &target.config.server.data_dir;
+    let vault = Vault::new(data_dir);
+    let exists = vault
+        .path()
+        .try_exists()
+        .unwrap_or_else(|e| fail(format!("couldn't check {}: {e}", vault.path().display())));
+    let passphrase = if exists {
+        read_existing_vault_passphrase(passphrase_stdin)
+    } else if !is_destination {
+        fail(format!("there is no vault at {}", vault.path().display()));
+    } else if passphrase_stdin || !std::io::stdin().is_terminal() {
+        fail(format!(
+            "there is no vault at {}. Create one with `yarvis-server vault init`, then run \
+             this again.",
+            vault.path().display()
+        ));
+    } else {
+        if !ask_yes_no(&format!(
+            "There is no vault at {} yet. Create one now? [y/N] ",
+            vault.path().display()
+        )) {
+            fail("No vault was created, so nothing was copied.");
+        }
+        wait_for_database(&target.store, target.database).await;
+        vault_init(target.config, target.store.clone(), false).await
+    };
+    let unlocking = vault.clone();
+    tokio::task::spawn_blocking(move || unlocking.unlock_with_passphrase(&passphrase))
+        .await
+        .unwrap_or_else(|e| fail(format!("unlocking the vault panicked: {e}")))
+        .unwrap_or_else(|e| fail(format!("couldn't unlock the vault: {e}")));
+    vault
+}
+
+/// The passphrase of a vault that already exists, asked for once.
+fn read_existing_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
+    use zeroize::Zeroizing;
+    if from_stdin {
+        let mut line = Zeroizing::new(String::new());
+        std::io::stdin()
+            .read_line(&mut line)
+            .unwrap_or_else(|e| fail(format!("couldn't read the passphrase: {e}")));
+        return Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_string());
+    }
+    Zeroizing::new(
+        rpassword::prompt_password("Vault passphrase: ")
+            .unwrap_or_else(|e| fail(format!("couldn't read the passphrase: {e}"))),
+    )
+}
+
+fn ask_yes_no(question: &str) -> bool {
+    use std::io::Write;
+    eprint!("{question}");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .unwrap_or_else(|e| fail(format!("couldn't read the answer: {e}")));
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// The store `kind` names. The 1Password item comes from Settings, as it
+/// does for the server.
+fn store_for(
+    kind: SecretBackendKind,
+    settings: &SettingsStore,
+    vault: Option<&Vault>,
+) -> SecretStore {
+    match kind {
+        SecretBackendKind::Keychain => SecretStore::keychain(),
+        SecretBackendKind::OnePassword => settings
+            .snapshot()
+            .onepassword_item()
+            .map(SecretStore::onepassword)
+            .unwrap_or_else(|e| {
+                fail(format!(
+                    "1Password needs a vault and an item, set in Settings → Secrets: {e}"
+                ))
+            }),
+        SecretBackendKind::Vault => SecretStore {
+            label: "the server's vault",
+            backend: vault
+                .expect("opened for a vault migration")
+                .secret_backend(),
+        },
+    }
+}
+
+fn backend_name(kind: SecretBackendKind) -> &'static str {
+    match kind {
+        SecretBackendKind::Keychain => "keychain",
+        SecretBackendKind::OnePassword => "onepassword",
+        SecretBackendKind::Vault => "vault",
+    }
+}
+
+fn parse_backend(name: &str) -> Result<SecretBackendKind, String> {
+    match name {
+        "keychain" => Ok(SecretBackendKind::Keychain),
+        "onepassword" => Ok(SecretBackendKind::OnePassword),
+        "vault" => Ok(SecretBackendKind::Vault),
+        other => Err(format!(
+            "unknown store: {other} (use keychain, onepassword or vault)"
+        )),
     }
 }
 
@@ -395,6 +647,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), String> {
     let (mut words, mut config, mut name, mut scopes) = (Vec::new(), None, None, None);
     let (mut passphrase_stdin, mut sign_out_all) = (false, false);
+    let (mut from, mut to, mut force_source, mut force_dest) = (None, None, false, false);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
@@ -404,12 +657,22 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
             "--scopes" => scopes = Some(value("--scopes")?),
             "--passphrase-stdin" => passphrase_stdin = true,
             "--sign-out-all" => sign_out_all = true,
+            "--from" => from = Some(value("--from")?),
+            "--to" => to = Some(value("--to")?),
+            "--force-source" => force_source = true,
+            "--force-dest" => force_dest = true,
             flag if flag.starts_with('-') => return Err(format!("unknown argument: {flag}")),
             _ => words.push(arg),
         }
     }
-    if passphrase_stdin && words != ["vault", "init"] {
-        return Err("--passphrase-stdin goes with `vault init`".into());
+    let migrating = words == ["secrets", "migrate"];
+    if passphrase_stdin && words != ["vault", "init"] && !migrating {
+        return Err("--passphrase-stdin goes with `vault init` or `secrets migrate`".into());
+    }
+    if !migrating && (from.is_some() || to.is_some() || force_source || force_dest) {
+        return Err(
+            "--from, --to, --force-source and --force-dest go with `secrets migrate`".into(),
+        );
     }
     if sign_out_all && words != ["auth", "reset"] {
         return Err("--sign-out-all goes with `auth reset`".into());
@@ -428,6 +691,25 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
                 return Err("--name and --scopes go with `device add`".into());
             }
             Command::VaultInit { passphrase_stdin }
+        }
+        [secrets, migrate] if secrets == "secrets" && migrate == "migrate" => {
+            if name.is_some() || scopes.is_some() {
+                return Err("--name and --scopes go with `device add`".into());
+            }
+            let on_conflict = match (force_source, force_dest) {
+                (true, true) => {
+                    return Err("pick one of --force-source and --force-dest".into());
+                }
+                (true, false) => OnConflict::SourceWins,
+                (false, true) => OnConflict::DestinationWins,
+                (false, false) => OnConflict::Refuse,
+            };
+            Command::SecretsMigrate {
+                from: parse_backend(&from.ok_or("secrets migrate needs --from")?)?,
+                to: parse_backend(&to.ok_or("secrets migrate needs --to")?)?,
+                on_conflict,
+                passphrase_stdin,
+            }
         }
         [device, add] if device == "device" && add == "add" => Command::AddDevice {
             name: name.ok_or("device add needs --name")?,
@@ -547,6 +829,73 @@ mod tests {
         assert!(parse(&["auth", "reset", "--name", "x"]).is_err());
         assert!(parse(&["--sign-out-all"]).is_err());
         assert!(parse(&["vault", "init", "--sign-out-all"]).is_err());
+    }
+
+    #[test]
+    fn parses_secrets_migrate() {
+        let (command, _) = parse(&[
+            "secrets",
+            "migrate",
+            "--from",
+            "keychain",
+            "--to",
+            "vault",
+            "--passphrase-stdin",
+        ])
+        .unwrap();
+        assert!(matches!(
+            command,
+            Command::SecretsMigrate {
+                from: SecretBackendKind::Keychain,
+                to: SecretBackendKind::Vault,
+                on_conflict: OnConflict::Refuse,
+                passphrase_stdin: true,
+            }
+        ));
+        let on_conflict = |flag: &str| match parse(&[
+            "secrets",
+            "migrate",
+            "--from",
+            "vault",
+            "--to",
+            "onepassword",
+            flag,
+        ])
+        .unwrap()
+        .0
+        {
+            Command::SecretsMigrate { on_conflict, .. } => on_conflict,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(on_conflict("--force-source"), OnConflict::SourceWins);
+        assert_eq!(on_conflict("--force-dest"), OnConflict::DestinationWins);
+    }
+
+    #[test]
+    fn refuses_a_bad_secrets_migrate() {
+        let migrate = |extra: &[&str]| {
+            let mut args = vec!["secrets", "migrate", "--from", "keychain", "--to", "vault"];
+            args.extend_from_slice(extra);
+            parse(&args)
+        };
+        assert!(
+            migrate(&["--force-source", "--force-dest"])
+                .unwrap_err()
+                .contains("pick one")
+        );
+        assert!(
+            parse(&["secrets", "migrate", "--to", "vault"])
+                .unwrap_err()
+                .contains("--from")
+        );
+        assert!(
+            parse(&["secrets", "migrate", "--from", "keychain", "--to", "disk"])
+                .unwrap_err()
+                .contains("unknown store")
+        );
+        assert!(parse(&["vault", "init", "--from", "keychain"]).is_err());
+        assert!(parse(&["--force-source"]).is_err());
+        assert!(migrate(&["--name", "x"]).is_err());
     }
 
     #[cfg(unix)]

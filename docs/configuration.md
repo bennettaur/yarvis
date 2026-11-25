@@ -221,6 +221,37 @@ an agent socket. Workspace shells sign through 1Password's agent, which asks
 for approval on the Mac it runs on. [Running the server](server.md#commit-signing-and-the-ssh-agent)
 explains how the server picks the socket and walks through both setups.
 
+### Moving secrets to another store
+
+`yarvis-server secrets migrate` copies your secrets from one store to another,
+in any direction between `keychain`, `onepassword` and `vault`:
+
+```bash
+yarvis-server secrets migrate --from keychain --to vault
+```
+
+- **The source is only read.** It keeps its copy, so you can switch back. Remove
+  it yourself once the new store works.
+- **The vault.** It asks for the vault passphrase (`--passphrase-stdin` reads it
+  from stdin). If you're moving into the vault and there isn't one yet, it
+  offers to create it, as `vault init` would, and prints the recovery key.
+  Moving into the vault needs the server stopped when the server already uses
+  the vault, since a running server keeps its own copy in memory and would
+  write over what was copied. The command refuses while it answers.
+- **1Password.** It uses the vault and item set in **Settings → Credentials →
+  Secret store**, and may ask you to approve `op` in 1Password.
+- **When both hold a secret.** If the destination already has a key with a
+  different value, nothing is copied. The command lists those keys, never their
+  values. Run it again with `--force-source` to take the source's values, or
+  `--force-dest` to keep the destination's. Either way, keys only the source has
+  are added and keys only the destination has are kept.
+- **Then switch.** Set `backend` under `[secrets]` in `server.toml` to the new
+  store and restart the server. The command prints the line when it isn't set
+  already.
+
+Settings' own **Secret store** switch still moves between the Keychain and
+1Password. It copies only into an empty store, and it can't reach the vault.
+
 ### `PATH` for a server launchd starts
 
 A server the desktop app starts gets your login shell's `PATH`. One that

@@ -231,7 +231,9 @@ things to know:
   their own, not through you and not with `!` (which puts the output in this
   conversation): the server's first start in a terminal (it prints the setup
   code), `yarvis-server vault init` (it asks for the vault passphrase and
-  prints the recovery key), `yarvis-server device add` (it prints a device
+  prints the recovery key), `yarvis-server secrets migrate` (it asks for the
+  vault passphrase, and prints a recovery key when it creates the vault),
+  `yarvis-server device add` (it prints a device
   token, which with `terminal` is a shell on the machine), and
   `yarvis-server auth reset`. Show them the command and wait for them to say
   it's done.
