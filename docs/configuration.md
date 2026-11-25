@@ -234,10 +234,11 @@ yarvis-server secrets migrate --from keychain --to vault
   it yourself once the new store works.
 - **The vault.** It asks for the vault passphrase (`--passphrase-stdin` reads it
   from stdin). If you're moving into the vault and there isn't one yet, it
-  offers to create it, as `vault init` would, and prints the recovery key.
-  Moving into the vault needs the server stopped when the server already uses
-  the vault, since a running server keeps its own copy in memory and would
-  write over what was copied. The command refuses while it answers.
+  offers to create it, as `vault init` would, and prints the recovery key. It
+  checks the source has secrets first, so it never leaves an empty vault.
+- **Stop the server first** when it already uses the vault. A running server
+  keeps its own copy of the vault in memory and would write over what was
+  copied, so the command refuses while the server answers on its address.
 - **1Password.** It uses the vault and item set in **Settings → Credentials →
   Secret store**, and may ask you to approve `op` in 1Password.
 - **When both hold a secret.** If the destination already has a key with a

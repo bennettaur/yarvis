@@ -539,7 +539,8 @@ This example uses the vault backend and the server's own agent:
    Add the public key it prints to GitHub as a **signing key**. Then copy
    your secrets into it with
    `server/target/release/yarvis-server secrets migrate --from keychain --to vault`
-   (`--from onepassword` if they're in 1Password). See
+   (`--from onepassword` if they're in 1Password). It asks for the vault
+   passphrase again to unlock it. See
    [Moving secrets to another store](configuration.md#moving-secrets-to-another-store).
 4. **Point git at that key.** In `~/.gitconfig`, remove any
    `gpg.ssh.program` line that names 1Password's `op-ssh-sign`, then add the

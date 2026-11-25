@@ -9,7 +9,7 @@ use yarvis_server::database_url::{self, DatabaseUrl, UrlSource};
 use yarvis_server::devices::{add_token_device, parse_scope_list};
 use yarvis_server::events::EventLog;
 use yarvis_server::secret_blob::{SecretBlob, Store as SecretStore};
-use yarvis_server::secret_migration::{self, MigrateError, OnConflict};
+use yarvis_server::secret_migration::{self, Migrated, OnConflict};
 use yarvis_server::settings::SettingsStore;
 use yarvis_server::sidecar::SupervisorDeps;
 use yarvis_server::store::Store;
@@ -360,25 +360,52 @@ async fn secrets_migrate(
     on_conflict: OnConflict,
     passphrase_stdin: bool,
 ) {
+    use std::io::IsTerminal;
     let config = target.config;
     if from == to {
         fail("--from and --to name the same store");
     }
-    // A running server holds the vault in memory and writes that copy back on
-    // its next change, which would drop what this adds.
-    if to == SecretBackendKind::Vault
-        && config.secrets.backend == Some(SecretBackendKind::Vault)
-        && server_is_running(config.server.bind)
-    {
-        fail(format!(
-            "the server is running on {}. Stop it first: it keeps its own copy of the vault in \
-             memory and would overwrite what this copies.",
-            config.server.bind
-        ));
+    // Only a server using the vault holds it in memory, and it writes that
+    // copy back on its next change, which would drop what this adds.
+    let running_server_check = (to == SecretBackendKind::Vault
+        && config.secrets.backend == Some(SecretBackendKind::Vault))
+    .then_some(config.server.bind);
+    if let Some(bind) = running_server_check {
+        refuse_if_running(bind).unwrap_or_else(|e| fail(e));
     }
     let settings = SettingsStore::new(SettingsStore::default_path());
     let vault = if from == SecretBackendKind::Vault || to == SecretBackendKind::Vault {
-        Some(open_vault(&target, to == SecretBackendKind::Vault, passphrase_stdin).await)
+        let vault = Vault::new(&config.server.data_dir);
+        let exists = vault
+            .path()
+            .try_exists()
+            .unwrap_or_else(|e| fail(format!("couldn't check {}: {e}", vault.path().display())));
+        let interactive = !passphrase_stdin && std::io::stdin().is_terminal();
+        let passphrase = match vault_plan(exists, to == SecretBackendKind::Vault, interactive) {
+            VaultPlan::Unlock => read_existing_vault_passphrase(passphrase_stdin),
+            VaultPlan::OfferToCreate => {
+                // Checked first, so a run with nothing to copy doesn't leave
+                // a new, empty vault behind.
+                let source = store_for(from, &settings, None);
+                blocking(move || secret_migration::read_source(&source).map(|_| ()))
+                    .await
+                    .unwrap_or_else(|e| fail(e));
+                if !ask_yes_no(&format!(
+                    "There is no vault at {} yet. Create one now? [y/N] ",
+                    vault.path().display()
+                )) {
+                    fail("No vault was created, so nothing was copied.");
+                }
+                wait_for_database(&target.store, target.database).await;
+                vault_init(config, target.store.clone(), false).await
+            }
+            VaultPlan::Refuse(reason) => fail(format!("{reason}: {}", vault.path().display())),
+        };
+        let unlocking = vault.clone();
+        blocking(move || unlocking.unlock_with_passphrase(&passphrase))
+            .await
+            .unwrap_or_else(|e| fail(format!("couldn't unlock the vault: {e}")));
+        Some(vault)
     } else {
         None
     };
@@ -386,36 +413,36 @@ async fn secrets_migrate(
     let destination = store_for(to, &settings, vault.as_ref());
     let (source_label, destination_label) = (source.label, destination.label);
 
-    // Blocking: the Keychain may prompt, and `op` can take up to a minute.
-    let result = tokio::task::spawn_blocking(move || {
+    let migrated = blocking(move || {
         let blob = SecretBlob::with_store(destination.clone(), settings);
         let guard = blob.lock_for_write()?;
-        secret_migration::migrate(&guard, &source, &destination, on_conflict).map_err(|e| match e {
-            MigrateError::Conflicts(keys) => conflict_message(&keys),
-            other => other.to_string(),
-        })
+        // Again under the lock: the prompts above leave time for a server to
+        // start.
+        if let Some(bind) = running_server_check {
+            refuse_if_running(bind)?;
+        }
+        secret_migration::migrate(&guard, &source, &destination, on_conflict)
+            .map_err(|e| e.to_string())
     })
     .await
-    .unwrap_or_else(|e| fail(format!("the copy panicked: {e}")));
-    let migrated = result.unwrap_or_else(|e| fail(e));
+    .unwrap_or_else(|e| fail(e));
 
-    let copied = migrated.added.len() + migrated.replaced.len();
-    if copied == 0 && migrated.kept.is_empty() {
+    if migrated == Migrated::default() {
         eprintln!("{destination_label} already holds everything in {source_label}.");
     } else {
-        eprintln!("Copied {copied} secrets from {source_label} to {destination_label}.");
+        eprintln!("Copied from {source_label} to {destination_label}.");
     }
-    if !migrated.replaced.is_empty() {
-        eprintln!(
-            "Replaced with {source_label}'s value: {}",
-            migrated.replaced.join(", ")
-        );
-    }
-    if !migrated.kept.is_empty() {
-        eprintln!(
-            "Kept {destination_label}'s value: {}",
-            migrated.kept.join(", ")
-        );
+    for (what, keys) in [
+        ("Added".to_string(), &migrated.added),
+        (
+            format!("Replaced with {source_label}'s value"),
+            &migrated.replaced,
+        ),
+        (format!("Kept {destination_label}'s value"), &migrated.kept),
+    ] {
+        if !keys.is_empty() {
+            eprintln!("{what}: {}", keys.join(", "));
+        }
     }
     eprintln!("{source_label} still holds its copy. Remove it yourself once you've checked.");
     if config.secrets.backend != Some(to) {
@@ -428,74 +455,75 @@ async fn secrets_migrate(
     }
 }
 
-fn conflict_message(keys: &[String]) -> String {
-    let mut message = String::from("Nothing was copied. Both stores hold a different value for:\n");
-    for key in keys {
-        message.push_str(&format!("  {key}\n"));
-    }
-    message.push_str(
-        "Run again with --force-source to take the source's values, or --force-dest to keep \
-         the destination's. Either way, keys only the source has are added.",
-    );
-    message
-}
-
-/// Whether something answers on the server's address.
-fn server_is_running(bind: SocketAddr) -> bool {
-    std::net::TcpStream::connect_timeout(&bind, Duration::from_secs(1)).is_ok()
-}
-
-/// The vault, unlocked. A missing vault is offered to be created when it is
-/// the destination and someone is at the terminal to answer.
-async fn open_vault(
-    target: &MigrationTarget<'_>,
-    is_destination: bool,
-    passphrase_stdin: bool,
-) -> Vault {
-    use std::io::IsTerminal;
-    let data_dir = &target.config.server.data_dir;
-    let vault = Vault::new(data_dir);
-    let exists = vault
-        .path()
-        .try_exists()
-        .unwrap_or_else(|e| fail(format!("couldn't check {}: {e}", vault.path().display())));
-    let passphrase = if exists {
-        read_existing_vault_passphrase(passphrase_stdin)
-    } else if !is_destination {
-        fail(format!("there is no vault at {}", vault.path().display()));
-    } else if passphrase_stdin || !std::io::stdin().is_terminal() {
-        fail(format!(
-            "there is no vault at {}. Create one with `yarvis-server vault init`, then run \
-             this again.",
-            vault.path().display()
-        ));
-    } else {
-        if !ask_yes_no(&format!(
-            "There is no vault at {} yet. Create one now? [y/N] ",
-            vault.path().display()
-        )) {
-            fail("No vault was created, so nothing was copied.");
-        }
-        wait_for_database(&target.store, target.database).await;
-        vault_init(target.config, target.store.clone(), false).await
-    };
-    let unlocking = vault.clone();
-    tokio::task::spawn_blocking(move || unlocking.unlock_with_passphrase(&passphrase))
+/// Runs `work` on the blocking pool: the Keychain may prompt, `op` can take
+/// up to a minute, and unlocking stretches the passphrase. A panic's message
+/// isn't shown, since it could come from code holding a secret.
+async fn blocking<T: Send + 'static, E: std::fmt::Display + Send + 'static>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(work)
         .await
-        .unwrap_or_else(|e| fail(format!("unlocking the vault panicked: {e}")))
-        .unwrap_or_else(|e| fail(format!("couldn't unlock the vault: {e}")));
-    vault
+        .unwrap_or_else(|_| fail("the migration stopped unexpectedly; nothing more was changed"))
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VaultPlan {
+    Unlock,
+    OfferToCreate,
+    Refuse(&'static str),
+}
+
+/// What to do about the vault, by whether it exists, whether it's being
+/// copied into, and whether someone is at the terminal to answer a question.
+fn vault_plan(exists: bool, is_destination: bool, interactive: bool) -> VaultPlan {
+    match (exists, is_destination, interactive) {
+        (true, _, _) => VaultPlan::Unlock,
+        (false, false, _) => VaultPlan::Refuse("there is no vault to copy from at"),
+        (false, true, false) => VaultPlan::Refuse(
+            "there is no vault yet. Create one with `yarvis-server vault init`, then run this \
+             again. It would be at",
+        ),
+        (false, true, true) => VaultPlan::OfferToCreate,
+    }
+}
+
+fn refuse_if_running(bind: SocketAddr) -> Result<(), String> {
+    if server_is_running(bind) {
+        return Err(format!(
+            "the server is running on {bind}. Stop it first: it keeps its own copy of the vault \
+             in memory and would overwrite what this copies."
+        ));
+    }
+    Ok(())
+}
+
+/// Whether something answers on the server's address. A wildcard bind is
+/// tried on loopback, since connecting to 0.0.0.0 doesn't work everywhere.
+fn server_is_running(bind: SocketAddr) -> bool {
+    let mut address = bind;
+    if address.ip().is_unspecified() {
+        address.set_ip(match address {
+            SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+            SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+        });
+    }
+    std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).is_ok()
 }
 
 /// The passphrase of a vault that already exists, asked for once.
 fn read_existing_vault_passphrase(from_stdin: bool) -> zeroize::Zeroizing<String> {
     use zeroize::Zeroizing;
     if from_stdin {
-        let mut line = Zeroizing::new(String::new());
+        // Sized up front so `read_line` doesn't reallocate and leave a copy
+        // behind that is never zeroed.
+        let mut line = Zeroizing::new(String::with_capacity(1024));
         std::io::stdin()
             .read_line(&mut line)
             .unwrap_or_else(|e| fail(format!("couldn't read the passphrase: {e}")));
-        return Zeroizing::new(line.trim_end_matches(['\r', '\n']).to_string());
+        let len = line.trim_end_matches(['\r', '\n']).len();
+        line.truncate(len);
+        return line;
     }
     Zeroizing::new(
         rpassword::prompt_password("Vault passphrase: ")
@@ -704,9 +732,15 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<(Command, PathBuf), 
                 (false, true) => OnConflict::DestinationWins,
                 (false, false) => OnConflict::Refuse,
             };
+            let from = parse_backend(&from.ok_or("secrets migrate needs --from")?)?;
+            let to = parse_backend(&to.ok_or("secrets migrate needs --to")?)?;
+            let vault = SecretBackendKind::Vault;
+            if passphrase_stdin && from != vault && to != vault {
+                return Err("--passphrase-stdin is for the vault's passphrase".into());
+            }
             Command::SecretsMigrate {
-                from: parse_backend(&from.ok_or("secrets migrate needs --from")?)?,
-                to: parse_backend(&to.ok_or("secrets migrate needs --to")?)?,
+                from,
+                to,
                 on_conflict,
                 passphrase_stdin,
             }
@@ -896,6 +930,48 @@ mod tests {
         assert!(parse(&["vault", "init", "--from", "keychain"]).is_err());
         assert!(parse(&["--force-source"]).is_err());
         assert!(migrate(&["--name", "x"]).is_err());
+        assert!(
+            parse(&[
+                "secrets",
+                "migrate",
+                "--from",
+                "keychain",
+                "--to",
+                "onepassword",
+                "--passphrase-stdin",
+            ])
+            .unwrap_err()
+            .contains("vault")
+        );
+    }
+
+    #[test]
+    fn the_vault_is_created_only_as_a_destination_someone_is_there_to_confirm() {
+        assert_eq!(vault_plan(true, false, false), VaultPlan::Unlock);
+        assert_eq!(vault_plan(true, true, true), VaultPlan::Unlock);
+        assert_eq!(vault_plan(false, true, true), VaultPlan::OfferToCreate);
+        assert!(
+            matches!(vault_plan(false, true, false), VaultPlan::Refuse(r) if r.contains("vault init"))
+        );
+        assert!(matches!(
+            vault_plan(false, false, true),
+            VaultPlan::Refuse(_)
+        ));
+    }
+
+    #[test]
+    fn a_server_answering_on_its_address_blocks_a_vault_migration() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // The server's own bind is often the wildcard address.
+        let wildcard = SocketAddr::from(([0, 0, 0, 0], port));
+        assert!(
+            refuse_if_running(wildcard)
+                .unwrap_err()
+                .contains("Stop it first")
+        );
+        drop(listener);
+        assert!(refuse_if_running(wildcard).is_ok());
     }
 
     #[cfg(unix)]

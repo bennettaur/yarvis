@@ -2,13 +2,10 @@
 //! `yarvis-server secrets migrate`.
 //!
 //! The source is only read, so it keeps its copy until the user removes it.
-//! The destination is merged into rather than replaced: a key only it holds is
-//! kept, and a key both hold with different values is a conflict. Conflicts
-//! stop the copy unless the caller says which side wins.
-//!
-//! Objects are merged key by key, so a provider or MCP server that only the
-//! destination has survives even when both hold the same subtree. Conflicts
-//! are named by dotted path, and values are never part of any message.
+//! The destination is merged into rather than replaced, key by key, so a
+//! provider or MCP server only it holds survives even inside a subtree both
+//! have. Conflicts are named by dotted path; values are never part of any
+//! message.
 
 use serde_json::{Map, Value};
 
@@ -41,28 +38,66 @@ pub enum MigrateError {
     /// Both stores hold these keys with different values, and the caller
     /// chose [`OnConflict::Refuse`]. Nothing was written.
     Conflicts(Vec<String>),
-    /// The destination holds text that isn't a JSON object, so there is
-    /// nothing to merge into and overwriting it could lose what the user put
-    /// there.
-    DestinationNotSecrets(String),
+    /// The source store, by label, holds nothing to copy.
+    SourceEmpty(String),
+    /// The store, by label, holds text that isn't a JSON object. As a
+    /// destination there is nothing to merge into, and overwriting it could
+    /// lose what the user put there.
+    NotSecrets(String),
     Store(String),
 }
 
 impl std::fmt::Display for MigrateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Conflicts(keys) => write!(
-                f,
-                "both stores hold different values for: {}",
-                keys.join(", ")
-            ),
-            Self::DestinationNotSecrets(label) => write!(
+            Self::Conflicts(keys) => {
+                writeln!(
+                    f,
+                    "Nothing was copied. Both stores hold a different value for:"
+                )?;
+                for key in keys {
+                    writeln!(f, "  {key}")?;
+                }
+                write!(
+                    f,
+                    "Run again with --force-source to take the source's values, or --force-dest \
+                     to keep the destination's. Either way, keys only the source has are added."
+                )
+            }
+            Self::SourceEmpty(label) => {
+                write!(f, "{label} holds no secrets, so nothing was copied")
+            }
+            Self::NotSecrets(label) => write!(
                 f,
                 "{label} holds something that isn't Yarvis's secrets, so nothing was copied"
             ),
             Self::Store(message) => f.write_str(message),
         }
     }
+}
+
+/// The secrets `store` holds, as an object. Read raw, because the usual
+/// parse turns unreadable text into an empty object: as a source that would
+/// pass for "nothing to copy", and as a destination for "safe to overwrite".
+pub fn read_secrets(store: &Store) -> Result<Map<String, Value>, MigrateError> {
+    match store.read_raw().map_err(MigrateError::Store)? {
+        None => Ok(Map::new()),
+        Some(raw) if raw.trim().is_empty() => Ok(Map::new()),
+        Some(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(Value::Object(map)) => Ok(map),
+            _ => Err(MigrateError::NotSecrets(store.label.to_string())),
+        },
+    }
+}
+
+/// The secrets in `store`, refusing a store with none, for a caller that
+/// wants to know there is something to copy before it prepares anything.
+pub fn read_source(store: &Store) -> Result<Map<String, Value>, MigrateError> {
+    let source = read_secrets(store)?;
+    if source.is_empty() {
+        return Err(MigrateError::SourceEmpty(store.label.to_string()));
+    }
+    Ok(source)
 }
 
 /// Merges the secrets in `from` into `to` under `guard`, writing `to` only
@@ -73,65 +108,20 @@ pub fn migrate(
     to: &Store,
     on_conflict: OnConflict,
 ) -> Result<Migrated, MigrateError> {
-    let source = secret_blob::read_root_from(from).map_err(MigrateError::Store)?;
-    // Read raw: unparseable text would otherwise look like an empty store
-    // and be overwritten.
-    let mut destination = match to.read_raw().map_err(MigrateError::Store)? {
-        None => Value::Object(Map::new()),
-        Some(raw) if raw.trim().is_empty() => Value::Object(Map::new()),
-        Some(raw) => match serde_json::from_str::<Value>(&raw) {
-            Ok(value @ Value::Object(_)) => value,
-            _ => return Err(MigrateError::DestinationNotSecrets(to.label.to_string())),
-        },
-    };
-    let Value::Object(source) = source else {
-        return Err(MigrateError::Store(format!(
-            "{} holds something that isn't Yarvis's secrets",
-            from.label
-        )));
-    };
-
-    let conflicts = conflicting_paths(&source, destination.as_object().expect("checked above"));
-    if on_conflict == OnConflict::Refuse && !conflicts.is_empty() {
-        return Err(MigrateError::Conflicts(conflicts));
-    }
+    let source = read_source(from)?;
+    let mut destination = read_secrets(to)?;
     let mut migrated = Migrated::default();
-    merge(
-        destination.as_object_mut().expect("checked above"),
-        &source,
-        "",
-        on_conflict,
-        &mut migrated,
-    );
+    // Merged in memory first: under `Refuse` every conflict lands in `kept`,
+    // and nothing has been written yet.
+    merge(&mut destination, &source, "", on_conflict, &mut migrated);
+    if on_conflict == OnConflict::Refuse && !migrated.kept.is_empty() {
+        return Err(MigrateError::Conflicts(migrated.kept));
+    }
     if !migrated.added.is_empty() || !migrated.replaced.is_empty() {
-        secret_blob::write_root_to(guard, to, &destination).map_err(MigrateError::Store)?;
+        secret_blob::write_root_to(guard, to, &Value::Object(destination))
+            .map_err(MigrateError::Store)?;
     }
     Ok(migrated)
-}
-
-/// The paths where both hold a value and the values differ. Two objects are
-/// walked into rather than compared whole.
-fn conflicting_paths(source: &Map<String, Value>, destination: &Map<String, Value>) -> Vec<String> {
-    let mut found = Vec::new();
-    walk_conflicts(source, destination, "", &mut found);
-    found
-}
-
-fn walk_conflicts(
-    source: &Map<String, Value>,
-    destination: &Map<String, Value>,
-    prefix: &str,
-    found: &mut Vec<String>,
-) {
-    for (key, value) in source {
-        let path = join(prefix, key);
-        match (value, destination.get(key)) {
-            (_, None) => {}
-            (Value::Object(a), Some(Value::Object(b))) => walk_conflicts(a, b, &path, found),
-            (a, Some(b)) if a != b => found.push(path),
-            _ => {}
-        }
-    }
 }
 
 fn merge(
@@ -297,12 +287,73 @@ mod tests {
 
         for on_conflict in [OnConflict::Refuse, OnConflict::SourceWins] {
             let err = run(&from, &to, on_conflict).unwrap_err();
+            assert_eq!(err, MigrateError::NotSecrets("destination".into()));
+        }
+        assert!(to.writes().is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_unparseable_source_is_reported_not_passed_off_as_copied() {
+        let to = MemoryBackend::holding(r#"{"github_token":"gh"}"#);
+        for (source, expected) in [
+            (
+                MemoryBackend::empty(),
+                MigrateError::SourceEmpty("source".into()),
+            ),
+            (
+                MemoryBackend::holding("{}"),
+                MigrateError::SourceEmpty("source".into()),
+            ),
+            (
+                MemoryBackend::holding("not json"),
+                MigrateError::NotSecrets("source".into()),
+            ),
+        ] {
             assert_eq!(
-                err,
-                MigrateError::DestinationNotSecrets("destination".into())
+                run(&source, &to, OnConflict::SourceWins).unwrap_err(),
+                expected
             );
         }
         assert!(to.writes().is_empty());
+    }
+
+    #[test]
+    fn destination_wins_inside_a_shared_subtree() {
+        let from =
+            MemoryBackend::holding(r#"{"custom_providers":{"a":{"key":"k2"},"b":{"key":"kb"}}}"#);
+        let to = MemoryBackend::holding(r#"{"custom_providers":{"a":{"key":"k1"}}}"#);
+
+        let migrated = run(&from, &to, OnConflict::DestinationWins).unwrap();
+
+        assert_eq!(migrated.kept, ["custom_providers.a.key"]);
+        assert_eq!(migrated.added, ["custom_providers.b"]);
+        assert_eq!(
+            contents(&to),
+            json!({"custom_providers":{"a":{"key":"k1"},"b":{"key":"kb"}}})
+        );
+    }
+
+    #[test]
+    fn a_value_against_a_subtree_is_one_conflict_resolved_whole() {
+        let from = MemoryBackend::holding(r#"{"mcp_servers":"flat","github_token":{"x":1}}"#);
+        let to = MemoryBackend::holding(r#"{"mcp_servers":{"s":{"t":"v"}},"github_token":"gh"}"#);
+
+        assert_eq!(
+            run(&from, &to, OnConflict::Refuse).unwrap_err(),
+            MigrateError::Conflicts(vec!["github_token".into(), "mcp_servers".into()])
+        );
+        run(&from, &to, OnConflict::SourceWins).unwrap();
+        assert_eq!(
+            contents(&to),
+            json!({"mcp_servers":"flat","github_token":{"x":1}})
+        );
+    }
+
+    #[test]
+    fn the_conflict_message_lists_every_path_and_how_to_go_on() {
+        let message = MigrateError::Conflicts(vec!["a.b".into(), "c".into()]).to_string();
+        assert!(message.contains("  a.b\n  c\n"), "{message}");
+        assert!(message.contains("--force-source") && message.contains("--force-dest"));
     }
 
     #[test]
