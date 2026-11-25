@@ -11,8 +11,8 @@ import { linkRef } from "./tools.ts";
 export const QUICK_TASK_KINDS = ["general", "ship", "watch"] as const;
 export type QuickTaskKind = (typeof QUICK_TASK_KINDS)[number];
 
-// The client's own context cap, so the model sees what Omni Chat would send.
-// The route rejects anything past 8000 before this applies.
+// Matches MAX_CONTEXT_CHARS in src/lib/omniChatContext.ts. The route's 8000
+// limit rejects longer screens from other callers before this cut applies.
 const MAX_SCREEN_CHARS = 7000;
 
 // A title, a focus and up to five PR URLs and tickets: well past a verdict's

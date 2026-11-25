@@ -35,6 +35,7 @@ const answer = {
 describe("proposeQuickTask", () => {
   it("keeps only links the context supports, and fences the screen text", async () => {
     let prompt = "";
+    let maxTokens: number | undefined;
     const proposal = await proposeQuickTask(
       config,
       db,
@@ -46,10 +47,13 @@ describe("proposeQuickTask", () => {
       },
       async (_c, _s, req) => {
         prompt = req.prompt;
+        maxTokens = req.ollamaMaxTokens;
         return answer as never;
       },
     );
     expect(proposal.kind).toBe("ship");
+    // The answer outgrows the verdict-sized default on Ollama.
+    expect(maxTokens).toBe(1024);
     expect(proposal.links.map((l) => l.ref.kind)).toEqual(["pr", "ticket"]);
     expect(prompt).toContain("The user is not in a workspace.");
     expect(prompt).toMatch(/<context-[^>]+>\nReviewing/);

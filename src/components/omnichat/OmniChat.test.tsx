@@ -200,6 +200,11 @@ describe("OmniChat", () => {
     await waitFor(() => sendButton(mounted.host) !== undefined, "the chat composer");
     expect(quickTaskBox(mounted.host)).toBeNull();
     expect(text()).not.toContain("Starting turn detection");
+    // The mic is closed and idle: nothing to stop, and listening starts on a click.
+    const buttons = Array.from(mounted.host.querySelectorAll("button"));
+    expect(buttons.some((b) => b.getAttribute("aria-label") === "Start listening")).toBe(true);
+    expect(buttons.some((b) => b.getAttribute("aria-label") === "Stop listening")).toBe(false);
+    expect(buttons.some((b) => b.textContent === "Stop")).toBe(false);
   });
 
   it("pins the thread to the newest message when leaving heads-down mode", async () => {
@@ -217,8 +222,12 @@ describe("OmniChat", () => {
 
       headsDownButton(mounted.host)?.click();
       await waitFor(() => sendButton(mounted.host) !== undefined, "the chat composer");
-      const thread = mounted.host.querySelector(".overflow-y-auto");
-      await waitFor(() => thread !== null && scrolled.includes(thread), "the thread to scroll");
+      // The thread is the scroller holding the empty chat's hint.
+      await waitFor(
+        () =>
+          scrolled.some((el) => el.textContent?.includes("Ask about whatever you're looking at")),
+        "the thread to scroll",
+      );
     } finally {
       HTMLElement.prototype.scrollTo = original;
     }
