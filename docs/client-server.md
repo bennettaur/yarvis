@@ -382,83 +382,30 @@ would make that immediate; it is a possible follow-up.
 
 ## Running it
 
-Every setup needs Postgres with pgvector (see "Postgres").
+[server.md](server.md) has the step-by-step setups: the server the desktop
+app starts, a server run on its own under launchd, reaching it through
+`tailscale serve` or a Caddy reverse proxy, connecting the Android app, and
+commit signing with the server's agent or 1Password's. Every setup needs
+Postgres with pgvector (see "Postgres").
 
-**A single Mac (the Tauri app).** Nothing to configure.
+The three deployments differ in where secrets and the signing key live:
 
-1. Install and open the app. It writes `server.toml` into its app data folder,
-   starts the bundled `yarvis-server` on a loopback port, and pairs itself with
-   `yarvis-server device add`, keeping the token in the Keychain.
-2. Secrets stay wherever Settings says (the Keychain unless you chose
-   1Password), and workspace shells get 1Password's SSH agent when it exists.
-3. For the actions that need a fresh device (minting or revoking devices,
-   account changes, switching the secrets backend), open
-   `http://localhost:<port>` in a browser on the same Mac, with the port from
-   `bind` in `<app data>/server.toml`, and set up the account with the code in
-   `<app data>/server/setup-code`. The app's own token can't do them. The app
-   keeps its port across restarts when it is free.
-
-**A home server with the vault and ssh-agent, behind `tailscale serve`.** The
-server runs on an always-on Mac and you reach it from anywhere on the tailnet.
-
-1. Build the UI (`bun run build`) and the server
-   (`cargo build --release --manifest-path server/Cargo.toml`).
-2. Write `~/.yarvis/server.toml`, with your machine's tailnet name:
-
-   ```toml
-   [server]
-   bind = "127.0.0.1:7878"              # tailscale serve connects here
-   data_dir = "/Users/me/.yarvis/server"
-   web_dir = "/Users/me/yarvis/dist"
-   # launchd's PATH misses Homebrew and mise, where claude, git, gh and bun are
-   path = "/Users/me/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
-   [auth]
-   origins = ["https://mac-mini.example-tailnet.ts.net"]
-
-   [secrets]
-   backend = "vault"
-
-   [ssh_agent]
-   enabled = true
-   ```
-
-   The bind stays on loopback, so `allow_plain_http` isn't needed: TLS ends
-   at `tailscale serve`, on the same machine.
-3. Run `yarvis-server vault init`, choose the vault passphrase, and write
-   down the recovery key it prints. Add the signing key it prints to GitHub
-   as a signing key.
-4. Set the database, with `[database] url` in `server.toml` or
-   `YARVIS_DATABASE_URL` in the LaunchAgent's environment, unless the default
-   `postgres://localhost:5432/yarvis` is right. Start the server (a LaunchAgent
-   keeps it running), then
-   `tailscale serve --bg 7878` to publish it as
-   `https://mac-mini.example-tailnet.ts.net`.
-5. Open that URL, enter the setup code from `<data_dir>/setup-code`, choose
-   the sign-in passphrase, scan the QR code into an authenticator app, confirm
-   a code, and save the backup codes. The vault unlock screen comes next; enter
-   the vault passphrase. The sidecar starts once the vault is open.
-6. Every commit a workspace shell signs waits for an approval, which any
-   device with `approve` can give from the approvals box. Locking the vault
-   stops the sidecar and the agent until the next unlock.
-7. To pair a Tauri app with this server, make its token on the server with
-   `yarvis-server device add --name Laptop --scopes read,chat,terminal,approve`,
-   so its terminals work.
-
-**The work laptop, with 1Password and no server agent, reached remotely.**
-Secrets and the signing key stay in 1Password, and the server never holds a
-key.
-
-1. Use the Tauri app as on a single Mac, or run the server yourself with
-   `[secrets] backend = "onepassword"` and `[ssh_agent] enabled = false`. A
-   server under launchd also needs `upstream_socket` set to 1Password's agent
-   socket (see "Deployments").
-2. To reach it from another device, publish its port (the `bind` in its
-   `server.toml`) with `tailscale serve` as for the home server, and add the
-   laptop's `https://` tailnet URL to `auth.origins`.
-3. Commits are signed by 1Password's agent, which asks on the laptop. So while
-   you're away from the laptop, workspace sessions can run but can't sign
-   commits; nothing in the server works around that.
+- **A single Mac (the Tauri app).** The app writes `server.toml` into its app
+  data folder, starts the bundled `yarvis-server` on a loopback port, and
+  pairs itself with `yarvis-server device add`, keeping the token in the
+  Keychain. That token can't do what needs a fresh device (minting or
+  revoking devices, account changes, switching the secrets backend), so those
+  happen in a browser signed in to the same server.
+- **A home server with the vault and ssh-agent.** The server runs under
+  launchd on an always-on Mac, with `backend = "vault"` and the agent on, and
+  is reached through `tailscale serve`. Every signature waits for an approval
+  from any device with `approve`. Locking the vault stops the sidecar and the
+  agent until the next unlock.
+- **A Mac with 1Password and no server agent.** Secrets and the
+  signing key stay in 1Password, and the server never holds a key. Commits
+  are signed by 1Password's agent, which asks on that Mac. While you're
+  away from it, workspace sessions can run but can't sign commits;
+  nothing in the server works around that.
 
 ## Clients
 
