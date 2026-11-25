@@ -3,6 +3,7 @@ import { refKey } from "../../../lib/pr/ref";
 import type { PrRef } from "../../../lib/pr/types";
 import { listViewed, markManyViewed, setViewed } from "../../../lib/pr/viewed";
 import {
+  invalidate,
   PROVIDER_FRESHNESS,
   primeCache,
   type Resource,
@@ -156,12 +157,16 @@ export function useVerificationFeedback(workspaceId: string, prId: string) {
   const save = useCallback(
     async (input: FeedbackInput) => {
       const saved = await saveVerificationFeedback(workspaceId, prId, input);
-      primeCache<ReportFeedback[]>(key, (current) => [
-        saved,
-        ...(current ?? []).filter((f) => f.id !== saved.id),
-      ]);
+      // With no list loaded yet there is nothing to add the row to: a list of
+      // just this row would hide every other verdict, so read the whole list.
+      if (resource.data === null) invalidate(key);
+      else {
+        primeCache<ReportFeedback[]>(key, (current) =>
+          current === null ? [saved] : [saved, ...current.filter((f) => f.id !== saved.id)],
+        );
+      }
     },
-    [workspaceId, prId, key],
+    [workspaceId, prId, key, resource.data],
   );
   return { feedback: resource.data ?? [], save };
 }

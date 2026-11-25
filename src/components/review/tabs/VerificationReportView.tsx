@@ -23,7 +23,7 @@ import {
   type VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
-import { ItemActions, type ReportActions } from "./ReportItemActions";
+import { type ReportActions, ReportItemActions } from "./ReportItemActions";
 
 export type { FindingPoster, Located, ReportActions } from "./ReportItemActions";
 
@@ -292,7 +292,7 @@ function CheckRow({
               <UpstackNote upstack={upstack} path={f.path} line={f.line} />
             </div>
             <p className="text-xs text-zinc-400">{f.detail}</p>
-            <ItemActions
+            <ReportItemActions
               section={section}
               sectionLabel={label}
               kind={kind}
@@ -409,7 +409,7 @@ function ChangeMap({
                   </p>
                 </div>
               )}
-              <ItemActions
+              <ReportItemActions
                 section="changeMap"
                 sectionLabel="Change map"
                 kind="theme"
@@ -423,7 +423,7 @@ function ChangeMap({
                 lines={first?.lines}
                 actions={actions}
                 canPost={!!theme.question}
-                acceptLabel="Accept risk"
+                risk
                 ratings={RISK_RATINGS}
               />
             </li>
@@ -506,7 +506,7 @@ function Claims({
                 <Location path={c.path} line={c.line} onOpen={onOpen} />
               </div>
               <p className="text-xs text-zinc-400">{c.evidence}</p>
-              <ItemActions
+              <ReportItemActions
                 section="claims"
                 sectionLabel={`Claims: ${CLAIM_LABEL[c.status].toLowerCase()}`}
                 kind="claim"
@@ -688,7 +688,8 @@ function MustReadItem({
         onOpen={onOpen}
       />
       <p className="text-xs text-zinc-400">{entry.reason}</p>
-      <ItemActions
+      {/* Must-reads are written by the summary run, so their feedback is filed under it. */}
+      <ReportItemActions
         section="summary"
         sectionLabel="Must read"
         kind="mustRead"
@@ -712,7 +713,7 @@ function MustReadItem({
                 <span className="text-amber-100">{flag.note}</span>
                 {flag.line && <Location path={entry.path} line={flag.line} onOpen={onOpen} />}
               </div>
-              <ItemActions
+              <ReportItemActions
                 section="summary"
                 sectionLabel={FLAG_LABEL}
                 kind="mustReadFlag"
@@ -771,7 +772,7 @@ function ImpactDetail({
                   <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
                 </div>
                 <p className="text-xs text-zinc-400">{c.check}</p>
-                <ItemActions
+                <ReportItemActions
                   section="risk"
                   sectionLabel="Impact"
                   kind="change"
@@ -783,7 +784,7 @@ function ImpactDetail({
                     line: c.line,
                   }}
                   actions={actions}
-                  acceptLabel="Accept risk"
+                  risk
                 />
               </li>
             ))}
@@ -851,7 +852,7 @@ export default function VerificationReportView({
       {report.summary !== undefined && (
         <Section title={titled("Summary", "summary")}>
           <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
-          <ItemActions
+          <ReportItemActions
             section="summary"
             sectionLabel="Summary"
             kind="summary"
@@ -952,13 +953,13 @@ export default function VerificationReportView({
                       <Location path={c.path} line={c.line} onOpen={onOpen} />
                     </div>
                     <p className="text-xs text-zinc-400">{c.detail}</p>
-                    <ItemActions
+                    <ReportItemActions
                       section="risk"
                       sectionLabel="Risk"
                       kind="concern"
                       item={c}
                       actions={actionsFor("risk")}
-                      acceptLabel="Accept risk"
+                      risk
                     />
                   </li>
                 ))}
@@ -971,7 +972,7 @@ export default function VerificationReportView({
       {report.approach && (
         <Section title={titled("Simpler approach", "approach")}>
           <Approach approach={report.approach} onOpen={onOpen} />
-          <ItemActions
+          <ReportItemActions
             section="approach"
             sectionLabel="Simpler approach"
             kind="approach"

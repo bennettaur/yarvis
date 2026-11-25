@@ -12,12 +12,13 @@ import type { Db } from "../db/client.ts";
 import {
   agentRuns,
   type VerificationFeedbackAction,
+  type VerificationFeedbackItem,
   type VerificationFeedbackRow,
   verificationFeedback,
 } from "../db/schema.ts";
 import { clip } from "./agentContext.ts";
 import { getReviewPr, ReviewWorkspaceError } from "./service.ts";
-import { REPORT_SECTIONS, VERIFICATION_RUN_KIND } from "./verification.ts";
+import { REPORT_SECTIONS, runSections, VERIFICATION_RUN_KIND } from "./verification.ts";
 
 /** The parts of a report a reviewer can give feedback on. */
 export const FEEDBACK_KINDS = [
@@ -34,15 +35,24 @@ export const FEEDBACK_KINDS = [
 ] as const;
 
 export const FEEDBACK_VERDICTS = ["accepted", "rejected", "rerated"] as const;
+/** What the reviewer did with an item. Each is kept once, with when it was first done: doing it again says nothing new. */
 export const FEEDBACK_ACTIONS = ["posted-pr", "added-workspace", "asked"] as const;
 /** What a reviewer can rerate an item to: a finding's severity or a risk level, `none` included. */
 export const FEEDBACK_RATINGS = ["none", "low", "medium", "high"] as const;
 
 const MAX_REASON_CHARS = 2000;
+/** Over this the body is refused; under it, the stored text is clipped. */
+const MAX_INPUT_CHARS = 20_000;
+
+const clipped = (max: number) =>
+  z
+    .string()
+    .max(MAX_INPUT_CHARS)
+    .transform((t) => clip(t, max));
 
 const itemSchema = z.object({
-  title: z.string().transform((t) => clip(t, 300)),
-  detail: z.string().transform((t) => clip(t, 1000)),
+  title: clipped(300),
+  detail: clipped(1000),
   rating: z.string().max(40).optional(),
   path: z.string().max(1000).optional(),
   line: z.number().int().positive().optional(),
@@ -58,7 +68,8 @@ export const feedbackInputSchema = z
     runId: z.string().uuid(),
     section: z.enum(REPORT_SECTIONS),
     kind: z.enum(FEEDBACK_KINDS),
-    itemKey: z.string().min(1).max(2000),
+    // Short enough for the unique index, which refuses entries past ~2.7 kB.
+    itemKey: z.string().min(1).max(1000),
     item: itemSchema,
     verdict: z.enum(FEEDBACK_VERDICTS).nullable().optional(),
     rating: z.enum(FEEDBACK_RATINGS).optional(),
@@ -74,13 +85,19 @@ export const feedbackInputSchema = z
 
 export type FeedbackInput = z.output<typeof feedbackInputSchema>;
 
-/** A feedback row as the report tab reads it. */
-export interface FeedbackResponse {
+/**
+ * A feedback row as it is read back. `item` is the report's text, which a
+ * model wrote from the PR's code and the client sent back: fence it before it
+ * goes into a prompt. Only `reason` is the reviewer's own words.
+ */
+export interface ReportFeedback {
   id: string;
-  runId: string | null;
+  refKey: string;
+  runId: string;
   section: string;
   kind: string;
   itemKey: string;
+  item: VerificationFeedbackItem;
   verdict: VerificationFeedbackRow["verdict"];
   rating: string | null;
   reason: string | null;
@@ -88,13 +105,15 @@ export interface FeedbackResponse {
   updatedAt: string;
 }
 
-function toResponse(row: VerificationFeedbackRow): FeedbackResponse {
+function toFeedback(row: VerificationFeedbackRow): ReportFeedback {
   return {
     id: row.id,
+    refKey: row.refKey,
     runId: row.runId,
     section: row.section,
     kind: row.kind,
     itemKey: row.itemKey,
+    item: row.item,
     verdict: row.verdict,
     rating: row.rating,
     reason: row.reason,
@@ -103,8 +122,17 @@ function toResponse(row: VerificationFeedbackRow): FeedbackResponse {
   };
 }
 
-/** The run's head, or a 400 when the run isn't one of this PR's verification runs. */
-async function runHead(db: Db, refKey: string, runId: string): Promise<string | null> {
+/**
+ * Checks the run is one of this PR's verification runs and wrote `section`,
+ * so feedback can't be filed against a check that never ran, and returns the
+ * head it ran on. Throws a 400 otherwise.
+ */
+async function verifiedRunHead(
+  db: Db,
+  refKey: string,
+  runId: string,
+  section: string,
+): Promise<string | null> {
   const [run] = await db
     .select({ meta: agentRuns.meta })
     .from(agentRuns)
@@ -116,6 +144,9 @@ async function runHead(db: Db, refKey: string, runId: string): Promise<string | 
       ),
     );
   if (!run) throw new ReviewWorkspaceError("not a verification run of this pull request", 400);
+  if (!runSections(run.meta).includes(section as (typeof REPORT_SECTIONS)[number])) {
+    throw new ReviewWorkspaceError(`that run didn't write the ${section} section`, 400);
+  }
   return typeof run.meta.headSha === "string" ? run.meta.headSha : null;
 }
 
@@ -126,39 +157,13 @@ export async function saveFeedback(
   prId: string,
   input: FeedbackInput,
   now: Date = new Date(),
-): Promise<FeedbackResponse> {
+): Promise<ReportFeedback> {
   const pr = await getReviewPr(db, workspaceId, prId);
-  const headSha = await runHead(db, pr.refKey, input.runId);
-  const where = and(
-    eq(verificationFeedback.refKey, pr.refKey),
-    eq(verificationFeedback.runId, input.runId),
-    eq(verificationFeedback.section, input.section),
-    eq(verificationFeedback.itemKey, input.itemKey),
-  );
+  const headSha = await verifiedRunHead(db, pr.refKey, input.runId, input.section);
   return db.transaction(async (tx) => {
-    const [existing] = await tx.select().from(verificationFeedback).where(where).for("update");
-    const verdictFields =
-      input.verdict === undefined
-        ? {}
-        : {
-            verdict: input.verdict,
-            rating: input.verdict === "rerated" ? (input.rating ?? null) : null,
-            reason: input.verdict ? input.reason || null : null,
-          };
-    const actions = existing?.actions ?? [];
-    const withAction =
-      input.action && !actions.some((a) => a.action === input.action)
-        ? [...actions, { action: input.action, at: now.toISOString() }]
-        : actions;
-    if (existing) {
-      const [row] = await tx
-        .update(verificationFeedback)
-        .set({ ...verdictFields, actions: withAction, item: input.item, updatedAt: now })
-        .where(eq(verificationFeedback.id, existing.id))
-        .returning();
-      return toResponse(row);
-    }
-    const [row] = await tx
+    // Inserted first so there is always a row to lock: two first saves at
+    // once (a post and a verdict, say) would otherwise both insert, and one fail.
+    await tx
       .insert(verificationFeedback)
       .values({
         refKey: pr.refKey,
@@ -168,13 +173,42 @@ export async function saveFeedback(
         kind: input.kind,
         itemKey: input.itemKey,
         item: input.item,
-        ...verdictFields,
-        actions: withAction,
         createdAt: now,
         updatedAt: now,
       })
+      .onConflictDoNothing();
+    // Locked so a verdict and an action saved at once don't drop each other's change.
+    const [existing] = await tx
+      .select()
+      .from(verificationFeedback)
+      .where(
+        and(
+          eq(verificationFeedback.refKey, pr.refKey),
+          eq(verificationFeedback.runId, input.runId),
+          eq(verificationFeedback.section, input.section),
+          eq(verificationFeedback.itemKey, input.itemKey),
+        ),
+      )
+      .for("update");
+    // The rating and reason belong to the verdict, so clearing it clears them.
+    const verdictFields =
+      input.verdict === undefined
+        ? {}
+        : {
+            verdict: input.verdict,
+            rating: input.verdict === "rerated" ? (input.rating ?? null) : null,
+            reason: input.verdict ? input.reason || null : null,
+          };
+    const nextActions =
+      input.action && !existing.actions.some((a) => a.action === input.action)
+        ? [...existing.actions, { action: input.action, at: now.toISOString() }]
+        : existing.actions;
+    const [row] = await tx
+      .update(verificationFeedback)
+      .set({ ...verdictFields, actions: nextActions, item: input.item, updatedAt: now })
+      .where(eq(verificationFeedback.id, existing.id))
       .returning();
-    return toResponse(row);
+    return toFeedback(row);
   });
 }
 
@@ -183,31 +217,18 @@ export async function feedbackForPr(
   db: Db,
   workspaceId: string,
   prId: string,
-): Promise<FeedbackResponse[]> {
+): Promise<ReportFeedback[]> {
   const pr = await getReviewPr(db, workspaceId, prId);
   const rows = await db
     .select()
     .from(verificationFeedback)
     .where(eq(verificationFeedback.refKey, pr.refKey))
     .orderBy(desc(verificationFeedback.updatedAt));
-  return rows.map(toResponse);
+  return rows.map(toFeedback);
 }
 
-/** Most rows a reflection reads in one window. */
+/** Most rows a reflection reads in one window, so its prompt stays a size a model can weigh. */
 export const MAX_FEEDBACK_READ = 200;
-
-/** Feedback as a reflection reads it: what the item said, what the reviewer made of it, and why. */
-export interface ReportFeedback {
-  refKey: string;
-  section: string;
-  kind: string;
-  item: VerificationFeedbackRow["item"];
-  verdict: VerificationFeedbackRow["verdict"];
-  rating: string | null;
-  reason: string | null;
-  actions: VerificationFeedbackAction[];
-  updatedAt: string;
-}
 
 /**
  * The feedback given since `since`, newest first, on every PR. A row whose
@@ -229,18 +250,5 @@ export async function feedbackSince(
     )
     .orderBy(desc(verificationFeedback.updatedAt))
     .limit(limit + 1);
-  return {
-    feedback: rows.slice(0, limit).map((row) => ({
-      refKey: row.refKey,
-      section: row.section,
-      kind: row.kind,
-      item: row.item,
-      verdict: row.verdict,
-      rating: row.rating,
-      reason: row.reason,
-      actions: row.actions.map((a) => a.action),
-      updatedAt: row.updatedAt.toISOString(),
-    })),
-    truncated: rows.length > limit,
-  };
+  return { feedback: rows.slice(0, limit).map(toFeedback), truncated: rows.length > limit };
 }

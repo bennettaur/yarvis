@@ -33,10 +33,10 @@ export interface FeedbackItem {
   line?: number;
 }
 
-/** Mirrors the sidecar's `FeedbackResponse`. */
+/** Mirrors the sidecar's `ReportFeedback` (`reviewWorkspaces/feedback.ts`), less what the tab doesn't read. */
 export interface ReportFeedback {
   id: string;
-  runId: string | null;
+  runId: string;
   section: string;
   kind: string;
   itemKey: string;
@@ -60,9 +60,21 @@ export interface FeedbackInput {
   action?: FeedbackAction;
 }
 
-/** Which item feedback is about, within one run's section: its kind, text and place. */
+/** Leaves room for the path under the sidecar's 1000-character cap on an item key. */
+const MAX_KEY_TITLE_CHARS = 600;
+
+/**
+ * Which item feedback is about, within one run's section: its kind, text and
+ * place. JSON so a title holding `:` can't read as another item's key, and
+ * the title cut so a long model-written one still fits the sidecar's cap.
+ */
 export const feedbackItemKey = (kind: FeedbackKind, item: FeedbackItem) =>
-  [kind, item.title, item.path ?? "", item.line ?? ""].join(":");
+  JSON.stringify([
+    kind,
+    item.title.slice(0, MAX_KEY_TITLE_CHARS),
+    item.path ?? "",
+    item.line ?? "",
+  ]);
 
 const path = (workspaceId: string, prId: string) =>
   `/api/review-workspaces/${workspaceId}/prs/${prId}/verification/feedback`;
