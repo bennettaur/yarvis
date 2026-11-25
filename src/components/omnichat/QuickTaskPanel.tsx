@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import { type DisplayError, formatError } from "../../lib/errors";
 import {
   createQuickTask,
   proposeQuickTask,
   type QuickTaskKind,
   type QuickTaskProposal,
-  type WorkStreamLinkRef,
 } from "../../lib/headsDown";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
+import type { WorkspaceNames } from "../../lib/workspaceMentions";
+import ErrorNotice from "../ErrorNotice";
+import { linkLabel } from "../headsDown/StreamList";
 
 const KINDS: { value: QuickTaskKind; label: string }[] = [
   { value: "general", label: "General" },
@@ -16,19 +19,8 @@ const KINDS: { value: QuickTaskKind; label: string }[] = [
 
 const PRIORITIES = ["urgent", "high", "medium", "low"] as const;
 
-function linkLabel(ref: WorkStreamLinkRef, title?: string): string {
-  if (title) return title;
-  switch (ref.kind) {
-    case "pr":
-      return title ? `${title} (${ref.url})` : ref.url;
-    case "ticket":
-      return ref.key;
-    case "workspace":
-      return "Workspace";
-    default:
-      return ref.kind;
-  }
-}
+// A proposed workspace link always carries the workspace's name as its title.
+const NO_WORKSPACE_NAMES: WorkspaceNames = new Map();
 
 /**
  * Omni Chat's "send to heads down" mode: one line becomes a proposed work
@@ -46,7 +38,7 @@ export default function QuickTaskPanel({
   const [message, setMessage] = useState("");
   const [proposal, setProposal] = useState<QuickTaskProposal | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DisplayError | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
 
@@ -73,7 +65,7 @@ export default function QuickTaskPanel({
         }),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     } finally {
       setBusy(false);
     }
@@ -89,7 +81,7 @@ export default function QuickTaskPanel({
       setProposal(null);
       setMessage("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(formatError(e));
     } finally {
       setBusy(false);
     }
@@ -131,11 +123,7 @@ export default function QuickTaskPanel({
         {saved && <span className="text-xs text-emerald-400">Added “{saved}”.</span>}
       </div>
 
-      {error && (
-        <p role="alert" className="text-xs text-red-400">
-          {error}
-        </p>
-      )}
+      {error && <ErrorNotice error={error} onDismiss={() => setError(null)} />}
 
       {proposal && (
         <div className="flex flex-col gap-2 rounded-lg border border-zinc-700 bg-zinc-950/50 p-3">
@@ -197,11 +185,11 @@ export default function QuickTaskPanel({
                 className="flex items-center justify-between gap-2 rounded border border-zinc-800 px-2 py-1"
               >
                 <span className="min-w-0 truncate text-zinc-200">
-                  {link.ref.kind}: {linkLabel(link.ref, link.title)}
+                  {linkLabel(link, NO_WORKSPACE_NAMES)}
                 </span>
                 <button
                   type="button"
-                  aria-label={`Remove ${linkLabel(link.ref, link.title)}`}
+                  aria-label={`Remove ${linkLabel(link, NO_WORKSPACE_NAMES)}`}
                   onClick={() => patch({ links: proposal.links.filter((_, j) => j !== i) })}
                   className="text-zinc-500 hover:text-zinc-200"
                 >

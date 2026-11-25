@@ -111,6 +111,11 @@ async function say(host: HTMLElement, text: string) {
   sendButton(host)?.click();
 }
 
+const headsDownButton = (host: HTMLElement) =>
+  Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Send to heads down");
+const quickTaskBox = (host: HTMLElement) =>
+  host.querySelector('textarea[placeholder="What should heads-down mode take on?"]');
+
 const artifactLink = (host: HTMLElement) =>
   Array.from(host.querySelectorAll("a")).find(
     (a) => a.getAttribute("href") === `yarvis://artifact/${ARTIFACT_ID}`,
@@ -174,5 +179,48 @@ describe("OmniChat", () => {
       () => !mounted.host.textContent?.includes("Starting turn detection"),
       "the mic to close",
     );
+  });
+
+  // Heads-down mode hides the mic controls, so an armed mic must close with them.
+  it("toggles heads-down mode from its button and shortcut, closing continuous voice", async () => {
+    const mounted = await mountForInteraction(createElement(Host));
+    unmount = mounted.unmount;
+    const text = () => mounted.host.textContent ?? "";
+
+    mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Start listening"]')?.click();
+    await waitFor(() => text().includes("Starting turn detection"), "turn detection to start");
+
+    headsDownButton(mounted.host)?.click();
+    await waitFor(() => quickTaskBox(mounted.host) !== null, "the heads-down panel");
+    expect(headsDownButton(mounted.host)?.getAttribute("aria-pressed")).toBe("true");
+
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "H", metaKey: true, shiftKey: true, bubbles: true }),
+    );
+    await waitFor(() => sendButton(mounted.host) !== undefined, "the chat composer");
+    expect(quickTaskBox(mounted.host)).toBeNull();
+    expect(text()).not.toContain("Starting turn detection");
+  });
+
+  it("pins the thread to the newest message when leaving heads-down mode", async () => {
+    const scrolled: Element[] = [];
+    const original = HTMLElement.prototype.scrollTo;
+    HTMLElement.prototype.scrollTo = function (this: HTMLElement) {
+      scrolled.push(this);
+    } as typeof original;
+    try {
+      const mounted = await mountForInteraction(createElement(Host));
+      unmount = mounted.unmount;
+      headsDownButton(mounted.host)?.click();
+      await waitFor(() => quickTaskBox(mounted.host) !== null, "the heads-down panel");
+      scrolled.length = 0;
+
+      headsDownButton(mounted.host)?.click();
+      await waitFor(() => sendButton(mounted.host) !== undefined, "the chat composer");
+      const thread = mounted.host.querySelector(".overflow-y-auto");
+      await waitFor(() => thread !== null && scrolled.includes(thread), "the thread to scroll");
+    } finally {
+      HTMLElement.prototype.scrollTo = original;
+    }
   });
 });

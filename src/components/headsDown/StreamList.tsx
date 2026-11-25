@@ -30,7 +30,10 @@ const STATUS_STYLE: Record<WorkStream["status"], string> = {
  * A link's one-line label: what it is and what was last seen of it. A
  * workspace with no title of its own goes by its current name.
  */
-export function linkLabel(link: WorkStreamLink, workspaceNames: WorkspaceNames): string {
+export function linkLabel(
+  link: Pick<WorkStreamLink, "ref"> & Partial<Pick<WorkStreamLink, "title" | "state">>,
+  workspaceNames: WorkspaceNames,
+): string {
   const ref = link.ref;
   const kind =
     ref.kind === "review-request"

@@ -73,7 +73,8 @@ export default function OmniChat({
   const [input, setInput] = useState("");
   const [headsDownMode, setHeadsDownMode] = useState(false);
   // The overlay stays mounted while hidden, so `open` is what says it's on screen.
-  const voice = useVoice({ send, streaming, busy, visible: open });
+  // Heads-down mode hides the thread and the mic controls, so it counts as hidden.
+  const voice = useVoice({ send, streaming, busy, visible: open && !headsDownMode });
   const panelRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const artifactPane = useArtifactPane();
@@ -87,12 +88,12 @@ export default function OmniChat({
   // Keep the thread pinned to the newest message. Skip while hidden so a
   // background stream doesn't run a layout read+write per token off-screen. The
   // body doesn't read messages/streaming, but the effect must re-run as the
-  // thread grows.
+  // thread grows, and when leaving heads-down mode mounts a fresh thread.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
-    if (!open) return;
+    if (!open || headsDownMode) return;
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [open, messages, streaming, activity]);
+  }, [open, headsDownMode, messages, streaming, activity]);
 
   // Esc hides the overlay; the conversation keeps running in the background.
   useEffect(() => {
