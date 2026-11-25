@@ -1635,6 +1635,29 @@ describe("review contributions", () => {
     });
   });
 
+  it("posts line comments together as one COMMENT review at the given commit", async () => {
+    let sent: { url: string; body: unknown } | null = null;
+    const capture = (async (url: string, init?: RequestInit) => {
+      sent = { url: String(url), body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ node_id: "PRR_3" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const result = await new GitHubClient("t", capture).submitCommentReview("o", "r", 1, {
+      commitId: "c".repeat(40),
+      body: "Summary",
+      comments: [{ path: "a.ts", line: 4, body: "Look here" }],
+    });
+    expect(result).toEqual({ nodeId: "PRR_3" });
+    expect(sent as unknown).toEqual({
+      url: "https://api.github.com/repos/o/r/pulls/1/reviews",
+      body: {
+        event: "COMMENT",
+        commit_id: "c".repeat(40),
+        body: "Summary",
+        comments: [{ path: "a.ts", line: 4, side: "RIGHT", body: "Look here" }],
+      },
+    });
+  });
+
   it("still succeeds when the submit reply has no readable node id", async () => {
     const empty = (async () => new Response("", { status: 200 })) as unknown as typeof fetch;
     expect(await new GitHubClient("t", empty).submitReview("o", "r", 1, "APPROVE")).toEqual({

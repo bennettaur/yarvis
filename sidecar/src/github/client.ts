@@ -2450,6 +2450,50 @@ export class GitHubClient {
   }
 
   /**
+   * Posts one non-blocking review (COMMENT) holding several line comments, so
+   * the author gets one notification and the comments post together or not at
+   * all. Every line has to be inside the diff at `commitId`: GitHub refuses
+   * the whole review otherwise.
+   */
+  async submitCommentReview(
+    owner: string,
+    repo: string,
+    number: number,
+    input: {
+      commitId: string;
+      body: string;
+      comments: { path: string; line: number; body: string }[];
+    },
+  ): Promise<{ nodeId: string | null }> {
+    const res = await this.fetchImpl(
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event: "COMMENT",
+          commit_id: input.commitId,
+          body: input.body,
+          comments: input.comments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: "RIGHT",
+            body: c.body,
+          })),
+        }),
+      },
+    );
+    if (!res.ok) throw await githubErrorFrom(res, "submit review");
+    const review = (await res.json().catch(() => null)) as { node_id?: unknown } | null;
+    return { nodeId: typeof review?.node_id === "string" ? review.node_id : null };
+  }
+
+  /**
    * The viewer's submitted reviews on one PR and the commit each was made on,
    * newest last. Drafts (`PENDING`) are left out: nobody has seen them.
    */

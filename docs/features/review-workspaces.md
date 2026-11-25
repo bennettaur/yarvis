@@ -115,10 +115,54 @@ head in a tab of its own.
   its source: **Looks off** for a flag, **Risk**, or the check's name. Click a
   line number to jump there. The must-read lines are marked in amber on the
   new side of the diff, and each cited line in red; hover one to read why.
+- **Draft comments** from the verification report sit under their lines. See
+  [Draft comments](#draft-comments).
 
 A **file tab** shows any file at the PR's head whole, with the PR's threads
 on it. Questions work on any file; comments only on files the PR changes,
 since that is all the providers accept.
+
+#### Draft comments
+
+Each item in the verification report that cites a line becomes a draft
+comment on that line of the diff: must-read flags, risk concerns, unmet
+claims, unfinished work and check findings. Only results for the PR's current
+head make drafts. A draft has a dashed violet border, so it can't be taken
+for a posted thread, and is labelled with where it came from: the check's
+name, **Risk** or **Looks off**. Its text is written the way **Post to PR**
+writes a finding: the title, then what the report said, quoted, with `@`
+mentions turned into plain text so nobody is notified. It renders as
+markdown, the same way comments do.
+
+For each draft:
+
+- **Accept** keeps it to post as written.
+- **Edit** opens its text. **Save and accept** keeps your version.
+- **Drop** removes it from the diff.
+- **Undo** on an accepted draft puts it back to undecided.
+
+Nothing posts until you post it. The **Draft comments** bar above the diff counts
+the drafts left to answer and the accepted ones, and **Post *N* as one
+review** sends every accepted draft on the PR, in any file. On GitHub they go
+up as one review, with an optional summary. The review doesn't approve or
+request changes. GitHub only takes a line comment on a line inside the diff,
+so a draft on an unchanged line goes into the review's summary under the file
+and line it is about. On Azure DevOps, which has no review summary, each draft
+posts as a thread of its own. If one fails there, the ones before it stay
+posted and a retry sends the rest.
+
+When verification runs again, the drafts follow it. A finding it still
+reports moves to its new line and text. If you had accepted it and its line
+or text changed, it goes back to undecided, so you never post words you
+didn't see. A finding it no longer reports is removed if you hadn't touched
+it. If you had edited or accepted it, it stays in the bar as **Stale**, with
+your text, and can only be dropped, since its line may point at different
+code now. After a push, every draft is stale or removed until its check has
+run on the new head, and comes back when the check reports it again. A draft
+you dropped or posted isn't offered again.
+
+Yarvis records what you did with each draft: accepted, edited (with your
+text) or dropped.
 
 ### Code navigation
 

@@ -1002,6 +1002,15 @@ report there and leaves the fixes to the author.
   back is fenced
   before the chat model reads it, and the file list is the model's claim, so
   `filesInFolder` keeps only files that really are inside the folder.
+- A review comment Yarvis proposes is a row in `review_drafts`
+  (`reviewWorkspaces/drafts.ts`), keyed by PR, never a post. A source adds
+  its drafts only through `syncReviewDrafts`, with a `sourceKey` that stays
+  the same across heads (no line in it) and a body already made safe to post
+  under the reviewer's account (`draftCommentBody`: mentions broken, model
+  text quoted). The verification report is synced when the drafts list is
+  read. Only `postAcceptedDrafts`, from the reviewer's click, sends anything,
+  and a sync puts an accepted draft whose text or line changed back to
+  undecided, so what posts is always what the reviewer saw.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

@@ -2418,6 +2418,52 @@ export const reviewPreps = pgTable(
 
 export type ReviewPrepRow = typeof reviewPreps.$inferSelect;
 
+export const REVIEW_DRAFT_STATUSES = ["open", "accepted", "dropped", "posted"] as const;
+export type ReviewDraftStatus = (typeof REVIEW_DRAFT_STATUSES)[number];
+
+/** What the reviewer did with a draft, kept for learning which drafts are worth writing. */
+export const REVIEW_DRAFT_OUTCOMES = ["accepted", "edited", "dropped"] as const;
+export type ReviewDraftOutcome = (typeof REVIEW_DRAFT_OUTCOMES)[number];
+
+/**
+ * A review comment Yarvis proposes on one line of a PR, for the reviewer to
+ * accept, edit or drop. Nothing is posted until they do. Keyed by PR rather
+ * than review workspace, so the reviewer's answers follow the PR.
+ */
+export const reviewDrafts = pgTable(
+  "review_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `refKey` of the PR, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    /** What wrote it: `verification`, or another reviewer that proposes comments. */
+    source: text("source").notNull(),
+    /** Identifies the same draft across heads within its source, so a re-run updates it. */
+    sourceKey: text("source_key").notNull(),
+    /** Where in the source it came from, as the reviewer sees it: a check's name, "Risk", "Looks off". */
+    label: text("label").notNull(),
+    path: text("path").notNull(),
+    line: integer("line").notNull(),
+    /** The commit `line` refers to. */
+    headSha: text("head_sha").notNull(),
+    title: text("title").notNull(),
+    /** The proposed comment, model-written from the PR's code. */
+    body: text("body").notNull(),
+    /** The reviewer's text, when they changed the proposal before accepting it. */
+    editedBody: text("edited_body"),
+    status: text("status").$type<ReviewDraftStatus>().notNull().default("open"),
+    outcome: text("outcome").$type<ReviewDraftOutcome>(),
+    /** The source no longer reports it at the PR's current head. */
+    stale: boolean("stale").notNull().default(false),
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("review_drafts_source_key_idx").on(t.refKey, t.source, t.sourceKey)],
+);
+
+export type ReviewDraftRow = typeof reviewDrafts.$inferSelect;
+
 /**
  * A reviewed PR in a review workspace being watched for new commits
  * (`reviewPrep/updates.ts`). A head is acted on only once it has stayed the

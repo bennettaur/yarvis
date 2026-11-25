@@ -8,7 +8,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { agentRuns } from "../db/schema.ts";
+import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import type { VerificationRunConfig } from "../pr/models.ts";
 import type { Coverage, UnknownCoverage } from "./coverage.ts";
@@ -299,6 +299,26 @@ export async function verificationChecklist(
     size,
     namedTickets: lastNamedTickets(rows),
   };
+}
+
+/**
+ * The report from the sections whose newest answer was made at the PR's
+ * current head: what still holds for the code as it is now. Null when no
+ * section has answered at that head.
+ */
+export async function reportAtHead(
+  db: Db,
+  pr: ReviewWorkspacePr,
+): Promise<VerificationReport | null> {
+  const headSha = pr.headSha;
+  if (!headSha) return null;
+  const answers = await newestAnswers(db, await verificationRunRows(db, pr.refKey));
+  const current: SectionAnswer[] = [];
+  for (const [section, { row, report }] of answers) {
+    if (row.meta.headSha !== headSha) continue;
+    current.push({ section, headSha, runId: row.id, startedAt: row.startedAt, report });
+  }
+  return assembleReport(current, headSha);
 }
 
 /** The tickets named for the newest run that recorded any, as the reviewer typed them. */
