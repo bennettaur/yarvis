@@ -72,6 +72,12 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Test quality",
     description: "Whether the tests cover the change and would catch it breaking.",
   },
+  bugs: {
+    theme: "correctness",
+    label: "Bugs",
+    description:
+      "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next change, and existing bugs it now reaches.",
+  },
   performance: {
     theme: "correctness",
     label: "Performance",
@@ -107,6 +113,12 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     theme: "maintainability",
     label: "Comment quality",
     description: "Comments that are wrong, out of date or only restate the code.",
+  },
+  improvements: {
+    theme: "maintainability",
+    label: "Improvements",
+    description:
+      "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups rather than blockers.",
   },
   approach: {
     theme: "maintainability",

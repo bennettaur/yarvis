@@ -69,6 +69,8 @@ function report(overrides: Record<string, unknown> = {}) {
     performance: pass,
     comments: pass,
     observability: pass,
+    bugs: pass,
+    improvements: pass,
     quality: pass,
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
     ...overrides,

@@ -17,6 +17,7 @@ import {
   findingCommentBody,
   type Severity,
   VERIFICATION_CHECKS,
+  type VerificationCheckKey,
   type VerificationReport,
   type VerificationUpstack,
 } from "./verification";
@@ -46,8 +47,16 @@ const HIGH_IMPACT_BAND = 4;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/**
+ * Checks whose findings are follow-ups, not reasons to hold the PR: they never
+ * block or change the suggestion, and never start ticked in a drafted review.
+ */
+const FOLLOW_UP_CHECKS: ReadonlySet<VerificationCheckKey> = new Set(["improvements"]);
+
 function countFindings(report: VerificationReport, severity: Severity): number {
-  const inChecks = VERIFICATION_CHECKS.flatMap((key) => report[key]?.findings ?? []);
+  const inChecks = VERIFICATION_CHECKS.filter((key) => !FOLLOW_UP_CHECKS.has(key)).flatMap(
+    (key) => report[key]?.findings ?? [],
+  );
   const all = [...inChecks, ...(report.claims?.gaps ?? [])];
   return all.filter((f) => f.severity === severity).length;
 }
@@ -115,7 +124,9 @@ export function assessReview(
     // only point at where a fix may be. Only results for the current commit
     // have line numbers the layer's can be matched against.
     const current = new Set(items.filter((i) => i.result?.current).map((i) => i.section));
-    const above = VERIFICATION_CHECKS.filter((key) => current.has(key))
+    const above = VERIFICATION_CHECKS.filter(
+      (key) => current.has(key) && !FOLLOW_UP_CHECKS.has(key),
+    )
       .flatMap((key) => report[key]?.findings ?? [])
       .filter((f) => f.severity === "high")
       .flatMap((f) => changedUpstack(upstack, f.path, f.line) ?? []);
@@ -267,7 +278,7 @@ export function draftComments(
           ...f,
           section: key,
           source: CHECK_LABEL[key],
-          pickedByDefault: f.severity === "high",
+          pickedByDefault: f.severity === "high" && !FOLLOW_UP_CHECKS.has(key),
         });
       }
     }
@@ -353,6 +364,7 @@ export function whereToLook(report: VerificationReport | null): Place[] {
   }
   for (const m of report.mustRead) add({ path: m.path, line: m.lines?.start, reason: m.reason });
   for (const key of VERIFICATION_CHECKS) {
+    if (FOLLOW_UP_CHECKS.has(key)) continue;
     for (const f of report[key]?.findings ?? []) {
       if (f.severity === "high" && f.path) {
         add({ path: f.path, line: f.line, reason: `${CHECK_LABEL[key]}: ${f.title}` });

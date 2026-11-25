@@ -42,6 +42,34 @@ const report: VerificationReport = {
 };
 
 describe("VerificationReportView", () => {
+  it("puts bugs under whether it is safe to ship, and improvements under the quality bar", async () => {
+    const finding = (title: string) => ({
+      status: "issues" as const,
+      findings: [{ title, detail: "d", severity: "medium" as const, path: "src/a.ts", line: 1 }],
+    });
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            bugs: finding("A second save drops the first"),
+            improvements: finding("Capture the selection, not the screen"),
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    const safety = text.indexOf("Is it safe to ship?");
+    const quality = text.indexOf("Does it meet the quality bar?");
+    const bug = text.indexOf("A second save drops the first");
+    const idea = text.indexOf("Capture the selection, not the screen");
+    expect(safety).toBeGreaterThanOrEqual(0);
+    expect(bug).toBeGreaterThan(safety);
+    expect(bug).toBeLessThan(quality);
+    expect(idea).toBeGreaterThan(quality);
+    expect(text).toContain("Refactors and design changes the PR points to");
+  });
+
   it("groups the sections under the questions a review answers, each saying what it is for", async () => {
     const text = textOf(
       await renderToHtml(

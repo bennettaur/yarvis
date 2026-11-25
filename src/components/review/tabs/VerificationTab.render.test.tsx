@@ -131,6 +131,7 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   changeMap: { theme: "understand", label: "Change map" },
   claims: { theme: "correctness", label: "Claims" },
   tests: { theme: "correctness", label: "Test quality" },
+  bugs: { theme: "correctness", label: "Bugs" },
   performance: { theme: "correctness", label: "Performance" },
   observability: { theme: "correctness", label: "Observability" },
   risk: { theme: "risk", label: "Risk" },
@@ -138,6 +139,7 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   complexity: { theme: "maintainability", label: "Complexity" },
   quality: { theme: "maintainability", label: "Code quality" },
   comments: { theme: "maintainability", label: "Comment quality" },
+  improvements: { theme: "maintainability", label: "Improvements" },
   approach: { theme: "maintainability", label: "Simpler approach" },
 };
 

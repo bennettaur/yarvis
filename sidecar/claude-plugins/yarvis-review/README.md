@@ -8,8 +8,8 @@ This folder is the source. The sidecar embeds every file listed in
 private temp directory for each run, removed when the run ends.
 
 The verification report has one run per section (summary, change map, claims,
-risk, malicious intent, tests, complexity, performance, comments,
-observability, quality, approach, and the flow diagram), so each can be re-run
+risk, malicious intent, tests, bugs, complexity, performance, comments,
+observability, quality, improvements, approach, and the flow diagram), so each can be re-run
 on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
 together from each section's newest answer. A run starts from
 `sidecar/src/reviewWorkspaces/verification.ts`, which writes the PR's context,

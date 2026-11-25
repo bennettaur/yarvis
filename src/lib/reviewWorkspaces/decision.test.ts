@@ -131,6 +131,46 @@ describe("the suggested decision", () => {
     });
   });
 
+  it("still suggests approving beside improvements, which are follow-ups", () => {
+    const withIdeas: VerificationReport = {
+      ...clean,
+      improvements: {
+        status: "issues",
+        findings: [
+          {
+            title: "Capture the selection, not the whole screen",
+            detail: "d",
+            severity: "high",
+            path: "src/screen.ts",
+            line: 4,
+          },
+        ],
+      },
+    };
+    expect(assessReview(withIdeas, green, items()).suggestion).toBe("approve");
+    const drafts = draftComments(withIdeas, [], new Set(["improvements"]));
+    expect(drafts.map((d) => [d.source, d.severity, d.pickedByDefault])).toEqual([
+      ["Improvements", "high", false],
+    ]);
+    expect(whereToLook(withIdeas).map((p) => p.path)).not.toContain("src/screen.ts");
+  });
+
+  it("asks for changes for a high bug, like any other high finding", () => {
+    const buggy: VerificationReport = {
+      ...clean,
+      bugs: {
+        status: "issues",
+        findings: [
+          { title: "A second save drops the first", detail: "d", severity: "high", path: "a.ts" },
+        ],
+      },
+    };
+    expect(assessReview(buggy, green, items())).toMatchObject({
+      suggestion: "request_changes",
+      blockers: ["1 high finding"],
+    });
+  });
+
   it("won't suggest approving until CI has passed on this commit", () => {
     for (const [evidence, concern] of [
       [null, "No CI results for this commit yet"],

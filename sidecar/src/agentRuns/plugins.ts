@@ -5,6 +5,9 @@ import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/pl
 import approachReviewer from "../../claude-plugins/yarvis-review/agents/approach-reviewer.md" with {
   type: "text",
 };
+import bugHunter from "../../claude-plugins/yarvis-review/agents/bug-hunter.md" with {
+  type: "text",
+};
 import changeMapper from "../../claude-plugins/yarvis-review/agents/change-mapper.md" with {
   type: "text",
 };
@@ -21,6 +24,9 @@ import complexityReviewer from "../../claude-plugins/yarvis-review/agents/comple
   type: "text",
 };
 import flowDiagram from "../../claude-plugins/yarvis-review/agents/flow-diagram.md" with {
+  type: "text",
+};
+import improvementReviewer from "../../claude-plugins/yarvis-review/agents/improvement-reviewer.md" with {
   type: "text",
 };
 import intentReviewer from "../../claude-plugins/yarvis-review/agents/intent-reviewer.md" with {
@@ -108,6 +114,8 @@ const PLUGINS = {
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
     "agents/observability-reviewer.md": withInputsAndTrust(observabilityReviewer),
     "agents/quality-reviewer.md": withInputsAndTrust(qualityReviewer),
+    "agents/bug-hunter.md": withInputsAndTrust(bugHunter),
+    "agents/improvement-reviewer.md": withInputsAndTrust(improvementReviewer),
     "agents/approach-reviewer.md": withInputsAndTrust(approachReviewer),
     "agents/flow-diagram.md": withInputsAndTrust(flowDiagram),
     "agents/rereviewer.md": withInputsAndTrust(
