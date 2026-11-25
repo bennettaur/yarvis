@@ -2385,3 +2385,37 @@ export const prReviewMarks = pgTable(
 );
 
 export type PrReviewMark = typeof prReviewMarks.$inferSelect;
+
+/**
+ * A revert of a PR the user shipped, found by the revert-investigation job.
+ * One row per original PR, so each revert is looked into once. `detected` waits
+ * for the user's go-ahead, `started` has a workspace and session writing the
+ * root-cause doc, `ready` has the doc, `dismissed` was turned down.
+ */
+export const revertInvestigations = pgTable(
+  "revert_investigations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    originalNumber: integer("original_number").notNull(),
+    originalTitle: text("original_title").notNull(),
+    originalUrl: text("original_url").notNull(),
+    revertKind: text("revert_kind", { enum: ["pr", "commit"] }).notNull(),
+    // A PR number for `pr`, a commit sha for `commit`.
+    revertRef: text("revert_ref").notNull(),
+    revertTitle: text("revert_title").notNull(),
+    revertUrl: text("revert_url").notNull(),
+    status: text("status", { enum: ["detected", "started", "ready", "dismissed"] })
+      .notNull()
+      .default("detected"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("revert_investigations_original_idx").on(t.repoId, t.originalNumber)],
+);
+
+export type RevertInvestigation = typeof revertInvestigations.$inferSelect;

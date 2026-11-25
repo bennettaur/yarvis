@@ -963,8 +963,6 @@ describe("linkLabel", () => {
   it("says when a review request was sent", () => {
     const label = linkLabel(
       {
-        id: "l",
-        kind: "review-request",
         ref: {
           kind: "review-request",
           channel: "slack",
@@ -974,7 +972,6 @@ describe("linkLabel", () => {
         },
         title: null,
         state: "no reply yet",
-        observedAt: null,
       },
       new Map(),
     );

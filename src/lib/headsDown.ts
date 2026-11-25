@@ -427,6 +427,28 @@ export const dismissQuestion = (id: string) =>
 
 export const listWorkStreams = () => request<WorkStream[]>("/api/work-streams");
 
+export type QuickTaskKind = "general" | "ship" | "watch";
+
+/** What the sidecar proposes for a one-line message; the user edits it before saving. */
+export interface QuickTaskProposal {
+  title: string;
+  kind: QuickTaskKind;
+  focus: string;
+  priority: WorkStream["priority"];
+  links: { ref: WorkStreamLinkRef; title?: string }[];
+}
+
+export const proposeQuickTask = (input: {
+  message: string;
+  workspaceId?: string;
+  screen?: string;
+  provider: string;
+  model: string;
+}) => request<QuickTaskProposal>("/api/work-streams/quick-task/propose", "POST", input);
+
+export const createQuickTask = (proposal: QuickTaskProposal) =>
+  request<WorkStream>("/api/work-streams/quick-task", "POST", proposal);
+
 export interface WorkStreamPatch {
   status?: WorkStreamStatus;
   priority?: WorkStream["priority"];

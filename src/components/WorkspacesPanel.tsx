@@ -3,6 +3,7 @@ import { setViewedWorkspace } from "../lib/attentionScope";
 import { useAttentionWorkspaceIds } from "../lib/attentionStore";
 import { clearDraft, draftKey, fileKey, useWorkspaceDraftKeys } from "../lib/fileDrafts";
 import type { NewWorkspaceRequest, OpenWorkspaceRequest } from "../lib/nav";
+import { useOmniChatContext } from "../lib/omniChatContext";
 import {
   type AgentConfig,
   getAgentConfig,
@@ -223,6 +224,18 @@ export default function WorkspacesPanel({
   const listRes = useCachedResource<WorkspaceSummary[]>(WORKSPACES_KEY, listWithBadges);
   const reposRes = useCachedResource<Repo[]>(REPOS_KEY, listRepos);
   const items = listRes.data ?? NO_WORKSPACES;
+
+  // Lets Omni Chat's heads-down mode attach the open workspace to a task.
+  useOmniChatContext("workspaces", () => {
+    const open = creating ? undefined : items.find((w) => w.id === selectedId);
+    return open
+      ? {
+          source: "workspaces",
+          summary: `Viewing workspace "${open.name}"`,
+          details: { workspaceId: open.id },
+        }
+      : null;
+  }, [creating, items, selectedId]);
   const repos = reposRes.data ?? NO_REPOS;
   const error = listRes.error ?? reposRes.error;
 

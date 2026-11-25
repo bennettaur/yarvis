@@ -1,5 +1,5 @@
 {
-  "id": "37d5589e-1cd1-43ac-bebd-da38fc2cf35a",
+  "id": "98111662-c3ea-4cb3-89f8-8fdeb594541a",
   "prevId": "97fff628-6baf-46c6-a140-5904a4888715",
   "version": "7",
   "dialect": "postgresql",
@@ -4073,6 +4073,155 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.revert_investigations": {
+      "name": "revert_investigations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "repo_id": {
+          "name": "repo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_number": {
+          "name": "original_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_title": {
+          "name": "original_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_url": {
+          "name": "original_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_kind": {
+          "name": "revert_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_ref": {
+          "name": "revert_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_title": {
+          "name": "revert_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_url": {
+          "name": "revert_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'detected'"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detected_at": {
+          "name": "detected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ready_at": {
+          "name": "ready_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "revert_investigations_original_idx": {
+          "name": "revert_investigations_original_idx",
+          "columns": [
+            {
+              "expression": "repo_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "original_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "revert_investigations_repo_id_repos_id_fk": {
+          "name": "revert_investigations_repo_id_repos_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "repos",
+          "columnsFrom": [
+            "repo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "revert_investigations_workspace_id_workspaces_id_fk": {
+          "name": "revert_investigations_workspace_id_workspaces_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.review_workspace_prs": {
       "name": "review_workspace_prs",
       "schema": "",
@@ -5078,14 +5227,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "kind": {
-          "name": "kind",
-          "type": "work_stream_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'work'"
-        },
         "status": {
           "name": "status",
           "type": "work_stream_status",
@@ -5142,24 +5283,6 @@
         },
         "paused_at": {
           "name": "paused_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watch_condition": {
-          "name": "watch_condition",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "watch_every_minutes": {
-          "name": "watch_every_minutes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "expires_at": {
-          "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -5226,12 +5349,7 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {
-        "work_streams_watch_fields_check": {
-          "name": "work_streams_watch_fields_check",
-          "value": "(\"work_streams\".\"kind\" = 'watch') = (\"work_streams\".\"watch_condition\" is not null and \"work_streams\".\"watch_every_minutes\" is not null and \"work_streams\".\"expires_at\" is not null)"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.workspace_agent_sessions": {
@@ -6213,14 +6331,6 @@
       "values": [
         "builtin",
         "mcp"
-      ]
-    },
-    "public.work_stream_kind": {
-      "name": "work_stream_kind",
-      "schema": "public",
-      "values": [
-        "work",
-        "watch"
       ]
     },
     "public.work_stream_link_kind": {
