@@ -538,7 +538,8 @@ sidecar/        Bun + TS service (Hono)
   src/scheduledTasks/
                    prompts the assistant schedules for itself in a chat, their
                    tools, and the job that runs them
-  src/digest/      dangling work, next-work ranking, weekly summary, dismissals
+  src/digest/      dangling work, next-work ranking, weekly summary, dismissals,
+                   stalled-work reminders (`stalled.ts`)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
@@ -558,6 +559,9 @@ sidecar/        Bun + TS service (Hono)
                    verification checklist: one run per section, the report
                    put together from each section's newest result
                    (`verification.ts`, `checklist.ts`)
+  src/reviewPrep/  review prep: its queue and verification slots, the upkeep
+                   job that archives what it opened, and the alerts for PRs
+                   updated since your review (`updates.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

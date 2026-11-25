@@ -440,6 +440,9 @@ In the bell they're filed under the category of the stream they belong to
 stream, and under **General** otherwise. See
 [Categories](workspaces.md#categories).
 
+One left unanswered gets a reminder in the bell after a while; see
+[Reminders about stalled work](assistant.md#reminders-about-stalled-work).
+
 Opening one from the bell answers it in a window over the page you're on,
 rather than taking you to the Heads down page. The window then shows the next
 open question or approval, until none are left. **Open Heads down** goes to the
@@ -481,6 +484,11 @@ Use **Tell it something** to give it direction at any time: new work, a change
 of priority, or a standing instruction such as "when Alex asks if the billing
 PR is ready, send him the link". The next pass acts on it, and later passes
 keep it in mind for the rest of this run.
+
+You can also add a work stream from anywhere with one line. In Omni Chat,
+switch to **Send to heads down**, type something like "get this PR merged",
+and check the stream it proposes before saving. See
+[Send to heads down](quick-chat.md#send-to-heads-down).
 
 ## What it has been doing
 

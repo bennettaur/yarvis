@@ -1199,7 +1199,12 @@ export type AttentionNavTarget =
   /** An artifact, opened beside the Chat tab. */
   | { type: "artifact"; id: string }
   /** A PR in a review workspace, opened on one of its tabs. */
-  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
+  | {
+      type: "review-workspace";
+      workspaceId: string;
+      prId: string;
+      tab?: "verification" | "since-review";
+    };
 
 /**
  * The attention stream: things that want the user's attention, most urgently a
@@ -2331,6 +2336,54 @@ export const reviewPreps = pgTable(
 export type ReviewPrepRow = typeof reviewPreps.$inferSelect;
 
 /**
+ * A reviewed PR in a review workspace being watched for new commits
+ * (`reviewPrep/updates.ts`). A head is acted on only once it has stayed the
+ * same for a settle time, so a burst of pushes gives one alert.
+ */
+export const prUpdateWatches = pgTable("pr_update_watches", {
+  /** `refKey` of the PR, e.g. `gh:owner/repo/7`. */
+  refKey: text("ref_key").primaryKey(),
+  /** The provider's head when last polled, and when it was first seen there. */
+  seenHeadSha: text("seen_head_sha").notNull(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  /** The head the last alert was claimed for, so it isn't raised twice. */
+  alertedHeadSha: text("alerted_head_sha"),
+  /** When that alert was claimed, and when it was raised: null while it is still being prepared. */
+  alertingAt: timestamp("alerting_at", { withTimezone: true }),
+  alertedAt: timestamp("alerted_at", { withTimezone: true }),
+  /**
+   * The last "What's changed" run the job started, and the head it covered.
+   * The job starts no other until the user has looked since (`tabOpenedAt`,
+   * or the item read).
+   */
+  unattendedRunAt: timestamp("unattended_run_at", { withTimezone: true }),
+  unattendedHeadSha: text("unattended_head_sha"),
+  /** When the user last opened the PR's Since last review tab. */
+  tabOpenedAt: timestamp("tab_opened_at", { withTimezone: true }),
+});
+
+export type PrUpdateWatch = typeof prUpdateWatches.$inferSelect;
+
+/**
+ * The reminders sent for one piece of stalled work (`digest/stalled.ts`),
+ * keyed by its dangling-work key. A new stretch of waiting (the user touched it
+ * again) starts the count over; `stoppedAt` is set when the user dismissed a
+ * reminder, and holds for as long as the item stays dangling.
+ */
+export const stallReminders = pgTable("stall_reminders", {
+  itemKey: text("item_key").primaryKey(),
+  /** The dangling item's kind, so a source that couldn't be read leaves its rows alone. */
+  kind: text("kind").notNull(),
+  /** When the item started waiting on the user, as the reminders counted it. */
+  waitingSince: timestamp("waiting_since", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(0),
+  lastRemindedAt: timestamp("last_reminded_at", { withTimezone: true }),
+  stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+});
+
+export type StallReminder = typeof stallReminders.$inferSelect;
+
+/**
  * A mutation-testing pass over one review PR: a planning run picks mutants, the
  * sidecar runs them against the PR's tests in a scratch copy, and an
  * explanation run writes up the survivors. Results are written as each mutant
@@ -2421,3 +2474,37 @@ export const prReviewMarks = pgTable(
 );
 
 export type PrReviewMark = typeof prReviewMarks.$inferSelect;
+
+/**
+ * A revert of a PR the user shipped, found by the revert-investigation job.
+ * One row per original PR, so each revert is looked into once. `detected` waits
+ * for the user's go-ahead, `started` has a workspace and session writing the
+ * root-cause doc, `ready` has the doc, `dismissed` was turned down.
+ */
+export const revertInvestigations = pgTable(
+  "revert_investigations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    repoId: uuid("repo_id")
+      .notNull()
+      .references(() => repos.id, { onDelete: "cascade" }),
+    originalNumber: integer("original_number").notNull(),
+    originalTitle: text("original_title").notNull(),
+    originalUrl: text("original_url").notNull(),
+    revertKind: text("revert_kind", { enum: ["pr", "commit"] }).notNull(),
+    // A PR number for `pr`, a commit sha for `commit`.
+    revertRef: text("revert_ref").notNull(),
+    revertTitle: text("revert_title").notNull(),
+    revertUrl: text("revert_url").notNull(),
+    status: text("status", { enum: ["detected", "started", "ready", "dismissed"] })
+      .notNull()
+      .default("detected"),
+    workspaceId: uuid("workspace_id").references(() => workspaces.id, { onDelete: "set null" }),
+    detectedAt: timestamp("detected_at", { withTimezone: true }).notNull().defaultNow(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    readyAt: timestamp("ready_at", { withTimezone: true }),
+  },
+  (t) => [uniqueIndex("revert_investigations_original_idx").on(t.repoId, t.originalNumber)],
+);
+
+export type RevertInvestigation = typeof revertInvestigations.$inferSelect;

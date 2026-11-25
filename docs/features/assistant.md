@@ -95,8 +95,10 @@ These are the questions it is built to answer:
   checks the activity log for anything more recent, and reads its own todos and
   your open tasks.
 - **"What should I work on next?"** It ranks what's waiting on you: reviews
-  you started and never finished, reviews requested of you, live workspaces,
-  your open PRs, overdue tasks and its own todos. It explains why each one is
+  you started and never finished, reviews [review prep](review-workspaces.md#review-prep)
+  got ready that you haven't opened, heads-down questions waiting on your
+  answer, reviews requested of you, live workspaces, your open PRs, overdue
+  tasks and its own todos. It explains why each one is
   on the list. If you've done little reviewing this week, it moves reviews up.
 - **"What's hanging?"** It lists everything left open, across GitHub and your
   workspaces.
@@ -112,6 +114,39 @@ priorities" in the same message.
 Turn a suggestion down ("not that one this week") and it records the
 dismissal, so the suggestion stops coming back. A dismissal can expire after a
 few days.
+
+### Reminders about stalled work
+
+Some of that list is work you started and then left. Yarvis reminds you about
+it in the attention stream, with how long it has been waiting and a link back
+to where you left off:
+
+- **A review you started is unfinished**: someone else's open PR you opened
+  in Yarvis (on the PRs tab or in a review workspace) and have never
+  commented on, approved or requested changes on. The wait counts from the
+  last time you opened it, and only looks back as far as the reviewing list
+  does (**Settings → PR review**). This needs a GitHub token, and covers GitHub
+  PRs only.
+- **A prepared review is waiting on you**: a PR review prep finished for you
+  (ready, failed, or waiting on your go-ahead for its checks), whose workspace
+  you haven't opened since.
+- **Heads down is still waiting on you**: a heads-down question or approval
+  nobody has answered.
+
+The wait before the first reminder depends on the item's category: 24 hours
+for reviews, 48 for build work, 8 for Slack and 24 for everything else (a
+heads-down question takes its work stream's category). Each later reminder
+waits three times as long as the gap before it, and there are at most three.
+Coming back to the item (opening the PR again, say) settles the reminder and
+starts the wait over. Reminders only go out in your heads-down
+[working hours](heads-down.md) (any time, if you've cleared them), whether or
+not heads-down mode is on.
+
+Dismiss a reminder and that item gets no more. Telling the assistant you're
+not doing it ("drop that review") records a dismissal, which stops the
+reminders and takes it off the "what next" list too. The waits, and turning
+reminders off, are under `stalledWork` in `~/.yarvis/settings.json` (see
+[Configuration](../configuration.md)).
 
 ### Steering running work
 

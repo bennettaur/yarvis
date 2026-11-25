@@ -61,6 +61,6 @@ export const navTargetSchema: z.ZodType<AttentionNavTarget> = z.discriminatedUni
     type: z.literal("review-workspace"),
     workspaceId: id,
     prId: id,
-    tab: z.literal("verification").optional(),
+    tab: z.enum(["verification", "since-review"]).optional(),
   }),
 ]);

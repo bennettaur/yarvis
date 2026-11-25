@@ -42,7 +42,12 @@ export type AttentionNavTarget =
   /** An artifact, opened beside the Chat tab. */
   | { type: "artifact"; id: string }
   /** A PR in a review workspace, opened on one of its tabs. */
-  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
+  | {
+      type: "review-workspace";
+      workspaceId: string;
+      prId: string;
+      tab?: "verification" | "since-review";
+    };
 
 export interface AttentionItem {
   id: string;
