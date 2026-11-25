@@ -99,7 +99,8 @@ async fn the_first_answer_wins_and_the_event_names_its_device() {
             assert_eq!(
                 decision,
                 Decision::Approved {
-                    by: laptop_id.clone()
+                    by: laptop_id.clone(),
+                    allow_for: None,
                 }
             );
         } else {
@@ -182,6 +183,15 @@ async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
         )
         .await;
     assert_eq!(st, StatusCode::NOT_FOUND);
+    let (st, _) = h
+        .call(
+            "POST",
+            "/api/approvals/nope",
+            Some(&laptop),
+            Some(json!({ "approve": true, "allowForSecs": 60 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "a duration doesn't change a 404");
     let (st, body) = h
         .call(
             "POST",
@@ -194,6 +204,110 @@ async fn pending_approvals_are_listed_and_unknown_ones_are_404() {
     assert!(settled(requester).await.approved());
     let (_, list) = h.call("GET", "/api/approvals", Some(&reader), None).await;
     assert_eq!(list, json!([]));
+}
+
+#[tokio::test]
+async fn a_duration_is_refused_unless_the_request_offered_one() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let (id, requester) = ask(&h, "covers only itself", Duration::from_secs(30)).await;
+    let path = format!("/api/approvals/{id}");
+
+    let (st, list) = h.call("GET", "/api/approvals", Some(&laptop), None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(list[0].get("maxAllowForSecs").is_none(), "{list}");
+    let (st, body) = h
+        .call(
+            "POST",
+            &path,
+            Some(&laptop),
+            Some(json!({ "approve": true, "allowForSecs": 60 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    // Refusing the duration recorded nothing, so a plain answer still lands.
+    let (st, _) = h
+        .call(
+            "POST",
+            &path,
+            Some(&laptop),
+            Some(json!({ "approve": true })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(settled(requester).await.approved());
+}
+
+#[tokio::test]
+async fn a_duration_within_the_limit_reaches_the_requester() {
+    let h = Harness::new().await;
+    let laptop = h.setup().await;
+    let laptop_id = h.device_id(&laptop).await;
+    let approvals = h.state.approvals.clone();
+    let requester = tokio::spawn(async move {
+        approvals
+            .request_allowing_grant(
+                "test",
+                "may cover more",
+                json!({}),
+                Duration::from_secs(30),
+                Duration::from_secs(900),
+            )
+            .await
+            .unwrap()
+    });
+    let pending = until("the approval to be listed", || async {
+        h.state
+            .approvals
+            .pending()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+    })
+    .await;
+    assert_eq!(pending.max_allow_for_secs, Some(900));
+    let path = format!("/api/approvals/{}", pending.id);
+
+    for refused in [
+        json!({ "approve": true, "allowForSecs": 901 }),
+        json!({ "approve": true, "allowForSecs": 0 }),
+        json!({ "approve": false, "allowForSecs": 60 }),
+    ] {
+        let (st, body) = h.call("POST", &path, Some(&laptop), Some(refused)).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (st, body) = h
+        .call(
+            "POST",
+            &path,
+            Some(&laptop),
+            Some(json!({ "approve": true, "allowForSecs": 900 })),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        settled(requester).await,
+        Decision::Approved {
+            by: laptop_id,
+            allow_for: Some(Duration::from_secs(900)),
+        }
+    );
+    let answered = h.events("approval.answered").await;
+    assert_eq!(
+        answered[0].data["allowForSecs"], 900,
+        "the full limit is allowed"
+    );
+
+    // A late answer is told it was already answered, duration or not, rather
+    // than that its duration is wrong.
+    for late in [
+        json!({ "approve": true, "allowForSecs": 60 }),
+        json!({ "approve": false, "allowForSecs": 60 }),
+    ] {
+        let (st, body) = h.call("POST", &path, Some(&laptop), Some(late)).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    }
 }
 
 #[tokio::test]
@@ -346,7 +460,8 @@ async fn the_requester_and_the_answer_agree_when_an_answer_races_the_timeout() {
             StatusCode::OK => assert_eq!(
                 decision,
                 Decision::Approved {
-                    by: laptop_id.clone()
+                    by: laptop_id.clone(),
+                    allow_for: None,
                 }
             ),
             StatusCode::CONFLICT => assert_eq!(decision, Decision::Unanswered),
