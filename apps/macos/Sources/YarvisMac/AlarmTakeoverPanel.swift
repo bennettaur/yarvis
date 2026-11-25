@@ -4,18 +4,22 @@ import SwiftUI
 /// Covers every screen with the ringing alarm, over other apps and full-screen
 /// spaces, the way the Tauri app takes its window full screen.
 ///
-/// The panels show without activating Yarvis. macOS 14 refuses to let an app
-/// take focus on its own, and a panel that took keyboard focus while the user
-/// types elsewhere would catch keystrokes meant for that app. The takeover's
-/// buttons arm only after a moment for the same reason.
+/// The panels show without activating Yarvis: macOS 14 refuses to let an app
+/// take focus on its own. The main screen's panel takes keyboard focus anyway,
+/// which a non-activating panel may do, so typing meant for the app it covers
+/// doesn't land in a window the user can no longer see. The takeover's buttons
+/// arm only after a moment, and none answers Return, so those keystrokes do
+/// nothing.
 @MainActor
 final class AlarmTakeoverPanels {
     private var panels: [NSPanel] = []
-
-    var showing: Bool { !panels.isEmpty }
+    private weak var model: AlarmsModel?
+    private var screensObserver: NSObjectProtocol?
 
     func show(model: AlarmsModel) {
-        guard panels.isEmpty else { return }
+        guard panels.isEmpty || self.model !== model else { return }
+        hide()
+        self.model = model
         panels = NSScreen.screens.map { screen in
             let panel = TakeoverPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                       backing: .buffered, defer: false)
@@ -24,15 +28,28 @@ final class AlarmTakeoverPanels {
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
             panel.contentView = NSHostingView(rootView: AlarmTakeoverQueueView(model: model))
-            panel.setFrame(screen.frame, display: true)
             panel.orderFrontRegardless()
             return panel
+        }
+        panels.first?.makeKey()
+        // A display plugged in or removed mid-alarm gets its own panel, or loses one.
+        screensObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let model = self.model else { return }
+                self.hide()
+                self.show(model: model)
+            }
         }
     }
 
     func hide() {
+        if let screensObserver { NotificationCenter.default.removeObserver(screensObserver) }
+        screensObserver = nil
         for panel in panels { panel.close() }
         panels = []
+        model = nil
     }
 }
 

@@ -22,7 +22,7 @@ final class AttentionModel {
 
     private var streamTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
-    private var activation: NSObjectProtocol?
+    private var activationObserver: NSObjectProtocol?
     private var stopped = false
 
     /// A backstop for a change the stream missed, such as the items an
@@ -44,10 +44,10 @@ final class AttentionModel {
                 await self.reloadItems()
             }
         }
-        activation = NotificationCenter.default.addObserver(
+        activationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.clearViewed() }
+            MainActor.assumeIsolated { self?.markViewedWorkspaceRead() }
         }
         followViewedWorkspace()
     }
@@ -56,40 +56,39 @@ final class AttentionModel {
         stopped = true
         streamTask?.cancel()
         pollTask?.cancel()
-        if let activation { NotificationCenter.default.removeObserver(activation) }
-        activation = nil
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
     }
 
-    /// The workspace on screen, while the app is in front.
+    /// The workspace selected on the Workspaces page, when that page shows.
     private var viewedWorkspaceId: String? {
         guard app.section == .workspaces else { return nil }
         return app.workspaces?.selectedId
     }
 
-    /// Re-runs `clearViewed` whenever the items or the workspace on screen change.
+    /// Re-runs `markViewedWorkspaceRead` whenever the items or the workspace on screen change.
     private func followViewedWorkspace() {
         guard !stopped else { return }
         withObservationTracking {
             _ = viewedWorkspaceId
             _ = inbox
         } onChange: { [weak self] in
-            Task { @MainActor in
-                self?.clearViewed()
-                self?.followViewedWorkspace()
-            }
+            Task { @MainActor in self?.followViewedWorkspace() }
         }
-        clearViewed()
+        markViewedWorkspaceRead()
     }
 
     /// Opening the workspace that raised an item counts as seeing it, so it
     /// doesn't need dismissing by hand, as in the web UI.
-    private func clearViewed() {
+    private func markViewedWorkspaceRead() {
         guard !stopped, NSApp.isActive, let workspaceId = viewedWorkspaceId else { return }
         let seen = attentionSeenByViewing(workspaceId: workspaceId, in: inbox.items)
         guard !seen.isEmpty else { return }
         inbox.remove(itemIds: Set(seen.map(\.id)))
-        // Per item rather than a workspace clear, which would also take the
-        // permission prompts that have to stay until they're answered.
+        // Per item rather than a workspace clear: the server's `read` clear
+        // spares questions but not permission prompts, which have to stay
+        // until they're answered. Failures stay quiet, since the user didn't
+        // ask for this; the item comes back on the next reload and is retried.
         Task { [client] in
             for item in seen { try? await client.setAttentionStatus(id: item.id, "read") }
         }
@@ -156,14 +155,14 @@ final class AttentionModel {
         perform { [client] in try await client.setAttentionStatus(id: item.id, "dismissed") }
     }
 
-    /// Dismisses everything the group's workspace or session has pending.
+    /// Dismisses the group's items one by one rather than its whole scope, so
+    /// a prompt that arrived after the row was drawn isn't dismissed unseen.
     func dismiss(_ group: AttentionGroup) {
-        guard let scope = group.scope else {
-            dismiss(group.lead)
-            return
+        let items = group.items
+        inbox.remove(itemIds: Set(items.map(\.id)))
+        perform { [client] in
+            for item in items { try await client.setAttentionStatus(id: item.id, "dismissed") }
         }
-        inbox.remove(itemIds: Set(group.items.map(\.id)))
-        perform { [client] in try await client.clearAttention(scope, "dismissed") }
     }
 
     /// Opens an item: an answer sheet for questions and permission prompts,

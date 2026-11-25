@@ -107,14 +107,20 @@ Then choose one:
 - **Acknowledge** stops it.
 - **Snooze 5 min** fires it again in five minutes.
 
+The native macOS app covers every screen instead, over other apps and
+full-screen spaces. It catches your keystrokes, so typing meant for another
+app doesn't land somewhere you can't see, and its buttons only work after a
+second.
+
 If several alarms fire together, they queue up, and the screen is released
 once you've handled them all.
 
 In a browser tab, the alarm covers the tab and chimes on the same schedule.
 The tab's title flashes the alarm's label, and a browser notification shows
-once you've allowed notifications for the site. Browsers only let a page
-play sound after you've clicked or typed in it, so the chime starts working
-after your first click in the tab. They also refuse full screen without a
+if you've allowed notifications for the site. Browsers only let a page play
+sound, or ask to send notifications, after you've clicked or typed in it, so
+the chime starts working, and the browser asks about notifications, on your
+first click in the tab. They also refuse full screen without a
 click, so the tab usually stays its normal size.
 
 ### Other details

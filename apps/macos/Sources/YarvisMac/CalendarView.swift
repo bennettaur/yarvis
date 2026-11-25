@@ -167,17 +167,22 @@ struct CalendarEventBlock: View {
     /// The height two lines of text and the padding need.
     private static let twoLineHeight: CGFloat = 32
 
+    private var fitsTwoLines: Bool { size.height >= Self.twoLineHeight }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(alignment: .top, spacing: 3) {
                 Text(event.title).fontWeight(.medium).lineLimit(1)
-                if size.height < Self.twoLineHeight, let start = event.startDate {
-                    Text(start, format: .dateTime.hour().minute()).foregroundStyle(.secondary).lineLimit(1)
+                if !fitsTwoLines {
+                    if let start = event.startDate {
+                        Text(start, format: .dateTime.hour().minute()).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let link = event.meetLink { CalendarJoinLink(link: link) }
                 }
                 Spacer(minLength: 0)
                 CalendarAlarmButton(event: event, armed: model.isArmed(event), compact: true) { model.arm(event) }
             }
-            if size.height >= Self.twoLineHeight {
+            if fitsTwoLines {
                 HStack(spacing: 3) {
                     if let start = event.startDate { Text(start, format: .dateTime.hour().minute()) }
                     if let link = event.meetLink {
@@ -191,7 +196,7 @@ struct CalendarEventBlock: View {
         }
         .font(.system(size: 11))
         .padding(.horizontal, 5)
-        .padding(.vertical, size.height < Self.twoLineHeight ? 1 : 3)
+        .padding(.vertical, fitsTwoLines ? 3 : 1)
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor.opacity(0.5)))
@@ -625,6 +630,7 @@ struct CalendarDayView: View {
                 ForEach(laid) { item in
                     let place = model.grid.placement(item.event, day: day)
                     let share = crossLength / CGFloat(item.lanes)
+                    // 1pt off each end so back-to-back meetings show a gap.
                     let frame = size(along: max(CGFloat(place.minutes) * pointsPerMinute - 2, 0),
                                      across: max(share - 2, 0))
                     CalendarEventBlock(event: item.event, model: model, size: frame)

@@ -8,8 +8,9 @@ import { localFeaturesAvailable } from "./core";
  * and asks for full screen.
  *
  * Browsers limit what a page may do on its own. Sound plays only after the
- * user has clicked or typed somewhere on the page, so `primeAlarmAudio`
- * unlocks it on the first gesture. Full screen needs a click right before the
+ * user has clicked or typed somewhere on the page, and some browsers ignore a
+ * notification permission request made without one, so `primeAlarmAudio`
+ * unlocks sound and asks for notifications on the first gesture. Full screen needs a click right before the
  * request, so it usually fails at fire time; the overlay still covers the tab.
  */
 
@@ -31,11 +32,27 @@ export function chimeAt(secondsOverdue: number): { gain: number; gapMs: number }
     : { gain: 0.25, gapMs: 5_000 };
 }
 
+// Ringing state for this tab. Everything but the audio unlock resets when the
+// takeover queue empties.
 let audio: AudioContext | null = null;
-let primed = false;
+/** True while the first-gesture listeners wait for a click or key press. */
+let listening = false;
+let chimeTimer: ReturnType<typeof setTimeout> | undefined;
+/** When the longest-ringing alarm with sound was due, which sets the escalation. */
+let oldestFireAtMs = 0;
+let titleTimer: ReturnType<typeof setInterval> | undefined;
+/** The label the flashing title shows: the front of the queue. */
+let titleLabel = "";
+let savedTitle: string | null = null;
+let enteredFullscreen = false;
+const notified = new Set<string>();
 
-/** Creates or resumes the audio context inside a user gesture, where browsers allow it. */
-function unlockAudio(): void {
+/** Runs inside the page's first user gesture, where browsers allow sound and permission prompts. */
+function onFirstGesture(): void {
+  stopListening();
+  if (typeof Notification !== "undefined" && Notification.permission === "default") {
+    void Notification.requestPermission();
+  }
   try {
     audio ??= new AudioContext();
     if (audio.state === "suspended") void audio.resume();
@@ -44,12 +61,22 @@ function unlockAudio(): void {
   }
 }
 
-/** Unlocks sound on the page's first click or key press. Safe to call repeatedly. */
+function stopListening(): void {
+  listening = false;
+  window.removeEventListener("pointerdown", onFirstGesture, { capture: true });
+  window.removeEventListener("keydown", onFirstGesture, { capture: true });
+}
+
+/**
+ * Unlocks sound and asks for notifications on the page's next click or key
+ * press. Does nothing once sound is unlocked or while already waiting, so it
+ * is safe to call on every mount.
+ */
 export function primeAlarmAudio(): void {
-  if (primed || typeof window === "undefined") return;
-  primed = true;
-  window.addEventListener("pointerdown", unlockAudio, { once: true, capture: true });
-  window.addEventListener("keydown", unlockAudio, { once: true, capture: true });
+  if (audio || listening || typeof window === "undefined") return;
+  listening = true;
+  window.addEventListener("pointerdown", onFirstGesture, { capture: true });
+  window.addEventListener("keydown", onFirstGesture, { capture: true });
 }
 
 /** Two short tones, like a doorbell, so it reads as an alert rather than a beep. */
@@ -74,12 +101,6 @@ function chime(gain: number): void {
   }
 }
 
-let chimeTimer: ReturnType<typeof setTimeout> | undefined;
-let titleTimer: ReturnType<typeof setInterval> | undefined;
-let savedTitle: string | null = null;
-let enteredFullscreen = false;
-const notified = new Set<string>();
-
 function notify(alarm: Alarm): void {
   if (notified.has(alarm.id) || typeof Notification === "undefined") return;
   notified.add(alarm.id);
@@ -91,13 +112,7 @@ function notify(alarm: Alarm): void {
     };
   };
   if (Notification.permission === "granted") show();
-  else if (Notification.permission === "default") {
-    void Notification.requestPermission().then((p) => p === "granted" && show());
-  }
 }
-
-/** When the longest-ringing alarm with sound was due, which sets the escalation. */
-let oldestFireAtMs = 0;
 
 function startChiming(): void {
   if (chimeTimer) return;
@@ -116,16 +131,17 @@ function stopChiming(): void {
 }
 
 function flashTitle(label: string): void {
+  titleLabel = label;
   if (titleTimer) return;
   savedTitle = document.title;
   let on = false;
   titleTimer = setInterval(() => {
     on = !on;
-    document.title = on ? `⏰ ${label}` : (savedTitle ?? "");
+    document.title = on ? `⏰ ${titleLabel}` : (savedTitle ?? "");
   }, 1_000);
 }
 
-function stopTitle(): void {
+function stopFlashingTitle(): void {
   clearInterval(titleTimer);
   titleTimer = undefined;
   if (savedTitle !== null) document.title = savedTitle;
@@ -159,7 +175,7 @@ function exitFullscreen(): void {
 export function syncBrowserAlarms(queue: Alarm[]): void {
   if (queue.length === 0) {
     stopChiming();
-    stopTitle();
+    stopFlashingTitle();
     exitFullscreen();
     notified.clear();
     return;

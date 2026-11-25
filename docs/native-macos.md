@@ -45,14 +45,17 @@ Native:
   viewed files are kept on this Mac per server.
 - Calendar: agenda, week, month and day views, and meeting alarms.
 - Alarms: the list, and a takeover driven by `alarm.fire` and
-  `alarm.release` events and the `/api/alarms/stream` SSE.
+  `alarm.release` events and the `/api/alarms/stream` SSE. The takeover
+  is a non-activating panel on every screen.
 - Heads-down mode: the run, questions and approvals, work streams,
   messages, routines, settings and the merge pop-ups. The live pass
   comes from `/api/heads-down/stream`, which only sends what happens
   after it connects, so the lists are read again on each connect.
 - Settings: devices, pairing tokens and the account.
-- Attention: items, server approvals, answering `ask_user` questions
-  and permission prompts, dismissing and opening. New attention items
+- Attention: items grouped by workspace or session, server approvals,
+  answering `ask_user` questions and permission prompts, dismissing an
+  item or a group, and opening. Viewing a workspace marks its items read,
+  except questions and permission prompts. New attention items
   post a macOS notification when the app runs as `Yarvis.app`.
 
 In a `WKWebView`: everything else, including first-run setup, the PRs list, tasks,
@@ -118,7 +121,7 @@ A chat turn is `POST /api/chat` answered as SSE (`delta`, `tool_call`,
 `tool_result`, `tool_approval_request`, `error`, `done`), read through
 `URLSession.bytes`; cancelling the request stops the turn. The attention
 stream (`/api/attention/stream`) replays nothing, so the list is reloaded
-each time it reconnects.
+each time it reconnects, and every 30 seconds for anything it missed.
 
 ## What in the API gets in the way
 

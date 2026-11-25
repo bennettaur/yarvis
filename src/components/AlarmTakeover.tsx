@@ -17,13 +17,15 @@ export default function AlarmTakeover() {
   const queue = useAlarmTakeoverQueue();
   // The desktop apps ring natively when an alarm fires; a browser tab has to
   // ring itself.
-  const inBrowser = !ringsNatively();
+  const mustRingItself = !ringsNatively();
   useEffect(() => {
-    if (inBrowser) primeAlarmAudio();
-  }, [inBrowser]);
+    if (mustRingItself) primeAlarmAudio();
+  }, [mustRingItself]);
   useEffect(() => {
-    if (inBrowser) syncBrowserAlarms(queue);
-  }, [inBrowser, queue]);
+    if (mustRingItself) syncBrowserAlarms(queue);
+  }, [mustRingItself, queue]);
+  // Stops ringing on unmount only. A cleanup on the sync effect would run on
+  // every queue change and send the notifications again.
   useEffect(() => () => syncBrowserAlarms([]), []);
 
   const active = queue[0];
