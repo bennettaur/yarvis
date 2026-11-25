@@ -7,7 +7,7 @@ import type {
   NewComment,
   PostedCommentResult,
   PrDetail,
-  PrFile,
+  PrFileSet,
   PrInvolvement,
   PrRef,
   PrStatus,
@@ -112,7 +112,7 @@ export const ghSavePrConfig = (config: GhPrConfig) =>
 
 export const ghPrStatus = (ref: PrRef) => get<PrStatus>(refApiPath(ref));
 export const ghPrDetail = (ref: PrRef) => get<PrDetail>(`${refApiPath(ref)}/detail`);
-export const ghPrFiles = (ref: PrRef) => get<PrFile[]>(`${refApiPath(ref)}/files`);
+export const ghPrFiles = (ref: PrRef) => get<PrFileSet>(`${refApiPath(ref)}/files`);
 export const ghFileContent = (ref: PrRef, path: string, sha: string) =>
   get<{ content: string }>(
     `${refApiPath(ref)}/content?path=${encodeURIComponent(path)}&ref=${encodeURIComponent(sha)}`,
@@ -141,11 +141,13 @@ export const ghSubmitReview = (
   seen: Record<string, string> = {},
 ) => send<{ ok: boolean }>(`${refApiPath(ref)}/reviews`, "POST", { event, body, ...seen });
 
-export const ghMergePr = (ref: PrRef, method: MergeMethod) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method });
+// `headSha` is the commit the user reviewed; GitHub refuses the merge once the
+// branch has moved past it.
+export const ghMergePr = (ref: PrRef, method: MergeMethod, headSha: string) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/merge`, "POST", { method, headSha });
 
-export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod) =>
-  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method });
+export const ghEnableAutoMerge = (ref: PrRef, method: MergeMethod, headSha: string) =>
+  send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "POST", { method, headSha });
 
 export const ghDisableAutoMerge = (ref: PrRef) =>
   send<{ ok: boolean }>(`${refApiPath(ref)}/auto-merge`, "DELETE");
