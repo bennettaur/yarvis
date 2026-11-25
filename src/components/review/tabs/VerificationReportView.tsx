@@ -1,5 +1,3 @@
-import { useState } from "react";
-import type { CommentPlacement } from "../../../lib/pr/types";
 import {
   APPROACH_LABEL,
   CHECK_LABEL,
@@ -8,6 +6,7 @@ import {
   changedUpstack,
   coverageKnown,
   type ImpactBand,
+  type ReportSection,
   type Severity,
   type ThemeCohesion,
   VERIFICATION_CHECKS,
@@ -17,7 +16,6 @@ import {
   type VerificationCheck,
   type VerificationClaims,
   type VerificationCoverage,
-  type VerificationFinding,
   type VerificationImpact,
   type VerificationMustRead,
   type VerificationReport,
@@ -25,6 +23,9 @@ import {
   type VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
+import { type ReportActions, ReportItemActions } from "./ReportItemActions";
+
+export type { FindingPoster, Located, ReportActions } from "./ReportItemActions";
 
 /** What a must-read's flags are called, in the report and on the diff. */
 export const FLAG_LABEL = "Looks off";
@@ -182,91 +183,8 @@ export function Location({
   );
 }
 
-/**
- * Where a finding can be sent once the reviewer has read it. Each takes the
- * finding and the label of the section it came from, and only findings with a
- * path and line get the buttons, since both targets anchor to a line.
- */
-export interface FindingPoster {
-  /** "file" when GitHub put the comment on the whole file instead of its line. */
-  toPr: (finding: Located, section: string) => Promise<CommentPlacement | undefined>;
-  /** Present when the PR was raised from a Yarvis workspace. */
-  toWorkspace?: { name: string; add: (finding: Located, section: string) => Promise<void> };
-}
-
-/** A finding or concern with the location both comment targets need. */
-export type Located = Pick<VerificationFinding, "title" | "detail"> &
-  Partial<Pick<VerificationFinding, "severity">> & { path: string; line: number };
-
-type PostState = "posting" | "posted" | "posted-to-file" | { error: string };
-
-/** The post buttons for one finding, each remembering it was sent so a second click can't repeat it. */
-function PostFinding({
-  finding,
-  section,
-  poster,
-}: {
-  finding: Partial<Located> & Pick<Located, "title" | "detail">;
-  section: string;
-  poster?: FindingPoster;
-}) {
-  const [toPr, setToPr] = useState<PostState | null>(null);
-  const [toWorkspace, setToWorkspace] = useState<PostState | null>(null);
-  const { path, line } = finding;
-  if (!poster || !path || !line) return null;
-  const located: Located = { ...finding, path, line };
-  const send = async (fn: () => Promise<unknown>, set: (s: PostState) => void) => {
-    set("posting");
-    try {
-      set((await fn()) === "file" ? "posted-to-file" : "posted");
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  };
-  const button = (state: PostState | null, idle: string, done: string, onClick: () => void) => {
-    const sent = state === "posted" || state === "posted-to-file";
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={state === "posting" || sent}
-        className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-60"
-      >
-        {state === "posting" ? "Posting…" : sent ? done : idle}
-      </button>
-    );
-  };
-  const errors = [toPr, toWorkspace].flatMap((s) => (s && typeof s === "object" ? [s.error] : []));
-  const workspace = poster.toWorkspace;
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      {button(
-        toPr,
-        "Post to PR",
-        "Posted to PR",
-        () => void send(() => poster.toPr(located, section), setToPr),
-      )}
-      {workspace &&
-        button(
-          toWorkspace,
-          `Add to ${workspace.name}`,
-          `Added to ${workspace.name}`,
-          () => void send(() => workspace.add(located, section), setToWorkspace),
-        )}
-      {toPr === "posted-to-file" && (
-        <span role="status" className="text-[10px] text-amber-300">
-          Posted on the whole file instead: GitHub only takes line comments on lines inside the
-          diff.
-        </span>
-      )}
-      {errors.map((e) => (
-        <span key={e} role="alert" className="text-[10px] text-red-400">
-          {e}
-        </span>
-      ))}
-    </div>
-  );
-}
+const SEVERITY_RATINGS = ["low", "medium", "high"] as const;
+const RISK_RATINGS = ["none", "low", "medium", "high"] as const;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -317,17 +235,21 @@ function UpstackNote({
  */
 function CheckRow({
   label,
+  section,
+  kind = "finding",
   check,
   onOpen,
   viewed,
-  poster,
+  actions,
   upstack = null,
 }: {
   label: string;
+  section: ReportSection;
+  kind?: "finding" | "gap";
   check: VerificationCheck;
   onOpen: OpenLocation;
   viewed: Viewed;
-  poster?: FindingPoster;
+  actions?: ReportActions;
   /** What the layers above change; only for a result at the PR's head, whose lines match theirs. */
   upstack?: VerificationUpstack | null;
 }) {
@@ -370,7 +292,14 @@ function CheckRow({
               <UpstackNote upstack={upstack} path={f.path} line={f.line} />
             </div>
             <p className="text-xs text-zinc-400">{f.detail}</p>
-            <PostFinding finding={f} section={label} poster={poster} />
+            <ReportItemActions
+              section={section}
+              sectionLabel={label}
+              kind={kind}
+              item={{ ...f, rating: f.severity }}
+              actions={actions}
+              ratings={SEVERITY_RATINGS}
+            />
           </li>
         ))}
       </ul>
@@ -430,12 +359,12 @@ function ChangeMap({
   map,
   onOpen,
   viewed,
-  poster,
+  actions,
 }: {
   map: VerificationChangeMap;
   onOpen: OpenLocation;
   viewed: Viewed;
-  poster?: FindingPoster;
+  actions?: ReportActions;
 }) {
   return (
     <div className="space-y-2 text-sm">
@@ -473,23 +402,30 @@ function ChangeMap({
               </div>
               {/* The server keeps a question only on an outlier. */}
               {theme.question && first && (
-                <div className="space-y-1 rounded border border-amber-900/60 bg-amber-950/20 p-2 text-xs">
+                <div className="rounded border border-amber-900/60 bg-amber-950/20 p-2 text-xs">
                   <p className="text-amber-100">
                     <span className="text-amber-400">Ask the author: </span>
                     {theme.question}
                   </p>
-                  <PostFinding
-                    finding={{
-                      title: theme.title,
-                      detail: theme.question,
-                      path: first.path,
-                      line: first.lines?.start ?? 1,
-                    }}
-                    section="Change map"
-                    poster={poster}
-                  />
                 </div>
               )}
+              <ReportItemActions
+                section="changeMap"
+                sectionLabel="Change map"
+                kind="theme"
+                item={{
+                  title: theme.title,
+                  detail: theme.question || theme.description,
+                  rating: theme.risk,
+                  path: first?.path,
+                  line: first ? (first.lines?.start ?? 1) : undefined,
+                }}
+                lines={first?.lines}
+                actions={actions}
+                canPost={!!theme.question}
+                risk
+                ratings={RISK_RATINGS}
+              />
             </li>
           );
         })}
@@ -511,12 +447,12 @@ function Claims({
   claims,
   onOpen,
   viewed,
-  poster,
+  actions,
 }: {
   claims: VerificationClaims;
   onOpen: OpenLocation;
   viewed: Viewed;
-  poster?: FindingPoster;
+  actions?: ReportActions;
 }) {
   const { tickets } = claims;
   return (
@@ -570,13 +506,20 @@ function Claims({
                 <Location path={c.path} line={c.line} onOpen={onOpen} />
               </div>
               <p className="text-xs text-zinc-400">{c.evidence}</p>
-              {isUnmetClaim(c.status) && (
-                <PostFinding
-                  finding={{ title: c.claim, detail: c.evidence, path: c.path, line: c.line }}
-                  section={`Claims: ${CLAIM_LABEL[c.status].toLowerCase()}`}
-                  poster={poster}
-                />
-              )}
+              <ReportItemActions
+                section="claims"
+                sectionLabel={`Claims: ${CLAIM_LABEL[c.status].toLowerCase()}`}
+                kind="claim"
+                item={{
+                  title: c.claim,
+                  detail: c.evidence,
+                  rating: c.status,
+                  path: c.path,
+                  line: c.line,
+                }}
+                actions={actions}
+                canPost={isUnmetClaim(c.status)}
+              />
             </li>
           ))}
         </ul>
@@ -584,10 +527,12 @@ function Claims({
       {claims.gaps.length > 0 && (
         <CheckRow
           label="Unfinished work"
+          section="claims"
+          kind="gap"
           check={{ status: "issues", findings: claims.gaps }}
           onOpen={onOpen}
           viewed={viewed}
-          poster={poster}
+          actions={actions}
         />
       )}
     </div>
@@ -725,10 +670,12 @@ function MustReadItem({
   entry,
   onOpen,
   viewed,
+  actions,
 }: {
   entry: VerificationMustRead;
   onOpen: OpenLocation;
   viewed: Viewed;
+  actions?: ReportActions;
 }) {
   const flags = entry.flags ?? [];
   return (
@@ -741,21 +688,43 @@ function MustReadItem({
         onOpen={onOpen}
       />
       <p className="text-xs text-zinc-400">{entry.reason}</p>
+      {/* Must-reads are written by the summary run, so their feedback is filed under it. */}
+      <ReportItemActions
+        section="summary"
+        sectionLabel="Must read"
+        kind="mustRead"
+        item={{ title: entry.reason, detail: "", path: entry.path, line: entry.lines?.start }}
+        lines={entry.lines}
+        actions={actions}
+        canPost={false}
+      />
       {flags.length > 0 && (
-        <ul aria-label={FLAG_LABEL} className="mt-0.5 space-y-0.5">
+        <ul aria-label={FLAG_LABEL} className="mt-1 space-y-1.5 border-l border-amber-900/60 pl-2">
           {flags.map((flag, i) => (
             // The agent can repeat a note, so its position keeps the key unique.
-            <li key={`${i}:${flag.note}`} className="flex gap-1.5 text-xs text-amber-300">
-              <span aria-hidden="true">?</span>
-              <span className="min-w-0">
-                {flag.note}
-                {flag.line && (
-                  <>
-                    {" "}
-                    <Location path={entry.path} line={flag.line} onOpen={onOpen} />
-                  </>
-                )}
-              </span>
+            <li key={`${i}:${flag.note}`} className="space-y-0.5 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span
+                  title="Something in this file that already looks wrong or unclear: check it, then post it, reject it or ask about it."
+                  className="rounded border border-amber-800 px-1 py-0.5 text-[10px] uppercase text-amber-300"
+                >
+                  {FLAG_LABEL}
+                </span>
+                <span className="text-amber-100">{flag.note}</span>
+                {flag.line && <Location path={entry.path} line={flag.line} onOpen={onOpen} />}
+              </div>
+              <ReportItemActions
+                section="summary"
+                sectionLabel={FLAG_LABEL}
+                kind="mustReadFlag"
+                item={{
+                  title: flag.note,
+                  detail: entry.reason,
+                  path: entry.path,
+                  line: flag.line ?? entry.lines?.start,
+                }}
+                actions={actions}
+              />
             </li>
           ))}
         </ul>
@@ -772,12 +741,12 @@ function ImpactDetail({
   impact,
   onOpen,
   viewed,
-  poster,
+  actions,
 }: {
   impact: VerificationImpact;
   onOpen: OpenLocation;
   viewed: Viewed;
-  poster?: FindingPoster;
+  actions?: ReportActions;
 }) {
   const attention = impact.changes.filter((c) => c.band >= ATTENTION_BAND);
   return (
@@ -803,10 +772,19 @@ function ImpactDetail({
                   <span className="text-[11px] text-zinc-500">{describeChange(c)}</span>
                 </div>
                 <p className="text-xs text-zinc-400">{c.check}</p>
-                <PostFinding
-                  finding={{ title: c.title, detail: c.check, path: c.path, line: c.line }}
-                  section="Impact"
-                  poster={poster}
+                <ReportItemActions
+                  section="risk"
+                  sectionLabel="Impact"
+                  kind="change"
+                  item={{
+                    title: c.title,
+                    detail: c.check,
+                    rating: `${c.band}/5`,
+                    path: c.path,
+                    line: c.line,
+                  }}
+                  actions={actions}
+                  risk
                 />
               </li>
             ))}
@@ -841,7 +819,7 @@ export default function VerificationReportView({
   report,
   onOpen,
   viewed = NONE_VIEWED,
-  poster,
+  actions,
   currentSections,
   upstack = null,
 }: {
@@ -850,18 +828,20 @@ export default function VerificationReportView({
   viewed?: Viewed;
   /** What the PRs stacked on this one change in it, read at the PR's head. */
   upstack?: VerificationUpstack | null;
-  /** Absent where findings can't be sent anywhere. */
-  poster?: FindingPoster;
+  /** Absent where items can't be sent anywhere or judged. */
+  actions?: ReportActions;
   /**
    * The sections whose result is for the PR's head now; absent when they all
-   * are. The others are marked, and their findings can't be posted, since
-   * their line numbers may point at different code now.
+   * are. The others are marked, and their findings can't be posted or asked
+   * about, since their line numbers may point at different code now. They
+   * can still be judged.
    */
   currentSections?: ReadonlySet<string>;
 }) {
   const { risk } = report;
   const isCurrent = (section: string) => !currentSections || currentSections.has(section);
-  const posterFor = (section: string) => (isCurrent(section) ? poster : undefined);
+  const actionsFor = (section: string): ReportActions | undefined =>
+    actions && (isCurrent(section) ? actions : { feedback: actions.feedback });
   const titled = (title: string, section: string) =>
     isCurrent(section) ? title : `${title} · older head`;
   const mustReadViewed = report.mustRead.filter((entry) => isViewed(viewed, entry.path)).length;
@@ -872,6 +852,14 @@ export default function VerificationReportView({
       {report.summary !== undefined && (
         <Section title={titled("Summary", "summary")}>
           <p className="text-sm leading-relaxed text-zinc-200">{report.summary}</p>
+          <ReportItemActions
+            section="summary"
+            sectionLabel="Summary"
+            kind="summary"
+            item={{ title: "Summary", detail: report.summary }}
+            actions={actionsFor("summary")}
+            canPost={false}
+          />
         </Section>
       )}
 
@@ -884,7 +872,13 @@ export default function VerificationReportView({
         >
           <ul className="space-y-1.5">
             {report.mustRead.map((entry) => (
-              <MustReadItem key={entry.path} entry={entry} onOpen={onOpen} viewed={viewed} />
+              <MustReadItem
+                key={entry.path}
+                entry={entry}
+                onOpen={onOpen}
+                viewed={viewed}
+                actions={actionsFor("summary")}
+              />
             ))}
           </ul>
         </Section>
@@ -896,7 +890,7 @@ export default function VerificationReportView({
             map={report.changeMap}
             onOpen={onOpen}
             viewed={viewed}
-            poster={posterFor("changeMap")}
+            actions={actionsFor("changeMap")}
           />
         </Section>
       )}
@@ -907,7 +901,7 @@ export default function VerificationReportView({
             claims={report.claims}
             onOpen={onOpen}
             viewed={viewed}
-            poster={posterFor("claims")}
+            actions={actionsFor("claims")}
           />
         </Section>
       )}
@@ -938,7 +932,7 @@ export default function VerificationReportView({
                 impact={risk.impact}
                 onOpen={onOpen}
                 viewed={viewed}
-                poster={posterFor("risk")}
+                actions={actionsFor("risk")}
               />
             )}
             {risk.mitigations.length > 0 && (
@@ -959,7 +953,14 @@ export default function VerificationReportView({
                       <Location path={c.path} line={c.line} onOpen={onOpen} />
                     </div>
                     <p className="text-xs text-zinc-400">{c.detail}</p>
-                    <PostFinding finding={c} section="Risk" poster={posterFor("risk")} />
+                    <ReportItemActions
+                      section="risk"
+                      sectionLabel="Risk"
+                      kind="concern"
+                      item={c}
+                      actions={actionsFor("risk")}
+                      risk
+                    />
                   </li>
                 ))}
               </ul>
@@ -971,6 +972,23 @@ export default function VerificationReportView({
       {report.approach && (
         <Section title={titled("Simpler approach", "approach")}>
           <Approach approach={report.approach} onOpen={onOpen} />
+          <ReportItemActions
+            section="approach"
+            sectionLabel="Simpler approach"
+            kind="approach"
+            item={{
+              title: APPROACH_LABEL[report.approach.rating],
+              detail: [report.approach.reason, report.approach.alternative]
+                .filter(Boolean)
+                .join(" "),
+              path: report.approach.path,
+              line: report.approach.line,
+            }}
+            actions={actionsFor("approach")}
+            canPost={
+              report.approach.rating === "simpler" || report.approach.rating === "much-simpler"
+            }
+          />
         </Section>
       )}
 
@@ -985,10 +1003,11 @@ export default function VerificationReportView({
                 <div key={key} className="space-y-1">
                   <CheckRow
                     label={titled(CHECK_LABEL[key], key)}
+                    section={key}
                     check={check}
                     onOpen={onOpen}
                     viewed={viewed}
-                    poster={posterFor(key)}
+                    actions={actionsFor(key)}
                     upstack={isCurrent(key) ? upstack : null}
                   />
                   {key === "malice" && report.malice?.tripwires && (

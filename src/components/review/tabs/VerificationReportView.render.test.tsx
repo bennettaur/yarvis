@@ -521,15 +521,17 @@ describe("VerificationReportView", () => {
       createElement(VerificationReportView, {
         report,
         onOpen: { open: () => {}, canOpen: () => true },
-        poster: {
-          toPr: async (f, section) => {
-            sent.push(`pr ${section} ${f.path}:${f.line}`);
-            return undefined;
-          },
-          toWorkspace: {
-            name: "cache-work",
-            add: async () => {
-              throw new Error("workspace repo not found");
+        actions: {
+          poster: {
+            toPr: async (f, section) => {
+              sent.push(`pr ${section} ${f.path}:${f.line}`);
+              return undefined;
+            },
+            toWorkspace: {
+              name: "cache-work",
+              add: async () => {
+                throw new Error("workspace repo not found");
+              },
             },
           },
         },
@@ -558,11 +560,13 @@ describe("VerificationReportView", () => {
       createElement(VerificationReportView, {
         report,
         onOpen: { open: () => {}, canOpen: () => true },
-        poster: {
-          toPr: () =>
-            new Promise<undefined>((resolve) => {
-              release = () => resolve(undefined);
-            }),
+        actions: {
+          poster: {
+            toPr: () =>
+              new Promise<undefined>((resolve) => {
+                release = () => resolve(undefined);
+              }),
+          },
         },
       }),
     );
@@ -584,7 +588,7 @@ describe("VerificationReportView", () => {
       createElement(VerificationReportView, {
         report,
         onOpen: { open: () => {}, canOpen: () => true },
-        poster: { toPr: async () => "file" as const },
+        actions: { poster: { toPr: async () => "file" as const } },
       }),
     );
     try {
@@ -811,10 +815,12 @@ describe("the change map and claims", () => {
       createElement(VerificationReportView, {
         report: withMap,
         onOpen: { open: () => {}, canOpen: () => true },
-        poster: {
-          toPr: async (f, section) => {
-            posted.push({ ...f, section });
-            return undefined;
+        actions: {
+          poster: {
+            toPr: async (f, section) => {
+              posted.push({ ...f, section });
+              return undefined;
+            },
           },
         },
       }),

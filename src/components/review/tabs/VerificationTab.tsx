@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
+import { askAboutLines } from "../../../lib/pr/insights";
 import {
   type RunChoice,
   useVerificationSettings,
@@ -38,6 +39,7 @@ import { Loader } from "../../ai-elements/loader";
 import CopyButton from "../../CopyButton";
 import LoadingIndicator from "../../LoadingIndicator";
 import DecisionPanel from "./DecisionPanel";
+import type { FeedbackController, FindingPoster, ReportActions } from "./ReportItemActions";
 import {
   reportOf,
   useMutationTesting,
@@ -46,16 +48,14 @@ import {
   useReviewViewed,
   useVerificationChecklist,
   useVerificationEvidence,
+  useVerificationFeedback,
   useVerificationUpstack,
   verificationKey,
 } from "./reviewData";
 import { FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
-import VerificationReportView, {
-  type FindingPoster,
-  Location,
-  type OpenLocation,
-} from "./VerificationReportView";
+import { reviewInsightsKey } from "./useReviewInsights";
+import VerificationReportView, { Location, type OpenLocation } from "./VerificationReportView";
 
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
@@ -573,6 +573,25 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       ),
     [ctx.prRef, ctx.pr.headSha, ctx.pr.mergeBaseSha, linked],
   );
+  const { feedback, save: saveFeedback } = useVerificationFeedback(workspaceId, pr.id);
+  const reportActions = useMemo((): ReportActions => {
+    const controller: FeedbackController = {
+      runFor: (section) => items.find((i) => i.section === section)?.result?.id ?? null,
+      get: (section, runId, itemKey) =>
+        feedback.find((f) => f.section === section && f.runId === runId && f.itemKey === itemKey),
+      save: saveFeedback,
+    };
+    return {
+      poster,
+      feedback: controller,
+      ask: async (target, question) => {
+        const insight = await askAboutLines(ctx.prRef, { ...target, selection: "", question });
+        // So the diff tabs show it beside the code.
+        invalidate(reviewInsightsKey(ctx.prRef));
+        return insight.answer;
+      },
+    };
+  }, [poster, items, feedback, saveFeedback, ctx.prRef]);
   // An older head's line numbers may point at different code now, so only a
   // section whose result is for the current head can post.
   const currentSections = useMemo(
@@ -876,7 +895,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             report={report}
             onOpen={open}
             viewed={viewed.viewed}
-            poster={poster}
+            actions={reportActions}
             currentSections={currentSections}
             upstack={upstack}
           />
