@@ -1084,13 +1084,23 @@ report there and leaves the fixes to the author.
   given it (`resolveRoutineTools`) and mounted for that pass, which is no more
   than `mount_tools` allows: the calls still go through `passApprovalHooks`, so
   naming an MCP tool never skips the heads-down allowlist. Its `config:` reaches
-  the pass fenced, as values the body refers to.
+  the pass fenced, as values the body refers to. While `slack-watcher` is on
+  and able to run (`SLACK_WATCHER` in `pass.ts`), the pass is told to leave
+  Slack to it rather than read it in the Messages step too.
   With always-on, a pass can propose one with `create_routine`, which is in
   `PASS_APPROVAL_TOOLS` and so only runs once the user approved its exact
   arguments. It refuses invisible characters, since what the user approves has
   to be what later passes read, and `writeRoutineFile` refuses a name already
   in the catalogue and writes with `O_EXCL | O_NOFOLLOW`. `stopHeadsDown` turns
   `alwaysOn` off before it stops the run, or the loop would start a new one.
+  - A watch (`work_streams.kind = 'watch'`, `workStreams/watches.ts`) is a
+    one-off condition the user asked to hear about. Its cadence is the
+    stream's own `wake_at`, so the loop is its scheduler. Code decides which
+    watches a pass is given and expires them; a pass only reports a check
+    with `report_watch`, and every other pass-side stream tool refuses a
+    watch. A ticket or workspace linked to a watch never counts as work the
+    user put in the loop's hands (`isChatLinkedToOpenStream`), since the
+    watch's linked text is read on every check.
 - Memory is typed. `memories.kind` is a column, not a metadata tag, because the
   jobs, the recap and the browser all filter on it. The kinds a *turn* may write
   exclude the ones the jobs author, so hand-written text can't masquerade as a

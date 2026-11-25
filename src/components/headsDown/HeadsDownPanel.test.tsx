@@ -45,6 +45,7 @@ const APPROVAL = {
 
 const STREAM = {
   id: "s1",
+  kind: "work",
   title: "Ship the billing PR",
   summary: null,
   status: "waiting-on-user",
@@ -53,6 +54,9 @@ const STREAM = {
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
   pausedAt: null,
+  watchCondition: null,
+  watchEveryMinutes: null,
+  expiresAt: null,
   updatedAt: "2026-10-19T10:00:00.000Z",
   links: [
     {
@@ -72,6 +76,20 @@ const STREAM = {
       observedAt: "2026-10-19T10:00:00.000Z",
     },
   ],
+};
+
+const WATCH = {
+  ...STREAM,
+  id: "s2",
+  kind: "watch",
+  title: "Alex's PRs",
+  status: "waiting-on-others",
+  nextAction: null,
+  waitingOn: null,
+  watchCondition: "Alex merged acme/billing#41",
+  watchEveryMinutes: 180,
+  expiresAt: "2026-10-26T10:00:00.000Z",
+  links: [],
 };
 
 const PASS = {
@@ -265,7 +283,7 @@ stubSidecarApi({
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
-    if (path === "/api/work-streams") return json([STREAM]);
+    if (path === "/api/work-streams") return json([STREAM, WATCH]);
     if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
     if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
@@ -351,6 +369,8 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Where should I ask for review?");
     expect(text).toContain("Waiting on you");
     expect(text).toContain("pr: Add invoices · CI passing");
+    expect(text).toContain("Watching for: Alex merged acme/billing#41 · checks every 3h · until");
+    expect(text).not.toContain("Watching for: null");
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");

@@ -1617,6 +1617,13 @@ export const workStreamStatus = pgEnum("work_stream_status", [
 ]);
 
 /**
+ * `work` is a thread to push forward. A `watch` only waits for something to
+ * happen ("tell me when Alex merges his PRs"): passes check its condition on
+ * its cadence and close it when the condition is met or it expires.
+ */
+export const workStreamKind = pgEnum("work_stream_kind", ["work", "watch"]);
+
+/**
  * One thread of work the assistant is pushing forward: a ticket to get merged,
  * a Slack message that needs an answer, a review to chase. The unit heads-down
  * mode tracks, so each pass can pick up where the last left off without
@@ -1630,6 +1637,7 @@ export const workStreams = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title").notNull(),
     summary: text("summary"),
+    kind: workStreamKind("kind").notNull().default("work"),
     status: workStreamStatus("status").notNull().default("active"),
     priority: projectItemPriority("priority").notNull().default("medium"),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
@@ -1653,13 +1661,27 @@ export const workStreams = pgTable(
      * up where the stream was.
      */
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    /**
+     * A watch's condition, in the user's words as the chat put it. Its next
+     * check is `wakeAt`, which a check moves on by `watchEveryMinutes`.
+     */
+    watchCondition: text("watch_condition"),
+    watchEveryMinutes: integer("watch_every_minutes"),
+    /** When a watch gives up and closes, telling the user it expired. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     /** Set when the stream ships one PR: which stage it is at and how each went. */
     ship: jsonb("ship").$type<WorkStreamShip>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
-  (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
+  (t) => [
+    index("work_streams_status_idx").on(t.status, t.priority),
+    check(
+      "work_streams_watch_fields_check",
+      sql`(${t.kind} = 'watch') = (${t.watchCondition} is not null and ${t.watchEveryMinutes} is not null and ${t.expiresAt} is not null)`,
+    ),
+  ],
 );
 
 /**

@@ -714,6 +714,75 @@ describe("a heads-down pass", () => {
     }
   });
 
+  it("expires old watches, hands the pass the due ones, and closes the one it reports met", async () => {
+    const run = await startRun(db, null);
+    const expired = await createStream(db, {
+      title: "old deploy",
+      watch: { condition: "deploy done", everyMinutes: 60, expiresAt: new Date(Date.now() - 1) },
+    });
+    const due = await createStream(db, {
+      title: "Alex's PRs",
+      category: "review",
+      watch: { condition: "both merged", everyMinutes: 60, expiresAt: new Date(Date.now() + 1e8) },
+    });
+    const model = streamingModel(
+      [
+        toolCall("w1", "report_watch", { id: due.id, met: true, finding: "both merged" }),
+        toolCall("w2", "report_watch", { id: expired.id, met: true, finding: "done" }),
+        toolCall("f1", "finish_pass", { sleepMinutes: 30, reason: "nothing left" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain(`- [${due.id}]`);
+    expect(prompt).not.toContain(`- [${expired.id}]`);
+    expect((await getStream(db, expired.id))?.status).toBe("dropped");
+    expect((await getStream(db, due.id))?.status).toBe("done");
+    const items = await sql`SELECT title, category FROM attention_items ORDER BY title`;
+    expect([...items]).toEqual([
+      { title: "A watch expired", category: "general" },
+      { title: "A watch went off", category: "review" },
+    ]);
+  });
+
+  it("leaves Slack to the slack-watcher routine when the user turned it on", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "slack-watcher.md"),
+      "---\nname: slack-watcher\ndescription: x\nevery: 1h\nconfig:\n  handle: '@sam'\n---\n\nWatch Slack.\n",
+    );
+    try {
+      const run = await startRun(db, null);
+      await reloadRoutines();
+      // Routines per pass is 0, so the routine can't run and the Messages step keeps Slack.
+      const off = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: off });
+      expect(JSON.stringify(off.doStreamCalls[0]?.prompt)).not.toContain(
+        "The slack-watcher routine is on",
+      );
+
+      await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
+        maxRoutinesPerPass: 1,
+      });
+      const on = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: on });
+      expect(JSON.stringify(on.doStreamCalls[0]?.prompt)).toContain(
+        "The slack-watcher routine is on",
+      );
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
       ...DEFAULT_HEADS_DOWN_CONFIG,

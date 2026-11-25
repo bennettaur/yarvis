@@ -48,6 +48,16 @@ export interface CreateStreamInput {
   note?: string;
   /** Makes it a ship stream for one PR. */
   ship?: WorkStreamShip | null;
+  /** Makes the stream a watch; see `workStreams/watches.ts`. */
+  watch?: WatchFields;
+}
+
+export interface WatchFields {
+  /** What to look for, in the user's words. */
+  condition: string;
+  /** How long between checks. */
+  everyMinutes: number;
+  expiresAt: Date;
 }
 
 export interface UpdateStreamInput {
@@ -76,6 +86,8 @@ export interface ListStreamsOptions {
   awakeAt?: Date;
   /** Leave out the streams the user paused. */
   excludePaused?: boolean;
+  /** Only streams of this kind. */
+  kind?: WorkStream["kind"];
 }
 
 export interface LinkToStreamInput {
@@ -122,10 +134,15 @@ function appendNote(existing: WorkStreamNote[], note: string, at: Date): WorkStr
 
 export async function createStream(db: Db, input: CreateStreamInput): Promise<WorkStream> {
   const now = new Date();
-  const status = input.status ?? "active";
+  // A watch waits on the world from the start, so it doesn't count as work to push.
+  const status = input.status ?? (input.watch ? "waiting-on-others" : "active");
   const [row] = await db
     .insert(workStreams)
     .values({
+      kind: input.watch ? "watch" : "work",
+      watchCondition: input.watch?.condition.trim() ?? null,
+      watchEveryMinutes: input.watch?.everyMinutes ?? null,
+      expiresAt: input.watch?.expiresAt ?? null,
       title: input.title.trim(),
       summary: input.summary ?? null,
       status,
@@ -143,7 +160,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
   await emitEvent(db, {
     type: "work_stream.created",
     source: "work_streams",
-    payload: { streamId: row!.id, title: row!.title, priority: row!.priority },
+    payload: { streamId: row!.id, title: row!.title, priority: row!.priority, kind: row!.kind },
   });
   return row!;
 }
@@ -187,6 +204,7 @@ export async function listStreams(
   if (statuses.length) conditions.push(inArray(workStreams.status, [...statuses]));
   if (options.projectId) conditions.push(eq(workStreams.projectId, options.projectId));
   if (options.excludePaused) conditions.push(isNull(workStreams.pausedAt));
+  if (options.kind) conditions.push(eq(workStreams.kind, options.kind));
   if (options.awakeAt) {
     const awake = or(isNull(workStreams.wakeAt), lte(workStreams.wakeAt, options.awakeAt));
     if (awake) conditions.push(awake);
@@ -274,13 +292,17 @@ export async function updateStream(
 /**
  * Drops every open stream, so heads-down mode starts the next run with none.
  * Dropped rather than deleted, so each still reaches the activity log as closed.
+ * Watches stay: each is something the user asked to hear about, not work a
+ * run took on.
  */
 export async function dropOpenStreams(db: Db): Promise<WorkStream[]> {
   const now = new Date();
   const rows = await db
     .update(workStreams)
     .set({ status: "dropped", closedAt: now, updatedAt: now })
-    .where(inArray(workStreams.status, [...OPEN_STREAM_STATUSES]))
+    .where(
+      and(inArray(workStreams.status, [...OPEN_STREAM_STATUSES]), eq(workStreams.kind, "work")),
+    )
     .returning();
   for (const row of rows) {
     await emitEvent(db, {

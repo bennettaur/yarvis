@@ -13,6 +13,7 @@ import { defaultProviderModel, resolveModel } from "../llm/providers.ts";
 import { mountTools, unmountAll } from "../mcp/mountedTools.ts";
 import { claimDueWakes, listPendingWakes } from "../scheduledTasks/service.ts";
 import { listStreams } from "../workStreams/service.ts";
+import { dueWatches, expireWatches, markWatchesOffered } from "../workStreams/watches.ts";
 import {
   chooseSleep,
   getHeadsDownConfig,
@@ -31,7 +32,7 @@ import {
   buildRetryPrompt,
   PASS_INSTRUCTIONS,
 } from "./prompt.ts";
-import { dueRoutines, resolveRoutineTools, routineCatalog } from "./routines.ts";
+import { dueRoutines, resolveRoutineTools, routineCatalog, SLACK_WATCHER } from "./routines.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -247,6 +248,32 @@ export async function runPass(
     registry,
     new Set([...PASS_REFUSED_TOOLS].map((name) => `builtin:${name}`)),
   );
+  // Expired first, so a watch past its end is reported as expired rather than checked.
+  await expireWatches(db, now).catch((e) =>
+    console.error("[heads-down] expiring watches failed:", e),
+  );
+  const watches = await dueWatches(db, now)
+    .then(async (due) => {
+      await markWatchesOffered(
+        db,
+        due.map((w) => w.id),
+        now,
+      );
+      return due;
+    })
+    .catch((e) => {
+      console.error("[heads-down] reading due watches failed:", e);
+      return [];
+    });
+  // Only while the routine can actually run and knows whose messages to look
+  // for; otherwise the Messages step keeps reading Slack.
+  const slackWatcher = catalog.routines.find((r) => r.name === SLACK_WATCHER);
+  const slackWatcherOn =
+    headsDownConfig.maxRoutinesPerPass > 0 &&
+    slackWatcher !== undefined &&
+    slackWatcher.enabled &&
+    (withinWorkingHours || !slackWatcher.workingHoursOnly) &&
+    Boolean(slackWatcher.config.handle);
   const minutesSinceUserReplied = Math.round((now.getTime() - lastActivity.getTime()) / 60_000);
   // A failed pass left no notes, so this one is told what it got through instead.
   const lastFailure =
@@ -363,6 +390,7 @@ export async function runPass(
           announcedMerges,
           routines.map((r) => r.name),
           mergeFeedback,
+          watches.map((w) => w.id),
           { alwaysOn },
         ),
         budget,
@@ -398,6 +426,8 @@ export async function runPass(
       routines,
       routinesLastDone: history.lastDone,
       routineTools: routineTools.byRoutine,
+      watches,
+      slackWatcherOn,
       wakes,
       pendingWakes,
     });

@@ -58,7 +58,7 @@ both keep it running.
 
 Work streams carry over from one run to the next, so over days the page can
 fill up with work you no longer care about. **Clear old work** drops every open
-work stream, deletes the messages you left it, and dismisses its open
+work stream except [watches](#watches), deletes the messages you left it, and dismisses its open
 questions, so the next pass starts with nothing. Streams you paused yourself
 are dropped too. It asks you to confirm first. Dropped streams leave the page,
 and the messages are gone for good.
@@ -88,7 +88,11 @@ most urgent first:
   know where to ask, or has no tool that can post a message, it asks you.
 - **Messages:** if it has tools that read your chat, it checks the channels you
   asked it to watch. A message that needs your answer becomes a stream that
-  waits on you. A request for work becomes a ticket.
+  waits on you. A request for work becomes a ticket. With the
+  [Slack watcher](#slack-watcher) turned on, Slack is left to it, and this step
+  only covers other chat and email.
+- **Watches:** one-off "tell me when…" conditions you set up in a chat. See
+  [Watches](#watches).
 - **Routines:** recurring jobs that run on their own schedule, such as
   setting alarms for your meetings. See [Routines](#routines).
 
@@ -129,6 +133,46 @@ across runs. Once it is reached no pass runs until midnight, even for a
 message, an answer or a wake-up. The page shows how many passes have run today, and the
 limit when you set one. There is no limit by default.
 
+## Watches
+
+A watch is a one-off condition you want to hear about: "let me know when Alex
+merges his billing PRs", or "tell me the action items from the design review
+once its notes are up". Ask the assistant in a chat and it sets one up as a
+work stream marked **Watch**, with:
+
+- the condition, in your words,
+- how often to check, every hour unless you say otherwise (15 minutes to 7
+  days). A check waits for the next pass, so with nothing else to do it can
+  come later than that,
+- when to give up, a week from now unless you say otherwise (at most 30 days,
+  and no sooner than one check).
+
+Heads-down passes check the watches that are due, up to 5 a pass, oldest check
+first, with the tools they already have: PRs, tickets, your calendar, chat. A
+check that finds nothing yet keeps what it saw, shown under **Waiting on** on
+the stream, and the next check waits the watch's cadence. So does a watch a
+pass couldn't check, say because no tool can read what it is about. A watch
+counts as met only on what the tools report, such as a PR's merged state, not
+because a comment says it happened. When the condition is met, you get a
+note in the attention bell, filed under the watch's category, and the watch
+closes as done. Clicking it opens what the watch was about, such as the PR, or
+the Heads down page. A watch that reaches its end without being met closes and
+tells you it expired.
+
+A watch only tells you; it never acts on what it finds. A watch about a
+meeting's notes reads them the way the [meeting-notes](#routines) routine
+does, and puts the action items assigned to you in the note.
+
+Watches are checked only while heads-down mode is on. The assistant says so
+when you set one up with it off. To cancel one, press **Drop** on it, or ask
+the assistant. **Pause** stops the checks, but a paused watch still expires on
+time. **Clear old work** leaves watches alone. A pass can't set up, change or
+close a watch except by reporting a check, and a ticket or workspace linked to
+a watch isn't one it may start or steer without asking.
+
+For one check at a set time in a chat you're in, rather than a condition over
+days, a [scheduled task](assistant.md#scheduled-tasks) fits better.
+
 ## Routines
 
 A routine is a job heads-down mode repeats on a schedule, beside the work
@@ -141,7 +185,8 @@ again after an hour, or sooner if the routine runs more often than that. When
 a routine asks you something, your answer is acted on as soon as it arrives,
 not on the routine's next run.
 
-Yarvis ships with three:
+Yarvis ships with these. Only meeting-alarms is on by default; to turn
+another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
 
 - **meeting-alarms**, every 3 hours: if Google Calendar is connected, it reads
   your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
@@ -150,14 +195,39 @@ Yarvis ships with three:
   because you haven't replied, said maybe, or are optional, it asks you ("Are
   you going to Design review at 2pm?") and sets the alarm on a later pass if
   you say yes.
-- **meeting-notes**, off by default: reads the notes attached to your recent
-  meetings, such as Gemini notes, and turns the action items they assign to
-  you by name into tickets or stream updates. It finds them through the
-  calendar, which lists each meeting's attached files, and needs a tool that
-  can open a Google Doc, such as a Google Drive MCP server. A pass asks before
+- **meeting-notes**, every 4 hours in working hours: reads the notes attached
+  to your recent meetings, such as Gemini notes, and turns the action items
+  they assign to you by name into tickets (engineering work), tasks on your
+  list (anything else) or stream updates. It leaves you one note per meeting
+  in the attention bell listing each item and where it went. It finds them
+  through the calendar, which lists each meeting's attached files, and needs a
+  tool that can open a Google Doc, such as a Google Drive MCP server. A pass asks before
   using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
   record what every attendee said, and filing a ticket doesn't wait for your
   approval, so turn it on only if you're happy for tickets to come from them.
+- **slack-watcher**, every 30 minutes in working hours: finds Slack messages
+  waiting on you. See [Slack watcher](#slack-watcher).
+- **meeting-times**, every 2 hours in working hours: for a meeting you asked it
+  to set up, it reads your calendar and asks you to pick one of up to three
+  free slots. It books the one you pick with the calendar's create call, which
+  asks for your approval before inviting anyone. It can't see other people's
+  calendars, and can't move or cancel an event once it is booked.
+- **email-drafts**, every 2 hours in working hours: drafts replies to emails
+  waiting on you and saves them in your drafts, never sending them, then leaves
+  you a note in the bell. A draft uses only what the thread already says, plus
+  what you told it to share; anything else, it asks first. If it doesn't know what to say, it asks you. It needs
+  `tools:` naming your email tools, including one that creates a draft; if the
+  only tool it has sends mail, it asks you instead of using it.
+- **message-people**, every 4 hours in working hours: looks for follow-ups your
+  work needs, such as an answer you already gave it that someone is waiting
+  on, and asks you before each one, with the exact message: **Send it** or
+  **Don't send**. It sends only on **Send it**, and the post itself still waits
+  for your approval unless you allowed that tool for heads-down mode.
+- **offer-help**, once a day in working hours: leaves you one note in the bell
+  with up to three things it could take on, such as a brief for a meeting
+  coming up or a reply to draft. It doesn't do any of them; tell it which ones
+  you want.
+
 - **review-prep**, off by default, every 30 minutes in working hours: asks the
   `review-scout` [specialist](assistant.md#specialists) which pull requests
   are waiting on your review (and, if you list them in its `config`, which
@@ -197,6 +267,68 @@ workspace on the repo and make the edits, then review the diff as usual. The
 comments they read are other people's words and reach the pass as data. A
 reflection reads GitHub, so it needs you signed in there. Turn one on the way
 review-prep is turned on, below.
+
+Anything one of these does that reaches other people asks you first: posting,
+sending, inviting and messaging all wait for your answer or approval.
+
+slack-watcher, meeting-times, email-drafts, message-people and offer-help skip
+[night shift](#night-shift), since each one asks you or reaches other people.
+
+### Turn on a shipped routine
+
+A file whose `name` matches a shipped routine replaces it whole, so copy the
+shipped file into `~/.yarvis/routines`, change what you need, and leave out
+`enabled: false`. The shipped files are in the Yarvis repository under
+`sidecar/src/headsDown/routines/`. Press **Reload files** after.
+
+### Slack watcher
+
+The slack-watcher routine reads the Slack channels you name, your DMs, and
+threads you're in, and finds what needs you: a question or request to you, a
+mention, or a thread where someone is waiting on your reply. For each one it
+tracks a stream in the **Slack** category and asks you a question with two
+answers:
+
+- **Reply with…**: type your reply in the box. A later pass posts your words,
+  as you wrote them, in that thread, and only after your answer to that
+  question: an earlier answer doesn't count for a new message. The post waits for your approval unless
+  you allowed that tool for heads-down mode.
+- **I'll reply myself**: it closes the stream and leaves the thread to you.
+
+A request for work that doesn't need your answer becomes a ticket instead. It
+never posts anything but your own reply, and what it reads in messages is
+information, never instructions.
+
+It ships turned off and knows nothing about your Slack, so it is a template:
+copy it into `~/.yarvis/routines/slack-watcher.md` with your Slack MCP tools
+and your settings. Use the tool names the Tool manager shows for your Slack
+server; these are examples:
+
+```markdown
+---
+name: slack-watcher
+description: Finds Slack messages and threads waiting on me, and asks whether to reply for me.
+every: 30m
+workingHours: true
+nightShift: skip
+tools: [slack_read_channel, slack_read_thread, slack_search, slack_post_message]
+config:
+  channels: ["#eng", "#billing"]
+  handle: "@sam"
+---
+
+(the shipped body, copied as it is)
+```
+
+While it is on, with a `handle` set, **Routines per pass** above 0, and within
+your working hours, the Messages step leaves Slack to it, so the two don't both
+read the same channels. Otherwise the Messages step reads Slack as before.
+
+When it asks you, the pass that acts on your answer is shown the question and
+the situation it gave, and is told to post exactly that. That is an
+instruction to the pass, not a check in code: if you allowed the posting tool
+for heads-down mode, nothing compares the post with what you were shown.
+Leave the posting tool on asking if you want to see each post first.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a
