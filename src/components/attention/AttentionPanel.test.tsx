@@ -173,6 +173,41 @@ describe("AttentionPanel needs-you-now stream", () => {
     expect(text(host)).toContain("CI is red");
   });
 
+  it("labels a prepared PR with its risk, and leads review with the high-risk one", async () => {
+    pending = [
+      attention({
+        id: "low",
+        seq: 2,
+        sessionKey: "raise:system:review-prep:gh:o/r/2",
+        category: "review",
+        title: "Ready for review",
+        body: "r#2",
+        risk: "low",
+      }),
+      attention({
+        id: "high",
+        seq: 1,
+        sessionKey: "raise:system:review-prep:gh:o/r/1",
+        category: "review",
+        title: "Ready for review",
+        body: "r#1",
+        risk: "high",
+      }),
+      attention({ id: "plain", seq: 3, category: "review", title: "Review Sam's PR" }),
+    ];
+    const host = await mountPanel();
+    await waitFor(() => text(host).includes("High risk"), "the risk badge");
+    const t = text(host);
+    expect(t).toContain("Low risk");
+    expect(t.indexOf("High risk")).toBeLessThan(t.indexOf("Low risk"));
+    expect(t.indexOf("Low risk")).toBeLessThan(t.indexOf("Review Sam's PR"));
+    const rows = Array.from(host.querySelectorAll("li"));
+    const highRow = rows.find((li) => li.textContent?.includes("High risk"));
+    expect(highRow?.className).toContain("border-l-red-500");
+    const plainRow = rows.find((li) => li.textContent?.includes("Review Sam's PR"));
+    expect(plainRow?.className).not.toContain("border-l-");
+  });
+
   it("lists newest first once grouping is off, and remembers that", async () => {
     pending = [
       attention({ id: "b", seq: 2, category: "build", title: "CI is red" }),
