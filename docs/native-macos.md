@@ -15,27 +15,36 @@ natively, and lists what in the API gets in its way.
 - `YarvisMac`: the SwiftUI app.
 
 The app is laid out like the web UI: a sidebar with the Chat, Terminal,
-Workspaces and Heads down pages in the web's order and Settings at the bottom, and the
-attention bell as a panel. `AppModel` routes between pages as the web's
+Workspaces, Calendar, Alarms and Heads down pages in the web's order
+and Settings at the bottom, and the attention bell as a panel. `AppModel` routes between pages as the web's
 `App.tsx` does: an attention item, a `yarvis://` link or a workspace mention
 opens the chat thread, workspace or terminal pane it names, and a PTY id is
 routed by the surface that owns it (`tab:terminal/…` to Terminal,
 `ws-claude:<id>` and `ws:<id>/…` to Workspaces).
 
-Native: sign-in and sign-out, the code prompt for `reauth_required`, the
-events socket, the vault unlock screen, chat (tabs with concurrent turns,
-queued messages, reasoning, tool cards, edit and resend, the approval bar,
-artifacts, the MCP connection bar), terminals (tabs and split panes in
-SwiftTerm, a layout kept per surface in the web's shape), workspaces (the
-list, the detail page with its agent and terminals, provisioning, new
-workspaces, archiving, changed and all files, diffs with review comments,
-the editor), heads-down mode (the run, questions and approvals, work
-streams, the live pass from `/api/heads-down/stream`, which only sends
-what happens after it connects, so the lists are read again on each
-connect; messages, routines, settings, and the merge pop-ups), Settings (devices, pairing tokens, the account) and attention
-(items, server approvals, answering `ask_user` questions and permission
-prompts, dismissing, opening). New attention items post a macOS
-notification when the app runs as `Yarvis.app`.
+Native:
+
+- Sign-in and sign-out, the code prompt for `reauth_required`, the
+  events socket and the vault unlock screen.
+- Chat: tabs with concurrent turns, queued messages, reasoning, tool
+  cards, edit and resend, the approval bar, artifacts and the MCP
+  connection bar.
+- Terminals: tabs and split panes in SwiftTerm, with a layout kept per
+  surface in the web's shape.
+- Workspaces: the list, the detail page with its agent and terminals,
+  provisioning, new workspaces, archiving, changed and all files, diffs
+  with review comments, and the editor.
+- Calendar: agenda, week, month and day views, and meeting alarms.
+- Alarms: the list, and a takeover driven by `alarm.fire` and
+  `alarm.release` events and the `/api/alarms/stream` SSE.
+- Heads-down mode: the run, questions and approvals, work streams,
+  messages, routines, settings and the merge pop-ups. The live pass
+  comes from `/api/heads-down/stream`, which only sends what happens
+  after it connects, so the lists are read again on each connect.
+- Settings: devices, pairing tokens and the account.
+- Attention: items, server approvals, answering `ask_user` questions
+  and permission prompts, dismissing and opening. New attention items
+  post a macOS notification when the app runs as `Yarvis.app`.
 
 In a `WKWebView`: everything else, including first-run setup, PRs, tasks,
 memory, and the rest of Settings.

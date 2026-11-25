@@ -15,7 +15,9 @@ private struct HeadsDownPopups: ViewModifier {
     @Environment(AppModel.self) private var app
 
     func body(content: Content) -> some View {
-        content.sheet(item: Binding(get: { app.headsDown?.popup }, set: { if $0 == nil { closed() } })) { popup in
+        // A ringing alarm's takeover goes first; the sheet comes back once it's answered.
+        content.sheet(item: Binding(get: { app.alarmTakeoverShowing ? nil : app.headsDown?.popup },
+                                    set: { if $0 == nil, !app.alarmTakeoverShowing { closed() } })) { popup in
             if let model = app.headsDown {
                 switch popup {
                 case .review(let item, let review, let remaining):
