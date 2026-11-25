@@ -56,6 +56,9 @@ import { setPassAbort, setPassStopTimeHandler } from "./wake.ts";
  * steps finding them. Anything else (an MCP Slack server, say) it can still
  * search for and mount itself.
  */
+/** The routine whose pass may prepare reviews without asking (`policy.ts`). */
+const REVIEW_PREP_ROUTINE = "review-prep";
+
 const PASS_FAMILIES = [
   "workStreams",
   "artifacts",
@@ -300,6 +303,7 @@ export async function runPass(
           ? "Ran out of time here."
           : `Failed here: ${errorMessage}`;
   const announcedMerges = new Set<string>();
+  const passStartedAt = new Date();
   const mergeFeedback = options.mergeFeedback ?? mergeFeedbackLoader(db, config);
   try {
     // Stopped, paused or past its stop time while the pass was getting ready:
@@ -344,6 +348,9 @@ export async function runPass(
           announcedMerges,
           withinWorkingHours,
           mergeFeedback,
+          reviewPrepSince: routines.some((r) => r.name === REVIEW_PREP_ROUTINE)
+            ? passStartedAt
+            : undefined,
         }),
         confirmBuiltins: PASS_CONFIRMED_TOOLS,
         instructions: alwaysOn

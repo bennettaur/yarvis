@@ -996,7 +996,7 @@ Every item has a category, so you can see what kind of work is waiting:
 
 | Category | What it holds |
 | --- | --- |
-| **Review** | Other people's pull requests, such as verification reports and guided reviews |
+| **Review** | Other people's pull requests, such as verification reports and guided reviews, a PR updated since your review, and reminders about reviews you started or haven't opened |
 | **Build** | Your own work, such as workspace sessions, your PRs and merges |
 | **Slack** | Chat messages waiting for an answer |
 | **General** | Everything else, such as scheduled tasks and heads-down questions |

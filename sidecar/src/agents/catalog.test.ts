@@ -213,6 +213,7 @@ describe("the catalogue", () => {
       "merge-reviewer",
       "planner",
       "project-manager",
+      "review-scout",
       "session-summarizer",
       "specialist-picker",
       "work-scout",
@@ -287,14 +288,14 @@ describe("the catalogue", () => {
     expect(problems.length).toBe(1);
     expect(problems[0]!.message).toContain("frontmatter fence");
     // The rest still load.
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
   });
 
   it("treats a missing directory as no user definitions", async () => {
     rmSync(dir, { recursive: true, force: true });
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
     mkdirSync(dir, { recursive: true });
   });
 
@@ -303,7 +304,7 @@ describe("the catalogue", () => {
     mkdirSync(join(dir, "nested.md"));
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
   });
 
   it("resolves a name case-insensitively, and answers null for an unknown one", async () => {
@@ -427,7 +428,7 @@ describe("choosing a specialist", () => {
   });
 
   it("returns everything for an empty query rather than nothing", async () => {
-    expect((await searchSpecialists("")).length).toBe(8);
+    expect((await searchSpecialists("")).length).toBe(9);
   });
 
   // A decision specialist can't run a task, so delegation never offers one.

@@ -1197,7 +1197,12 @@ export type AttentionNavTarget =
   | { type: "task"; taskId: string }
   | { type: "heads-down" }
   /** A PR in a review workspace, opened on one of its tabs. */
-  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
+  | {
+      type: "review-workspace";
+      workspaceId: string;
+      prId: string;
+      tab?: "verification" | "since-review";
+    };
 
 /**
  * The attention stream: things that want the user's attention, most urgently a
@@ -2269,6 +2274,11 @@ export const reviewWorkspaces = pgTable("review_workspaces", {
   lastOpenedAt: timestamp("last_opened_at", { withTimezone: true }),
   /** Whether Ask Claude also loads the repos' own skills and CLAUDE.md. */
   askClaudeRepoConfig: boolean("ask_claude_repo_config").notNull().default(false),
+  /**
+   * Who opened it: the user, or review prep (`reviewPrep/`). Only a workspace
+   * review prep opened is archived without asking once its PRs are done.
+   */
+  openedBy: text("opened_by").$type<"user" | "review-prep">().notNull().default("user"),
 });
 
 /**
@@ -2332,6 +2342,105 @@ export const reviewWorkspacePrs = pgTable(
 
 export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
+
+export const REVIEW_PREP_STATES = [
+  "queued",
+  "verifying",
+  "ready",
+  "failed",
+  "needs-go-ahead",
+  "done",
+] as const;
+export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
+
+export const REVIEW_PREP_VERDICTS = ["changes-needed", "review-deeper", "no-problems"] as const;
+export type ReviewPrepVerdict = (typeof REVIEW_PREP_VERDICTS)[number];
+
+/**
+ * A pull request review prep got ready for the user: the review workspace it
+ * went into, how its verification ended, and the attention item it raised.
+ * One row per PR; preparing the same PR again reuses it. `done` means its
+ * workspace is gone (archived, or closed before it ran) and its items resolved.
+ */
+export const reviewPreps = pgTable(
+  "review_preps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `refKey` of `ref`, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    ref: jsonb("ref").$type<PrRef>().notNull(),
+    workspaceId: uuid("workspace_id").references(() => reviewWorkspaces.id, {
+      onDelete: "set null",
+    }),
+    prId: uuid("pr_id").references(() => reviewWorkspacePrs.id, { onDelete: "set null" }),
+    state: text("state").$type<ReviewPrepState>().notNull().default("queued"),
+    /** The head commit verification last ran against. */
+    headSha: text("head_sha"),
+    verdict: text("verdict").$type<ReviewPrepVerdict>(),
+    /** Why it failed or waits for the user, in Yarvis's words. */
+    note: text("note"),
+    /** The attention item's dedupe key, raised with source `system`. */
+    attentionKey: text("attention_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    /** When the attention item was raised, null before. */
+    raisedAt: timestamp("raised_at", { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex("review_preps_ref_key_idx").on(t.refKey),
+    index("review_preps_workspace_idx").on(t.workspaceId),
+  ],
+);
+
+export type ReviewPrepRow = typeof reviewPreps.$inferSelect;
+
+/**
+ * A reviewed PR in a review workspace being watched for new commits
+ * (`reviewPrep/updates.ts`). A head is acted on only once it has stayed the
+ * same for a settle time, so a burst of pushes gives one alert.
+ */
+export const prUpdateWatches = pgTable("pr_update_watches", {
+  /** `refKey` of the PR, e.g. `gh:owner/repo/7`. */
+  refKey: text("ref_key").primaryKey(),
+  /** The provider's head when last polled, and when it was first seen there. */
+  seenHeadSha: text("seen_head_sha").notNull(),
+  seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  /** The head the last alert was claimed for, so it isn't raised twice. */
+  alertedHeadSha: text("alerted_head_sha"),
+  /** When that alert was claimed, and when it was raised: null while it is still being prepared. */
+  alertingAt: timestamp("alerting_at", { withTimezone: true }),
+  alertedAt: timestamp("alerted_at", { withTimezone: true }),
+  /**
+   * The last "What's changed" run the job started, and the head it covered.
+   * The job starts no other until the user has looked since (`tabOpenedAt`,
+   * or the item read).
+   */
+  unattendedRunAt: timestamp("unattended_run_at", { withTimezone: true }),
+  unattendedHeadSha: text("unattended_head_sha"),
+  /** When the user last opened the PR's Since last review tab. */
+  tabOpenedAt: timestamp("tab_opened_at", { withTimezone: true }),
+});
+
+export type PrUpdateWatch = typeof prUpdateWatches.$inferSelect;
+
+/**
+ * The reminders sent for one piece of stalled work (`digest/stalled.ts`),
+ * keyed by its dangling-work key. A new stretch of waiting (the user touched it
+ * again) starts the count over; `stoppedAt` is set when the user dismissed a
+ * reminder, and holds for as long as the item stays dangling.
+ */
+export const stallReminders = pgTable("stall_reminders", {
+  itemKey: text("item_key").primaryKey(),
+  /** The dangling item's kind, so a source that couldn't be read leaves its rows alone. */
+  kind: text("kind").notNull(),
+  /** When the item started waiting on the user, as the reminders counted it. */
+  waitingSince: timestamp("waiting_since", { withTimezone: true }).notNull(),
+  count: integer("count").notNull().default(0),
+  lastRemindedAt: timestamp("last_reminded_at", { withTimezone: true }),
+  stoppedAt: timestamp("stopped_at", { withTimezone: true }),
+});
+
+export type StallReminder = typeof stallReminders.$inferSelect;
 
 /**
  * A mutation-testing pass over one review PR: a planning run picks mutants, the

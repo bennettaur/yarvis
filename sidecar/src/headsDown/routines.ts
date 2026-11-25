@@ -16,6 +16,7 @@ import type { RegistryTool } from "../agentTools/store.ts";
 import { hasInvisibleChars } from "../web/extract.ts";
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
+import reviewPrep from "./routines/review-prep.md" with { type: "text" };
 
 /**
  * Routines: recurring jobs a heads-down pass takes on beside the work streams,
@@ -87,6 +88,7 @@ export interface RoutineCatalog {
 const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "routines/meeting-alarms.md", content: meetingAlarms },
   { path: "routines/meeting-notes.md", content: meetingNotes },
+  { path: "routines/review-prep.md", content: reviewPrep },
 ];
 
 /** `~/.yarvis/routines`, overridable so tests and a second instance can point elsewhere. */
