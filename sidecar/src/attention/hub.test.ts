@@ -15,6 +15,7 @@ function row(id: string): AttentionItemRow {
     body: null,
     status: "pending",
     navTarget: null,
+    risk: null,
     payload: null,
     createdAt: new Date(),
     updatedAt: new Date(),

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { raiseAttention } from "../attention/raise.ts";
+import { updateAttentionStatus } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { attentionItems, reviewPreps, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
@@ -68,6 +69,7 @@ beforeEach(async () => {
     },
     donePrs: async () => done,
   };
+  deps.prep.notNeedingReview = async () => done;
 });
 
 afterEach(async () => {
@@ -159,9 +161,15 @@ describe("runReviewPrepUpkeep", () => {
   it("leaves it while any PR still waits on the user", async () => {
     const { ws } = await workspace([ref(1), ref(2)]);
     done = new Set([refKey(ref(1))]);
-    expect((await runReviewPrepUpkeep(db, config, deps)).archived).toEqual([]);
+    const result = await runReviewPrepUpkeep(db, config, deps);
+    expect(result).toMatchObject({ archived: [], released: 1 });
     expect(await statusOf(ws.id)).toBe("active");
-    expect(await pending()).toHaveLength(2);
+    // PR 1's slot is freed and its item resolved; PR 2's still waits.
+    expect((await pending()).map((a) => a.sessionKey)).toEqual([
+      `raise:system:${prepAttentionKey(refKey(ref(2)))}`,
+    ]);
+    const states = await db.select().from(reviewPreps);
+    expect(states.find((p) => p.refKey === refKey(ref(1)))?.state).toBe("released");
   });
 
   it("waits while a prep of one of its PRs is still running", async () => {
@@ -234,7 +242,7 @@ describe("runReviewPrepUpkeep", () => {
     mkdirSync(reviewSessionFolder(config, ws.id), { recursive: true });
     done = new Set([refKey(ref(1))]);
     await runReviewPrepUpkeep(db, config, deps);
-    expect(await pending()).toHaveLength(2);
+    expect((await pending()).map((a) => a.title)).toEqual(["Review workspace ready to archive"]);
 
     await db
       .update(reviewWorkspaces)
@@ -264,5 +272,92 @@ describe("runReviewPrepUpkeep", () => {
     // Its checkout had failed, which the requeued prep reports.
     expect(prep).toMatchObject({ state: "failed", prId: prs[0]?.id });
     expect(prep?.note).toContain("the checkout failed");
+  });
+});
+
+describe("the review stream's upkeep", () => {
+  const backlog = async (r: PrRef, minutesAgo: number) =>
+    db.insert(reviewPreps).values({
+      refKey: refKey(r),
+      ref: r,
+      state: "backlog",
+      backloggedAt: new Date(Date.now() - minutesAgo * 60_000),
+      attentionKey: prepAttentionKey(refKey(r)),
+    });
+  const stateOf = async (r: PrRef) =>
+    (
+      await db
+        .select()
+        .from(reviewPreps)
+        .where(eq(reviewPreps.refKey, refKey(r)))
+    )[0]?.state;
+
+  beforeEach(() => {
+    deps.prep.prepConfig = async () => ({ maxConcurrentVerifications: 1, maxReady: 1 });
+  });
+
+  it("frees the slot of a PR whose item the user dismissed, and takes up the backlog", async () => {
+    await workspace([ref(1)], "user");
+    await backlog(ref(2), 10);
+    const [item] = await pending();
+    await updateAttentionStatus(db, item?.id ?? "", "dismissed");
+    // No workspace can be opened in this test, so the backlogged PR's repo is
+    // unregistered and it leaves the backlog rather than starting.
+    deps.prep.kickoff.isRegistered = async () => false;
+
+    const result = await runReviewPrepUpkeep(db, config, deps);
+    expect(result.released).toBe(1);
+    expect(await stateOf(ref(1))).toBe("released");
+    const [backlogged] = await db
+      .select()
+      .from(reviewPreps)
+      .where(eq(reviewPreps.refKey, refKey(ref(2))));
+    expect(backlogged).toMatchObject({ state: "done", note: "Its repo is no longer registered." });
+  });
+
+  it("keeps the backlog while every slot is in use", async () => {
+    await workspace([ref(1)], "user");
+    await backlog(ref(2), 10);
+    expect(await runReviewPrepUpkeep(db, config, deps)).toMatchObject({ released: 0, started: 0 });
+    expect(await stateOf(ref(2))).toBe("backlog");
+  });
+
+  it("drops backlogged PRs that no longer need the user's review", async () => {
+    await workspace([ref(1)], "user");
+    await backlog(ref(2), 10);
+    await backlog(ref(3), 5);
+    deps.prep.notNeedingReview = async (refs) =>
+      new Set(refs.map(refKey).filter((k) => k === refKey(ref(3))));
+    expect((await runReviewPrepUpkeep(db, config, deps)).dropped).toBe(1);
+    expect(await stateOf(ref(2))).toBe("backlog");
+    expect(await stateOf(ref(3))).toBe("done");
+  });
+
+  it("never marks a backlogged PR done for having no workspace", async () => {
+    await backlog(ref(2), 10);
+    deps.prep.prepConfig = async () => ({ maxConcurrentVerifications: 1, maxReady: 0 });
+    await runReviewPrepUpkeep(db, config, deps);
+    expect(await stateOf(ref(2))).toBe("backlog");
+  });
+
+  it("frees the slot of a PR the user reviewed, and resolves its item", async () => {
+    await workspace([ref(1)], "user");
+    done = new Set([refKey(ref(1))]);
+    expect((await runReviewPrepUpkeep(db, config, deps)).released).toBe(1);
+    expect(await stateOf(ref(1))).toBe("released");
+    expect(await pending()).toEqual([]);
+  });
+
+  it("doesn't release a prep for a dismissal from before it last changed", async () => {
+    await workspace([ref(1)], "user");
+    const [item] = await pending();
+    await updateAttentionStatus(db, item?.id ?? "", "dismissed");
+    // Prepared again since: the old round's dismissal says nothing about this one.
+    await db
+      .update(reviewPreps)
+      .set({ updatedAt: new Date(Date.now() + 1000) })
+      .where(eq(reviewPreps.refKey, refKey(ref(1))));
+    expect((await runReviewPrepUpkeep(db, config, deps)).released).toBe(0);
+    expect(await stateOf(ref(1))).toBe("ready");
   });
 });

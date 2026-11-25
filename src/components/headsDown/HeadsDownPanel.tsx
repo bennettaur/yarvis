@@ -31,12 +31,18 @@ import {
   type WorkStream,
 } from "../../lib/headsDown";
 import { combineResources, primeCache, useCachedResource } from "../../lib/resourceCache";
+import {
+  getReviewStream,
+  REVIEW_STREAM_CACHE_KEY,
+  type ReviewStream as ReviewStreamData,
+} from "../../lib/reviewPrep";
 import RefreshingIndicator from "../RefreshingIndicator";
 import AgentMark, { type AgentState } from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
+import ReviewStream from "./ReviewStream";
 import RoutineList from "./RoutineList";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
@@ -411,6 +417,10 @@ export default function HeadsDownPanel() {
     HEADS_DOWN_CACHE_KEYS.routines,
     listRoutines,
   );
+  const reviewStream = useCachedResource<ReviewStreamData>(
+    REVIEW_STREAM_CACHE_KEY,
+    getReviewStream,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -421,6 +431,7 @@ export default function HeadsDownPanel() {
   const refreshAutoApprovals = autoApprovals.refresh;
   const refreshRoutines = routines.refresh;
   const refreshConfig = config.refresh;
+  const refreshReviewStream = reviewStream.refresh;
   const refreshAll = useCallback(() => {
     void refreshState();
     void refreshQuestions();
@@ -429,6 +440,7 @@ export default function HeadsDownPanel() {
     void refreshMessages();
     void refreshAutoApprovals();
     void refreshRoutines();
+    void refreshReviewStream();
   }, [
     refreshState,
     refreshQuestions,
@@ -437,6 +449,7 @@ export default function HeadsDownPanel() {
     refreshMessages,
     refreshAutoApprovals,
     refreshRoutines,
+    refreshReviewStream,
   ]);
   const live = useLivePass(refreshAll);
   const combined = combineResources([state, questions, streams, passes, messages]);
@@ -499,6 +512,13 @@ export default function HeadsDownPanel() {
         <Section title="Tell it something">
           <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
         </Section>
+
+        {reviewStream.data &&
+          reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
+            <Section title="Review stream">
+              <ReviewStream data={reviewStream.data} />
+            </Section>
+          )}
 
         <Section title="Routines">
           <RoutineList

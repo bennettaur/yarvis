@@ -239,9 +239,12 @@ describe("what a pass may do", () => {
       expect(await decideCall(db, run, "delegate", task, options)).toBe("ask");
       for (let n = 1; n <= MAX_PREPS_PER_PASS; n++) {
         const ref = { provider: "github" as const, owner: "o", repo: "r", number: n };
-        await db
-          .insert(schema.reviewPreps)
-          .values({ refKey: `gh:o/r/${n}`, ref, attentionKey: `review-prep:gh:o/r/${n}` });
+        await db.insert(schema.reviewPreps).values({
+          refKey: `gh:o/r/${n}`,
+          ref,
+          attentionKey: `review-prep:gh:o/r/${n}`,
+          requestedAt: new Date(),
+        });
       }
       expect(await decideCall(db, run, "prep_pr_review", pr, options)).toBe("ask");
     });

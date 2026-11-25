@@ -132,7 +132,7 @@ async function isReviewPrepCall(
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(reviewPreps)
-    .where(gte(reviewPreps.updatedAt, reviewPrepSince));
+    .where(gte(reviewPreps.requestedAt, reviewPrepSince));
   return (row?.count ?? 0) < MAX_PREPS_PER_PASS;
 }
 
