@@ -15,6 +15,7 @@ import {
 import { createGitHubClient, type ReviewCandidate } from "../github/client.ts";
 import { createKeyedLock } from "../lib/keyedLock.ts";
 import { describeError } from "../llm/errors.ts";
+import type { GuideKickoff } from "../pr/guideRun.ts";
 import { openStackRefs } from "../pr/startReviewTools.ts";
 import { type PrRef, type ReviewerState, refKey } from "../pr/types.ts";
 import { verificationChecklist } from "../reviewWorkspaces/checklist.ts";
@@ -31,9 +32,17 @@ import {
   getReviewPr,
   locatorFor,
 } from "../reviewWorkspaces/service.ts";
-import { DEFAULT_SECTIONS, defaultVerificationDeps } from "../reviewWorkspaces/verification.ts";
+import { defaultVerificationDeps } from "../reviewWorkspaces/verification.ts";
 import { findRepoForPr } from "../workspaces/service.ts";
 import { getReviewPrepConfig, type ReviewPrepConfig } from "./config.ts";
+import {
+  choosePrepTier,
+  type PrepTierDeps,
+  startStory,
+  storyNote,
+  type TierChoice,
+  tierLine,
+} from "./sizeTier.ts";
 import { prepBody, summarizePrep } from "./summary.ts";
 
 /**
@@ -68,6 +77,7 @@ export interface ReviewPrepDeps {
   /** The open PRs in a GitHub PR's stack, bottom first, the PR itself included. */
   loadStack?: (ref: PrRef) => Promise<PrRef[]>;
   prepConfig?: () => Promise<ReviewPrepConfig>;
+  tier?: PrepTierDeps;
   /**
    * Which of `refs` don't need the user's review, by refKey: see
    * {@link needsNoReview}. A backlogged PR in the answer leaves the backlog,
@@ -713,10 +723,12 @@ async function runPrep(db: Db, config: Config, id: string, deps: ReviewPrepDeps)
       await setState(db, id, { state: "done", note: "Its review workspace was closed." });
       return;
     }
+    const tier = await choosePrepTier(db, config, found, deps.kickoff, deps.tier);
+    const story = tier.tier === "big" ? await startStory(db, config, row.ref, deps.tier) : null;
     const outcome = await verifyAndWait(db, config, row.ref, deps.kickoff, {
-      sections: DEFAULT_SECTIONS,
+      sections: tier.sections,
     });
-    await finishPrep(db, config, row, outcome, deps);
+    await finishPrep(db, config, row, outcome, deps, tier, story);
   } catch (e) {
     console.error(`[review-prep] ${name} failed:`, describeError(e));
     await raiseFailed(db, row, "Preparing it failed. See Settings → Diagnostics.").catch((err) =>
@@ -731,6 +743,8 @@ async function finishPrep(
   row: ReviewPrepRow,
   outcome: VerifyOutcome,
   deps: ReviewPrepDeps,
+  tier: TierChoice,
+  story: GuideKickoff | null,
 ): Promise<void> {
   const name = shortPrName(row.ref);
   const found = await findReviewWorkspacePr(db, row.ref);
@@ -761,9 +775,11 @@ async function finishPrep(
     deps.kickoff.review,
     (id) => (deps.kickoff.verification.run?.registry ?? agentRunRegistry).isLive(id),
     deps.kickoff.verification.settings,
+    deps.kickoff.verification.repoSettings,
   );
-  const summary = summarizePrep(checklist.report, checklist.items, checklist.size);
+  const summary = summarizePrep(checklist.report, checklist.items, checklist.size, tier.sections);
   let body = prepBody(name, pr.title || null, summary);
+  body += `\n${tierLine(tier, story && (await storyNote(db, row.ref, story)))}`;
   if (await setupWaiting(pr, deps)) {
     body +=
       "\nIts setup script hasn't run: it runs the PR's code, so it waits for your go-ahead in the workspace.";

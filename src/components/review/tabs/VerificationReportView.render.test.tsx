@@ -1045,6 +1045,57 @@ describe("VerificationReportView", () => {
     expect(withoutChecks).not.toContain("Code quality");
   });
 
+  it("shows where the repo's instructions came from, how each command ran, and the steps left", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          repoVerify: {
+            status: "issues",
+            findings: [
+              { title: "`bun test` failed", detail: "it exited with code 1", severity: "medium" },
+            ],
+            instructions: {
+              branch: "main",
+              commit: "abcdef1234567890",
+              files: ["AGENTS.md", ".claude/skills/verify-pr/SKILL.md"],
+              omitted: 2,
+            },
+            commands: [
+              {
+                argv: ["bun", "test"],
+                why: "AGENTS.md: the tests must pass.",
+                status: "failed",
+                exitCode: 1,
+                reason: "it exited with code 1",
+                output: "<img src=x onerror=alert(1)> 1 fail",
+              },
+              {
+                argv: ["make", "lint"],
+                why: "lint",
+                status: "not-run",
+                exitCode: null,
+                reason: "not an allowed test runner",
+                output: "",
+              },
+            ],
+            skipped: [{ step: "Check the staging deploy", reason: "Needs the network." }],
+          },
+        },
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    const text = textOf(html);
+    expect(text).toContain("Instructions from main at abcdef1");
+    expect(text).toContain("AGENTS.md, .claude/skills/verify-pr/SKILL.md, and 2 more left out.");
+    expect(text).toContain("Failed bun test (it exited with code 1)");
+    expect(text).toContain("Not run make lint (not an allowed test runner)");
+    expect(text).toContain("1 step left for you");
+    // The PR's test output is shown as text, never as markup.
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt; 1 fail");
+  });
+
   it("lists the malicious-intent check's tripwires even when it passes, each opening its line", async () => {
     const opened: unknown[] = [];
     const { host, unmount } = await mountForInteraction(

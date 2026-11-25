@@ -107,6 +107,7 @@ const checklist = (r: VerificationReport | null, running = false): VerificationC
   report: r,
   size: null,
   namedTickets: [],
+  defaultSections: [],
 });
 
 const patch = (lines: string[]) =>

@@ -9,8 +9,9 @@ private temp directory for each run, removed when the run ends.
 
 The verification report has one run per section (summary, change map,
 claims, risk, malicious intent, bugs, tests, complexity, performance,
-comments, observability, quality, improvements, approach, and the flow
-diagram), so each can be re-run on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
+comments, observability, quality, improvements, approach, the flow diagram,
+and the repo's own and the user's playbook verification), so each can be
+re-run on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
 together from each section's newest answer. A run starts from
 `sidecar/src/reviewWorkspaces/verification.ts`, which writes the PR's context,
 an `index.md` of every changed file and one numbered patch per file
@@ -22,6 +23,10 @@ group for risk and the checks. The sidecar checks each answer, asks a failed
 one again once, and puts the answers together in code
 (`combineSectionAnswers`). Once the run answers it adds which changed files
 no agent read (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+For the repo verification check it also writes the repo's `AGENTS.md`,
+`CLAUDE.md` and `.claude/` skills, agents and commands, read from the default
+branch (`reviewWorkspaces/repoInstructions.ts`), under `repo/`; for the
+playbook check, the user's `verify` playbook as `playbook.md`.
 For the malicious-intent check it also writes `tripwires.md`, what
 `reviewWorkspaces/tripwires.ts`'s fixed rules found in the diff, and adds that
 list to the check's answer itself, so the agent can't drop one.

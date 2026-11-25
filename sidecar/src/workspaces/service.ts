@@ -132,6 +132,8 @@ export interface CreateRepoInput {
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
   playbooks?: PlaybookInput;
+  /** Verification report sections its PRs run when none are picked; null for the app's defaults. */
+  verificationChecks?: string[] | null;
 }
 
 export interface UpdateRepoInput {
@@ -142,6 +144,8 @@ export interface UpdateRepoInput {
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
   playbooks?: PlaybookInput;
+  /** Verification report sections its PRs run when none are picked; null for the app's defaults. */
+  verificationChecks?: string[] | null;
 }
 
 /** Extracts {owner, repo} from an ssh or https git remote, or null. */
@@ -358,6 +362,7 @@ export async function createRepo(db: Db, config: Config, input: CreateRepoInput)
       pullIssues: input.pullIssues ?? false,
       tracker: input.tracker ?? null,
       playbooks: normalizePlaybooks(input.playbooks ?? {}),
+      verificationChecks: input.verificationChecks ?? null,
     })
     .returning();
   return row!;
@@ -410,6 +415,7 @@ export async function updateRepo(db: Db, id: string, patch: UpdateRepoInput): Pr
   if (patch.pullIssues !== undefined) values.pullIssues = patch.pullIssues;
   if (patch.tracker !== undefined) values.tracker = patch.tracker;
   if (patch.playbooks !== undefined) values.playbooks = normalizePlaybooks(patch.playbooks);
+  if (patch.verificationChecks !== undefined) values.verificationChecks = patch.verificationChecks;
   if (patch.cloneUrl !== undefined) {
     assertSafeCloneUrl(patch.cloneUrl);
     const parsed = parseGitUrl(patch.cloneUrl);

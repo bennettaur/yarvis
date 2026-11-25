@@ -100,6 +100,7 @@ describe("repoPrRef", () => {
     pullIssues: false,
     tracker: null,
     playbooks: {},
+    verificationChecks: null,
     createdAt: "",
     updatedAt: "",
   };

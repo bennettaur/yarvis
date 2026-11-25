@@ -11,6 +11,9 @@ import {
   changedUpstack,
   coverageKnown,
   type ImpactBand,
+  type InstructedCheck,
+  type RepoCommand,
+  type RepoInstructions,
   type ReportSection,
   type Severity,
   THEME_RISK_LABEL,
@@ -357,6 +360,11 @@ const QUESTIONS = {
     title: "Does it meet the quality bar?",
     purpose: "Design, readability and maintainability, once it is correct and safe.",
   },
+  repo: {
+    title: "Does it pass this repo's own checks?",
+    purpose:
+      "The verification the repo's instructions and your playbook for it ask for, with the steps a read-only run left for you.",
+  },
 } as const;
 
 type Question = keyof typeof QUESTIONS;
@@ -372,6 +380,8 @@ const CHECK_QUESTION: Record<VerificationCheckKey, Question> = {
   comments: "quality",
   quality: "quality",
   improvements: "quality",
+  repoVerify: "repo",
+  playbookVerify: "repo",
 };
 
 const CHECK_PURPOSE: Record<VerificationCheckKey, string> = {
@@ -385,6 +395,9 @@ const CHECK_PURPOSE: Record<VerificationCheckKey, string> = {
   bugs: "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next likely change, and existing bugs it now reaches.",
   improvements:
     "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups that never block.",
+  repoVerify:
+    "The PR verification the repo's own AGENTS.md and skills describe, read from its default branch.",
+  playbookVerify: "Your Verify a PR playbook for this repo.",
 };
 
 function QuestionGroup({ question, children }: { question: Question; children: React.ReactNode }) {
@@ -558,6 +571,80 @@ function Tripwires({
         {omitted > 0 && <li className="text-zinc-500">{omitted} more not listed.</li>}
       </ul>
     </details>
+  );
+}
+
+const COMMAND_STATUS: Record<RepoCommand["status"], string> = {
+  passed: "Passed",
+  failed: "Failed",
+  "not-run": "Not run",
+};
+
+/**
+ * Under a repo or playbook check: which commit the repo's instructions came
+ * from, how the commands they asked for ran, and the steps nobody could take.
+ */
+function InstructedNote({
+  check,
+  instructions,
+  commands = [],
+}: {
+  check: InstructedCheck;
+  instructions?: RepoInstructions;
+  commands?: RepoCommand[];
+}) {
+  const skipped = check.skipped ?? [];
+  if (!instructions && skipped.length === 0 && commands.length === 0) return null;
+  return (
+    <div className="space-y-1 pl-6 text-xs text-zinc-400">
+      {instructions && (
+        <p>
+          Instructions from {instructions.branch} at{" "}
+          <code className="font-mono">{instructions.commit.slice(0, 7)}</code>:{" "}
+          {instructions.files.length === 0
+            ? "the repo has none."
+            : `${instructions.files.join(", ")}${instructions.omitted > 0 ? `, and ${instructions.omitted} more left out` : ""}.`}
+        </p>
+      )}
+      {commands.length > 0 && (
+        <ul className="space-y-1">
+          {commands.map((c, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: two commands can be the same
+            <li key={i}>
+              <details>
+                <summary className="cursor-pointer">
+                  <span className="text-zinc-300">{COMMAND_STATUS[c.status]}</span>{" "}
+                  <code className="font-mono">{c.argv.join(" ")}</code>
+                  {c.reason && <span className="text-zinc-500"> ({c.reason})</span>}
+                </summary>
+                <p className="mt-1 text-zinc-500">{c.why}</p>
+                {c.output && (
+                  <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-zinc-900 p-2 font-mono text-[11px] text-zinc-400">
+                    {c.output}
+                  </pre>
+                )}
+              </details>
+            </li>
+          ))}
+        </ul>
+      )}
+      {skipped.length > 0 && (
+        <details>
+          <summary className="cursor-pointer">
+            {skipped.length} {skipped.length === 1 ? "step" : "steps"} left for you
+          </summary>
+          <ul className="mt-1 space-y-0.5">
+            {skipped.map((s, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: two steps can read the same
+              <li key={i}>
+                <span className="text-zinc-300">{s.step}</span>{" "}
+                <span className="text-zinc-500">{s.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -1494,6 +1581,16 @@ export default function VerificationReportView({
               onOpen={onOpen}
             />
           )}
+          {key === "repoVerify" && report.repoVerify && (
+            <InstructedNote
+              check={report.repoVerify}
+              instructions={report.repoVerify.instructions}
+              commands={report.repoVerify.commands}
+            />
+          )}
+          {key === "playbookVerify" && report.playbookVerify && (
+            <InstructedNote check={report.playbookVerify} />
+          )}
         </div>
       );
     });
@@ -1503,6 +1600,7 @@ export default function VerificationReportView({
   const hasSafety = !!risk || checksFor("safety").length > 0;
   const hasUnrelated = outliers.length > 0 || checksFor("unrelated").length > 0;
   const hasQuality = !!report.approach || checksFor("quality").length > 0;
+  const hasRepo = checksFor("repo").length > 0;
 
   return (
     <div className="space-y-5">
@@ -1651,6 +1749,12 @@ export default function VerificationReportView({
           {checksFor("quality").length > 0 && (
             <div className="space-y-2">{checkRows("quality")}</div>
           )}
+        </QuestionGroup>
+      )}
+
+      {hasRepo && (
+        <QuestionGroup question="repo">
+          <div className="space-y-2">{checkRows("repo")}</div>
         </QuestionGroup>
       )}
     </div>

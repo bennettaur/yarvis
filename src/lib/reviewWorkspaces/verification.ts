@@ -25,6 +25,36 @@ export interface VerificationCheck {
   findings: VerificationFinding[];
 }
 
+/** A step a repo or playbook check's instructions gave that a read-only run couldn't take. */
+export interface SkippedStep {
+  step: string;
+  reason: string;
+}
+
+/** A check run from instructions written for the repo, by its maintainers or by the user. */
+export interface InstructedCheck extends VerificationCheck {
+  skipped?: SkippedStep[];
+}
+
+/** Mirrors the sidecar's `RepoCommandResult`: a command the repo's instructions asked for, run by Yarvis. */
+export interface RepoCommand {
+  argv: string[];
+  why: string;
+  status: "passed" | "failed" | "not-run";
+  exitCode: number | null;
+  reason: string | null;
+  /** Written by the PR's code: shown as text, never as markup. */
+  output: string;
+}
+
+/** Mirrors the sidecar's `RepoInstructions`: where the repo check's instructions came from. */
+export interface RepoInstructions {
+  branch: string;
+  commit: string;
+  files: string[];
+  omitted: number;
+}
+
 /** A place in the code backing a claim: the test that proves a change, or the guard that contains it. */
 export interface VerificationProof {
   text: string;
@@ -269,6 +299,8 @@ export interface VerificationReport {
   quality?: VerificationCheck;
   bugs?: VerificationCheck;
   improvements?: VerificationCheck;
+  repoVerify?: InstructedCheck & { instructions?: RepoInstructions; commands?: RepoCommand[] };
+  playbookVerify?: InstructedCheck;
   approach?: VerificationApproach;
   flow?: VerificationFlow;
   /** Absent on a report from before coverage was counted. */
@@ -306,6 +338,8 @@ export const VERIFICATION_CHECKS = [
   "comments",
   "observability",
   "quality",
+  "repoVerify",
+  "playbookVerify",
   "improvements",
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
@@ -321,6 +355,8 @@ export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   quality: "Code quality",
   bugs: "Bugs",
   improvements: "Improvements",
+  repoVerify: "Repo verification",
+  playbookVerify: "Playbook verification",
 };
 
 /**
@@ -338,9 +374,26 @@ export const REPORT_SECTIONS = [
 ] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** What runs when no sections are picked: everything but the diagram. */
+/** What each section is called in Settings; mirrors the sidecar's checklist labels. */
+export const SECTION_LABEL: Record<ReportSection, string> = {
+  summary: "Summary and must-read files",
+  changeMap: "Change map",
+  claims: "Claims",
+  risk: "Risk",
+  ...CHECK_LABEL,
+  approach: "Simpler approach",
+  flow: "Flow diagram",
+};
+
+/** The checks that follow instructions written for the repo; mirrors the sidecar's `REPO_SECTIONS`. */
+export const REPO_SECTIONS: readonly ReportSection[] = ["repoVerify", "playbookVerify"];
+
+/**
+ * What runs when no sections are picked, for a repo with no checks of its own
+ * picked: everything but the diagram and the repo's own checks.
+ */
 export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow",
+  (s) => s !== "flow" && !REPO_SECTIONS.includes(s),
 );
 
 /**
@@ -387,7 +440,7 @@ export interface ChecklistRun {
   finishedAt: string | null;
 }
 
-export type ChecklistThemeId = "understand" | "correctness" | "risk" | "maintainability";
+export type ChecklistThemeId = "understand" | "correctness" | "risk" | "maintainability" | "repo";
 
 export interface ChecklistItem {
   section: ReportSection;
@@ -414,6 +467,8 @@ export interface VerificationChecklist {
   size: VerificationSize | null;
   /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
   namedTickets: string[];
+  /** The sections the PR's repo runs when none are picked. */
+  defaultSections: ReportSection[];
 }
 
 const path = (workspaceId: string, prId: string) =>

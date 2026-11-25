@@ -256,6 +256,8 @@ theme:
 - **Risk and impact**: the risk score and the malicious-intent check.
 - **Maintainability**: complexity, code quality, comment quality,
   improvements, and whether there is a simpler way to do what the PR does.
+- **This repo's own checks**: repo verification and playbook verification
+  (see [Repo and playbook verification](#repo-and-playbook-verification)).
 
 At the top, **Decision** sums the checklist up. It opens with what the PR is
 for, suggests a decision, and lists every reason for it:
@@ -305,8 +307,10 @@ Nothing is posted until you submit.
 
 Each check runs on its own, when you choose. **Run** (or **Re-run**) on a
 row runs that one; tick several and press **Run picked** to start them
-together. The boxes start ticked on the checks with no result for the PR's
-current head, except the flow diagram, which runs only when you ask. Each
+together. The boxes start ticked on the repo's default checks that have no result for
+the PR's current head. Those are the checks picked for the repo under
+**Settings → Repositories → Verification checks**, or, with none picked,
+every check but the flow diagram and the repo's own checks. Each
 row says what its newest result found ("Pass", "2 findings", "Impact 3/5"),
 what that result cost, whether that result is from an older head, and whether
 its last run failed or was cancelled. A failed or cancelled run leaves the
@@ -375,6 +379,8 @@ under the questions a review answers:
    change map's outliers.
 5. **Does it meet the quality bar?** The simpler approach, complexity,
    comments, code quality and improvements.
+6. **Does it pass this repo's own checks?** Repo verification and playbook
+   verification, each with the steps a read-only run left for you.
 
 Each question and each section opens with a line saying what it is for. A
 section whose result is from an older head is marked "older head". Every
@@ -617,6 +623,53 @@ of them read it.
 
 Under the checklist, the tab names the binary files, any diffs that will be
 cut off, and the bulk the agents will only skim.
+
+### Repo and playbook verification
+
+Two checks follow instructions written for the repo rather than Yarvis's own:
+
+- **Repo verification** runs the PR verification the repo describes for
+  itself: its `AGENTS.md`, `CLAUDE.md`, and the skills, agents and commands
+  under `.claude/` (a `verify-pr` skill, say). The agent reads them, does each
+  step it can by reading the PR's code, and reports where the PR breaks the
+  repo's own rules. The files are read from the default branch's tip, not from
+  the PR or its base, so neither a PR nor a lower layer of its stack can
+  rewrite the instructions that review it. A stacked layer is checked like
+  any other PR, against the default branch's instructions. If the repo's
+  registered default branch no longer matches its remote's, the check
+  refuses to start. The report names the branch, the commit and the files it
+  read. It is off for
+  every repo until you tick it under **Settings → Repositories →
+  Verification checks**; until then it refuses to start.
+- **Playbook verification** checks the PR against your **Verify a PR**
+  playbook for the repo (see [Repo playbooks](workspaces.md#repo-playbooks)).
+  It runs whenever the repo has one.
+
+Both agents only read, like every other check, and post nothing. The repo's
+files are never loaded as Claude Code settings, so its hooks and permissions
+don't apply, and what either agent writes is shown as findings, never acted
+on.
+
+When the repo's instructions ask for its tests to be run, the repo
+verification agent names the commands, and Yarvis runs them itself once the
+agent is done, the way [mutation testing](#mutation-testing) runs tests:
+
+- only after you agreed to run the PR's code: its setup ran with your consent
+  on this commit. A repo with no setup script never gets that consent here,
+  so its commands don't run;
+- in a scratch copy of the checkout, inside the same sandbox, with no network;
+- only as one of the test runners mutation testing allows (`bun test`,
+  `npm test`, `pytest`, `go test` and the like).
+
+The check counts as running until its commands have finished. Each command
+is listed with whether it passed, failed or didn't run and why, and the end
+of its output. A command passes on exit code 0, unless its output says it ran
+no tests: `npm test` and the like run the PR's own script, which the PR can
+change. A failed command adds a finding of its own. Anything else the
+instructions ask for (another script, anything needing the network or
+credentials, posting a report) isn't done: the check lists it under **steps
+left for you**. Playbook verification only reads, and lists any step that
+needs more the same way.
 
 ### Flow diagram
 
@@ -1023,10 +1076,26 @@ PR, it:
 1. Opens a review workspace for it. A PR already in a review workspace stays
    there, and no second one is opened. A layer of a stack goes into the
    workspace review prep already opened for another layer of that stack.
-2. Runs the verification report's default checks (everything but the flow
-   diagram), at most two PRs at a time; the rest wait their turn. The number
-   is `maxConcurrentVerifications` in the `reviewPrep` section of
+2. Picks which checks to run from the PR's size, then runs them, at most two
+   PRs at a time; the rest wait their turn. The number is
+   `maxConcurrentVerifications` in the `reviewPrep` section of
    `~/.yarvis/settings.json` (see [Configuration](../configuration.md)).
+   - A **small** PR (20 changed lines or fewer in at most 2 files, and no
+     binary files) gets only the summary, risk and malicious-intent checks,
+     plus the repo's own checks if you turned them on for it, since reading it
+     is quicker than waiting for more. The bug-hunting and improvement checks
+     are left out of a small PR; normal and big PRs get them with the repo's
+     default checks.
+   - A **big** PR (500 changed lines or more, or 10 files or more) gets the
+     repo's default checks plus the flow diagram, and its Story walkthrough
+     is written at the same time, so both are ready when you open it.
+   - Anything between gets the repo's default checks.
+
+   Lockfiles, test snapshots, migration metadata and other generated files
+   don't count toward a big PR. They do count toward a small one, so a
+   change can't hide in a file named like a lockfile to skip the checks. The
+   thresholds are `sizeTiers` in the same `reviewPrep` section. The item says
+   which size the PR was and what that changed.
 3. When the checks end, adds a **Ready for review** item to the attention
    stream, under Review. It gives a verdict, the files to read first and an
    estimated review time, and opens the PR's verification checklist. The

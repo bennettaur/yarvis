@@ -3,6 +3,7 @@ import type { ChecklistItem, ChecklistReport } from "../reviewWorkspaces/checkli
 import {
   CHECK_SECTIONS,
   DEFAULT_SECTIONS,
+  type ReportSection,
   type VerificationSize,
 } from "../reviewWorkspaces/verification.ts";
 
@@ -42,6 +43,8 @@ export function summarizePrep(
   report: ChecklistReport | null,
   items: readonly ChecklistItem[],
   size: VerificationSize | null,
+  /** The sections the prep asked for; one it didn't ask for isn't missing. */
+  asked: readonly ReportSection[] = DEFAULT_SECTIONS,
 ): PrepSummary {
   const blockers: string[] = [];
   const concerns: string[] = [];
@@ -65,7 +68,7 @@ export function summarizePrep(
   if (medium > 0) concerns.push(plural(medium, "medium finding", "medium findings"));
   const rating = report?.approach?.rating;
   if (rating === "simpler" || rating === "much-simpler") concerns.push("a simpler approach");
-  const notRun = items.filter((i) => DEFAULT_SECTIONS.includes(i.section) && !i.result?.current);
+  const notRun = items.filter((i) => asked.includes(i.section) && !i.result?.current);
   if (notRun.length > 0) {
     concerns.push(plural(notRun.length, "check without a result", "checks without a result"));
   }

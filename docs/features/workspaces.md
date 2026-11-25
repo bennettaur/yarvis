@@ -32,6 +32,10 @@ On this page:
      for example `bun run dev`.
    - **Pull issues**. Tick it to show the repo's issues on the Issues tab.
    - **Playbooks** (optional). See [Repo playbooks](#repo-playbooks).
+   - **Verification checks** (optional). The verification report checks its
+     PRs run when none are picked, by review prep among others. Untouched, it
+     uses Yarvis's defaults. Repo verification runs only when ticked here; see
+     [Repo and playbook verification](review-workspaces.md#repo-and-playbook-verification).
 3. Optional: install the GitHub CLI and the stack extension for the
    [Stack tab](#stacked-pull-requests)'s grouping and merge button:
    ```bash
@@ -63,6 +67,9 @@ Playbooks**:
   merging.
 - **Test in staging**, **Deploy**, **Monitor the deploy**, **Monitor production**,
   **Test in production** and **Revert**.
+- **Verify a PR**: what the
+  [playbook verification](review-workspaces.md#repo-and-playbook-verification)
+  check runs on a PR.
 
 Write them in plain text, up to 4000 characters each. A repo with none saved
 has no playbook.

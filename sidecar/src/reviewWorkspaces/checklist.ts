@@ -11,6 +11,7 @@ import type { Db } from "../db/client.ts";
 import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import type { VerificationRunConfig } from "../pr/models.ts";
+import type { PrRef } from "../pr/types.ts";
 import type { Coverage, UnknownCoverage } from "./coverage.ts";
 import { PATCH_LIMITS } from "./patchFiles.ts";
 import { getReviewPr, type ReviewDeps, reviewDiffFacts } from "./service.ts";
@@ -21,6 +22,8 @@ import {
   emptyAudit,
   REPORT_SECTIONS,
   type ReportSection,
+  type RepoVerificationSettings,
+  repoVerificationSettings,
   runSections,
   VERIFICATION_RUN_KIND,
   type VerificationReport,
@@ -33,6 +36,7 @@ export const CHECKLIST_THEMES = [
   { id: "correctness", label: "Correctness and tests" },
   { id: "risk", label: "Risk and impact" },
   { id: "maintainability", label: "Maintainability" },
+  { id: "repo", label: "This repo's own checks" },
 ] as const;
 
 export type ChecklistTheme = (typeof CHECKLIST_THEMES)[number]["id"];
@@ -125,6 +129,17 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Simpler approach",
     description: "Whether there is a simpler way to do what the PR does.",
   },
+  repoVerify: {
+    theme: "repo",
+    label: "Repo verification",
+    description:
+      "The PR verification the repo's own AGENTS.md and skills describe, read from its default branch. Off until turned on for the repo.",
+  },
+  playbookVerify: {
+    theme: "repo",
+    label: "Playbook verification",
+    description: "Your Verify a PR playbook for this repo, from Settings → Repositories.",
+  },
 };
 
 /** A run on the checklist: enough to show its state, without its answer or events. */
@@ -169,6 +184,8 @@ export interface VerificationChecklist {
   size: VerificationSize | null;
   /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
   namedTickets: string[];
+  /** The sections the PR's repo runs when none are picked. */
+  defaultSections: ReportSection[];
 }
 
 /** More runs than any PR's checklist needs, so a PR re-run for months can't make the read unbounded. */
@@ -238,8 +255,13 @@ export async function verificationChecklist(
   reviewDeps: ReviewDeps,
   isLive: (id: string) => boolean,
   settings: () => Promise<VerificationRunConfig>,
+  repoSettings: (
+    db: Db,
+    ref: PrRef,
+  ) => Promise<RepoVerificationSettings> = repoVerificationSettings,
 ): Promise<VerificationChecklist> {
   const pr = await getReviewPr(db, workspaceId, prId);
+  const { defaultSections } = await repoSettings(db, pr.ref);
   const rows = await verificationRunRows(db, pr.refKey);
 
   const toRun = (row: RunRow): ChecklistRun => {
@@ -298,6 +320,7 @@ export async function verificationChecklist(
     report: assembleReport(answers, pr.headSha),
     size,
     namedTickets: lastNamedTickets(rows),
+    defaultSections,
   };
 }
 

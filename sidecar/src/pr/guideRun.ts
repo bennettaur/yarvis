@@ -94,6 +94,8 @@ export interface WriteGuideInput {
   signal?: AbortSignal;
   /** Replaces the guide agent, for tests. */
   runTour?: typeof generateTour;
+  /** Saves the guide without its "ready" bell item, for a caller that reports it in its own. */
+  quiet?: boolean;
 }
 
 /**
@@ -116,7 +118,7 @@ export async function writeGuide(
     contextTokens: await modelCompactAtTokens(config, provider, model),
   });
   const guide = await saveGuide(db, { ref, headSha, steps, graph, title, url });
-  await announceGuideReady(db, ref, guide);
+  if (!input.quiet) await announceGuideReady(db, ref, guide);
   void emitEvent(db, {
     type: "pr.guide.generated",
     source: ref.provider,
@@ -164,6 +166,8 @@ export async function kickOffGuide(
     source?: PrCodeSource;
     /** Replaces the guide agent, for tests. */
     runTour?: typeof generateTour;
+    /** No bell item when it is ready; a failure still raises one. */
+    quiet?: boolean;
   } = {},
 ): Promise<GuideKickoff> {
   // Claimed before the first await, so a second ask in the meantime joins this one.
@@ -201,6 +205,7 @@ export async function kickOffGuide(
       url: prWebUrl(ref, config.secrets.azureDevopsOrgUrl),
       signal: AbortSignal.timeout(GUIDE_TIMEOUT_MS),
       runTour: options.runTour,
+      quiet: options.quiet,
     })
       .catch(async (e) => {
         console.error("[pr] guide generation failed:", describeError(e));

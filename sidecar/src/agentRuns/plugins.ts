@@ -38,7 +38,13 @@ import observabilityReviewer from "../../claude-plugins/yarvis-review/agents/obs
 import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
   type: "text",
 };
+import playbookVerifier from "../../claude-plugins/yarvis-review/agents/playbook-verifier.md" with {
+  type: "text",
+};
 import qualityReviewer from "../../claude-plugins/yarvis-review/agents/quality-reviewer.md" with {
+  type: "text",
+};
+import repoVerifier from "../../claude-plugins/yarvis-review/agents/repo-verifier.md" with {
   type: "text",
 };
 import rereviewer from "../../claude-plugins/yarvis-review/agents/rereviewer.md" with {
@@ -118,6 +124,8 @@ const PLUGINS = {
     "agents/improvement-reviewer.md": withInputsAndTrust(improvementReviewer),
     "agents/approach-reviewer.md": withInputsAndTrust(approachReviewer),
     "agents/flow-diagram.md": withInputsAndTrust(flowDiagram),
+    "agents/repo-verifier.md": withInputsAndTrust(repoVerifier),
+    "agents/playbook-verifier.md": withInputsAndTrust(playbookVerifier),
     "agents/rereviewer.md": withInputsAndTrust(
       rereviewer,
       rereviewInputsAndTrust,

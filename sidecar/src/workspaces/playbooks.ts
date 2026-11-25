@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 /**
- * Per-repo prompts for shipping a PR, one per step from CI to production.
+ * Per-repo prompts for shipping a PR, one per step from CI to production, and for
+ * the Playbook verification check (verify).
  * They are stored in the repo's settings and nowhere else. An agent reads them
  * as the user's own instructions with nobody watching, so text from the repo
  * (a README, a CONTRIBUTING file) must never stand in for them.
@@ -19,6 +20,7 @@ export const PLAYBOOK_KEYS = [
   "monitorProduction",
   "testProduction",
   "revert",
+  "verify",
 ] as const;
 
 export type PlaybookKey = (typeof PLAYBOOK_KEYS)[number];
@@ -45,6 +47,7 @@ export const repoPlaybooksSchema = z.object({
   monitorProduction: playbookText,
   testProduction: playbookText,
   revert: playbookText,
+  verify: playbookText,
 });
 
 /** Trims each prompt and drops the empty ones, so a cleared text area stores nothing. */
