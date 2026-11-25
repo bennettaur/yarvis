@@ -205,11 +205,14 @@ describe("loadRoutines", () => {
     expect(problems).toEqual([]);
     expect(routines.map((r) => [r.name, r.enabled])).toEqual([
       ["email-drafts", false],
+      ["generation-reflection", false],
       ["meeting-alarms", true],
       ["meeting-notes", false],
       ["meeting-times", false],
       ["message-people", false],
       ["offer-help", false],
+      ["review-prep", false],
+      ["review-reflection", false],
       ["slack-watcher", false],
     ]);
     // A template: the user's own file names their Slack tools and fills these in.

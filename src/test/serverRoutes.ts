@@ -5,7 +5,9 @@ import { spyOn } from "bun:test";
  * `"METHOD /path"`, recording each call. Anything not in the table gets a 404.
  * The returned `restore` puts the real `fetch` back, for the suite's `afterAll`.
  */
-export function stubServerRoutes(routes: Record<string, (body: unknown) => Response>): {
+export function stubServerRoutes(
+  routes: Record<string, (body: unknown) => Response | Promise<Response>>,
+): {
   calls: { route: string; body: unknown }[];
   restore: () => void;
 } {

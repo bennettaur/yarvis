@@ -5,6 +5,7 @@ import {
   type WorkStreamLink,
   type WorkStreamLinkRef,
   type WorkStreamNote,
+  type WorkStreamShip,
   workStreamLinks,
   workStreams,
 } from "../db/schema.ts";
@@ -45,6 +46,8 @@ export interface CreateStreamInput {
   waitingOn?: string | null;
   wakeAt?: Date | null;
   note?: string;
+  /** Makes it a ship stream for one PR. */
+  ship?: WorkStreamShip | null;
   /** Makes the stream a watch; see `workStreams/watches.ts`. */
   watch?: WatchFields;
 }
@@ -72,6 +75,8 @@ export interface UpdateStreamInput {
   paused?: boolean;
   /** Appended to the notes rather than replacing them. */
   note?: string;
+  /** Written only by `ship.ts`, which decides the stages. */
+  ship?: WorkStreamShip | null;
 }
 
 export interface ListStreamsOptions {
@@ -147,6 +152,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
       nextAction: input.nextAction ?? null,
       waitingOn: input.waitingOn ?? null,
       wakeAt: input.wakeAt ?? null,
+      ship: input.ship ?? null,
       notes: input.note ? appendNote([], input.note, now) : [],
       closedAt: CLOSED_STREAM_STATUSES.includes(status) ? now : null,
     })
@@ -223,7 +229,14 @@ export async function updateStream(
   db: Db,
   id: string,
   patch: UpdateStreamInput,
-  { unlessPaused = false }: { unlessPaused?: boolean } = {},
+  {
+    unlessPaused = false,
+    expectedShip,
+  }: {
+    unlessPaused?: boolean;
+    /** Writes only while `ship` is still this, so two updates can't lose one another's. */
+    expectedShip?: WorkStreamShip | null;
+  } = {},
 ): Promise<WorkStream | null> {
   const [existing] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!existing) return null;
@@ -248,15 +261,22 @@ export async function updateStream(
       ...(patch.paused !== undefined
         ? { pausedAt: patch.paused ? (existing.pausedAt ?? now) : null }
         : {}),
+      ...(patch.ship !== undefined ? { ship: patch.ship } : {}),
       ...(patch.note ? { notes: appendNote(existing.notes, patch.note, now) } : {}),
       ...(closing && !existing.closedAt ? { closedAt: now } : {}),
       ...(reopening ? { closedAt: null } : {}),
       updatedAt: now,
     })
     .where(
-      unlessPaused
-        ? and(eq(workStreams.id, id), isNull(workStreams.pausedAt))
-        : eq(workStreams.id, id),
+      and(
+        eq(workStreams.id, id),
+        unlessPaused ? isNull(workStreams.pausedAt) : undefined,
+        expectedShip === undefined
+          ? undefined
+          : expectedShip === null
+            ? isNull(workStreams.ship)
+            : sql`${workStreams.ship} = ${JSON.stringify(expectedShip)}::jsonb`,
+      ),
     )
     .returning();
   if (row && closing && !existing.closedAt) {

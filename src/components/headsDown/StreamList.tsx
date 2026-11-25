@@ -1,9 +1,12 @@
 import { useState } from "react";
 import {
+  SHIP_STAGES,
+  type ShipStage,
   updateWorkStream,
   type WorkStream,
   type WorkStreamLink,
   type WorkStreamPatch,
+  type WorkStreamShip,
 } from "../../lib/headsDown";
 import { requestOpenWorkspace } from "../../lib/nav";
 import { openExternal } from "../../lib/url";
@@ -25,6 +28,71 @@ const STATUS_STYLE: Record<WorkStream["status"], string> = {
   done: "bg-zinc-800 text-zinc-500",
   dropped: "bg-zinc-800 text-zinc-500",
 };
+
+/** Mirrors `SHIP_STAGE_LABEL` in sidecar/src/workStreams/ship.ts, which titles its attention items. */
+const SHIP_STAGE_LABEL: Record<ShipStage, string> = {
+  ci: "CI",
+  reviewer: "Reviewer",
+  feedback: "Review feedback",
+  staging_test: "Staging test",
+  merge: "Merge",
+  deploy: "Deploy",
+  monitor_deploy: "Watch deploy",
+  monitor_production: "Watch production",
+  test_production: "Production test",
+  done: "Done",
+};
+
+const STAGE_STYLE: Record<"done" | "skipped" | "failed" | "current" | "pending", string> = {
+  failed: "bg-red-500/15 text-red-300",
+  current: "bg-sky-500/15 text-sky-200",
+  done: "bg-emerald-500/10 text-emerald-300/80",
+  skipped: "bg-zinc-800 text-zinc-500 line-through",
+  pending: "bg-zinc-800/60 text-zinc-500",
+};
+
+/** A ship stream's stages in order: where it is, and how each finished one went. */
+export function ShipStages({ ship }: { ship: WorkStreamShip }) {
+  const latestLogEntry = ship.log[ship.log.length - 1];
+  return (
+    <div className="mt-2">
+      <ol className="flex flex-wrap gap-1" aria-label="Ship stages">
+        {SHIP_STAGES.filter((stage) => stage !== "done").map((stage) => {
+          const result = ship.stages[stage];
+          const isCurrent = ship.stage === stage;
+          const status = result?.status ?? (isCurrent ? "current" : "pending");
+          const style =
+            status === "failed"
+              ? STAGE_STYLE.failed
+              : isCurrent
+                ? STAGE_STYLE.current
+                : STAGE_STYLE[status];
+          return (
+            <li
+              key={stage}
+              aria-current={isCurrent ? "step" : undefined}
+              title={status}
+              className={`rounded px-1.5 py-0.5 text-[11px] ${style}`}
+            >
+              {SHIP_STAGE_LABEL[stage]}
+              {status === "skipped" ? " (skipped)" : status === "failed" ? " (failed)" : ""}
+            </li>
+          );
+        })}
+      </ol>
+      {ship.stage === "monitor_production" && ship.monitorUntil && (
+        <p className="mt-1 text-xs text-zinc-500">
+          Watching production until {new Date(ship.monitorUntil).toLocaleString()}
+        </p>
+      )}
+      {latestLogEntry && (
+        <p className="mt-1 truncate text-xs text-zinc-500">
+          Last logged ({SHIP_STAGE_LABEL[latestLogEntry.stage]}): {latestLogEntry.text}
+        </p>
+      )}
+    </div>
+  );
+}
 
 /** What `linkLabel` reads: a saved link, or one Omni Chat proposes before saving. */
 export type LinkLabelInput = Pick<WorkStreamLink, "ref"> &
@@ -149,6 +217,7 @@ function StreamCard({ stream, onChanged }: { stream: WorkStream; onChanged: () =
           {stream.expiresAt ? ` · until ${new Date(stream.expiresAt).toLocaleString()}` : ""}
         </p>
       )}
+      {stream.ship && <ShipStages ship={stream.ship} />}
       {stream.waitingOn && (
         <p className="mt-1 text-xs text-amber-200/80">
           Waiting on: <WorkspaceMentionText text={stream.waitingOn} names={workspaceNames} />

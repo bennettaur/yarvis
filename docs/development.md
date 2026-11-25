@@ -133,6 +133,29 @@ CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
 
+On a pull request, the frontend and sidecar jobs run only the test files that
+import a changed file, directly or not (`scripts/affected-tests.ts`, built on
+`bun test --changed`). A change Bun can't trace through imports runs the whole
+suite instead: the lockfile, `package.json`, the test preloads and config, the
+sidecar's migrations, or `ci.yml` itself. A few tests that read repo files
+from disk or scan the source tree run every time (`alwaysRun` in the script).
+Pushes to main always run every test.
+To run the same selection locally, against where your branch left
+`origin/main`:
+
+```bash
+bun run test:affected
+bun run sidecar:test:affected     # needs the test database, as above
+```
+
+Cargo has nothing like `--changed`, so the Rust jobs are gated by folder
+instead: the `src-tauri` jobs (fmt, clippy, tests) run on a pull request only
+when it changes `src-tauri/`, and the server job only when it changes
+`server/`. The native macOS and Android app jobs work the same way for
+`apps/macos/` and `apps/android/`, and the nightly workflow builds and tests
+both apps every night. `cargo audit` always runs, since a new advisory doesn't
+need a code change.
+
 ## Verifying a PR for merge
 
 The `/verify-pr` Claude Code skill checks a PR is ready to merge and posts a
@@ -404,6 +427,9 @@ Workspaces are shared too: both instances create worktrees under
 
 `.github/workflows/nightly.yml` publishes a `.dmg` to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly).
+It also tests and builds the native clients and attaches them: the macOS app
+from `apps/macos/scripts/make-app.sh`, zipped, and a debug APK of the Android
+app.
 
 Build a release locally with `bun run tauri:build`, not `bun run tauri build`.
 It layers `src-tauri/tauri.release.conf.json` over the main config, which
@@ -538,7 +564,8 @@ sidecar/        Bun + TS service (Hono)
   src/scheduledTasks/
                    prompts the assistant schedules for itself in a chat, their
                    tools, and the job that runs them
-  src/digest/      dangling work, next-work ranking, weekly summary, dismissals
+  src/digest/      dangling work, next-work ranking, weekly summary, dismissals,
+                   stalled-work reminders (`stalled.ts`)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
@@ -558,6 +585,9 @@ sidecar/        Bun + TS service (Hono)
                    verification checklist: one run per section, the report
                    put together from each section's newest result
                    (`verification.ts`, `checklist.ts`)
+  src/reviewPrep/  review prep: its queue and verification slots, the upkeep
+                   job that archives what it opened, and the alerts for PRs
+                   updated since your review (`updates.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

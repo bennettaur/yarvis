@@ -63,7 +63,7 @@ export interface PrReviewStartDeps {
 }
 
 /** The open PRs of a GitHub stack, bottom layer first. */
-async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
+export async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
   if (ref.provider !== "github") throw new StackError("Only GitHub PRs can be stacked.");
   const token = config.secrets.githubToken;
   if (!token) throw new StackError("GitHub isn't signed in under Settings → Credentials.");

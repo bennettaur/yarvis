@@ -56,10 +56,11 @@ export const navTargetSchema: z.ZodType<AttentionNavTarget> = z.discriminatedUni
   }),
   z.object({ type: z.literal("task"), taskId: id }),
   z.object({ type: z.literal("heads-down") }),
+  z.object({ type: z.literal("artifact"), id }),
   z.object({
     type: z.literal("review-workspace"),
     workspaceId: id,
     prId: id,
-    tab: z.literal("verification").optional(),
+    tab: z.enum(["verification", "since-review"]).optional(),
   }),
 ]);

@@ -136,6 +136,8 @@ beforeEach(async () => {
     model: null,
     guidance: null,
     maxRoutinesPerPass: 0,
+    shipMonitorWindowMinutes: 60,
+    shipCheckEveryMinutes: 15,
   });
 });
 
@@ -377,6 +379,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: "Merging docs PRs in acme/docs is fine any time.",
       maxRoutinesPerPass: 0,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     const run = await startRun(db, null);
     const model = streamingModel(
@@ -544,6 +548,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: null,
       maxRoutinesPerPass: 2,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     await reloadRoutines();
     const run = await startRun(db, null);
@@ -609,6 +615,8 @@ describe("a heads-down pass", () => {
           model: null,
           guidance: null,
           maxRoutinesPerPass,
+          shipMonitorWindowMinutes: 60,
+          shipCheckEveryMinutes: 15,
         });
         const model = streamingModel([finish("stop")]);
         await runPass(config, db, run, { model });
@@ -660,6 +668,8 @@ describe("a heads-down pass", () => {
         model: null,
         guidance: null,
         maxRoutinesPerPass: 1,
+        shipMonitorWindowMinutes: 60,
+        shipCheckEveryMinutes: 15,
       });
       await reloadRoutines();
       const run = await startRun(db, null);
@@ -786,6 +796,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: null,
       maxRoutinesPerPass: 2,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     await reloadRoutines();
     const run = await startRun(db, null);

@@ -115,10 +115,54 @@ head in a tab of its own.
   its source: **Looks off** for a flag, **Risk**, or the check's name. Click a
   line number to jump there. The must-read lines are marked in amber on the
   new side of the diff, and each cited line in red; hover one to read why.
+- **Draft comments** from the verification report sit under their lines. See
+  [Draft comments](#draft-comments).
 
 A **file tab** shows any file at the PR's head whole, with the PR's threads
 on it. Questions work on any file; comments only on files the PR changes,
 since that is all the providers accept.
+
+#### Draft comments
+
+Each item in the verification report that cites a line becomes a draft
+comment on that line of the diff: must-read flags, risk concerns, unmet
+claims, unfinished work and check findings. Only results for the PR's current
+head make drafts. A draft has a dashed violet border, so it can't be taken
+for a posted thread, and is labelled with where it came from: the check's
+name, **Risk** or **Looks off**. Its text is written the way **Post to PR**
+writes a finding: the title, then what the report said, quoted, with `@`
+mentions turned into plain text so nobody is notified. It renders as
+markdown, the same way comments do.
+
+For each draft:
+
+- **Accept** keeps it to post as written.
+- **Edit** opens its text. **Save and accept** keeps your version.
+- **Drop** removes it from the diff.
+- **Undo** on an accepted draft puts it back to undecided.
+
+Nothing posts until you post it. The **Draft comments** bar above the diff counts
+the drafts left to answer and the accepted ones, and **Post *N* as one
+review** sends every accepted draft on the PR, in any file. On GitHub they go
+up as one review, with an optional summary. The review doesn't approve or
+request changes. GitHub only takes a line comment on a line inside the diff,
+so a draft on an unchanged line goes into the review's summary under the file
+and line it is about. On Azure DevOps, which has no review summary, each draft
+posts as a thread of its own. If one fails there, the ones before it stay
+posted and a retry sends the rest.
+
+When verification runs again, the drafts follow it. A finding it still
+reports moves to its new line and text. If you had accepted it and its line
+or text changed, it goes back to undecided, so you never post words you
+didn't see. A finding it no longer reports is removed if you hadn't touched
+it. If you had edited or accepted it, it stays in the bar as **Stale**, with
+your text, and can only be dropped, since its line may point at different
+code now. After a push, every draft is stale or removed until its check has
+run on the new head, and comes back when the check reports it again. A draft
+you dropped or posted isn't offered again.
+
+Yarvis records what you did with each draft: accepted, edited (with your
+text) or dropped.
 
 ### Code navigation
 
@@ -817,6 +861,11 @@ tab opens on changes it hasn't summarised, turn on auto-start under
 are set too ($1 by default). Like the verification report's, the budget only
 warns; a run you start finishes even if it goes over.
 
+When someone pushes to a PR you reviewed, Yarvis also runs it for you, with
+the same model and budget, whatever auto-start says. A run estimated over the
+budget isn't started that way: the alert asks for your go-ahead instead (see
+[PR updated since your review](#pr-updated-since-your-review)).
+
 ### New commits pushed
 
 The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
@@ -826,6 +875,52 @@ bar. **Refresh** fetches the new commits and moves the checkout, showing the
 fetch's progress as it goes. Your tabs stay open and show the new commits once it is
 done, and the banner then offers **See what changed since you last reviewed** —
 or, if more commits were pushed while it ran, another **Refresh**.
+
+### PR updated since your review
+
+When someone pushes to a PR you reviewed, and the PR is still in an active
+review workspace, Yarvis gets it ready for another look and tells you. It
+counts as reviewed once there is a [last review](#since-last-review) for it:
+a review or line comment you posted, on GitHub, Azure DevOps or through
+Yarvis, or **Mark reviewed here**.
+
+A background job checks those PRs every 5 minutes (GitHub PRs need a GitHub
+token). A PR in several workspaces is handled in the one you opened last. The
+job waits until it has seen the same head on checks at least 10 minutes
+apart, so a burst of pushes gives one alert, about 10 to 15 minutes after the
+last push. Then it:
+
+1. Fetches the new commits and moves the checkout, as **Refresh** does.
+2. Works out what changed since your review, as the
+   [Since last review](#since-last-review) tab shows it.
+3. Runs [What's changed](#whats-changed) over the new commits, whether or not
+   its auto-start is on, and waits for its answer. It doesn't re-run the
+   verification checks. A run that already covers the new commits is reused,
+   and at most two of these runs go at once. One over its budget isn't
+   started, and the item says it needs your go-ahead. When the changes are
+   more than its agent can read, the item says so. When the new commits
+   couldn't be fetched or the checkout isn't ready, nothing runs and the item
+   asks you to refresh the PR yourself.
+
+   After it runs What's changed for a PR, it starts no other for that PR
+   until you've opened its **Since last review** tab or read its item. Until
+   then, later pushes only update the item, for example "2 more commits since
+   the last What's changed. Open it to re-run." That way an author pushing
+   small commits can't keep paid runs going while you're away.
+4. Adds a **PR updated since your review** item under Review, which opens the
+   PR's **Since last review** tab. It says whether What's changed suggests
+   it's ready to approve, how many of your comments are addressed or resolved
+   and how many are still open, and how many other changes need reading. The
+   agent's own words stay in the tab.
+
+   When there's no answer (the run didn't start, failed, or is still going),
+   the item says why. It then counts which of your review threads the new
+   commits touch (the provider marks them outdated, or their file changed)
+   and which are still open.
+
+Each head gets one item, and a later push updates the item while you haven't
+read it yet. A merged or closed PR is left alone. Nothing is posted to the
+PR.
 
 ### Tabs
 
@@ -916,6 +1011,93 @@ mutation testing stays off.
 **Archive** in the top bar (or on hover in the list), after you confirm, removes the workspace's
 checkouts and moves it to **Show archived**. The clone each repo was fetched
 into is kept, so the next review of that repo starts faster.
+
+A workspace that [review prep](#review-prep) opened is the one exception: it
+archives itself, without asking, once you're done with it.
+
+### Review prep
+
+Review prep gets a pull request ready before it reaches you. Given a GitHub
+PR, it:
+
+1. Opens a review workspace for it. A PR already in a review workspace stays
+   there, and no second one is opened. A layer of a stack goes into the
+   workspace review prep already opened for another layer of that stack.
+2. Runs the verification report's default checks (everything but the flow
+   diagram), at most two PRs at a time; the rest wait their turn. The number
+   is `maxConcurrentVerifications` in the `reviewPrep` section of
+   `~/.yarvis/settings.json` (see [Configuration](../configuration.md)).
+3. When the checks end, adds a **Ready for review** item to the attention
+   stream, under Review. It gives a verdict, the files to read first and an
+   estimated review time, and opens the PR's verification checklist. The
+   verdict comes from the checks alone: **Changes likely needed**, **Review
+   deeper first** or **The checks found no problems**, with the reasons. CI
+   and bot comments aren't part of it; the Decision panel adds them when you
+   open the PR. The time assumes about 300 changed lines an hour, plus a
+   minute a file.
+
+If a check fails or the checkout doesn't finish, the item still comes, as
+**Review prep failed**, with the reason. A PR that would need your go-ahead
+for a report (a large PR, or one over your report budget) is checked out but
+not verified, and the item says **Review prep needs your go-ahead**; run the
+checks from the workspace. A PR in a repo you haven't registered gets no
+workspace and no item: whoever asked for it is told, and it is left to you. Review prep never runs the repo's setup script, since that
+runs the PR's code: the item says so when there is one, and you run it from
+the workspace as usual. It posts nothing to the PR.
+
+The [review-prep routine](heads-down.md#routines) runs it for the PRs the
+`review-scout` specialist picks, and the assistant runs it when you ask it to
+get a PR ready.
+
+**The review stream.** Review prep keeps at most five PRs (by default) ready
+for you, or being prepared, at once, so you get a steady stream rather than a
+pile. The number is `maxReady` in the `reviewPrep` section of
+`~/.yarvis/settings.json`. Further PRs go into a backlog, oldest first, and
+get no workspace until their turn. The backlog is kept in the database, so it
+survives a restart.
+
+- A PR holds its place from when its prep starts until you're done with it:
+  you review it on GitHub (approve, ask for changes, or leave comments),
+  someone else's approval
+  settles it, it merges or closes, you dismiss its item, or its workspace is
+  archived. Opening the item doesn't count, since you may come back to it. A
+  PR waiting for your go-ahead holds its place too. One whose prep failed
+  doesn't.
+- A stack is prepared whole, its open layers at once, even past the limit.
+  Each layer counts, so with three PRs ready and a four-layer stack next, all
+  four layers are prepared (seven of five) and nothing else starts until you
+  are below five again. Layers you already finished with, your own, and ones
+  that are approved, merged or closed are skipped. At most ten layers start
+  with the PR picked; the rest go to the backlog.
+- When a place frees up, the oldest backlogged PR starts straight away when
+  you dismiss an item or a prep fails, and within 15 minutes when you review
+  a PR on GitHub or it merges or closes. A PR asked for while others are
+  backlogged goes behind them.
+- A backlogged PR that merged, closed, was approved, that you already
+  reviewed, or whose repo you unregistered leaves the backlog instead of
+  starting.
+- While anything is ready or backlogged, the **Review stream** box on the
+  [Heads down](heads-down.md) page shows how many PRs are ready against the
+  limit (noting when a stack started past it), each one's state and risk,
+  and the backlog in the order it will start.
+
+Each **Ready for review** item carries the risk the verification report
+assessed, **High**, **Medium** or **Low**, as a coloured badge, and high-risk
+PRs come first in the bell's Review category (see
+[the attention bell](workspaces.md#categories)). A re-run of the prep updates
+the badge.
+
+**Archiving.** A workspace that review prep opened archives itself once
+every PR in it is approved by you (your latest review on GitHub is an
+approval), merged or closed. Only workspaces holding GitHub PRs alone are
+archived this way, since GitHub is what says whether you approved. A background job checks every 15 minutes, and leaves alone
+a workspace you opened in the last 15 minutes or that still has checks
+running. If an Ask Claude session was ever started in it, or a checkout has
+uncommitted changes, it doesn't archive it: it adds a **Review workspace
+ready to archive** item instead, and you archive it yourself. Workspaces you
+opened, and ones review prep only reused, are never archived this way. Once
+the workspace is archived, by the job or by you, the PR's items are resolved
+on the job's next run.
 
 ## Reference
 

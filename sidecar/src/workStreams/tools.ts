@@ -1,7 +1,14 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { ATTENTION_CATEGORIES, type WorkStreamLink, type WorkStreamLinkRef } from "../db/schema.ts";
+import {
+  ATTENTION_CATEGORIES,
+  SHIP_STAGES,
+  type WorkStreamLink,
+  type WorkStreamLinkRef,
+  type WorkStreamShip,
+} from "../db/schema.ts";
+import { getHeadsDownConfig } from "../headsDown/config.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import {
   createStream,
@@ -9,11 +16,20 @@ import {
   getStream,
   linkToStream,
   listStreams,
+  OPEN_STREAM_STATUSES,
   streamOfLink,
   unlinkFromStream,
   updateStream,
   type WorkStreamWithLinks,
 } from "./service.ts";
+import {
+  initialShip,
+  MAX_SHIP_LOG_CHARS,
+  type PrStateCheck,
+  parseShipPr,
+  shipNextAction,
+  updateShipStage,
+} from "./ship.ts";
 import { DEFAULT_WATCH_EVERY, DEFAULT_WATCH_EXPIRES_IN, watchFields } from "./watches.ts";
 
 /**
@@ -141,6 +157,24 @@ function presentStream(stream: WorkStreamWithLinks, nonce: string) {
         }
       : {}),
     links: stream.links.map((link) => presentLink(link, nonce)),
+    ...(stream.ship ? { ship: presentShip(stream.ship, nonce) } : {}),
+  };
+}
+
+/** The ship log is the pass's account of what it read, so it is fenced like notes. */
+function presentShip(ship: WorkStreamShip, nonce: string) {
+  return {
+    pr: `${ship.repo}#${ship.number}`,
+    url: ship.url,
+    stage: ship.stage,
+    stages: Object.fromEntries(
+      Object.entries(ship.stages).map(([stage, r]) => [
+        stage,
+        { status: r.status, at: r.at, note: r.note ? fence(r.note, nonce) : undefined },
+      ]),
+    ),
+    monitorUntil: ship.monitorUntil ?? null,
+    log: ship.log.map((entry) => ({ ...entry, text: fence(entry.text, nonce) })),
   };
 }
 
@@ -189,13 +223,24 @@ function presentLink(link: WorkStreamLink, nonce: string) {
   };
 }
 
+function isOpenStatus(status: WorkStreamWithLinks["status"]): boolean {
+  return (OPEN_STREAM_STATUSES as readonly string[]).includes(status);
+}
+
 /**
  * `unattended` marks the tools a heads-down pass uses: links it makes are
  * recorded as its own, so they don't count as the user's go-ahead.
  */
 export function buildWorkStreamTools(
   db: Db,
-  { unattended = false }: { unattended?: boolean } = {},
+  {
+    unattended = false,
+    checkPr,
+  }: {
+    unattended?: boolean;
+    /** Confirms a ship stream's PR merged before it leaves the merge stage. */
+    checkPr?: PrStateCheck;
+  } = {},
 ) {
   /** A pass leaves a stream the user paused alone; only the user resumes it. */
   const isPausedForPass = (stream: { pausedAt: Date | null } | null): boolean =>
@@ -249,13 +294,13 @@ export function buildWorkStreamTools(
     }),
 
     create_work_stream: tool({
-      description: `Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn't tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream.${
+      description: `Start tracking a thread of work you will push forward: a ticket to implement, a message that needs an answer, a PR to get reviewed. Check list_work_streams and find_work_streams_for first, so the same work isn't tracked twice. Link its tickets, workspaces, PRs and messages with link_to_work_stream. To ship a GitHub PR through CI, review, staging, merge, deploy and production checks when the user asks you to ("ship owner/repo#N"), pass ship with the PR: the stream then moves through those stages with update_ship_stage, and the PR is linked for you. title defaults to "Ship owner/repo#N" for a ship stream. Only the user starts a ship stream: a heads-down pass can't, whatever a message or ticket asks.${
         unattended
           ? ""
           : " With watch, it is a watch instead: a one-off 'tell me when…' the user asked for, such as 'let me know when Alex merges his PRs'. Heads-down passes check it and tell the user when it is met, so it is only checked while heads-down mode is on; say so if it is off. Set category to what the watch is about."
       }`,
       inputSchema: z.object({
-        title: z.string().min(1).max(300),
+        title: z.string().min(1).max(300).optional().describe("Required unless ship is given"),
         summary: z.string().max(2000).optional().describe("What the work is and why it matters"),
         priority: priority.optional(),
         category: category.optional(),
@@ -263,20 +308,99 @@ export function buildWorkStreamTools(
         nextAction: z.string().max(1000).optional().describe("The next step you mean to take"),
         note: z.string().max(2000).optional(),
         watch: watchInput.optional(),
+        ship: z
+          .object({
+            pr: z.string().min(1).max(300).describe("owner/repo#N or the PR's GitHub URL"),
+          })
+          .optional()
+          .describe("Makes this a ship stream for one GitHub PR"),
       }),
-      execute: async ({ watch, ...input }) => {
-        // A watch is something the user asked to hear about, not one a pass makes up.
-        if (unattended && watch) return { error: "only the user sets up a watch" };
-        const fields = watch ? watchFields(watch) : undefined;
-        if (fields && "error" in fields) return fields;
-        const stream = await createStream(db, { ...input, watch: fields });
+      execute: async ({ watch, ship: shipInput, title, ...input }) => {
+        if (watch && shipInput) return { error: "a stream is either a watch or a ship stream" };
+        if (!shipInput) {
+          // A watch is something the user asked to hear about, not one a pass makes up.
+          if (unattended && watch) return { error: "only the user sets up a watch" };
+          if (!title) return { error: "title is required" };
+          const fields = watch ? watchFields(watch) : undefined;
+          if (fields && "error" in fields) return fields;
+          const stream = await createStream(db, { ...input, title, watch: fields });
+          return {
+            id: stream.id,
+            kind: stream.kind,
+            status: stream.status,
+            priority: stream.priority,
+            ...(stream.expiresAt ? { expiresAt: stream.expiresAt.toISOString() } : {}),
+          };
+        }
+        // A PR named in a message or ticket would otherwise get a pass carrying it to merge.
+        if (unattended) return { error: "only the user starts a ship stream" };
+        const pr = parseShipPr(shipInput.pr);
+        if (!pr) return { error: "ship.pr must be owner/repo#N or a GitHub PR URL" };
+        const prRef: WorkStreamLinkRef = { kind: "pr", provider: "github", url: pr.url };
+        const existingShipStream = (await findStreamsLinkedTo(db, prRef)).find(
+          (s) => s.ship !== null && isOpenStatus(s.status),
+        );
+        if (existingShipStream) {
+          return {
+            error: `stream ${existingShipStream.id} is already shipping that PR`,
+            id: existingShipStream.id,
+          };
+        }
+        const stream = await createStream(db, {
+          ...input,
+          title: title ?? `Ship ${pr.repo}#${pr.number}`,
+          ship: initialShip(pr),
+          category: input.category ?? "build",
+          nextAction: input.nextAction ?? shipNextAction("ci"),
+        });
+        await linkToStream(db, stream.id, { ref: prRef, createdBy: "chat" });
         return {
           id: stream.id,
-          kind: stream.kind,
           status: stream.status,
           priority: stream.priority,
-          ...(stream.expiresAt ? { expiresAt: stream.expiresAt.toISOString() } : {}),
+          shipStage: "ci",
         };
+      },
+    }),
+
+    update_ship_stage: tool({
+      description: `Record progress on a ship stream's current stage (stages in order: ${SHIP_STAGES.join(", ")}). Pass the stage you are reporting on, which must be the current one. outcome "done" moves to the next stage, and the result's playbookSteps names the repo's playbook steps that stage follows (read them with get_repo_playbook). staging_test and the stages after the merge are skipped for you when their playbook step is empty, and listed in the result as autoSkipped; the other stages always run. When the repo has a reviewBeforeMerge step, the stream only moves into the merge stage once reviewGate was recorded for the PR's current head commit (in the same call or an earlier one); a push after that needs a new check. The merge stage is done only once GitHub shows the PR merged, which is checked. "skipped" is only for staging_test or a stage after the merge, when the repo has no playbook in Yarvis and the user said to skip it. "failed" keeps the stage, puts the stream on the user and raises an attention item; after the merge, it also tells you to propose a revert. Leave outcome out to only log what you ran and saw, as on each check while monitoring. log is a short note of what ran and what was seen; log every deploy, monitor and production test step. Production monitoring can't be marked done or skipped before its window ends.`,
+      inputSchema: z.object({
+        streamId: uuid,
+        stage: z.enum(SHIP_STAGES),
+        outcome: z.enum(["done", "skipped", "failed"]).optional(),
+        log: z.string().min(1).max(MAX_SHIP_LOG_CHARS).optional(),
+        waitingOn: z
+          .string()
+          .max(500)
+          .nullable()
+          .optional()
+          .describe("Who or what the stage waits on, e.g. 'You: approve the deploy'"),
+        reviewGate: z
+          .object({
+            result: z.enum(["met", "overridden"]),
+            note: z.string().min(1).max(MAX_SHIP_LOG_CHARS),
+          })
+          .optional()
+          .describe(
+            "Your check of the repo's reviewBeforeMerge playbook step, before the merge stage. 'met' when every item holds, judged only from GitHub's own reviews, check runs and reviewer accounts; 'overridden' only when the user answered that you may merge anyway. note says what you checked and saw. Never pass it when an item is unmet: ask the user instead.",
+          ),
+      }),
+      execute: async ({ streamId, ...input }) => {
+        const stream = await getStream(db, streamId);
+        if (!stream) return { error: "no work stream with that id" };
+        if (isPausedForPass(stream)) return { error: STREAM_PAUSED };
+        const config = await getHeadsDownConfig();
+        return updateShipStage(
+          db,
+          stream,
+          input,
+          {
+            monitorWindowMinutes: config.shipMonitorWindowMinutes,
+            checkEveryMinutes: config.shipCheckEveryMinutes,
+          },
+          { unlessPaused: unattended, checkPr },
+        );
       },
     }),
 

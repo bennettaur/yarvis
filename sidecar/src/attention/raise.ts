@@ -1,5 +1,10 @@
 import type { Db } from "../db/client.ts";
-import type { AttentionCategory, AttentionItemRow, AttentionNavTarget } from "../db/schema.ts";
+import type {
+  AttentionCategory,
+  AttentionItemRow,
+  AttentionNavTarget,
+  RiskLevel,
+} from "../db/schema.ts";
 import { publish } from "./hub.ts";
 import { type AttentionSource, clearAttentionScope, createAttention } from "./service.ts";
 
@@ -29,6 +34,8 @@ export interface RaiseAttentionInput {
    * instead of adding a second.
    */
   dedupeKey?: string | null;
+  /** A prepared PR's verification risk level, which the stream colours the item by. */
+  risk?: RiskLevel | null;
   /** Defaults to `system`; the assistant's tool passes `chat-agent`. */
   source?: AttentionSource;
 }
@@ -38,8 +45,22 @@ export interface RaiseAttentionInput {
  * Keyed by source too, so an agent re-raising a key can't rewrite an item the
  * app itself raised.
  */
-function sessionKeyFor(source: AttentionSource, dedupeKey: string): string {
-  return `raise:${source}:${dedupeKey}`;
+export function raisedSessionKey(source: AttentionSource, dedupeKey: string): string {
+  return `${raisedSessionKeyPrefix(source)}${dedupeKey}`;
+}
+
+/** What every session key raised by `source` starts with, for matching them in SQL. */
+export function raisedSessionKeyPrefix(source: AttentionSource = "system"): string {
+  return `raise:${source}:`;
+}
+
+/** The dedupe key an item raised by `source` was raised under, or null for any other item. */
+export function raisedDedupeKey(
+  sessionKey: string,
+  source: AttentionSource = "system",
+): string | null {
+  const prefix = raisedSessionKeyPrefix(source);
+  return sessionKey.startsWith(prefix) ? sessionKey.slice(prefix.length) : null;
 }
 
 /** Raises (or refreshes) an item and publishes it to connected clients. */
@@ -50,12 +71,13 @@ export async function raiseAttention(
   const source = input.source ?? "system";
   const item = await createAttention(db, {
     source,
-    sessionKey: input.dedupeKey ? sessionKeyFor(source, input.dedupeKey) : null,
+    sessionKey: input.dedupeKey ? raisedSessionKey(source, input.dedupeKey) : null,
     kind: input.kind,
     category: input.category,
     title: input.title,
     body: input.body ?? null,
     navTarget: input.navTarget ?? null,
+    risk: input.risk ?? null,
   });
   publish(item);
   return item;
@@ -72,7 +94,7 @@ export async function resolveRaisedAttention(
 ): Promise<void> {
   const rows = await clearAttentionScope(
     db,
-    { sessionKey: sessionKeyFor(source, dedupeKey) },
+    { sessionKey: raisedSessionKey(source, dedupeKey) },
     "resolved",
   );
   for (const row of rows) publish(row);
