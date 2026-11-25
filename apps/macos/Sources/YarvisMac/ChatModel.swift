@@ -2,178 +2,211 @@ import Foundation
 import Observation
 import YarvisClient
 
-/// Chat threads and the turn in progress, as the web's `useChatThread` keeps them.
+/// The Chat page: its tabs, each with its own thread so background tabs keep
+/// streaming, the shared session list and model choices, and the artifact pane.
 @MainActor @Observable
 final class ChatModel {
-    private unowned let app: AppModel
+    unowned let app: AppModel
     private let client: YarvisClient
 
     var sessions: [ChatSession] = []
-    var selectedId: String?
-    var messages: [ChatMessage] = []
-    var draft = ""
-    var providers: [ProviderInfo] = []
-    var provider: String?
-    var model: String?
-    /// The turn on screen: streaming, or failed with its tool activity kept.
-    private(set) var live = LiveTurn()
-    var reply: String { live.reply }
-    var liveTools: [ToolActivity] { live.tools }
-    var approvals: [ToolApprovalRequest] { live.approvals }
-    var isStreaming: Bool { turn != nil }
-    var error: String?
-    /// Something the user did, such as stopping a turn. Not an error.
-    var notice: String?
+    var sessionsError: String?
+    /// Why the provider list couldn't be read, shown by the model picker.
+    var providersError: String?
+    private(set) var providers: [ProviderInfo] = []
+    private(set) var tabs: ChatTabsState {
+        didSet { serverDefaults.set(try? JSONEncoder().encode(tabs), Self.tabsKey) }
+    }
+    private(set) var threads: [String: ChatThread] = [:]
+    var historyOpen: Bool {
+        didSet { UserDefaults.standard.set(historyOpen, forKey: Self.historyKey) }
+    }
+    /// The Thinking checkbox, shared by every tab.
+    var reasoningOn: Bool {
+        didSet { UserDefaults.standard.set(reasoningOn, forKey: Self.reasoningKey) }
+    }
+    /// The artifact open in the side pane.
+    private(set) var artifact: ChatArtifactModel?
+    let mcp: McpConnectionModel
 
-    private var turn: Task<Void, Never>?
-    /// Which turn owns `live`, so a turn cancelled by opening another thread
-    /// leaves that thread alone.
-    private var turnId = UUID()
+    private let serverDefaults: ServerDefaults
+    private static let tabsKey = "yarvis.chat.tabs"
+    private static let historyKey = "yarvis.chat.historyOpen"
+    private static let reasoningKey = "yarvis.chat.reasoning"
     private static let providerKey = "chat.provider"
     private static let modelKey = "chat.model"
 
     init(app: AppModel, client: YarvisClient) {
         self.app = app
         self.client = client
+        serverDefaults = ServerDefaults(server: client.baseURL)
+        let defaults = UserDefaults.standard
+        tabs = ChatTabsState.restore(serverDefaults.data(Self.tabsKey)) ?? .single(UUID().uuidString)
+        historyOpen = defaults.object(forKey: Self.historyKey) as? Bool ?? true
+        reasoningOn = defaults.bool(forKey: Self.reasoningKey)
+        mcp = McpConnectionModel(client: client)
+        for tab in tabs.tabs {
+            threads[tab.id] = ChatThread(id: tab.id, sessionId: tab.sessionId, chat: self, client: client)
+        }
         reloadSessions()
-        Task { await loadProviders() }
+        reloadProviders()
+    }
+
+    var activeThread: ChatThread? { threads[tabs.activeId] }
+
+    func thread(_ tabId: String) -> ChatThread? { threads[tabId] }
+
+    func label(_ tab: ChatTabsState.Tab) -> String {
+        chatTabLabel(sessionId: threads[tab.id]?.sessionId ?? tab.sessionId, sessions: sessions)
+    }
+
+    func isOpen(sessionId: String) -> Bool {
+        tabs.tabs.contains { threads[$0.id]?.sessionId == sessionId }
+    }
+
+    // MARK: Interface for AppModel
+
+    func handle(_ event: ServerEvent) {
+        if event.kind == "sidecar.started" {
+            reloadSessions()
+            reloadProviders()
+        }
+    }
+
+    func resync() {
+        reloadSessions()
+        for thread in threads.values { thread.reload() }
+    }
+
+    /// Opens a thread asked for from another page, such as an attention item.
+    func openSession(_ id: String) {
+        let newTab = UUID().uuidString
+        let shownIn = tabs.open(sessionId: id, newTabId: newTab,
+                                activeTabIdle: !(activeThread?.busy ?? false))
+        if let thread = threads[shownIn] {
+            if thread.sessionId != id { thread.load(id) }
+        } else {
+            threads[shownIn] = makeThread(shownIn, sessionId: id)
+        }
     }
 
     func stop() {
-        turn?.cancel()
+        for thread in threads.values { thread.stop() }
+        artifact?.stop()
+        mcp.stopPolling()
     }
+
+    // MARK: Tabs
+
+    func newTab() {
+        let id = UUID().uuidString
+        tabs.add(id)
+        threads[id] = makeThread(id, sessionId: nil)
+    }
+
+    private func makeThread(_ tabId: String, sessionId: String?) -> ChatThread {
+        let thread = ChatThread(id: tabId, sessionId: sessionId, chat: self, client: client)
+        thread.adoptDefaultModel(defaultPick)
+        return thread
+    }
+
+    func select(_ tabId: String) {
+        tabs.select(tabId)
+    }
+
+    /// Closes a tab, stopping its turn if one is running.
+    func close(_ tabId: String) {
+        threads[tabId]?.stop()
+        threads[tabId] = nil
+        let replacement = UUID().uuidString
+        tabs.close(tabId, newTabId: replacement)
+        if threads[replacement] == nil, tabs.tabs.contains(where: { $0.id == replacement }) {
+            threads[replacement] = makeThread(replacement, sessionId: nil)
+        }
+    }
+
+    // MARK: Sessions
 
     func reloadSessions() {
         Task {
             do {
                 sessions = try await client.chatSessions()
+                sessionsError = nil
             } catch {
-                self.error = error.localizedDescription
+                sessionsError = error.localizedDescription
             }
         }
     }
 
-    private func loadProviders() async {
-        do {
-            providers = try await client.chatProviders()
-            let pick = defaultChatModel(providers,
-                                        savedProvider: UserDefaults.standard.string(forKey: Self.providerKey),
-                                        savedModel: UserDefaults.standard.string(forKey: Self.modelKey))
-            provider = pick?.provider
-            model = pick?.model
-        } catch {
-            self.error = error.localizedDescription
-        }
+    func sessionCreated(_ session: ChatSession, inTab tabId: String) {
+        tabs.setSession(tabId, session.id)
+        if !sessions.contains(where: { $0.id == session.id }) { sessions.insert(session, at: 0) }
     }
 
-    func choose(provider: String, model: String) {
-        self.provider = provider
-        self.model = model
-        UserDefaults.standard.set(provider, forKey: Self.providerKey)
-        UserDefaults.standard.set(model, forKey: Self.modelKey)
+    /// The server names a thread after its first turn, so the list is read
+    /// again while this one has no title.
+    func turnFinished(sessionId: String) {
+        if sessions.first(where: { $0.id == sessionId })?.title == nil { reloadSessions() }
     }
 
-    func open(_ id: String?) {
-        guard id != selectedId else { return }
-        turn?.cancel()
-        turnId = UUID()
-        selectedId = id
-        messages = []
-        live = LiveTurn()
-        error = nil
-        notice = nil
-        guard let id else { return }
-        Task { await loadMessages(id) }
-    }
+    // MARK: Providers
 
-    private func loadMessages(_ id: String) async {
-        do {
-            let loaded = try await client.chatMessages(sessionId: id)
-            if selectedId == id { messages = loaded }
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    func newThread() {
-        open(nil)
-    }
-
-    func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, turn == nil else { return }
-        guard let provider, let model else {
-            error = "No chat model is set up. Add a provider in the web UI's Settings."
-            return
-        }
-        draft = ""
-        error = nil
-        notice = nil
-        let id = UUID()
-        turnId = id
-        turn = Task { await runTurn(id: id, text: text, provider: provider, model: model) }
-    }
-
-    private func runTurn(id: UUID, text: String, provider: String, model: String) async {
-        defer { if turnId == id { turn = nil } }
-        do {
-            let sessionId: String
-            if let selectedId {
-                sessionId = selectedId
-            } else {
-                let created = try await client.createChatSession()
-                sessionId = created.id
-                selectedId = created.id
-                sessions.insert(created, at: 0)
-            }
-            messages.append(ChatMessage(id: "local-\(UUID())", sessionId: sessionId, role: "user", content: text,
-                                        createdAt: ISO8601DateFormatter().string(from: Date())))
-            live = LiveTurn()
-            let stream = try client.sendChat(ChatTurn(sessionId: sessionId, message: text, provider: provider, model: model))
-            for try await event in stream where turnId == id {
-                live.apply(event)
-            }
-            // Cancelling the consumer ends the stream without an error, so a
-            // stop is told apart here.
-            finish(id: id, sessionId: sessionId, cancelled: Task.isCancelled)
-        } catch let e as URLError where e.code == .cancelled {
-            finish(id: id, sessionId: nil, cancelled: true)
-        } catch is CancellationError {
-            finish(id: id, sessionId: nil, cancelled: true)
-        } catch {
-            guard turnId == id else { return }
-            _ = live.finish(cancelled: false)
-            self.error = error.localizedDescription
-        }
-    }
-
-    private func finish(id: UUID, sessionId: String?, cancelled: Bool) {
-        guard turnId == id else { return }
-        switch live.finish(cancelled: cancelled) {
-        case .stopped:
-            notice = "Stopped. Nothing was saved for that turn."
-        case .failed(let reason):
-            error = reason
-        case .saved:
-            guard let sessionId else { return }
-            Task {
-                await loadMessages(sessionId)
-                if turnId == id { live = LiveTurn() }
-                sessions = (try? await client.chatSessions()) ?? sessions
-            }
-        }
-    }
-
-    func answer(_ request: ToolApprovalRequest, approved: Bool) {
-        live.answered(request.id)
+    func reloadProviders() {
         Task {
             do {
-                _ = try await app.withFreshCode { [client] in
-                    try await client.answerToolApproval(id: request.id, approved: approved)
-                }
+                providers = try await client.chatProviders()
+                providersError = nil
+                for thread in threads.values { thread.adoptDefaultModel(defaultPick) }
             } catch {
-                self.error = error.localizedDescription
+                providersError = error.localizedDescription
             }
         }
+    }
+
+    private var defaultPick: (provider: String, model: String)? {
+        defaultChatModel(providers, savedProvider: serverDefaults.string(Self.providerKey),
+                         savedModel: serverDefaults.string(Self.modelKey))
+    }
+
+    /// Each tab keeps its own model, and a new tab starts from the last pick.
+    func remember(provider: String, model: String) {
+        serverDefaults.set(provider, Self.providerKey)
+        serverDefaults.set(model, Self.modelKey)
+    }
+
+    /// The page came back into view or the window regained focus.
+    func becameVisible() {
+        reloadSessions()
+        reloadProviders()
+        mcp.recheck()
+    }
+
+    // MARK: Links and artifacts
+
+    /// Follows a link in a reply or an artifact, by the rule in `chatLinkAction`.
+    func follow(_ url: URL, fromUntrusted: Bool = false) {
+        switch chatLinkAction(url, fromUntrusted: fromUntrusted) {
+        case .openInBrowser(let url): openWebLink(url)
+        case .openArtifact(let id): openArtifact(id)
+        case .openPlace(let url): app.open(link: url)
+        case .ignore: break
+        }
+    }
+
+    func openArtifact(_ id: String) {
+        if artifact?.id == id { return }
+        artifact?.stop()
+        let pane = ChatArtifactModel(id: id, client: client)
+        artifact = pane
+        pane.start()
+    }
+
+    func closeArtifact() {
+        artifact?.stop()
+        artifact = nil
+    }
+
+    var workspaceNames: [String: String] {
+        Dictionary((app.workspaces?.workspaces ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
     }
 }

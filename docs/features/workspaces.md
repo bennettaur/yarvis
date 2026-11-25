@@ -936,6 +936,38 @@ archived to free its disk space.
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
 
+## Revert investigations
+
+When a PR you wrote, or one a Yarvis workspace opened, is reverted, Yarvis
+offers to find out why. The `revert-investigation` [job](scheduled-jobs.md)
+runs every hour and only looks at repos you registered. It spots a merged PR
+titled "Revert ..." that names the original, or a commit on the default branch
+saying "This reverts commit ...". It handles each original PR once.
+
+It raises a **Build** item in the [attention bell](#the-attention-bell), "Revert
+of owner/repo#N detected — start investigation?". Nothing starts until you say
+so. Tell the assistant to start it (it lists them with
+`list_revert_investigations`, and asks you first on a spoken turn), or to
+dismiss it. The same actions are on `/api/revert-investigations/:id/start` and
+`/dismiss`. There is no button for them in the app yet.
+
+Starting one opens a workspace on the repo's default branch and a Claude Code
+session on a brief. The brief links the original PR, the revert, the review
+comments and the verification report, and tells the session to read them with
+`gh`. It also carries the revert's text and any deploy and monitoring notes a
+ship stream recorded, fenced as data the session must not take orders from.
+
+The session writes `.yarvis/root-cause.md` in the workspace root: what broke,
+what was missed, why it was missed, and what has to change, with concrete edits
+to `AGENTS.md`, Claude instructions, reviewers or verification. It is told not
+to push, open PRs or comment anywhere. When the file appears, the next run of
+the job raises a note, "Revert investigation for owner/repo#N is ready", that
+opens the workspace.
+
+To skip the question, set `autoStart` under `revertInvestigation` in
+`~/.yarvis/settings.json` (or `PUT /api/revert-investigations/settings`). It is
+off by default. Only GitHub repos are checked.
+
 ## Terminal limit
 
 At most 60 terminal sessions can be live at once, across the Terminal tab and

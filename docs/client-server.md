@@ -36,8 +36,9 @@ Built:
 - The web UI as a server client: sign-in, a vault unlock screen, Settings →
   Devices, and an approvals list.
 - The thin Tauri app, which starts a local server or connects to a remote one.
-- A first native macOS app (`apps/macos/`): chat, attention and approvals,
-  and terminals natively, the rest in a web view. See
+- A native macOS app (`apps/macos/`) laid out like the web UI: chat,
+  terminals, workspaces, Settings (devices and the account) and attention
+  natively, the rest in a web view. See
   [native-macos.md](native-macos.md).
 - An end-to-end test (`bun run e2e`, `e2e/`) that drives the real server and
   the built UI in Chromium, signing in with TOTP codes it computes.

@@ -1,6 +1,6 @@
 {
-  "id": "ef6a799f-a198-4c2f-8d25-d687c2b09e7f",
-  "prevId": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
+  "id": "1f16d5f7-0d2a-4d78-87a8-b8186b9497bc",
+  "prevId": "98111662-c3ea-4cb3-89f8-8fdeb594541a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3625,73 +3625,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.pr_update_watches": {
-      "name": "pr_update_watches",
-      "schema": "",
-      "columns": {
-        "ref_key": {
-          "name": "ref_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "seen_head_sha": {
-          "name": "seen_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seen_at": {
-          "name": "seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "alerted_head_sha": {
-          "name": "alerted_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerting_at": {
-          "name": "alerting_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "alerted_at": {
-          "name": "alerted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "unattended_run_at": {
-          "name": "unattended_run_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "unattended_head_sha": {
-          "name": "unattended_head_sha",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tab_opened_at": {
-          "name": "tab_opened_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.project_items": {
       "name": "project_items",
       "schema": "",
@@ -4134,6 +4067,155 @@
         }
       },
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.revert_investigations": {
+      "name": "revert_investigations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "repo_id": {
+          "name": "repo_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_number": {
+          "name": "original_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_title": {
+          "name": "original_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "original_url": {
+          "name": "original_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_kind": {
+          "name": "revert_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_ref": {
+          "name": "revert_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_title": {
+          "name": "revert_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_url": {
+          "name": "revert_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'detected'"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detected_at": {
+          "name": "detected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ready_at": {
+          "name": "ready_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "revert_investigations_original_idx": {
+          "name": "revert_investigations_original_idx",
+          "columns": [
+            {
+              "expression": "repo_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "original_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "revert_investigations_repo_id_repos_id_fk": {
+          "name": "revert_investigations_repo_id_repos_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "repos",
+          "columnsFrom": [
+            "repo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "revert_investigations_workspace_id_workspaces_id_fk": {
+          "name": "revert_investigations_workspace_id_workspaces_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -4738,56 +4820,6 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.stall_reminders": {
-      "name": "stall_reminders",
-      "schema": "",
-      "columns": {
-        "item_key": {
-          "name": "item_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "waiting_since": {
-          "name": "waiting_since",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "count": {
-          "name": "count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_reminded_at": {
-          "name": "last_reminded_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stopped_at": {
-          "name": "stopped_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
