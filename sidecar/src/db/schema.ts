@@ -2198,6 +2198,67 @@ export const agentRuns = pgTable(
 export type AgentRunRow = typeof agentRuns.$inferSelect;
 export type NewAgentRunRow = typeof agentRuns.$inferInsert;
 
+/** What the reviewer made of one item: right, wrong, or right but rated too high or too low. */
+export type VerificationFeedbackVerdict = "accepted" | "rejected" | "rerated";
+
+/** What the reviewer did with an item, each recorded once. */
+export type VerificationFeedbackAction = "posted-pr" | "added-workspace" | "asked";
+
+/** The item as the report showed it, so a later reflection can read it without the run. */
+export interface VerificationFeedbackItem {
+  title: string;
+  detail: string;
+  /** Its severity or risk level as the report gave it. */
+  rating?: string;
+  path?: string;
+  line?: number;
+}
+
+/**
+ * The reviewer's feedback on one item of a verification report: whether it
+ * was right, why not, and what they did with it. One row per item per run;
+ * changing their mind updates it. The weekly review reflection reads these
+ * to see which checks are noise and which are worth keeping.
+ */
+export const verificationFeedback = pgTable(
+  "verification_feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `refKey` of the PR the report is for. */
+    refKey: text("ref_key").notNull(),
+    /**
+     * The run that wrote the item's section. Not a foreign key: the feedback
+     * outlives the run row, since it still says what the check got wrong.
+     */
+    runId: uuid("run_id").notNull(),
+    headSha: text("head_sha"),
+    /** The report section, e.g. `risk` or `tests`. */
+    section: text("section").notNull(),
+    /** What part of the section, e.g. `finding`, `concern` or `mustReadFlag`. */
+    kind: text("kind").notNull(),
+    /** Which item, stable for one run: built from the item's own text and place. */
+    itemKey: text("item_key").notNull(),
+    item: jsonb("item").$type<VerificationFeedbackItem>().notNull(),
+    verdict: text("verdict").$type<VerificationFeedbackVerdict>(),
+    /** For `rerated`: the severity or risk level the reviewer would give it. */
+    rating: text("rating"),
+    /** The reviewer's own words on why. */
+    reason: text("reason"),
+    actions: jsonb("actions")
+      .$type<{ action: VerificationFeedbackAction; at: string }[]>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("verification_feedback_item_idx").on(t.refKey, t.runId, t.section, t.itemKey),
+    index("verification_feedback_updated_idx").on(t.updatedAt.desc()),
+  ],
+);
+
+export type VerificationFeedbackRow = typeof verificationFeedback.$inferSelect;
+
 /**
  * A review workspace: a named set of pull requests checked out side by side for
  * review. Separate from `workspaces`, which are for doing work — nothing here

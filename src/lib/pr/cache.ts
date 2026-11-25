@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { refKey } from "./ref";
 import { fetchPrStack } from "./stack";
-import type { PrDetail, PrFile, PrRef, PrStack, PrStatus } from "./types";
+import type { PrDetail, PrFile, PrFileSet, PrRef, PrStack, PrStatus } from "./types";
 
 /**
  * The PR feature's view of the shared resource cache in `lib/resourceCache`:
@@ -96,7 +96,7 @@ export function usePrDetail(ref: PrRef | null): Resource<PrDetail> {
   );
 }
 
-export function usePrFiles(ref: PrRef | null): Resource<PrFile[]> {
+export function usePrFiles(ref: PrRef | null): Resource<PrFileSet> {
   return useCachedResource(
     ref ? prFilesKey(ref) : null,
     () => fetchPrFiles(ref!),

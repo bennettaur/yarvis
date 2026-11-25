@@ -836,6 +836,8 @@ describe("verification report", () => {
     performance: pass,
     comments: pass,
     observability: pass,
+    bugs: pass,
+    improvements: pass,
     quality: { status: "issues", findings: [at("b is never read", 2)] },
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
     repoVerify: {
@@ -1023,7 +1025,12 @@ ${printAgentAnswer(fakeDir)}`,
     items: { section: string; theme: string; latest: Run | null; result: Run | null }[];
     report: {
       summary?: string;
-      mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
+      mustRead?: {
+        path: string;
+        reason: string;
+        why: string;
+        flags: { note: string; line?: number }[];
+      }[];
       tests?: { status: string; findings: unknown[] };
       quality?: { status: string; findings: unknown[] };
       malice?: { status: string; findings: unknown[]; tripwires?: unknown[] };
@@ -1481,6 +1488,7 @@ ${printAgentAnswer(fakeDir)}`,
       {
         path: "src/a.ts",
         reason: "the change",
+        why: "",
         flags: [{ note: "b is never read; check it is used", line: 2 }],
       },
     ]);

@@ -70,9 +70,16 @@ risk (it is the only proof a tricky behaviour works).
   have none. Order by importance.
 - `path` must be one of the changed files, exactly as listed in `index.md`; for a
   rename (`old -> new`), the new path. Anything else is dropped.
-- `reason`: at most 15 words naming what to check there, not what the file is
-  ("decides refund eligibility; check the partial-refund branch", not "the
-  refund service").
+- `reason`: at most 20 words, the question the reviewer should answer while
+  reading, specific enough that they know when they have answered it. Name
+  the input or case and the outcome to confirm: "Does a partial refund
+  above the captured amount get refused?", not "check the partial-refund
+  branch" or "the refund service". "Check X" with no question behind it
+  tells the reader nothing.
+- `why`: at most 25 words, what goes wrong, and for whom, if the answer is
+  no: "Customers could be refunded more than they paid." This is what makes
+  the file a must-read. When the code doesn't let you tell, say what is at
+  stake if it is wrong rather than leaving the file out.
 - `lines`: the head line range of the part to read, when it is a part.
 - `flags`: what already looks off or unclear in that file, so the reviewer
   reads it with the question in mind. At most MUST_READ_FLAGS_MAX, usually
@@ -98,6 +105,7 @@ Reply with one JSON object and nothing else:
     {
       "path": "src/x.ts",
       "reason": "…",
+      "why": "…",
       "lines": { "start": 10, "end": 42 },
       "flags": [{ "note": "…", "line": 17 }]
     }

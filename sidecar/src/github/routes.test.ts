@@ -101,7 +101,7 @@ describe("github merge validation", () => {
     const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
       method: "POST",
       headers: { ...auth, "Content-Type": "application/json" },
-      body: JSON.stringify({ method: "FAST_FORWARD" }),
+      body: JSON.stringify({ method: "FAST_FORWARD", headSha: "a".repeat(40) }),
     });
     expect(res.status).toBe(400);
   });
@@ -121,6 +121,68 @@ describe("github merge validation", () => {
       headers: { ...auth },
     });
     expect(res.status).toBe(400);
+  });
+
+  it("refuses a merge with no head sha, since nothing pins it", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "SQUASH" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a head sha that isn't a full commit sha with 400", async () => {
+    const res = await configured.request("/api/github/pr/octo/repo/1/merge", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "SQUASH", headSha: "main" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("pins auto-merge to the reviewed head", async () => {
+    const realFetch = globalThis.fetch;
+    const bodies: Array<{ query: string; variables: Record<string, unknown> }> = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ data: { repository: { pullRequest: { id: "PR_node" } } } }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    try {
+      const headSha = "b".repeat(40);
+      const res = await configured.request("/api/github/pr/octo/repo/1/auto-merge", {
+        method: "POST",
+        headers: { ...auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ method: "SQUASH", headSha }),
+      });
+      expect(res.status).toBe(200);
+      expect(bodies.at(-1)!.variables).toEqual({ id: "PR_node", method: "SQUASH", head: headSha });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+describe("github files route", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  it("returns the files with the commit they were read at", async () => {
+    const headSha = "f".repeat(40);
+    const file = { filename: "a.ts", status: "added", additions: 2, deletions: 0, patch: "@@" };
+    globalThis.fetch = (async (url: string) =>
+      new Response(
+        JSON.stringify(String(url).includes("/files") ? [file] : { head: { sha: headSha } }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const res = await configured.request("/api/github/pr/octo/repo/1/files", { headers: auth });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ headSha, files: [file], incomplete: false });
   });
 });
 
