@@ -97,8 +97,8 @@ disappears from the list.
 A commit signature can also be approved for a while: on the row below
 **Approve**, next to **Approve and stop asking for**, pick **15 min**,
 **30 min** or **1 hour**, or type a number of minutes up to 60 and press
-**Allow**. Until then the server signs commits
-without asking, for any terminal or agent session on it, and the box says
+**Allow**. Until then the server signs commits without asking, for any
+terminal or agent session on it, and the box says
 until when. Press **Stop** there to go back to asking. Locking the vault or
 restarting the server stops it too. A rebase signs each commit again, so this
 saves you a prompt per commit.

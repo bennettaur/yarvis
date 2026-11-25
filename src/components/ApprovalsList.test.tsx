@@ -242,13 +242,39 @@ describe("ApprovalsList", () => {
     await waitFor(() => customMinutesField(mounted.host) !== null, "the custom field");
     expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(true);
 
-    for (const typed of ["16", "0", "2.5"]) {
+    for (const typed of ["16", "0", "-1", "2.5", "1e1"]) {
       await typeMinutes(mounted.host, typed);
       expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(true);
     }
+    await typeMinutes(mounted.host, "1");
+    expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(false);
     await typeMinutes(mounted.host, "15");
     expect(buttonNamed(mounted.host, "Allow")?.disabled).toBe(false);
     expect(server.calls.some((c) => c.route === "POST /api/approvals/ap-1")).toBe(false);
+  });
+
+  it("submits a custom time with Enter only when it's allowed", async () => {
+    approvals = [{ ...signing, maxAllowForSecs: 15 * 60 }];
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => customMinutesField(mounted.host) !== null, "the custom field");
+    const pressEnter = () =>
+      customMinutesField(mounted.host)
+        ?.closest("form")
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    await typeMinutes(mounted.host, "16");
+    pressEnter();
+    await typeMinutes(mounted.host, "10");
+    pressEnter();
+
+    await waitFor(
+      () => server.calls.some((c) => c.route === "POST /api/approvals/ap-1"),
+      "the answer",
+    );
+    const answers = server.calls.filter((c) => c.route === "POST /api/approvals/ap-1");
+    expect(answers.map((c) => c.body)).toEqual([{ approve: true, allowForSecs: 600 }]);
+    await waitFor(() => mounted.host.textContent?.includes("without asking") ?? false, "the grant");
   });
 
   it("approves for a while, shows until when, and stops on request", async () => {
