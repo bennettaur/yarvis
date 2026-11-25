@@ -4,6 +4,7 @@ import {
   type Approval,
   answerApproval,
   endSigningGrant,
+  getMyDevice,
   getSshAgentStatus,
   listApprovals,
 } from "../lib/auth";
@@ -12,6 +13,8 @@ import { onServerEvent } from "../lib/serverEvents";
 
 const APPROVALS_KEY = "server:approvals";
 const SIGNING_KEY = "server:ssh-agent";
+/** The same key `DevicesSection` reads this device under, so both share it. */
+const ME_KEY = "server:devices:me";
 
 const BUTTON = "rounded-md border px-2.5 py-1 text-xs disabled:opacity-50";
 
@@ -43,6 +46,9 @@ const formatClockTime = (ms: number) =>
 export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty?: boolean }) {
   const approvals = useCachedResource(APPROVALS_KEY, listApprovals, SIDECAR_FRESHNESS);
   const signing = useCachedResource(SIGNING_KEY, getSshAgentStatus, SIDECAR_FRESHNESS);
+  const me = useCachedResource(ME_KEY, getMyDevice, SIDECAR_FRESHNESS);
+  // Ending a grant needs the approve scope; without it the server answers 403.
+  const canStop = me.data?.scopes.includes("approve") ?? false;
   const [busyId, setBusyId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,14 +129,16 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
           <span className="min-w-0 flex-1 text-sm text-amber-200">
             Signing commits without asking until {formatClockTime(grantEnds)}
           </span>
-          <button
-            type="button"
-            className={`${BUTTON} border-amber-700 text-amber-200 hover:bg-amber-900`}
-            disabled={stopping}
-            onClick={() => void stopGrant()}
-          >
-            Stop
-          </button>
+          {canStop && (
+            <button
+              type="button"
+              className={`${BUTTON} border-amber-700 text-amber-200 hover:bg-amber-900`}
+              disabled={stopping}
+              onClick={() => void stopGrant()}
+            >
+              Stop
+            </button>
+          )}
         </div>
       )}
       {pending.length === 0 && !approvals.loading && !grantActive && (

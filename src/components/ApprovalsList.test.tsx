@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Approval } from "../lib/auth";
+import { primeCache } from "../lib/resourceCache";
 import { saveDeviceToken, signOut } from "../lib/server";
 import { fakeSockets, installFakeSockets } from "../test/fakeSocket";
 import { mountForInteraction, renderToHtml, waitFor } from "../test/render";
@@ -11,10 +12,15 @@ let approvals: Approval[] = [];
 let answerStatus = 204;
 let grantExpiresAt: number | undefined;
 let stopFails = false;
+let statusFails = false;
+/** Set to hold the next Stop until the test resolves it. */
+let stopHeld: Promise<void> | undefined;
 let serverClockOffsetMs = 0;
 
 const server = stubServerRoutes({
   "GET /api/approvals": () => Response.json(approvals),
+  "GET /api/devices/me": () =>
+    Response.json({ deviceId: "dev-me", name: "This Mac", scopes: ["read", "approve"] }),
   "POST /api/approvals/ap-1": (body) => {
     approvals = [];
     const allowFor = (body as { allowForSecs?: number }).allowForSecs;
@@ -27,6 +33,7 @@ const server = stubServerRoutes({
   // that has run out isn't reported. `serverClockOffsetMs` moves the server's
   // clock away from this device's.
   "GET /api/vault/ssh-agent": () => {
+    if (statusFails) return Response.json({ error: "agent unreachable" }, { status: 500 });
     const left = grantExpiresAt === undefined ? 0 : grantExpiresAt - Date.now();
     return Response.json(
       left > 0
@@ -38,7 +45,8 @@ const server = stubServerRoutes({
         : { enabled: true },
     );
   },
-  "DELETE /api/vault/ssh-agent/grant": () => {
+  "DELETE /api/vault/ssh-agent/grant": async () => {
+    await stopHeld;
     if (stopFails) return Response.json({ error: "vault unreachable" }, { status: 500 });
     grantExpiresAt = undefined;
     return new Response(null, { status: 204 });
@@ -59,6 +67,8 @@ afterEach(() => {
   answerStatus = 204;
   grantExpiresAt = undefined;
   stopFails = false;
+  statusFails = false;
+  stopHeld = undefined;
   serverClockOffsetMs = 0;
 });
 
@@ -312,5 +322,52 @@ describe("ApprovalsList", () => {
       "the refetch",
     );
     expect(mounted.host.textContent).toContain("without asking");
+  });
+
+  it("keeps Stop disabled while it runs, so a second press sends nothing", async () => {
+    approvals = [];
+    grantExpiresAt = Date.now() + 600_000;
+    let release = () => {};
+    stopHeld = new Promise((resolve) => {
+      release = resolve;
+    });
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => buttonNamed(mounted.host, "Stop") !== undefined, "the banner");
+
+    buttonNamed(mounted.host, "Stop")?.click();
+    await waitFor(() => buttonNamed(mounted.host, "Stop")?.disabled ?? false, "Stop to disable");
+    buttonNamed(mounted.host, "Stop")?.click();
+    release();
+
+    await waitFor(
+      () => !(mounted.host.textContent?.includes("without asking") ?? true),
+      "the grant to end",
+    );
+    expect(
+      server.calls.filter((c) => c.route === "DELETE /api/vault/ssh-agent/grant"),
+    ).toHaveLength(1);
+  });
+
+  it("says so when the agent's status can't be read", async () => {
+    approvals = [];
+    statusFails = true;
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(() => mounted.host.querySelector('[role="alert"]') !== null, "the error");
+  });
+
+  it("shows the banner without Stop on a device that can't approve", async () => {
+    approvals = [];
+    grantExpiresAt = Date.now() + 600_000;
+    // Known before the first render, so the banner can't show with Stop on it.
+    primeCache("server:devices:me", { deviceId: "dev-me", name: "Watcher", scopes: ["read"] });
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("without asking") ?? false,
+      "the banner",
+    );
+    expect(buttonNamed(mounted.host, "Stop")).toBeUndefined();
   });
 });

@@ -245,6 +245,12 @@ impl Shared {
         grant.clone()
     }
 
+    /// Whether `grant` is still the active one: not run out, stopped, or
+    /// replaced by another grant.
+    fn is_current(&self, grant: &Grant) -> bool {
+        self.active_grant().is_some_and(|g| g.id == grant.id)
+    }
+
     /// Returns whether a grant was there to drop.
     fn drop_grant(&self) -> bool {
         lock(&self.grant).take().is_some()
@@ -456,7 +462,7 @@ impl Session for VaultAgent {
             // event. Checked again afterwards, so a Stop pressed during the
             // signing wins, and so is the grant's identity: one that replaced
             // it isn't what the signature started under.
-            if self.shared.active_grant().is_none_or(|g| g.id != grant.id) {
+            if !self.shared.is_current(&grant) {
                 return Err(refuse("signing without asking was stopped"));
             }
             self.record_signature_under_grant(&grant, hash_alg).await?;
@@ -917,6 +923,52 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn only_the_grant_a_signature_started_under_counts_as_current() {
+        let shared = Shared {
+            key: Mutex::new(None),
+            grant: Mutex::new(None),
+            stopped: watch::channel(false).0,
+        };
+        let first = grant(300_000);
+        *lock(&shared.grant) = Some(first.clone());
+        assert!(shared.is_current(&first));
+        // Replaced by another grant, as when a second approval allows longer.
+        let second = grant(600_000);
+        *lock(&shared.grant) = Some(second.clone());
+        assert!(!shared.is_current(&first));
+        assert!(shared.is_current(&second));
+        shared.drop_grant();
+        assert!(!shared.is_current(&second));
+    }
+
+    #[tokio::test]
+    async fn a_grant_whose_start_cant_be_recorded_is_dropped_but_the_signature_goes_ahead() {
+        let approvals = approvals().await;
+        // Never migrated, so every append to it fails.
+        let unusable = crate::store::Store::connect_lazy(
+            &crate::store::testing::test_database_url(),
+            "never_migrated",
+        )
+        .unwrap();
+        let mut agent = VaultAgent::new(
+            &[3u8; 32],
+            approvals.clone(),
+            EventLog::new(unusable),
+            Duration::from_secs(5),
+        );
+        let answer = tokio::spawn({
+            let approvals = approvals.clone();
+            async move { answer_next_allowing(&approvals, true, Some(Duration::from_secs(300))).await }
+        });
+        agent
+            .sign(request(&agent, sshsig_blob("git")))
+            .await
+            .unwrap();
+        answer.await.unwrap();
+        assert!(agent.shared.active_grant().is_none());
     }
 
     #[tokio::test]
