@@ -77,6 +77,8 @@ const report = {
   malice: pass,
   observability: pass,
   quality: pass,
+  bugs: pass,
+  improvements: pass,
   approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
   flow: { title: "Flow", explanation: "How it runs.", mermaid: "flowchart TD\n  a --> b" },
 };
