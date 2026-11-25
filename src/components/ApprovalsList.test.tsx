@@ -354,7 +354,12 @@ describe("ApprovalsList", () => {
     statusFails = true;
     const mounted = await mountForInteraction(createElement(ApprovalsList));
     unmount = mounted.unmount;
-    await waitFor(() => mounted.host.querySelector('[role="alert"]') !== null, "the error");
+    await waitFor(
+      () =>
+        mounted.host.querySelector('[role="alert"]')?.textContent?.includes("agent unreachable") ??
+        false,
+      "the error",
+    );
   });
 
   it("shows the banner without Stop on a device that can't approve", async () => {

@@ -460,8 +460,7 @@ impl Session for VaultAgent {
         if let Some(grant) = grant {
             // Signed before recording, so a locked vault leaves no "signed"
             // event. Checked again afterwards, so a Stop pressed during the
-            // signing wins, and so is the grant's identity: one that replaced
-            // it isn't what the signature started under.
+            // signing wins and a grant that replaced this one doesn't count.
             if !self.shared.is_current(&grant) {
                 return Err(refuse("signing without asking was stopped"));
             }

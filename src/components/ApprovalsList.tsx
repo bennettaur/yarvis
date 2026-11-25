@@ -46,9 +46,9 @@ const formatClockTime = (ms: number) =>
 export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty?: boolean }) {
   const approvals = useCachedResource(APPROVALS_KEY, listApprovals, SIDECAR_FRESHNESS);
   const signing = useCachedResource(SIGNING_KEY, getSshAgentStatus, SIDECAR_FRESHNESS);
-  const me = useCachedResource(ME_KEY, getMyDevice, SIDECAR_FRESHNESS);
+  const myDevice = useCachedResource(ME_KEY, getMyDevice, SIDECAR_FRESHNESS);
   // Ending a grant needs the approve scope; without it the server answers 403.
-  const canStop = me.data?.scopes.includes("approve") ?? false;
+  const canStop = myDevice.data?.scopes.includes("approve") ?? false;
   const [busyId, setBusyId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
