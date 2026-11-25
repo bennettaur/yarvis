@@ -124,6 +124,13 @@ final class AttentionModel {
             // An item from the workspace's agent opens on the agent's tab.
             let agent = target?["type"]?.stringValue == "workspace-claude"
             app.openWorkspace(id: ws, focusSessionKey: agent ? WorkspaceSummary.agentSessionId(workspaceId: ws) : nil)
+        case "review-workspace":
+            guard let ws = target?["workspaceId"]?.stringValue else {
+                app.section = .review
+                break
+            }
+            let tab = target?["tab"]?.stringValue.flatMap(ReviewTabSpec.Kind.init(rawValue:))
+            app.openReview(OpenReviewRequest(workspaceId: ws, prId: target?["prId"]?.stringValue, tab: tab))
         case "terminal":
             let key = target?["sessionKey"]?.stringValue
             if let key, app.openTerminalSession(key) { break }

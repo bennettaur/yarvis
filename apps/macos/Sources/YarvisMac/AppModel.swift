@@ -6,17 +6,22 @@ import YarvisClient
 /// The pages in the sidebar, in the web UI's nav order. Settings is pinned
 /// to the bottom, as in the web UI's rail.
 enum Section: String, Hashable, CaseIterable {
-    case chat, terminal, workspaces, calendar, alarms
+    case chat, terminal, workspaces, review, calendar, alarms
     case headsDown = "heads-down"
     case settings
 
-    static let top: [Section] = [.chat, .terminal, .workspaces, .calendar, .alarms, .headsDown]
+    static let top: [Section] = [.chat, .terminal, .workspaces, .review, .calendar, .alarms, .headsDown]
+
+    /// Review is off the Cmd-digit shortcuts, as in the web UI, so the pages
+    /// after it keep their numbers.
+    var takesDigit: Bool { self != .review }
 
     var title: String {
         switch self {
         case .chat: return "Chat"
         case .terminal: return "Terminal"
         case .workspaces: return "Workspaces"
+        case .review: return "Review"
         case .calendar: return "Calendar"
         case .alarms: return "Alarms"
         case .headsDown: return "Heads down"
@@ -29,6 +34,7 @@ enum Section: String, Hashable, CaseIterable {
         case .chat: return "bubble.left.and.bubble.right"
         case .terminal: return "terminal"
         case .workspaces: return "square.stack.3d.up"
+        case .review: return "checklist"
         case .calendar: return "calendar"
         case .alarms: return "alarm"
         case .headsDown: return "scope"
@@ -57,6 +63,7 @@ final class AppModel {
     private(set) var attention: AttentionModel?
     private(set) var terminals: TerminalsModel?
     private(set) var workspaces: WorkspacesModel?
+    private(set) var review: ReviewModel?
     private(set) var settings: SettingsModel?
     private(set) var calendar: CalendarModel?
     private(set) var alarms: AlarmsModel?
@@ -103,6 +110,7 @@ final class AppModel {
         attention = AttentionModel(app: self, client: client)
         terminals = TerminalsModel(app: self, client: client)
         workspaces = WorkspacesModel(app: self, client: client)
+        review = ReviewModel(app: self, client: client)
         settings = SettingsModel(app: self, client: client)
         calendar = CalendarModel(app: self, client: client)
         alarms = AlarmsModel(app: self, client: client)
@@ -144,6 +152,7 @@ final class AppModel {
         chat?.handle(event)
         terminals?.handle(event)
         workspaces?.handle(event)
+        review?.handle(event)
         settings?.handle(event)
         calendar?.handle(event)
         alarms?.handle(event)
@@ -157,6 +166,7 @@ final class AppModel {
         chat?.resync()
         terminals?.resync()
         workspaces?.resync()
+        review?.resync()
         settings?.resync()
         calendar?.resync()
         alarms?.resync()
@@ -207,6 +217,7 @@ final class AppModel {
         chat?.stop()
         terminals?.stop()
         workspaces?.stop()
+        review?.stop()
         settings?.stop()
         calendar?.stop()
         alarms?.stop()
@@ -227,6 +238,7 @@ final class AppModel {
         attention = nil
         terminals = nil
         workspaces = nil
+        review = nil
         settings = nil
         calendar = nil
         alarms = nil
@@ -315,6 +327,14 @@ final class AppModel {
             return true
         }
         return false
+    }
+
+    /// Shows a review workspace with one of its PRs brought forward. Links,
+    /// attention items and the Workspaces page's PR rows all land here, so
+    /// each opens the same tab the same way.
+    func openReview(_ request: OpenReviewRequest) {
+        section = .review
+        review?.open(request)
     }
 
     func openSettings(tab: String? = nil) {

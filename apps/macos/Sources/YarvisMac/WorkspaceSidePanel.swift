@@ -120,7 +120,8 @@ private struct FolderRow<Row: View>: View {
     }
 }
 
-private func changeLetter(_ status: String) -> (String, Color) {
+/// A changed file's status as one letter and its colour, here and in the Review nav.
+func changeLetter(_ status: String) -> (String, Color) {
     switch status {
     case "added": return ("A", .green)
     case "modified": return ("M", .orange)

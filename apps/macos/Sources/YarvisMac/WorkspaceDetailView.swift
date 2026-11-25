@@ -237,6 +237,19 @@ private struct PrRow: View {
     let model: WorkspaceDetailModel
     let repo: WorkspaceRepoDetail
     let pr: WorkspaceRepoPr
+    @State private var openingReview = false
+    @State private var reviewError: String?
+
+    private func openInReview(_ number: Int) {
+        guard let review = model.app.review else { return }
+        let ref = linkedPrRef(url: pr.prUrl, owner: repo.repo.owner, repo: repo.repo.repo, number: number)
+        openingReview = true
+        reviewError = nil
+        Task {
+            defer { openingReview = false }
+            do { try await review.openPr(ref) } catch { reviewError = error.localizedDescription }
+        }
+    }
 
     var body: some View {
         let number = pr.prNumber ?? 0
@@ -250,6 +263,10 @@ private struct PrRow: View {
             }
             Text(checksLabel(pr.checkRollup)).font(.caption).foregroundStyle(checksColor(pr.checkRollup))
             if hasConflicts(pr.mergeable) { Chip(text: "⚠ merge conflicts", color: .red) }
+            Button(openingReview ? "Opening…" : "Open in review workspace") { openInReview(number) }
+                .buttonStyle(.borderless).controlSize(.small)
+                .disabled(openingReview)
+            if let reviewError { Text(reviewError).font(.caption).foregroundStyle(.red) }
             if let url = pr.prUrl {
                 Button("Open ↗") { openExternal(url) }
                     .buttonStyle(.borderless).controlSize(.small)
