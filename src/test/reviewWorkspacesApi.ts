@@ -74,6 +74,7 @@ mock.module("../lib/reviewWorkspaces/api", () => ({
   archiveReviewWorkspace: through(review, "archiveReviewWorkspace"),
   reviewChangedFiles: through(review, "reviewChangedFiles"),
   reviewTree: through(review, "reviewTree"),
+  reviewFileDiff: through(review, "reviewFileDiff"),
 }));
 
 mock.module("../lib/reviewWorkspaces/verification", () => ({

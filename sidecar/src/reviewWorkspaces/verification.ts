@@ -154,6 +154,9 @@ const checkSchema = z
     ),
   );
 
+/** A fix is posted on the PR as written, so it gets room for the 40 words asked rather than being cut. */
+const FIX_CHARS = 360;
+
 /** Optional, so an answer or a stored report from before the field still parses as empty. */
 const optionalText = (max: number) =>
   boundedText(max)
@@ -182,7 +185,7 @@ const concernSchema = z.object({
     .enum(SEVERITIES)
     .nullish()
     .transform((s) => s ?? "medium"),
-  fix: optionalText(DETAIL_CHARS).meta({
+  fix: optionalText(FIX_CHARS).meta({
     description: "The change that would resolve or contain it. Empty when you have none.",
   }),
   path: optionalPath,
@@ -191,26 +194,18 @@ const concernSchema = z.object({
 
 /**
  * A control that limits a risk, and which risk: a concern's or a change's
- * title. A bare string is what agents answered before mitigations were tied
- * to a risk, so it still parses, with nothing named.
+ * title, or empty when it limits no single one. Stored reports from before
+ * this hold bare strings, which the frontend still reads.
  */
-const mitigationSchema = z
-  .union([
-    z.string(),
-    z.object({
-      text: boundedText(100),
-      addresses: optionalText(TITLE_CHARS).meta({
-        description: "The title of the concern or change this limits.",
-      }),
-      path: optionalPath,
-      line: optionalLine,
-    }),
-  ])
-  .transform((m) =>
-    typeof m === "string"
-      ? { text: clip(m, 100), addresses: "", path: undefined, line: undefined }
-      : m,
-  );
+const mitigationSchema = z.object({
+  text: boundedText(100),
+  addresses: optionalText(TITLE_CHARS).meta({
+    description:
+      "The exact title of the concern or change this limits; empty for none in particular.",
+  }),
+  path: optionalPath,
+  line: optionalLine,
+});
 
 /** One change, classified for `verify/impact.ts` to score. */
 const changeSchema = z.object({
@@ -234,7 +229,7 @@ const changeSchema = z.object({
     .nullish()
     .transform((c) => c ?? ""),
   proof: proofSchema.nullish().transform((p) => p ?? undefined),
-  fix: optionalText(DETAIL_CHARS).meta({
+  fix: optionalText(FIX_CHARS).meta({
     description: "For a change that isn't proven: what to add to the PR to prove or contain it.",
   }),
   path: optionalPath,
@@ -956,11 +951,19 @@ function splitFallbacks<A, I>(
   return { answered, gap: fallback ? items(fallback).slice(0, 1) : [] };
 }
 
+/** A raw concern's severity rank; one that gives none counts as medium, as the schema reads it. */
+function concernRank(concern: unknown): number {
+  const severity = (concern as { severity?: unknown }).severity;
+  return typeof severity === "string" && severity in SEVERITY_ORDER
+    ? SEVERITY_ORDER[severity as keyof typeof SEVERITY_ORDER]
+    : SEVERITY_ORDER.medium;
+}
+
 /**
  * Risk across groups: the highest level any group gave, a fallen-back group's
  * medium included; the client impact of the highest answered group; the first
- * {@link MAX_MITIGATIONS} mitigations; the first {@link MAX_FINDINGS} concerns, the highest
- * answered group's first, keeping the "did not complete" one when a group fell
+ * {@link MAX_MITIGATIONS} mitigations; the {@link MAX_FINDINGS} most severe concerns, the highest
+ * answered group's first within a severity, keeping the "did not complete" one when a group fell
  * back; and every answered group's changes, since the impact score is over the
  * whole list.
  */
@@ -977,7 +980,17 @@ function combineRisk(answers: RawRisk[], fellBack: readonly boolean[]): RawRisk 
     level: highest(answers).level,
     clientImpact: top.clientImpact,
     mitigations: real.flatMap((a) => a.mitigations).slice(0, MAX_MITIGATIONS),
-    concerns: [...topFirst.flatMap((a) => a.concerns).slice(0, MAX_FINDINGS - gap.length), ...gap],
+    // Most severe first before the cut, so a lower group's high concern isn't
+    // crowded out by the top group's medium ones; group order breaks ties.
+    concerns: [
+      ...topFirst
+        .flatMap((a) => a.concerns)
+        .map((concern, order) => ({ concern, order }))
+        .sort((a, b) => concernRank(a.concern) - concernRank(b.concern) || a.order - b.order)
+        .slice(0, MAX_FINDINGS - gap.length)
+        .map(({ concern }) => concern),
+      ...gap,
+    ],
     changes: real.flatMap((a) => a.changes ?? []),
   };
 }

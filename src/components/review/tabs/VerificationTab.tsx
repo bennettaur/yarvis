@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
@@ -15,7 +15,6 @@ import {
 import { refKey } from "../../../lib/pr/ref";
 import type { PrRef, SeenCommits } from "../../../lib/pr/types";
 import { invalidate } from "../../../lib/resourceCache";
-import { reviewFileDiff } from "../../../lib/reviewWorkspaces/api";
 import { assessReview } from "../../../lib/reviewWorkspaces/decision";
 import { verificationReportMarkdown } from "../../../lib/reviewWorkspaces/exportReport";
 import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
@@ -593,11 +592,6 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       },
     };
   }, [poster, items, feedback, saveFeedback, ctx.prRef]);
-  const loadPatch = useCallback(
-    (path: string) =>
-      reviewFileDiff(workspaceId, pr.id, path).then((d) => (d.tooLarge ? null : d.patch)),
-    [workspaceId, pr.id],
-  );
   // An older head's line numbers may point at different code now, so only a
   // section whose result is for the current head can post.
   const currentSections = useMemo(
@@ -904,7 +898,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             actions={reportActions}
             currentSections={currentSections}
             upstack={upstack}
-            loadPatch={loadPatch}
+            diffSource={{ workspaceId, pr }}
           />
         )}
       </div>

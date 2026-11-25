@@ -441,7 +441,7 @@ describe("drafting a request for changes", () => {
   };
   const all = new Set(["claims", "changeMap", "tests", "risk"]);
 
-  it("ticks what a reviewer would almost always raise, and leaves low ones out", () => {
+  it("ticks what a reviewer would almost always raise, and leaves low findings out", () => {
     const drafts = draftComments(report, [ci("bad", "1 of 4 failing")], all);
     expect(
       drafts.map((d) => [d.source, d.title, d.severity, d.pickedByDefault, d.path, d.line]),
@@ -453,8 +453,12 @@ describe("drafting a request for changes", () => {
       ["Test quality", "No eviction test", "high", true, "src/cache.ts", 12],
       ["Risk", "Stale reads", "medium", false, "src/cache.ts", 70],
       ["Risk", "Mic stays live", "high", true, "src/chat.tsx", 4],
+      // A low concern is still drafted, unticked: its severity is the agent's call.
+      ["Risk", "Nit", "low", false, "src/chat.tsx", 5],
       ["CI", "tests: failed", "high", true, undefined, undefined],
     ]);
+    // No fix, no "Suggested fix" line.
+    expect(drafts[5]?.body).not.toContain("Suggested fix");
     expect(drafts[2]?.body).toContain("> Why the timeout?");
     expect(drafts[6]?.body).toContain(
       "Hidden controls leave it recording.\n> Suggested fix: Stop it on hide.",

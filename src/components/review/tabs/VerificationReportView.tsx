@@ -1,5 +1,7 @@
-import { useRef, useState } from "react";
-import { type DiffRow, parsePatch } from "../../../lib/pr/diff";
+import { useMemo, useState } from "react";
+import { parsePatch } from "../../../lib/pr/diff";
+import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
+import { rowsInRange } from "../../../lib/reviewWorkspaces/story";
 import {
   APPROACH_LABEL,
   asMitigation,
@@ -11,6 +13,7 @@ import {
   type ImpactBand,
   type ReportSection,
   type Severity,
+  THEME_RISK_LABEL,
   type ThemeCohesion,
   type ThemeRisk,
   VERIFICATION_CHECKS,
@@ -31,7 +34,9 @@ import {
   type VerificationUpstack,
 } from "../../../lib/reviewWorkspaces/verification";
 import { openExternal } from "../../../lib/url";
+import { rowClass } from "../../diff/DiffRow";
 import { type ReportActions, ReportItemActions } from "./ReportItemActions";
+import { useReviewFileDiff } from "./reviewData";
 
 export type { FindingPoster, Located, ReportActions } from "./ReportItemActions";
 
@@ -55,13 +60,6 @@ const RISK_CLASS: Record<VerificationRiskLevel, string> = {
 const THEME_RISK_CLASS: Record<ThemeRisk, string> = {
   ...RISK_CLASS,
   none: "border-zinc-700 text-zinc-400",
-};
-
-const THEME_RISK_LABEL: Record<ThemeRisk, string> = {
-  high: "high risk",
-  medium: "medium risk",
-  low: "low risk",
-  none: "no risk",
 };
 
 const THEME_RISK_HELP =
@@ -178,11 +176,21 @@ function countsText(counts: VerificationImpact["counts"]): string {
     .join(", ");
 }
 
+/**
+ * Props for an element whose tooltip explains it. Focusable and labelled, so
+ * a keyboard or screen-reader user gets the explanation a mouse user hovers for.
+ */
+const explained = (text: string, help: string) => ({
+  title: help,
+  tabIndex: 0,
+  "aria-label": `${text}: ${help}`,
+});
+
 /** A small labelled chip whose tooltip says what it means. */
 function Trait({ text, help, className = "" }: { text: string; help: string; className?: string }) {
   return (
     <span
-      title={help}
+      {...explained(text, help)}
       className={`cursor-help rounded border border-zinc-700 px-1 py-0.5 text-[10px] text-zinc-400 ${className}`}
     >
       {text}
@@ -211,14 +219,21 @@ function ChangeTraits({ change }: { change: VerificationChange }) {
         />
       )}
       {change.count > 1 && (
-        <Trait text={`×${change.count}`} help="This entry stands for this many alike changes." />
+        <Trait text={`×${change.count}`} help="This entry stands for this many similar changes." />
       )}
     </span>
   );
 }
 
+/**
+ * Proofs and mitigations are the agent's reading of a checkout the PR's author
+ * wrote, so the label says to confirm them rather than take them as checked.
+ */
+const CLAIM_HELP =
+  "What the agent says it found. Open the file to confirm it: a test's name or a comment is not proof.";
+
 /** A proof or mitigation: what it shows, and where in the code. */
-function ProofLine({ proof, onOpen }: { proof: VerificationProof; onOpen: OpenLocation }) {
+function EvidenceLine({ proof, onOpen }: { proof: VerificationProof; onOpen: OpenLocation }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-x-2">
       <span className="text-emerald-200/90">{proof.text}</span>
@@ -336,7 +351,7 @@ const QUESTIONS = {
   },
   unrelated: {
     title: "Anything malicious or unrelated?",
-    purpose: "Code that does something hidden, and changes the PR's goal doesn't need.",
+    purpose: "Code that does something hidden, or changes the PR's goal doesn't need.",
   },
   quality: {
     title: "Does it meet the quality bar?",
@@ -541,17 +556,13 @@ function Tripwires({
   );
 }
 
-/**
- * The change by theme, core first. An outlier carries the question for its
- * author, which can go to the PR like a finding, anchored at its first file.
- */
 type Theme = VerificationChangeMap["themes"][number];
 
 /** What a theme's post says: the question for an outlier, else what the proofs leave uncovered. */
 function themePostText(theme: Theme): string {
   if (theme.question) return theme.question;
   if (theme.unmitigated) {
-    return [theme.riskWhy, `To cover it: ${theme.unmitigated}`].filter(Boolean).join("\n");
+    return [theme.riskWhy, `Not covered: ${theme.unmitigated}`].filter(Boolean).join("\n");
   }
   return theme.riskWhy || theme.description;
 }
@@ -568,11 +579,16 @@ function ThemeRiskDetail({ theme, onOpen }: { theme: Theme; onOpen: OpenLocation
       {theme.riskWhy && <Labelled label="Risk:">{theme.riskWhy}</Labelled>}
       {theme.proofs.length > 0 ? (
         <div className="text-xs">
-          <span className="text-zinc-500">Proof it's handled:</span>
+          <span
+            {...explained("Proof it's handled", CLAIM_HELP)}
+            className="cursor-help text-zinc-500"
+          >
+            Proof it's handled:
+          </span>
           <ul className="ml-3 list-disc space-y-0.5 pl-2">
             {theme.proofs.map((p) => (
               <li key={`${p.text}:${p.path}:${p.line}`}>
-                <ProofLine proof={p} onOpen={onOpen} />
+                <EvidenceLine proof={p} onOpen={onOpen} />
               </li>
             ))}
           </ul>
@@ -591,6 +607,10 @@ function ThemeRiskDetail({ theme, onOpen }: { theme: Theme; onOpen: OpenLocation
   );
 }
 
+/**
+ * The change by theme, core first. An outlier carries the question for its
+ * author, which can go to the PR like a finding, anchored at its first file.
+ */
 function ChangeMap({
   map,
   onOpen,
@@ -618,7 +638,7 @@ function ChangeMap({
                   {COHESION_LABEL[theme.cohesion]}
                 </span>
                 <span
-                  title={THEME_RISK_HELP}
+                  {...explained(THEME_RISK_LABEL[theme.risk], THEME_RISK_HELP)}
                   className={`cursor-help rounded border px-1 py-0.5 text-[10px] ${THEME_RISK_CLASS[theme.risk]}`}
                 >
                   {THEME_RISK_LABEL[theme.risk]}
@@ -904,107 +924,101 @@ function Coverage({ report, onOpen }: { report: VerificationReport; onOpen: Open
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 
-/** A must-read and what already looks off or unclear in it. */
-/** Reads one file's patch for the PR's head; null when there is none to show. */
-export type PatchLoader = (path: string) => Promise<string | null>;
+/** Where a must-read's diff comes from: the review PR, at the head its lines are for. */
+export interface DiffSource {
+  workspaceId: string;
+  pr: Pick<ReviewWorkspacePr, "id" | "headSha" | "mergeBaseSha">;
+}
 
 /** Most diff rows a snippet shows before sending the reader to the file. */
 const SNIPPET_MAX_ROWS = 80;
 
-/**
- * The patch's rows for a head line range: from the first row inside it to
- * the last, so removed lines between them stay, and the removed lines just
- * before it, which its first lines replaced. The whole patch when there is
- * no range.
- */
-export function snippetRows(patch: string, lines?: { start: number; end: number }): DiffRow[] {
-  const rows = parsePatch(patch).filter((r) => r.kind !== "meta");
-  if (!lines) return rows;
-  const inRange = (r: DiffRow) =>
-    r.rightLine !== null && r.rightLine >= lines.start && r.rightLine <= lines.end;
-  let first = rows.findIndex(inRange);
-  if (first < 0) return [];
-  while (first > 0 && rows[first - 1].kind === "del") first -= 1;
-  const last = rows.length - 1 - [...rows].reverse().findIndex(inRange);
-  return rows.slice(first, last + 1);
-}
-
-const ROW_CLASS: Record<DiffRow["kind"], string> = {
-  add: "bg-emerald-950/40 text-emerald-200",
-  del: "bg-red-950/40 text-red-200",
-  context: "text-zinc-400",
-  hunk: "text-sky-400/80",
-  meta: "text-zinc-500",
-};
-
-/** A must-read's part of the diff, loaded the first time it is opened. */
-function DiffSnippet({
+/** The hunks of a must-read's diff that touch its lines, read through the review's diff cache. */
+function SnippetRows({
+  source,
   path,
   lines,
-  loadPatch,
 }: {
+  source: DiffSource;
   path: string;
   lines?: { start: number; end: number };
-  loadPatch: PatchLoader;
 }) {
-  const [state, setState] = useState<
-    { status: "idle" | "loading" } | { status: "done"; rows: DiffRow[] } | { status: "error" }
-  >({ status: "idle" });
-  // A ref, not the state: two toggles before a re-render would both see "idle".
-  const started = useRef(false);
-  const load = () => {
-    if (started.current) return;
-    started.current = true;
-    setState({ status: "loading" });
-    loadPatch(path).then(
-      (patch) => setState({ status: "done", rows: patch ? snippetRows(patch, lines) : [] }),
-      () => setState({ status: "error" }),
+  const diff = useReviewFileDiff(source.workspaceId, source.pr, path);
+  const rows = useMemo(
+    () => (diff.data && !diff.data.tooLarge ? rowsInRange(parsePatch(diff.data.patch), lines) : []),
+    [diff.data, lines],
+  );
+  if (!diff.data) {
+    return diff.error ? (
+      <p className="mt-1 text-red-300">Couldn't load the diff.</p>
+    ) : (
+      <p className="mt-1 text-zinc-500">Loading…</p>
     );
-  };
+  }
+  if (rows.length === 0) {
+    return (
+      <p className="mt-1 text-zinc-500">
+        {diff.data.tooLarge ? "The diff is too large to show here." : "No changes in these lines."}
+      </p>
+    );
+  }
   return (
-    <details className="text-xs" onToggle={(e) => e.currentTarget.open && load()}>
+    <pre className="mt-1 max-h-80 overflow-auto rounded border border-zinc-800 bg-zinc-950 py-1 font-mono text-[11px] leading-snug">
+      {rows.slice(0, SNIPPET_MAX_ROWS).map((r, i) => (
+        // Rows have no id of their own, and their order is fixed once parsed.
+        // biome-ignore lint/suspicious/noArrayIndexKey: see above
+        <div key={i} className={`whitespace-pre px-2 ${rowClass(r.kind)}`}>
+          <span className="mr-2 inline-block w-8 select-none text-right text-zinc-600">
+            {r.rightLine ?? ""}
+          </span>
+          {r.text}
+        </div>
+      ))}
+      {rows.length > SNIPPET_MAX_ROWS && (
+        <div className="px-2 text-zinc-500">
+          {rows.length - SNIPPET_MAX_ROWS} more lines: open the file to read them.
+        </div>
+      )}
+    </pre>
+  );
+}
+
+/**
+ * A must-read's part of the diff. Read only while open, so a closed report
+ * loads nothing, and opening it again after a failure asks again.
+ */
+function DiffSnippet({
+  source,
+  path,
+  lines,
+}: {
+  source: DiffSource;
+  path: string;
+  lines?: { start: number; end: number };
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details className="text-xs" onToggle={(e) => setOpen(e.currentTarget.open)}>
       <summary className="cursor-pointer text-zinc-500 hover:text-zinc-300">Show the diff</summary>
-      {state.status === "loading" && <p className="mt-1 text-zinc-500">Loading…</p>}
-      {state.status === "error" && <p className="mt-1 text-red-300">Couldn't load the diff.</p>}
-      {state.status === "done" &&
-        (state.rows.length === 0 ? (
-          <p className="mt-1 text-zinc-500">No changed lines in this range.</p>
-        ) : (
-          <pre className="mt-1 max-h-80 overflow-auto rounded border border-zinc-800 bg-zinc-950 py-1 font-mono text-[11px] leading-snug">
-            {state.rows.slice(0, SNIPPET_MAX_ROWS).map((r, i) => (
-              // Rows have no id of their own; their order never changes once loaded.
-              // biome-ignore lint/suspicious/noArrayIndexKey: see above
-              <div key={i} className={`whitespace-pre px-2 ${ROW_CLASS[r.kind]}`}>
-                <span className="mr-2 inline-block w-8 select-none text-right text-zinc-600">
-                  {r.rightLine ?? ""}
-                </span>
-                {r.text}
-              </div>
-            ))}
-            {state.rows.length > SNIPPET_MAX_ROWS && (
-              <div className="px-2 text-zinc-500">
-                {state.rows.length - SNIPPET_MAX_ROWS} more lines: open the file to read them.
-              </div>
-            )}
-          </pre>
-        ))}
+      {open && <SnippetRows source={source} path={path} lines={lines} />}
     </details>
   );
 }
 
+/** A must-read and what already looks off or unclear in it. */
 function MustReadItem({
   entry,
   onOpen,
   viewed,
   actions,
-  loadPatch,
+  diffSource,
 }: {
   entry: VerificationMustRead;
   onOpen: OpenLocation;
   viewed: Viewed;
   actions?: ReportActions;
   /** Absent where the diff can't be read, or the must-reads are for an older head. */
-  loadPatch?: PatchLoader;
+  diffSource?: DiffSource;
 }) {
   const flags = entry.flags ?? [];
   return (
@@ -1020,7 +1034,7 @@ function MustReadItem({
         {entry.reason}
       </Labelled>
       {entry.why && <Labelled label="Why it matters:">{entry.why}</Labelled>}
-      {loadPatch && <DiffSnippet path={entry.path} lines={entry.lines} loadPatch={loadPatch} />}
+      {diffSource && <DiffSnippet source={diffSource} path={entry.path} lines={entry.lines} />}
       {/* Must-reads are written by the summary run, so their feedback is filed under it. */}
       <ReportItemActions
         section="summary"
@@ -1076,7 +1090,7 @@ type Risk = NonNullable<VerificationReport["risk"]>;
 const sameTitle = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /** The mitigations that name this risk by its title. */
-const limiting = (mitigations: readonly VerificationMitigation[], title: string) =>
+const mitigationsFor = (mitigations: readonly VerificationMitigation[], title: string) =>
   mitigations.filter((m) => m.addresses && sameTitle(m.addresses, title));
 
 function MitigationList({
@@ -1089,11 +1103,13 @@ function MitigationList({
   if (mitigations.length === 0) return null;
   return (
     <div className="text-xs">
-      <span className="text-zinc-500">Limited by:</span>
+      <span {...explained("Limited by", CLAIM_HELP)} className="cursor-help text-zinc-500">
+        Limited by:
+      </span>
       <ul className="ml-3 list-disc space-y-0.5 pl-2">
         {mitigations.map((m) => (
           <li key={`${m.text}:${m.path}:${m.line}`}>
-            <ProofLine proof={m} onOpen={onOpen} />
+            <EvidenceLine proof={m} onOpen={onOpen} />
           </li>
         ))}
       </ul>
@@ -1101,17 +1117,14 @@ function MitigationList({
   );
 }
 
-const CONCERN_CLASS: Record<Severity, string> = {
-  high: "rounded border border-red-900/70 bg-red-950/20 p-2",
-  medium: "",
-  low: "",
-};
+/** A high concern is boxed, so the one that should block the merge isn't lost among the rest. */
+const HIGH_CONCERN_CLASS = "rounded border border-red-900/70 bg-red-950/20 p-2";
 
 /** What a concern's post says: what is wrong, then what to do about it. */
 const concernPostText = (c: VerificationConcern) =>
   [c.detail, c.fix ? `Suggested fix: ${c.fix}` : ""].filter(Boolean).join("\n");
 
-/** What an attention change's post says: what to add to prove it, else what to confirm. */
+/** What an attention change's post says: what to confirm, then what to add to prove it. */
 const changePostText = (c: VerificationChange) =>
   [c.check, c.fix ? `To prove it: ${c.fix}` : ""].filter(Boolean).join("\n");
 
@@ -1126,7 +1139,8 @@ function themeOfPath(map: VerificationChangeMap | undefined): (path?: string) =>
     const exact = byPath.get(path);
     if (exact) return exact;
     // A folded change can name a folder.
-    for (const [file, title] of byPath) if (file.startsWith(path)) return title;
+    const folder = path.endsWith("/") ? path : `${path}/`;
+    for (const [file, title] of byPath) if (file.startsWith(folder)) return title;
     return null;
   };
 }
@@ -1144,12 +1158,16 @@ function Score({ impact, level }: { impact?: VerificationImpact; level: Risk["le
     );
   }
   const potential = impact.potentialBand;
+  const showsPotential = potential !== undefined && potential !== impact.band;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
-      {potential !== undefined && potential !== impact.band && (
+      {showsPotential && (
         <>
           <span
-            title="The score if none of the PR's changes were proven by tests: how much could go wrong."
+            {...explained(
+              `Potential ${potential}/5`,
+              "The score if none of the PR's changes were proven by tests: how much could go wrong.",
+            )}
             className={`cursor-help rounded border px-1.5 py-0.5 ${IMPACT_CLASS[potential]}`}
           >
             Potential {potential}/5
@@ -1160,16 +1178,23 @@ function Score({ impact, level }: { impact?: VerificationImpact; level: Risk["le
         </>
       )}
       <span
-        title={`${BAND_HELP} This counts the tests the PR has; other mitigations are listed against the risks they limit.`}
+        {...explained(
+          `Impact ${impact.band}/5`,
+          showsPotential
+            ? `${BAND_HELP} This counts the tests the PR has; other mitigations are listed under the risks they limit.`
+            : BAND_HELP,
+        )}
         className={`cursor-help rounded border px-1.5 py-0.5 ${IMPACT_CLASS[impact.band]}`}
       >
-        {potential !== undefined && potential !== impact.band ? "With its tests" : "Impact"}{" "}
-        {impact.band}/5 · {IMPACT_LABEL[impact.band]}
+        {showsPotential ? "With its tests" : "Impact"} {impact.band}/5 · {IMPACT_LABEL[impact.band]}
       </span>
       {/* The level shows beside the band only when the agent judged it stricter. */}
       {level !== LEVEL_FOR_BAND[impact.band] && (
         <span
-          title="The risk agent judged the PR riskier than its changes score, from something the score can't see, such as a failing CI check."
+          {...explained(
+            `${level} risk`,
+            "The risk agent judged the PR riskier than its changes score, from something the score can't see, such as a failing CI check.",
+          )}
           className={`cursor-help rounded border px-1.5 py-0.5 ${RISK_CLASS[level]}`}
         >
           {level} risk
@@ -1201,9 +1226,9 @@ function RiskDetail({
   const mitigations = risk.mitigations.map(asMitigation);
   const impact = risk.impact;
   const attention = impact?.changes.filter((c) => c.band >= ATTENTION_BAND) ?? [];
-  const named = new Set([...risk.concerns.map((c) => c.title), ...attention.map((c) => c.title)]);
+  const titles = [...risk.concerns.map((c) => c.title), ...attention.map((c) => c.title)];
   const unplaced = mitigations.filter(
-    (m) => !m.addresses || ![...named].some((t) => sameTitle(t, m.addresses)),
+    (m) => !m.addresses || !titles.some((t) => sameTitle(t, m.addresses)),
   );
   return (
     <div className="space-y-3 text-sm">
@@ -1230,7 +1255,7 @@ function RiskDetail({
             {risk.concerns.map((c) => (
               <li
                 key={`${c.title}:${c.path}:${c.line}`}
-                className={`space-y-0.5 ${CONCERN_CLASS[c.severity ?? "medium"]} ${viewedClass(isViewed(viewed, c.path))}`}
+                className={`space-y-0.5 ${c.severity === "high" ? HIGH_CONCERN_CLASS : ""} ${viewedClass(isViewed(viewed, c.path))}`}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   {c.severity && (
@@ -1249,7 +1274,10 @@ function RiskDetail({
                     {c.fix}
                   </Labelled>
                 )}
-                <MitigationList mitigations={limiting(mitigations, c.title)} onOpen={onOpen} />
+                <MitigationList
+                  mitigations={mitigationsFor(mitigations, c.title)}
+                  onOpen={onOpen}
+                />
                 <ReportItemActions
                   section="risk"
                   sectionLabel="Risk"
@@ -1273,11 +1301,8 @@ function RiskDetail({
 
       {attention.length > 0 && (
         <div className="space-y-1.5">
-          <div
-            className="text-xs text-zinc-500"
-            title="Changes scored 4 or 5: where a mistake would spread furthest."
-          >
-            Changes that need your attention
+          <div className="text-xs text-zinc-500">
+            Changes that need your attention · scored 4 or 5, where a mistake would spread furthest
           </div>
           <ul className="space-y-2">
             {attention.map((c, i) => (
@@ -1294,8 +1319,10 @@ function RiskDetail({
                 {c.check && <Labelled label="Confirm:">{c.check}</Labelled>}
                 {c.proof ? (
                   <div className="text-xs">
-                    <span className="text-zinc-500">Proof: </span>
-                    <ProofLine proof={c.proof} onOpen={onOpen} />
+                    <span {...explained("Proof", CLAIM_HELP)} className="cursor-help text-zinc-500">
+                      Proof:{" "}
+                    </span>
+                    <EvidenceLine proof={c.proof} onOpen={onOpen} />
                   </div>
                 ) : null}
                 {c.fix && (
@@ -1303,7 +1330,10 @@ function RiskDetail({
                     {c.fix}
                   </Labelled>
                 )}
-                <MitigationList mitigations={limiting(mitigations, c.title)} onOpen={onOpen} />
+                <MitigationList
+                  mitigations={mitigationsFor(mitigations, c.title)}
+                  onOpen={onOpen}
+                />
                 <ReportItemActions
                   section="risk"
                   sectionLabel="Impact"
@@ -1332,7 +1362,7 @@ function RiskDetail({
           <ul className="ml-3 list-disc space-y-0.5 pl-2">
             {unplaced.map((m) => (
               <li key={`${m.text}:${m.path}:${m.line}`}>
-                <ProofLine proof={m} onOpen={onOpen} />
+                <EvidenceLine proof={m} onOpen={onOpen} />
                 {m.addresses && <span className="text-zinc-500"> (limits: {m.addresses})</span>}
               </li>
             ))}
@@ -1355,11 +1385,14 @@ function EveryChange({
   changeMap?: VerificationChangeMap;
   onOpen: OpenLocation;
 }) {
+  // Without a change map there are no themes, so one untitled group holds every change.
+  const groups = new Map<string | null, VerificationChange[]>();
   const themeOf = themeOfPath(changeMap);
-  const groups = new Map<string, VerificationChange[]>();
   for (const c of impact.changes) {
-    const theme = themeOf(c.path) ?? (changeMap ? "In no theme" : "");
-    groups.set(theme, [...(groups.get(theme) ?? []), c]);
+    const theme = changeMap ? (themeOf(c.path) ?? "In no theme") : null;
+    const group = groups.get(theme);
+    if (group) group.push(c);
+    else groups.set(theme, [c]);
   }
   return (
     <details className="text-xs">
@@ -1372,7 +1405,7 @@ function EveryChange({
       </p>
       <div className="mt-1.5 space-y-2">
         {[...groups].map(([theme, changes]) => (
-          <div key={theme || "all"} className="space-y-1">
+          <div key={theme ?? ""} className="space-y-1">
             {theme && <div className="text-zinc-400">{theme}</div>}
             <ul className="space-y-1">
               {changes.map((c, i) => (
@@ -1403,7 +1436,7 @@ export default function VerificationReportView({
   actions,
   currentSections,
   upstack = null,
-  loadPatch,
+  diffSource,
 }: {
   report: VerificationReport;
   onOpen: OpenLocation;
@@ -1419,8 +1452,8 @@ export default function VerificationReportView({
    * can still be judged.
    */
   currentSections?: ReadonlySet<string>;
-  /** Reads a file's patch at the PR's head, for a must-read's diff snippet. */
-  loadPatch?: PatchLoader;
+  /** Where a must-read's diff snippet is read from. */
+  diffSource?: DiffSource;
 }) {
   const { risk } = report;
   const isCurrent = (section: string) => !currentSections || currentSections.has(section);
@@ -1460,7 +1493,8 @@ export default function VerificationReportView({
       );
     });
 
-  const hasIntent = report.summary !== undefined || report.mustRead.length > 0 || report.changeMap;
+  const hasIntent =
+    report.summary !== undefined || report.mustRead.length > 0 || !!report.changeMap;
   const hasSafety = !!risk || checksFor("safety").length > 0;
   const hasUnrelated = outliers.length > 0 || checksFor("unrelated").length > 0;
   const hasQuality = !!report.approach || checksFor("quality").length > 0;
@@ -1501,7 +1535,8 @@ export default function VerificationReportView({
                     onOpen={onOpen}
                     viewed={viewed}
                     actions={actionsFor("summary")}
-                    loadPatch={isCurrent("summary") ? loadPatch : undefined}
+                    // The diff is read at the current head, so it matches only current must-reads.
+                    diffSource={isCurrent("summary") ? diffSource : undefined}
                   />
                 ))}
               </ul>
@@ -1511,7 +1546,7 @@ export default function VerificationReportView({
           {report.changeMap && (
             <Section
               title={titled("Change map", "changeMap")}
-              purpose="The changes grouped by reason. Each says what could go wrong and what in the PR shows it's handled: accept the risk, or reject it and say why."
+              purpose="The changes grouped by reason. Each says what could go wrong and what in the PR shows it's handled: accept the risk, or reject the theme's rating and say why."
             >
               <ChangeMap
                 map={report.changeMap}
@@ -1565,7 +1600,7 @@ export default function VerificationReportView({
           {checkRows("unrelated")}
           {outliers.length > 0 && (
             <Section
-              title="Unrelated changes"
+              title={titled("Unrelated changes", "changeMap")}
               purpose="Themes from the change map that the PR's goal doesn't need. Judge or post each one there."
             >
               <ul className="space-y-1 text-xs">

@@ -197,6 +197,14 @@ export interface ChangeTheme {
 /** `none` is for a theme no mistake in can hurt anyone: accurate docs, tests, a passive rename. */
 export type ThemeRisk = "none" | "low" | "medium" | "high";
 
+/** What a theme's risk is called wherever it is shown. */
+export const THEME_RISK_LABEL: Record<ThemeRisk, string> = {
+  high: "high risk",
+  medium: "medium risk",
+  low: "low risk",
+  none: "no risk",
+};
+
 /** The change grouped into themes. `unmapped` lists changed files no theme names. */
 export interface VerificationChangeMap {
   intent: string;
@@ -348,8 +356,9 @@ export function findingCommentBody(
   section: string,
 ): string {
   const tag = finding.severity ? `${section}, ${finding.severity}` : section;
+  // Every line break a renderer honours, or a lone CR could end the quote early.
   const quoted = unmention(finding.detail)
-    .split("\n")
+    .split(/\r\n?|\n|[\u2028\u2029]/)
     .map((line) => `> ${line}`)
     .join("\n");
   const title = unmention(finding.title).replace(/\s+/g, " ").trim();

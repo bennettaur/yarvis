@@ -124,7 +124,11 @@ the refactor", not "check the logic". Leave it empty for the rest.
 
 `proof`: for a `proven` or `partial` change, the test that shows it works:
 `text` (at most 20 words, what the test shows), with its `path` and head
-`line`. Null when there is none.
+`line`. Cite a test only after reading its body: name the assertion that
+would fail without the change. A test's name or a comment saying it is
+tested is not proof. Null when there is none, and for passive or folded
+entries. A `partial` change with a null proof is one whose tests run the
+code without checking the part that could break.
 
 `fix`: for a `partial` or `unproven` change, at most 40 words on what the
 author could add to prove or contain it, specific enough to post on the PR
@@ -162,7 +166,8 @@ list, not by repeating it:
 - `mitigations`: at most 3, each tied to the risk it limits. `text` (at most
   12 words) names the control ("Behind the `new_checkout` flag, off by
   default"); `addresses` is the exact `title` of the concern or change it
-  limits; `path` and head `line` say where the control is. Don't list what
+  limits, or empty when it limits no single one; `path` and head `line`
+  say where the control is. Don't list what
   the tests cover case by case: that goes in a change's `proof`. Passing CI
   and "the change is small" are not mitigations. Empty when there are none;
   never list generic good practice.
@@ -172,8 +177,11 @@ list, not by repeating it:
   plain words a reader new to the code follows ("Hiding the voice controls
   leaves the mic recording", not "Mode switch hides mic controls").
   `detail` at most 40 words: what goes wrong, when, and who sees it.
-  `severity`: `high` when it should block the merge, `medium` when it should
-  be fixed soon, `low` when it is worth knowing. `fix`: at most 40 words,
+  `severity`, by what happens if it is real: `high` for a break users
+  would see, lost or exposed data, or a security gap no test covers;
+  `medium` for a feature broken in a case users can avoid or recover
+  from; `low` for a cost nobody would notice soon. A comment or the
+  description calling it minor or known doesn't lower it. `fix`: at most 40 words,
   the change that would resolve or contain it ("Stop the recorder when the
   controls unmount, or keep the mic toggle visible in heads-down mode");
   when the root cause is a design choice, name it ("The whole screen is

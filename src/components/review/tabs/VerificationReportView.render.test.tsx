@@ -1,7 +1,8 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { VerificationReport } from "../../../lib/reviewWorkspaces/verification";
 import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../../test/render";
+import { resetReviewApi, stubReviewApi } from "../../../test/reviewWorkspacesApi";
 import VerificationReportView from "./VerificationReportView";
 
 const pass = { status: "pass" as const, findings: [] };
@@ -73,7 +74,7 @@ describe("VerificationReportView", () => {
     expect(text).toContain("Other mitigations in the PR:Short TTL");
   });
 
-  it("asks a must-read's question, says why it matters, and shows its diff on request", async () => {
+  describe("a must-read's diff snippet", () => {
     const patch = [
       "@@ -8,4 +8,5 @@",
       " before",
@@ -81,48 +82,185 @@ describe("VerificationReportView", () => {
       "+new eviction",
       "+evict on write",
       " after",
+      "@@ -40,2 +41,2 @@",
+      "-far away",
+      "+elsewhere",
     ].join("\n");
-    const loaded: string[] = [];
-    const { host, unmount } = await mountForInteraction(
-      createElement(VerificationReportView, {
-        report: {
-          ...report,
-          mustRead: [
-            {
-              path: "src/cache.ts",
-              reason: "Does a write evict the cached profile?",
-              why: "Users would see their old profile after editing it.",
-              lines: { start: 9, end: 10 },
-            },
-          ],
+    let sha = 0;
+    /** A fresh head per test, so the diff cache never answers from another test. */
+    const source = () => ({
+      workspaceId: "ws",
+      pr: { id: "pr", headSha: `head${++sha}`, mergeBaseSha: "base" },
+    });
+    const mustRead = {
+      ...report,
+      mustRead: [
+        {
+          path: "src/cache.ts",
+          reason: "Does a write evict the cached profile?",
+          why: "Users would see their old profile after editing it.",
+          lines: { start: 9, end: 10 },
         },
-        onOpen: { open: () => {}, canOpen: () => true },
-        loadPatch: async (path) => {
-          loaded.push(path);
-          return patch;
-        },
-      }),
-    );
-    try {
-      const text = textOf(host.innerHTML);
-      expect(text).toContain("Answer while reading: Does a write evict the cached profile?");
-      expect(text).toContain("Why it matters: Users would see their old profile after editing it.");
-      expect(loaded).toEqual([]);
+      ],
+    };
+    const snippetOf = (host: HTMLElement) => {
       const details = [...host.querySelectorAll("details")].find((d) =>
         d.textContent?.includes("Show the diff"),
       );
       if (!details) throw new Error("no diff snippet");
-      details.open = true;
+      return details;
+    };
+    const toggle = (details: HTMLDetailsElement, open: boolean) => {
+      details.open = open;
       details.dispatchEvent(new Event("toggle"));
-      await waitFor(() => !!details.querySelector("pre"), "the snippet");
-      // Lines 9 and 10 and the removed line between them; not the context around them.
-      expect(details.querySelector("pre")?.textContent).toBe(
-        "-old eviction9+new eviction10+evict on write",
+    };
+
+    afterEach(() => resetReviewApi());
+
+    it("asks the question, says why it matters, and shows only the hunks for its lines", async () => {
+      const asked: string[] = [];
+      stubReviewApi({
+        reviewFileDiff: async (_ws, _pr, path) => {
+          asked.push(path);
+          return { path, patch, tooLarge: false, headSha: "h", mergeBaseSha: "b" };
+        },
+      });
+      const { host, unmount } = await mountForInteraction(
+        createElement(VerificationReportView, {
+          report: mustRead,
+          onOpen: { open: () => {}, canOpen: () => true },
+          diffSource: source(),
+        }),
       );
-      expect(loaded).toEqual(["src/cache.ts"]);
-    } finally {
-      unmount();
-    }
+      try {
+        const text = textOf(host.innerHTML);
+        expect(text).toContain("Answer while reading: Does a write evict the cached profile?");
+        expect(text).toContain(
+          "Why it matters: Users would see their old profile after editing it.",
+        );
+        // Nothing is read until the snippet is opened.
+        expect(asked).toEqual([]);
+        const details = snippetOf(host);
+        toggle(details, true);
+        await waitFor(() => !!details.querySelector("pre"), "the snippet");
+        const shown = details.querySelector("pre")?.textContent ?? "";
+        expect(shown).toContain("+new eviction");
+        expect(shown).toContain("-old eviction");
+        expect(shown).not.toContain("elsewhere");
+        // Closing and opening again reads from the cache.
+        toggle(details, false);
+        await waitFor(() => !details.querySelector("pre"), "the snippet closed");
+        toggle(details, true);
+        await waitFor(() => !!details.querySelector("pre"), "the snippet again");
+        expect(asked).toEqual(["src/cache.ts"]);
+      } finally {
+        unmount();
+      }
+    });
+
+    it("says when the diff can't be read, and asks again when reopened", async () => {
+      let calls = 0;
+      stubReviewApi({
+        reviewFileDiff: async () => {
+          calls += 1;
+          throw new Error("sidecar is down");
+        },
+      });
+      const { host, unmount } = await mountForInteraction(
+        createElement(VerificationReportView, {
+          report: mustRead,
+          onOpen: { open: () => {}, canOpen: () => true },
+          diffSource: source(),
+        }),
+      );
+      try {
+        const details = snippetOf(host);
+        toggle(details, true);
+        await waitFor(() => !!details.textContent?.includes("Couldn't load the diff."), "error");
+        toggle(details, false);
+        await waitFor(() => !details.textContent?.includes("Couldn't load"), "the snippet closed");
+        toggle(details, true);
+        await waitFor(() => calls === 2, "a second read");
+      } finally {
+        unmount();
+      }
+    });
+
+    it("says when the diff is too large, and when it has nothing in the lines", async () => {
+      for (const [answer, message] of [
+        [{ patch: "", tooLarge: true }, "The diff is too large to show here."],
+        [{ patch: "@@ -1,1 +1,1 @@\n-a\n+b", tooLarge: false }, "No changes in these lines."],
+      ] as const) {
+        stubReviewApi({
+          reviewFileDiff: async (_ws, _pr, path) => ({
+            path,
+            ...answer,
+            headSha: "h",
+            mergeBaseSha: "b",
+          }),
+        });
+        const { host, unmount } = await mountForInteraction(
+          createElement(VerificationReportView, {
+            report: mustRead,
+            onOpen: { open: () => {}, canOpen: () => true },
+            diffSource: source(),
+          }),
+        );
+        try {
+          const details = snippetOf(host);
+          toggle(details, true);
+          await waitFor(() => !!details.textContent?.includes(message), message);
+        } finally {
+          unmount();
+        }
+      }
+    });
+
+    it("shows at most 80 lines and points to the file for the rest", async () => {
+      const long = ["@@ -1,0 +1,100 @@", ...Array.from({ length: 100 }, (_, i) => `+line ${i}`)];
+      stubReviewApi({
+        reviewFileDiff: async (_ws, _pr, path) => ({
+          path,
+          patch: long.join("\n"),
+          tooLarge: false,
+          headSha: "h",
+          mergeBaseSha: "b",
+        }),
+      });
+      const { host, unmount } = await mountForInteraction(
+        createElement(VerificationReportView, {
+          report: { ...mustRead, mustRead: [{ ...mustRead.mustRead[0], lines: undefined }] },
+          onOpen: { open: () => {}, canOpen: () => true },
+          diffSource: source(),
+        }),
+      );
+      try {
+        const details = snippetOf(host);
+        toggle(details, true);
+        // The hunk header and 100 lines: 80 shown, 21 left.
+        await waitFor(
+          () => !!details.textContent?.includes("21 more lines: open the file to read them."),
+          "the overflow note",
+        );
+      } finally {
+        unmount();
+      }
+    });
+
+    it("offers no snippet for must-reads from an older head", async () => {
+      const text = textOf(
+        await renderToHtml(
+          createElement(VerificationReportView, {
+            report: mustRead,
+            onOpen: { open: () => {}, canOpen: () => true },
+            diffSource: source(),
+            currentSections: new Set(["risk"]),
+          }),
+        ),
+      );
+      expect(text).toContain("Does a write evict the cached profile?");
+      expect(text).not.toContain("Show the diff");
+    });
   });
 
   it("shows the impact band, what to check, and every change behind a fold", async () => {
@@ -448,6 +586,168 @@ describe("VerificationReportView", () => {
     expect(text).toContain("Bump the linter · Why bump the linter here?");
   });
 
+  it("posts what to add: a theme's uncovered risk, a concern's fix, and an attention change's proof to add", async () => {
+    const posted: { title: string; detail: string; section: string }[] = [];
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          changeMap: {
+            intent: "Cache user lookups.",
+            unmapped: [],
+            themes: [
+              {
+                title: "Serve lookups from the cache",
+                description: "d",
+                risk: "high",
+                riskWhy: "A stale entry shows an old profile.",
+                proofs: [],
+                unmitigated: "Add a test that a write evicts the entry.",
+                cohesion: "core",
+                question: "",
+                files: [{ path: "src/cache.ts" }],
+              },
+              {
+                title: "Document the cache",
+                description: "d",
+                risk: "none",
+                riskWhy: "",
+                proofs: [],
+                unmitigated: "",
+                cohesion: "supporting",
+                question: "",
+                files: [{ path: "README.md" }],
+              },
+            ],
+          },
+          risk: {
+            ...risk,
+            level: "high",
+            mitigations: [
+              // Matched to its concern whatever its case and spacing.
+              { text: "Short TTL", addresses: " no invalidation ON write " },
+            ],
+            concerns: [
+              {
+                title: "No invalidation on write",
+                detail: "Edits stay stale.",
+                severity: "medium",
+                fix: "Evict on write.",
+                path: "src/cache.ts",
+                line: 22,
+              },
+            ],
+            impact: {
+              band: 4,
+              potentialBand: 4,
+              highestChangeBand: 4,
+              load: 4,
+              raisedByVolume: 0,
+              counts: {
+                passive: 0,
+                reorganization: 0,
+                addition: 0,
+                removal: 0,
+                interface: 0,
+                logic: 2,
+              },
+              changes: [
+                {
+                  title: "Read through the cache",
+                  kind: "logic",
+                  reach: "shared",
+                  evidence: "unproven",
+                  sensitive: false,
+                  count: 1,
+                  check: "A write evicts the entry.",
+                  fix: "Add a test that writes then reads.",
+                  path: "src/cache.ts",
+                  line: 30,
+                  band: 4,
+                },
+                {
+                  title: "Retry the lookup",
+                  kind: "logic",
+                  reach: "shared",
+                  evidence: "partial",
+                  sensitive: false,
+                  count: 1,
+                  check: "Retries stop.",
+                  path: "src/lookup.ts",
+                  line: 3,
+                  band: 4,
+                },
+              ],
+            },
+          },
+        },
+        onOpen: { open: () => {}, canOpen: () => true },
+        actions: {
+          poster: {
+            toPr: async (f, section) => {
+              posted.push({ title: f.title, detail: f.detail, section });
+              return undefined;
+            },
+          },
+        },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      // The same score before and after the tests shows once, with no "Potential".
+      expect(text).toContain("Impact 4/5");
+      expect(text).not.toContain("Potential");
+      expect(text).toContain("Limited by:Short TTL");
+      const buttons = [...host.querySelectorAll("button")].filter(
+        (b) => b.textContent === "Post to PR",
+      );
+      // The theme with something uncovered, the concern, and the change with a fix:
+      // not the no-risk theme, nor the change with nothing to add.
+      expect(buttons).toHaveLength(3);
+      for (const b of buttons) b.click();
+      await waitFor(() => posted.length === 3, "the posts");
+      expect(posted).toEqual(
+        expect.arrayContaining([
+          {
+            title: "Serve lookups from the cache",
+            detail:
+              "A stale entry shows an old profile.\nNot covered: Add a test that a write evicts the entry.",
+            section: "Change map",
+          },
+          {
+            title: "No invalidation on write",
+            detail: "Edits stay stale.\nSuggested fix: Evict on write.",
+            section: "Risk",
+          },
+          {
+            title: "Read through the cache",
+            detail: "A write evicts the entry.\nTo prove it: Add a test that writes then reads.",
+            section: "Impact",
+          },
+        ]),
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  it("shows no severity on a concern from before concerns had one", async () => {
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report,
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
+    );
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    const li = [...host.querySelectorAll("li")].find((l) =>
+      l.textContent?.startsWith("No invalidation on write"),
+    );
+    expect(li).toBeDefined();
+    expect(li?.textContent).not.toMatch(/^(high|medium|low)/);
+  });
+
   it("lists every scored change under the change map theme its file is in", async () => {
     const change = {
       kind: "logic" as const,
@@ -474,7 +774,7 @@ describe("VerificationReportView", () => {
                   risk: "medium",
                   cohesion: "core",
                   question: "",
-                  files: [{ path: "src/cache.ts" }],
+                  files: [{ path: "src/cache.ts" }, { path: "src/store/db.ts" }],
                 },
               ],
             },
@@ -496,6 +796,10 @@ describe("VerificationReportView", () => {
                 changes: [
                   { ...change, title: "Read through the cache", path: "src/cache.ts" },
                   { ...change, title: "Retry the lookup", path: "src/lookup.ts" },
+                  // A folded change on a folder joins the theme of a file in it.
+                  { ...change, title: "Tidy the store", path: "src/store" },
+                  // A path that only shares a prefix with a theme file is not in it.
+                  { ...change, title: "Rename the cache helper", path: "src/cach" },
                 ],
               },
             },
@@ -506,7 +810,16 @@ describe("VerificationReportView", () => {
     );
     expect(text).toContain("Grouped by the change map's themes.");
     expect(text).toContain("Serve lookups from the cacheRead through the cachesrc/cache.ts");
-    expect(text).toContain("In no themeRetry the lookupsrc/lookup.ts");
+    expect(text).toContain("Read through the cachesrc/cache.ts");
+    expect(text).toContain("Tidy the storesrc/store");
+    const inTheme = text.slice(
+      text.indexOf("Serve lookups from the cacheRead"),
+      text.indexOf("In no theme"),
+    );
+    expect(inTheme).toContain("Tidy the store");
+    expect(inTheme).not.toContain("Rename the cache helper");
+    expect(text.slice(text.indexOf("In no theme"))).toContain("Rename the cache helper");
+    expect(text.slice(text.indexOf("In no theme"))).toContain("Retry the lookup");
   });
 
   it("links only paths the PR has, and shows any other as plain text", async () => {

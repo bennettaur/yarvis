@@ -21,6 +21,7 @@ import {
   type ChecklistItem,
   coverageKnown,
   type EvidenceItem,
+  THEME_RISK_LABEL,
   VERIFICATION_CHECKS,
   type VerificationApproach,
   type VerificationChangeMap,
@@ -182,11 +183,11 @@ function changeMapSection(changeMap: VerificationChangeMap | undefined): string 
     const question = t.question ? `Question for the author: ${t.question}` : null;
     // Older reports have no proof fields, so say nothing about proof rather than "none found".
     const proofs = t.proofs?.length
-      ? `Proof the risk is handled:\n${t.proofs.map((p) => `- ${proofLine(p)}`).join("\n")}`
+      ? `Proof it's handled:\n${t.proofs.map((p) => `- ${proofLine(p)}`).join("\n")}`
       : t.proofs && t.risk !== "none"
-        ? "No proof the risk is handled was found."
+        ? "Proof it's handled: none found."
         : null;
-    return entry(t.title, ` (${t.cohesion}, ${t.risk === "none" ? "no" : t.risk} risk)`, [
+    return entry(t.title, ` (${t.cohesion}, ${THEME_RISK_LABEL[t.risk]})`, [
       t.description,
       t.riskWhy ? `Risk: ${t.riskWhy}` : null,
       proofs,
@@ -237,7 +238,7 @@ function riskSection(risk: VerificationReport["risk"]): string | null {
     });
     const potential =
       impact.potentialBand && impact.potentialBand !== impact.band
-        ? ` ${impact.potentialBand}/5 before its tests count.`
+        ? ` Potential ${impact.potentialBand}/5 if none of it were proven by tests.`
         : "";
     const bands = `Impact ${impact.band}/5 (highest single change ${impact.highestChangeBand}/5).${potential}`;
     parts.push(`${bands}\n\n${changes.join("\n")}`);

@@ -78,7 +78,8 @@ risk (it is the only proof a tricky behaviour works).
   tells the reader nothing.
 - `why`: at most 25 words, what goes wrong, and for whom, if the answer is
   no: "Customers could be refunded more than they paid." This is what makes
-  the file a must-read; if you can't say it, the file isn't one.
+  the file a must-read. When the code doesn't let you tell, say what is at
+  stake if it is wrong rather than leaving the file out.
 - `lines`: the head line range of the part to read, when it is a part.
 - `flags`: what already looks off or unclear in that file, so the reviewer
   reads it with the question in mind. At most MUST_READ_FLAGS_MAX, usually

@@ -272,9 +272,9 @@ export function draftComments(
       }
     }
     for (const c of report.risk?.concerns ?? []) {
-      // Concerns from before they carried a severity read as medium.
+      // Concerns from before they carried a severity read as medium. A low one
+      // is still drafted, unticked: the severity is the agent's call.
       const severity = c.severity ?? "medium";
-      if (severity === "low") continue;
       add({
         ...c,
         detail: c.fix ? `${c.detail}\nSuggested fix: ${c.fix}` : c.detail,

@@ -230,7 +230,10 @@ describe("verificationReportMarkdown", () => {
     expect(md).toContain(
       "- `src/upload.ts:10-30`: The retry loop.\n  - Looks off (line 12): No backoff.",
     );
-    expect(md).toContain("**Drive-by rename** (outlier, low risk)");
+    // A theme from before proofs says nothing about proof either way.
+    expect(md).toContain(
+      "**Drive-by rename** (outlier, low risk)\n  > Renames a helper.\n  > Files:",
+    );
     expect(md).toContain("  > Question for the author: Why rename this here?");
     expect(md).toContain("In no theme: `README.md`");
     expect(md).toContain(
@@ -488,12 +491,14 @@ describe("verificationReportMarkdown", () => {
       "- `src/upload.ts`: Does the loop stop after three tries? Why: A failing upload would retry forever.",
     );
     expect(md).toContain(
-      "- **Retry uploads** (core, high risk)\n  > Retries a failed upload.\n  > Risk: A retry loop with no cap hangs the client.\n  > Proof the risk is handled:\n  > - Gives up after three (`src/upload.test.ts:20`)\n  > Not covered: Add a test for a timeout.",
+      "- **Retry uploads** (core, high risk)\n  > Retries a failed upload.\n  > Risk: A retry loop with no cap hangs the client.\n  > Proof it's handled:\n  > - Gives up after three (`src/upload.test.ts:20`)\n  > Not covered: Add a test for a timeout.",
     );
     // No risk needs no proof, and says nothing about it.
     expect(md).toContain("- **Docs** (supporting, no risk)\n  > Documents the retry.\n  > Files:");
-    expect(md).toContain("  > No proof the risk is handled was found.");
-    expect(md).toContain("Impact 3/5 (highest single change 3/5). 5/5 before its tests count.");
+    expect(md).toContain("  > Proof it's handled: none found.");
+    expect(md).toContain(
+      "Impact 3/5 (highest single change 3/5). Potential 5/5 if none of it were proven by tests.",
+    );
     expect(md).toContain(
       "  > Proof: Retries once (`src/upload.test.ts:8`)\n  > To prove it: Add a test that it gives up.",
     );

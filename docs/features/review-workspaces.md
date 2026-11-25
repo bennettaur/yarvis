@@ -246,8 +246,9 @@ suggests:
   commit, takes an optional comment, and approves the PR when you submit it.
 - **Request changes** drafts the review from the report: unmet claims,
   outlier questions, high and medium findings, unfinished work, risk concerns
-  and failing CI. The ones a reviewer almost always raises start ticked. Tick
-  or untick each one, and edit its text. Those with a line in a result for the
+  (with their suggested fix) and failing CI. The ones a reviewer almost
+  always raises start ticked, high risk concerns among them. Tick or untick
+  each one, and edit its text. Those with a line in a result for the
   current commit are posted on that line. The rest go into the review's
   summary in full, which you can edit too. Mentions in text the report or a
   check wrote are defused, so nothing it says pings anyone. The line comments go first. If one

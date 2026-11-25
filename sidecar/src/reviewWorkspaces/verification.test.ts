@@ -184,7 +184,7 @@ describe("the report schema", () => {
         risk: {
           level: "high",
           clientImpact: "x".repeat(1000),
-          mitigations: ["a", "b", "c", "d", "e", "f"],
+          mitigations: ["a", "b", "c", "d", "e", "f"].map((text) => ({ text })),
           concerns: [{ title: "t".repeat(500), detail: "d" }],
         },
       }),
@@ -195,14 +195,14 @@ describe("the report schema", () => {
     expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
   });
 
-  it("ties each mitigation to the risk it limits, and still reads a bare one", () => {
+  it("ties each mitigation to the risk it limits, or to none in particular", () => {
     const parsed = schema.parse(
       report({
         risk: {
           level: "low",
           clientImpact: "",
           mitigations: [
-            "Older answer",
+            { text: "Older answer", addresses: null },
             {
               text: "Tests cover the retry",
               addresses: "Retry failed uploads",
@@ -314,6 +314,13 @@ describe("the report schema", () => {
         line: 9,
       });
       expect(parsed.risk?.impact?.changes[0]?.fix).toBe("");
+    });
+
+    it("gives the same potential band as the band when nothing is proven", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change({ evidence: "unproven" })] } }),
+      );
+      expect(parsed.risk?.impact?.potentialBand).toBe(parsed.risk?.impact?.band);
     });
 
     it("keeps the agent's level when it listed no changes", () => {
@@ -824,25 +831,35 @@ describe("the change map", () => {
         intent: "Retry failed uploads.",
         themes: [
           { ...theme("Docs", "core", ["src/c.ts"]), risk: "none" },
+          { ...theme("Wire the option", "core", ["src/b.ts"]), risk: "low", proofs: null },
           {
             ...theme("Retry uploads", "core", ["src/a.ts"]),
             risk: "high",
             riskWhy: "A retry that repeats a finished upload stores the file twice.",
             proofs: [
               { text: "A retry after success is a no-op", path: "./src/a.test.ts", line: 3 },
+              ...["b", "c", "d", "e"].map((t) => ({ text: t })),
             ],
             unmitigated: "Add a test for a retry after a timeout.",
           },
         ],
       },
     });
-    const [retry, docs] = parsed.changeMap?.themes ?? [];
-    expect(docs?.risk).toBe("none");
+    const themes = parsed.changeMap?.themes ?? [];
+    expect(themes.map((t) => t.risk)).toEqual(["high", "low", "none"]);
+    const [retry, wire] = themes;
+    // At most four proofs; none given reads as an empty list.
+    expect(retry?.proofs).toHaveLength(4);
+    expect(wire?.proofs).toEqual([]);
     expect(retry).toMatchObject({
       risk: "high",
       riskWhy: "A retry that repeats a finished upload stores the file twice.",
-      proofs: [{ text: "A retry after success is a no-op", path: "src/a.test.ts", line: 3 }],
       unmitigated: "Add a test for a retry after a timeout.",
+    });
+    expect(retry?.proofs[0]).toEqual({
+      text: "A retry after success is a no-op",
+      path: "src/a.test.ts",
+      line: 3,
     });
   });
 
@@ -1440,6 +1457,33 @@ describe("putting a section's answers together", () => {
     expect(combineSectionAnswers("tests", [{ status: "issues", findings: [] }])).toEqual({
       tests: { status: "pass", findings: [] },
     });
+  });
+
+  it("keeps a lower group's high concern over the top group's medium ones", () => {
+    const risk = (level: string, concerns: unknown[]) => ({
+      level,
+      clientImpact: "",
+      mitigations: [],
+      concerns,
+      changes: [],
+    });
+    const mediums = ["m1", "m2", "m3", "m4", "m5"].map((title) => ({
+      title,
+      detail: "d",
+      severity: "medium",
+    }));
+    const combined = combineSectionAnswers("risk", [
+      risk("high", mediums),
+      risk("low", [{ title: "Mic stays live", detail: "d", severity: "high" }]),
+    ]);
+    const parsed = verificationReportSchema({ ...limits, sections: ["risk"] }).parse(combined);
+    expect(parsed.risk?.concerns.map((c) => c.title)).toEqual([
+      "Mic stays live",
+      "m1",
+      "m2",
+      "m3",
+      "m4",
+    ]);
   });
 
   it("takes risk's level and client impact from its highest group, and every group's changes", () => {
