@@ -110,6 +110,13 @@ Then choose one:
 If several alarms fire together, they queue up, and the screen is released
 once you've handled them all.
 
+In a browser tab, the alarm covers the tab and chimes on the same schedule.
+The tab's title flashes the alarm's label, and a browser notification shows
+once you've allowed notifications for the site. Browsers only let a page
+play sound after you've clicked or typed in it, so the chime starts working
+after your first click in the tab. They also refuse full screen without a
+click, so the tab usually stays its normal size.
+
 ### Other details
 
 - The **Alarms** tab lists what's **Ringing** (with Snooze, and Dismiss, which acknowledges it) and

@@ -217,9 +217,8 @@ final class AlarmsModel {
 
 /// Sounds the alarms in the takeover queue, in front or not, and makes them
 /// noticeable from the background with a notification and a Dock icon that
-/// bounces until the user comes back. It doesn't pull the window forward:
-/// macOS 14 refuses focus stealing, and a window that jumps forward while the
-/// user types can catch keystrokes meant for another app.
+/// bounces until the user comes back. The screen itself is covered by
+/// `AlarmTakeoverPanels`, which shows without taking focus.
 @MainActor
 final class AlarmRinger {
     private var state = AlarmRingState()

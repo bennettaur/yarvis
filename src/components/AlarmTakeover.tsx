@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { useAlarmTakeoverQueue } from "../lib/alarmStore";
+import { primeAlarmAudio, ringsNatively, syncBrowserAlarms } from "../lib/browserAlarmRinger";
 import AlarmOverlay from "./AlarmOverlay";
 
 /**
@@ -13,6 +15,17 @@ import AlarmOverlay from "./AlarmOverlay";
  */
 export default function AlarmTakeover() {
   const queue = useAlarmTakeoverQueue();
+  // The desktop apps ring natively when an alarm fires; a browser tab has to
+  // ring itself.
+  const inBrowser = !ringsNatively();
+  useEffect(() => {
+    if (inBrowser) primeAlarmAudio();
+  }, [inBrowser]);
+  useEffect(() => {
+    if (inBrowser) syncBrowserAlarms(queue);
+  }, [inBrowser, queue]);
+  useEffect(() => () => syncBrowserAlarms([]), []);
+
   const active = queue[0];
   if (!active) return null;
 

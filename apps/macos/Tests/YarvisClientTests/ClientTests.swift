@@ -260,6 +260,17 @@ final class Recorder: @unchecked Sendable {
         #expect(bodyJSON(body) == .object(["behavior": .string("deny"), "message": .string("not now")]))
     }
 
+    @Test func clearsAWorkspaceOrASessionInOneRequest() async throws {
+        let (session, id) = StubProtocol.session { _, _ in (200, json("[]")) }
+        let client = YarvisClient(baseURL: base, token: "t", session: session)
+        try await client.clearAttention(.workspace("w1"), "dismissed")
+        try await client.clearAttention(.session("tab:terminal/1/0"), "read")
+        let sent = StubProtocol.recorded(id)
+        #expect(sent.map { $0.0.url?.path } == Array(repeating: "/api/sidecar/api/attention/clear", count: 2))
+        #expect(bodyJSON(sent[0].1) == .object(["workspaceId": .string("w1"), "status": .string("dismissed")]))
+        #expect(bodyJSON(sent[1].1) == .object(["sessionKey": .string("tab:terminal/1/0"), "status": .string("read")]))
+    }
+
     @Test func answersAQuestionPositionally() async throws {
         let (session, id) = StubProtocol.session { _, _ in (200, json("{}")) }
         let client = YarvisClient(baseURL: base, token: "t", session: session)
@@ -560,6 +571,50 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         _ = inbox.loadItems([item("a", seq: 1), item("c", seq: 5)])
         _ = inbox.apply(item("b", seq: 3))
         #expect(inbox.items.map(\.id) == ["c", "b", "a"])
+    }
+}
+
+@Suite struct AttentionGroupTests {
+    func item(_ id: String, seq: Int64, kind: String = "completed", workspace: String? = nil,
+              session: String? = nil) -> AttentionItem {
+        AttentionItem(id: id, seq: seq, source: "claude-hook", sessionKey: session, workspaceId: workspace, kind: kind,
+                      title: id, body: nil, status: "pending", navTarget: nil, payload: nil, createdAt: "a", updatedAt: "b")
+    }
+
+    @Test func groupsByWorkspaceThenSessionKeepingNewestFirst() {
+        let groups = groupAttention([
+            item("w3", seq: 6, workspace: "w", session: "ws-claude:w"),
+            item("s2", seq: 5, session: "tab:terminal/1/0"),
+            item("loose", seq: 4),
+            item("w2", seq: 3, workspace: "w", session: "w/other/0"),
+            item("s1", seq: 2, session: "tab:terminal/1/0"),
+            item("w1", seq: 1, workspace: "w"),
+        ])
+        #expect(groups.map(\.id) == ["workspace:w", "session:tab:terminal/1/0", "item:loose"])
+        #expect(groups[0].items.map(\.id) == ["w3", "w2", "w1"])
+        #expect(groups[0].scope == .workspace("w"))
+        #expect(groups[1].scope == .session("tab:terminal/1/0"))
+        #expect(groups[2].scope == nil)
+    }
+
+    @Test func theLeadIsTheMostUrgentThenTheNewest() {
+        let groups = groupAttention([
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("idle-new", seq: 3, kind: "idle", workspace: "w"),
+            item("idle-old", seq: 2, kind: "idle", workspace: "w"),
+            item("error", seq: 1, kind: "error", workspace: "w"),
+        ])
+        #expect(groups.first?.lead.id == "idle-new")
+    }
+
+    @Test func viewingAWorkspaceSeesAllButQuestionsAndPrompts() {
+        let items = [
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("ask", seq: 3, kind: "question", workspace: "w"),
+            item("prompt", seq: 2, kind: "permission", workspace: "w"),
+            item("elsewhere", seq: 1, kind: "completed", workspace: "other"),
+        ]
+        #expect(attentionSeenByViewing(workspaceId: "w", in: items).map(\.id) == ["done"])
     }
 }
 

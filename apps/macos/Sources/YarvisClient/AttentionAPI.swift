@@ -18,6 +18,17 @@ extension YarvisClient {
                        body: .object(["status": .string(status)]))
     }
 
+    /// Sets every pending item in a scope to `status` in one request. Marking
+    /// `read` leaves questions pending, since seeing one doesn't answer it.
+    public func clearAttention(_ scope: AttentionScope, _ status: String) async throws {
+        var body: [String: JSONValue] = ["status": .string(status)]
+        switch scope {
+        case .workspace(let id): body["workspaceId"] = .string(id)
+        case .session(let key): body["sessionKey"] = .string(key)
+        }
+        try await send("POST", Self.sidecar("/api/attention/clear"), body: .object(body))
+    }
+
     public func permissionRequests(sessionKey: String? = nil) async throws -> [PermissionRequest] {
         var path = "/api/attention/permissions"
         if let sessionKey {
