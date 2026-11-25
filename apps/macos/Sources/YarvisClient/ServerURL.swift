@@ -77,3 +77,11 @@ public func encodePathSegment(_ s: String) -> String {
     allowed.remove(charactersIn: "/?#%")
     return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
 }
+
+/// The key a setting is saved under for one server. Chat tabs, terminal
+/// layouts and the selected workspace hold that server's ids, so each server
+/// keeps its own copy: another server would open them as empty chats and
+/// start shells under the saved pane ids.
+public func serverScopedKey(_ key: String, server: URL) -> String {
+    "\(server.absoluteString)|\(key)"
+}

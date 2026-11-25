@@ -261,22 +261,8 @@ public final class YarvisClient: Sendable {
         _ = try await core("pty_kill", ["id": .string(id)])
     }
 
-    /// Starts the agent session `ws-claude:<workspaceId>` in the workspace's folder.
-    public func startAgentSession(workspace: WorkspaceSummary) async throws {
-        _ = try await core("pty_start_claude", [
-            "workspaceId": .string(workspace.id),
-            "cwd": .string(workspace.rootPath),
-            "name": .string(workspace.name),
-            "remoteControl": .bool(false),
-        ])
-    }
-
     // MARK: Sidecar
 
     /// A sidecar path such as `/api/chat` reached through the server's proxy.
     static func sidecar(_ path: String) -> String { "/api/sidecar\(path)" }
-
-    public func workspaces() async throws -> [WorkspaceSummary] {
-        try await get([WorkspaceSummary].self, Self.sidecar("/api/workspaces"))
-    }
 }
