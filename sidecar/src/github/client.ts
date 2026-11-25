@@ -2202,6 +2202,42 @@ export class GitHubClient {
   }
 
   /**
+   * The changed files together with the commit they were read at, so a merge
+   * can be pinned to the diff the reviewer saw. The file list doesn't name its
+   * commit, so the head is read before it and again after, one request at a
+   * time: a head read that overlapped the list could see a push the list
+   * missed. When the two reads differ a push landed mid-read, and `headSha`
+   * is null. `incomplete` is set when the list is shorter than the PR's own
+   * file count, which happens past GitHub's 3,000-file listing cap.
+   */
+  async prFilesAtHead(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ headSha: string | null; files: PrFile[]; incomplete: boolean }> {
+    const readHead = async () => {
+      const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
+      const changedFiles: unknown = pr.changed_files;
+      return {
+        sha: (pr.head?.sha as string | undefined) ?? null,
+        changedFiles: typeof changedFiles === "number" ? changedFiles : null,
+      };
+    };
+    const before = await readHead();
+    const listed = await this.allPrFiles(owner, repo, number);
+    const after = await readHead();
+    const files = listed.files;
+    // A full last page alone can't tell a PR of exactly 3,000 files from a cut-off list.
+    const incomplete =
+      before.changedFiles === null ? listed.incomplete : files.length < before.changedFiles;
+    return {
+      headSha: before.sha && before.sha === after.sha ? before.sha : null,
+      files,
+      incomplete,
+    };
+  }
+
+  /**
    * Marks a draft pull request as ready for review (the GraphQL equivalent of
    * the "Ready for review" button). GitHub keys this mutation by the PR's node
    * id, not its number, so a tiny preflight resolves the id first.
@@ -2221,39 +2257,44 @@ export class GitHubClient {
    * equivalent of the green "Merge" button). Keyed by the PR's node id, so a
    * preflight resolves it first. GitHub rejects a method the repo disallows or
    * a PR that isn't currently mergeable; the error is surfaced to the caller.
+   * GitHub also refuses once the branch has moved past `expectedHeadSha`, so a
+   * push landing after the review can't merge unreviewed.
    */
   async mergePullRequest(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!){
-        mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
+        mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
-      { id, method },
+      { id, method, head: expectedHeadSha },
     );
   }
 
   /**
    * Arms auto-merge: GitHub merges the PR automatically once its branch
    * protections pass. Requires the repo to allow auto-merge and the chosen
-   * method; GitHub rejects otherwise.
+   * method; GitHub rejects otherwise. `expectedHeadSha` pins the commit as
+   * it does for {@link mergePullRequest}.
    */
   async enableAutoMerge(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!){
-        enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
+        enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
-      { id, method },
+      { id, method, head: expectedHeadSha },
     );
   }
 

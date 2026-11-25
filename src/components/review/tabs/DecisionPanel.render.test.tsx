@@ -261,7 +261,9 @@ describe("DecisionPanel", () => {
     expect(textOf(host.innerHTML)).toContain("Run the checks first");
     button(host, "Approve").click();
     await waitFor(() => !!button(host, "Submit approval"), "the approval form");
-    expect(textOf(host.innerHTML)).toContain(`${ranAll.length} checks haven't run on this commit.`);
+    // Improvements are follow-ups, so a run not had isn't one to wait on.
+    const awaited = ranAll.filter((i) => i.section !== "improvements").length;
+    expect(textOf(host.innerHTML)).toContain(`${awaited} checks haven't run on this commit.`);
     button(host, "Submit approval").click();
     await waitFor(() => !!host.querySelector('[role="alert"]'), "the error");
     expect(textOf(host.innerHTML)).toContain("GitHub said no");

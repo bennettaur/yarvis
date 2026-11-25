@@ -154,9 +154,55 @@ const checkSchema = z
     ),
   );
 
+/** A fix is posted on the PR as written, so it gets room for the 40 words asked rather than being cut. */
+const FIX_CHARS = 360;
+
+/** Optional, so an answer or a stored report from before the field still parses as empty. */
+const optionalText = (max: number) =>
+  boundedText(max)
+    .nullish()
+    .transform((t) => t ?? "");
+
+/**
+ * A place in the code that backs a claim: a test that proves a change, or the
+ * guard that contains it. Without a path it is the agent's word only.
+ */
+const proofSchema = z.object({
+  text: boundedText(160),
+  path: optionalPath,
+  line: optionalLine,
+});
+
+/**
+ * A concern says what to do about it as well as what is wrong, so posting it
+ * gives the author something to act on. Severity is optional for answers
+ * written before it existed, which read as medium.
+ */
 const concernSchema = z.object({
   title: boundedText(TITLE_CHARS),
   detail: boundedText(DETAIL_CHARS),
+  severity: z
+    .enum(SEVERITIES)
+    .nullish()
+    .transform((s) => s ?? "medium"),
+  fix: optionalText(FIX_CHARS).meta({
+    description: "The change that would resolve or contain it. Empty when you have none.",
+  }),
+  path: optionalPath,
+  line: optionalLine,
+});
+
+/**
+ * A control that limits a risk, and which risk: a concern's or a change's
+ * title, or empty when it limits no single one. Stored reports from before
+ * this hold bare strings, which the frontend still reads.
+ */
+const mitigationSchema = z.object({
+  text: boundedText(100),
+  addresses: optionalText(TITLE_CHARS).meta({
+    description:
+      "The exact title of the concern or change this limits; empty for none in particular.",
+  }),
   path: optionalPath,
   line: optionalLine,
 });
@@ -182,6 +228,10 @@ const changeSchema = z.object({
   check: boundedText(DETAIL_CHARS)
     .nullish()
     .transform((c) => c ?? ""),
+  proof: proofSchema.nullish().transform((p) => p ?? undefined),
+  fix: optionalText(FIX_CHARS).meta({
+    description: "For a change that isn't proven: what to add to the PR to prove or contain it.",
+  }),
   path: optionalPath,
   line: optionalLine,
 });
@@ -198,6 +248,19 @@ const LEVEL_FOR_BAND: Record<ImpactBand, RiskLevel> = {
 
 const LEVEL_RANK: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2 };
 
+/** Most mitigations a risk answer keeps, across every reading group. */
+const MAX_MITIGATIONS = 5;
+
+/**
+ * The band the PR would score if none of its changes were proven: the risk
+ * before its tests count. Next to the band, it shows how much the tests take
+ * off. Scored here rather than in `verify/impact.ts`, whose bands
+ * `/verify-pr`'s merge gate reads.
+ */
+function potentialBand(changes: readonly z.output<typeof changeSchema>[]): ImpactBand | undefined {
+  return scoreImpact(changes.map((c) => ({ ...c, evidence: "unproven" as const })))?.band;
+}
+
 /** Shown for a high change the agent gave nothing to check on, so the reader still has a prompt. */
 export const MISSING_CHECK = "No check given: read this change.";
 
@@ -213,8 +276,10 @@ const riskSchema = z
   .object({
     level: z.enum(["low", "medium", "high"]),
     clientImpact: boundedText(240),
-    mitigations: boundedList(boundedText(100), 3),
-    concerns: boundedList(concernSchema, MAX_FINDINGS),
+    mitigations: boundedList(mitigationSchema, MAX_MITIGATIONS),
+    concerns: boundedList(concernSchema, MAX_FINDINGS).transform((concerns) =>
+      [...concerns].sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]),
+    ),
     // Not `boundedList`: every change counts toward the load and could be the
     // highest, so the cut to what is shown comes after scoring.
     changes: z
@@ -236,6 +301,7 @@ const riskSchema = z
       level: LEVEL_RANK[level] > LEVEL_RANK[bandLevel] ? level : bandLevel,
       impact: {
         ...score,
+        potentialBand: potentialBand(changes),
         changes: allScored.map((change) =>
           change.band >= ATTENTION_BAND && !change.check
             ? { ...change, check: MISSING_CHECK }
@@ -253,6 +319,9 @@ const mustReadFlagSchema = z.object({
 const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
   reason: boundedText(160),
+  why: optionalText(200).meta({
+    description: "What goes wrong, and for whom, if the reviewer misses a mistake here.",
+  }),
   lines: lineRangeSchema,
   // Optional and nullable: most must-reads have nothing to flag, and an
   // agent writes `null` for none as often as it leaves the key out. Capped by
@@ -326,7 +395,16 @@ const COHESION_ORDER: Record<(typeof COHESION)[number], number> = {
   supporting: 1,
   outlier: 2,
 };
-const RISK_ORDER: Record<"low" | "medium" | "high", number> = { high: 0, medium: 1, low: 2 };
+/** `none` is for a theme a mistake can't hurt: accurate docs, tests, a passive rename. */
+const THEME_RISKS = ["none", "low", "medium", "high"] as const;
+const RISK_ORDER: Record<(typeof THEME_RISKS)[number], number> = {
+  high: 0,
+  medium: 1,
+  low: 2,
+  none: 3,
+};
+/** Most proofs listed against one theme's risk. */
+const MAX_THEME_PROOFS = 4;
 
 const themeFileSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
@@ -336,7 +414,18 @@ const themeFileSchema = z.object({
 const themeSchema = z.object({
   title: boundedText(TITLE_CHARS),
   description: boundedText(DETAIL_CHARS),
-  risk: z.enum(["low", "medium", "high"]),
+  risk: z.enum(THEME_RISKS),
+  riskWhy: optionalText(DETAIL_CHARS).meta({
+    description: "What breaks, for whom, if this theme is wrong. Empty for risk none.",
+  }),
+  proofs: z
+    .array(proofSchema)
+    .nullish()
+    .transform((p) => (p ?? []).slice(0, MAX_THEME_PROOFS))
+    .meta({ description: `At most ${MAX_THEME_PROOFS} items.` }),
+  unmitigated: optionalText(DETAIL_CHARS).meta({
+    description: "The part of the risk no proof covers, said as what to add. Empty when covered.",
+  }),
   cohesion: z.enum(COHESION),
   question: boundedText(DETAIL_CHARS)
     .nullish()
@@ -379,7 +468,8 @@ function changeMapSchema(limits: Pick<ReportLimits, "changedPaths" | "checkoutDi
           theme.cohesion !== "outlier"
             ? ""
             : theme.question || `Why is "${theme.title}" part of this PR?`;
-        return [{ ...theme, files, question }];
+        const proofs = theme.proofs.map((p) => withRepoPath(p, limits.checkoutDir));
+        return [{ ...theme, files, question, proofs }];
       });
       kept.sort(
         (a, b) =>
@@ -447,12 +537,14 @@ function claimsSchema(audit: ReportAudit) {
  */
 export const CHECK_SECTIONS = [
   "malice",
+  "bugs",
   "tests",
   "performance",
   "complexity",
   "comments",
   "observability",
   "quality",
+  "improvements",
 ] as const;
 
 type CheckSection = (typeof CHECK_SECTIONS)[number];
@@ -490,6 +582,8 @@ export const SECTION_AGENTS: Record<ReportSection, string> = {
   comments: "yarvis-review:comment-reviewer",
   observability: "yarvis-review:observability-reviewer",
   quality: "yarvis-review:quality-reviewer",
+  bugs: "yarvis-review:bug-hunter",
+  improvements: "yarvis-review:improvement-reviewer",
   approach: "yarvis-review:approach-reviewer",
   flow: "yarvis-review:flow-diagram",
 };
@@ -512,6 +606,9 @@ export const SECTION_RUN_DEFAULTS: Record<ReportSection, Required<RunChoice>> = 
   comments: { model: "haiku", effort: "low" },
   observability: { model: "haiku", effort: "low" },
   quality: { model: "sonnet", effort: "medium" },
+  // Tracing values through callers takes more reasoning than the other checks' medium.
+  bugs: { model: "sonnet", effort: "high" },
+  improvements: { model: "sonnet", effort: "medium" },
   approach: { model: "sonnet", effort: "medium" },
   flow: { model: "sonnet", effort: "medium" },
 };
@@ -734,6 +831,8 @@ function answerSchemas(limits: ReportLimits, audit: ReportAudit) {
     comments: checkSchema,
     observability: checkSchema,
     quality: checkSchema,
+    bugs: checkSchema,
+    improvements: checkSchema,
     approach: approachSchema,
     flow: flowSchema,
   };
@@ -861,11 +960,19 @@ function splitFallbacks<A, I>(
   return { answered, gap: fallback ? items(fallback).slice(0, 1) : [] };
 }
 
+/** A raw concern's severity rank; one that gives none counts as medium, as the schema reads it. */
+function concernRank(concern: unknown): number {
+  const severity = (concern as { severity?: unknown }).severity;
+  return typeof severity === "string" && severity in SEVERITY_ORDER
+    ? SEVERITY_ORDER[severity as keyof typeof SEVERITY_ORDER]
+    : SEVERITY_ORDER.medium;
+}
+
 /**
  * Risk across groups: the highest level any group gave, a fallen-back group's
  * medium included; the client impact of the highest answered group; the first
- * three mitigations; the first {@link MAX_FINDINGS} concerns, the highest
- * answered group's first, keeping the "did not complete" one when a group fell
+ * {@link MAX_MITIGATIONS} mitigations; the {@link MAX_FINDINGS} most severe concerns, the highest
+ * answered group's first within a severity, keeping the "did not complete" one when a group fell
  * back; and every answered group's changes, since the impact score is over the
  * whole list.
  */
@@ -881,8 +988,18 @@ function combineRisk(answers: RawRisk[], fellBack: readonly boolean[]): RawRisk 
   return {
     level: highest(answers).level,
     clientImpact: top.clientImpact,
-    mitigations: real.flatMap((a) => a.mitigations).slice(0, 3),
-    concerns: [...topFirst.flatMap((a) => a.concerns).slice(0, MAX_FINDINGS - gap.length), ...gap],
+    mitigations: real.flatMap((a) => a.mitigations).slice(0, MAX_MITIGATIONS),
+    // Most severe first before the cut, so a lower group's high concern isn't
+    // crowded out by the top group's medium ones; group order breaks ties.
+    concerns: [
+      ...topFirst
+        .flatMap((a) => a.concerns)
+        .map((concern, order) => ({ concern, order }))
+        .sort((a, b) => concernRank(a.concern) - concernRank(b.concern) || a.order - b.order)
+        .slice(0, MAX_FINDINGS - gap.length)
+        .map(({ concern }) => concern),
+      ...gap,
+    ],
     changes: real.flatMap((a) => a.changes ?? []),
   };
 }
@@ -956,9 +1073,13 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
           risk: {
             ...risk,
             concerns: risk.concerns.map((c) => withRepoPath(c, limits.checkoutDir)),
+            mitigations: risk.mitigations.map((m) => withRepoPath(m, limits.checkoutDir)),
             impact: risk.impact && {
               ...risk.impact,
-              changes: risk.impact.changes.map((c) => withRepoPath(c, limits.checkoutDir)),
+              changes: risk.impact.changes.map((c) => ({
+                ...withRepoPath(c, limits.checkoutDir),
+                proof: c.proof && withRepoPath(c.proof, limits.checkoutDir),
+              })),
             },
           },
         }),

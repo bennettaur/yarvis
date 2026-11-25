@@ -32,6 +32,7 @@ import {
   postAcceptedDrafts,
   syncVerificationDrafts,
 } from "./drafts.ts";
+import { feedbackForPr, feedbackInputSchema, saveFeedback } from "./feedback.ts";
 import { assertSafeRepoPath, UnsafePathError } from "./git.ts";
 import { mountMutationTestingRoutes } from "./mutationRoutes.ts";
 import type { MutationTestingDeps } from "./mutationTesting.ts";
@@ -640,6 +641,28 @@ export function createReviewWorkspaceRoutes(
         { summary, seen },
       );
       return c.json(result, result.error ? 502 : 201);
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // The reviewer's feedback on the PR's report items, newest first.
+  router.get("/:id/prs/:prId/verification/feedback", async (c) => {
+    try {
+      return c.json({
+        feedback: await feedbackForPr(db(), c.req.param("id"), c.req.param("prId")),
+      });
+    } catch (e) {
+      return fail(c, e);
+    }
+  });
+
+  // Records the reviewer's verdict on one report item, or what they did with it.
+  router.put("/:id/prs/:prId/verification/feedback", async (c) => {
+    const parsed = feedbackInputSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
+    try {
+      return c.json(await saveFeedback(db(), c.req.param("id"), c.req.param("prId"), parsed.data));
     } catch (e) {
       return fail(c, e);
     }

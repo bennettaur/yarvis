@@ -226,6 +226,7 @@ export default function DecisionPanel({
   mutation = null,
   upstack = null,
   currentSections,
+  changedPaths,
   onOpen,
 }: {
   prRef: PrRef;
@@ -241,6 +242,8 @@ export default function DecisionPanel({
   upstack?: VerificationUpstack | null;
   /** Sections whose result is for the PR's head; only these comment on lines. */
   currentSections: ReadonlySet<string>;
+  /** The files the PR changes, the only ones a comment can go on; absent until loaded. */
+  changedPaths?: ReadonlySet<string>;
   onOpen: OpenLocation;
 }) {
   const assessment = useMemo(
@@ -248,8 +251,8 @@ export default function DecisionPanel({
     [report, evidence, items, mutation, upstack],
   );
   const drafts = useMemo(
-    () => draftComments(report, evidence, currentSections),
-    [report, evidence, currentSections],
+    () => draftComments(report, evidence, currentSections, changedPaths),
+    [report, evidence, currentSections, changedPaths],
   );
   const places = useMemo(() => whereToLook(report), [report]);
   const [mode, setMode] = useState<Mode | null>(null);
