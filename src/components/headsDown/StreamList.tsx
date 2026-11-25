@@ -26,18 +26,22 @@ const STATUS_STYLE: Record<WorkStream["status"], string> = {
   dropped: "bg-zinc-800 text-zinc-500",
 };
 
+/** What `linkLabel` reads: a saved link, or one Omni Chat proposes before saving. */
+export type LinkLabelInput = Pick<WorkStreamLink, "ref"> &
+  Partial<Pick<WorkStreamLink, "title" | "state">>;
+
 /**
  * A link's one-line label: what it is and what was last seen of it. A
  * workspace with no title of its own goes by its current name.
  */
-export function linkLabel(link: WorkStreamLink, workspaceNames: WorkspaceNames): string {
+export function linkLabel(link: LinkLabelInput, workspaceNames: WorkspaceNames): string {
   const ref = link.ref;
   const kind =
     ref.kind === "review-request"
       ? `review request, sent ${new Date(ref.sentAt).toLocaleString()}`
       : ref.kind;
   const name =
-    link.title ??
+    link.title ||
     (ref.kind === "ticket"
       ? ref.key
       : ref.kind === "pr"

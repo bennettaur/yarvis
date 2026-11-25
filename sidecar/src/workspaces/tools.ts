@@ -22,6 +22,11 @@ import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import type { PrRef } from "../pr/types.ts";
+import {
+  dismissInvestigation,
+  listInvestigations,
+  startInvestigation,
+} from "../revertInvestigation/service.ts";
 import { type ActivityRecapper, recapActivity, recapWorkspaceSession } from "./activity.ts";
 import { reapAndListAgentSessions } from "./agentSessions.ts";
 import { kickOffResult, resolveWorkspaceBrief, WORKSPACE_BRIEF_FILE } from "./brief.ts";
@@ -813,6 +818,44 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
         return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail, harness);
       },
+    }),
+
+    list_revert_investigations: tool({
+      description:
+        "List reverts of the user's PRs that Yarvis detected, each with an id, the repo and original PR, and a status: detected (waiting for the user to say whether to investigate), started, ready (the root-cause write-up exists in the workspace) or dismissed.",
+      inputSchema: z.object({}),
+      execute: async () => ({
+        investigations: (await listInvestigations(db)).map((row) => ({
+          id: row.id,
+          originalPr: row.originalNumber,
+          originalUrl: row.originalUrl,
+          revertUrl: row.revertUrl,
+          status: row.status,
+          workspaceId: row.workspaceId,
+        })),
+      }),
+    }),
+
+    start_revert_investigation: tool({
+      description:
+        "Begin the root-cause write-up for a detected revert. Opens a workspace on the repo's default branch with a session that investigates and posts nothing anywhere. Only for one the user asked to begin; get ids from list_revert_investigations.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+      execute: async ({ id }) =>
+        startInvestigation(db, config, id, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        }),
+    }),
+
+    dismiss_revert_investigation: tool({
+      description:
+        "Turn down a detected revert investigation the user doesn't want. Only for one still in the detected status.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+      execute: async ({ id }) =>
+        (await dismissInvestigation(db, id))
+          ? { ok: true }
+          : { error: "not found or already acted on" },
     }),
 
     list_workspaces: tool({

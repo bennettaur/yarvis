@@ -24,7 +24,7 @@ import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { ControlTimeoutError, type HarnessRunEnv } from "../core/controlClient.ts";
 import { getDb } from "../db/client.ts";
-import { agentRuns, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
+import { agentRuns, prUpdateWatches, reviewWorkspacePrs, reviewWorkspaces } from "../db/schema.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
@@ -2029,6 +2029,22 @@ cat "${fakeDir}/result.jsonl"`,
   afterEach(() => {
     release();
     rmSync(fakeDir, { recursive: true, force: true });
+  });
+
+  it("notes the tab was opened, for the PR-update job's limit on its own runs", async () => {
+    const { wsId, prId } = await reviewedThenPushed();
+    const { refKey } = await prRow(prId);
+    await db
+      .insert(prUpdateWatches)
+      .values({ refKey, seenHeadSha: "abc", seenAt: new Date() })
+      .onConflictDoNothing();
+    try {
+      await latest(wsId, prId);
+      const [watch] = await db.select().from(prUpdateWatches);
+      expect(watch?.tabOpenedAt).toBeInstanceOf(Date);
+    } finally {
+      await db.delete(prUpdateWatches);
+    }
   });
 
   it("starts one run per range, judging only the viewer's comments", async () => {

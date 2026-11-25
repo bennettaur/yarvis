@@ -780,6 +780,11 @@ tab opens on changes it hasn't summarised, turn on auto-start under
 are set too ($1 by default). Like the verification report's, the budget only
 warns; a run you start finishes even if it goes over.
 
+When someone pushes to a PR you reviewed, Yarvis also runs it for you, with
+the same model and budget, whatever auto-start says. A run estimated over the
+budget isn't started that way: the alert asks for your go-ahead instead (see
+[PR updated since your review](#pr-updated-since-your-review)).
+
 ### New commits pushed
 
 The PR bar checks the PR on GitHub or Azure DevOps every couple of minutes
@@ -789,6 +794,52 @@ bar. **Refresh** fetches the new commits and moves the checkout, showing the
 fetch's progress as it goes. Your tabs stay open and show the new commits once it is
 done, and the banner then offers **See what changed since you last reviewed** —
 or, if more commits were pushed while it ran, another **Refresh**.
+
+### PR updated since your review
+
+When someone pushes to a PR you reviewed, and the PR is still in an active
+review workspace, Yarvis gets it ready for another look and tells you. It
+counts as reviewed once there is a [last review](#since-last-review) for it:
+a review or line comment you posted, on GitHub, Azure DevOps or through
+Yarvis, or **Mark reviewed here**.
+
+A background job checks those PRs every 5 minutes (GitHub PRs need a GitHub
+token). A PR in several workspaces is handled in the one you opened last. The
+job waits until it has seen the same head on checks at least 10 minutes
+apart, so a burst of pushes gives one alert, about 10 to 15 minutes after the
+last push. Then it:
+
+1. Fetches the new commits and moves the checkout, as **Refresh** does.
+2. Works out what changed since your review, as the
+   [Since last review](#since-last-review) tab shows it.
+3. Runs [What's changed](#whats-changed) over the new commits, whether or not
+   its auto-start is on, and waits for its answer. It doesn't re-run the
+   verification checks. A run that already covers the new commits is reused,
+   and at most two of these runs go at once. One over its budget isn't
+   started, and the item says it needs your go-ahead. When the changes are
+   more than its agent can read, the item says so. When the new commits
+   couldn't be fetched or the checkout isn't ready, nothing runs and the item
+   asks you to refresh the PR yourself.
+
+   After it runs What's changed for a PR, it starts no other for that PR
+   until you've opened its **Since last review** tab or read its item. Until
+   then, later pushes only update the item, for example "2 more commits since
+   the last What's changed. Open it to re-run." That way an author pushing
+   small commits can't keep paid runs going while you're away.
+4. Adds a **PR updated since your review** item under Review, which opens the
+   PR's **Since last review** tab. It says whether What's changed suggests
+   it's ready to approve, how many of your comments are addressed or resolved
+   and how many are still open, and how many other changes need reading. The
+   agent's own words stay in the tab.
+
+   When there's no answer (the run didn't start, failed, or is still going),
+   the item says why. It then counts which of your review threads the new
+   commits touch (the provider marks them outdated, or their file changed)
+   and which are still open.
+
+Each head gets one item, and a later push updates the item while you haven't
+read it yet. A merged or closed PR is left alone. Nothing is posted to the
+PR.
 
 ### Tabs
 

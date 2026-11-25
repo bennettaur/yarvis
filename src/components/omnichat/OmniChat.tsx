@@ -16,6 +16,7 @@ import QueuedMessages from "../QueuedMessages";
 import SplitPane, { usePersistedRatio } from "../SplitPane";
 import ToolApprovalBar from "../ToolApprovalBar";
 import VoiceControls from "../voice/VoiceControls";
+import QuickTaskPanel from "./QuickTaskPanel";
 
 /**
  * A centered, summon-from-anywhere chat overlay. It stays mounted while hidden
@@ -70,8 +71,10 @@ export default function OmniChat({
   });
 
   const [input, setInput] = useState("");
+  const [headsDownMode, setHeadsDownMode] = useState(false);
   // The overlay stays mounted while hidden, so `open` is what says it's on screen.
-  const voice = useVoice({ send, streaming, busy, visible: open });
+  // Heads-down mode hides the thread and the mic controls, so it counts as hidden.
+  const voice = useVoice({ send, streaming, busy, visible: open && !headsDownMode });
   const panelRef = useRef<HTMLDivElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const artifactPane = useArtifactPane();
@@ -85,12 +88,12 @@ export default function OmniChat({
   // Keep the thread pinned to the newest message. Skip while hidden so a
   // background stream doesn't run a layout read+write per token off-screen. The
   // body doesn't read messages/streaming, but the effect must re-run as the
-  // thread grows.
+  // thread grows, and when leaving heads-down mode mounts a fresh thread.
   // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on thread growth
   useEffect(() => {
-    if (!open) return;
+    if (!open || headsDownMode) return;
     threadRef.current?.scrollTo(0, threadRef.current.scrollHeight);
-  }, [open, messages, streaming, activity]);
+  }, [open, headsDownMode, messages, streaming, activity]);
 
   // Esc hides the overlay; the conversation keeps running in the background.
   useEffect(() => {
@@ -99,6 +102,9 @@ export default function OmniChat({
       if (e.key === "Escape") {
         e.preventDefault();
         onClose();
+      } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        setHeadsDownMode((on) => !on);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -133,6 +139,17 @@ export default function OmniChat({
           className="rounded-md border border-zinc-700 px-2 py-1 text-xs hover:bg-zinc-800"
         >
           New chat
+        </button>
+        <button
+          type="button"
+          aria-pressed={headsDownMode}
+          title="Send a task to heads-down mode (Cmd/Ctrl+Shift+H)"
+          onClick={() => setHeadsDownMode((on) => !on)}
+          className={`rounded-md border px-2 py-1 text-xs hover:bg-zinc-800 ${
+            headsDownMode ? "border-emerald-600 text-emerald-300" : "border-zinc-700"
+          }`}
+        >
+          Send to heads down
         </button>
         <div className="ml-auto flex items-center gap-2">
           <label title={REASONING_HINT} className="flex items-center gap-1 text-xs text-zinc-400">
@@ -175,21 +192,6 @@ export default function OmniChat({
         </div>
       </div>
 
-      <div
-        ref={threadRef}
-        className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
-      >
-        <ChatMessages
-          messages={messages}
-          streaming={streaming}
-          busy={busy}
-          thinking={thinking}
-          activity={activity}
-          onRewind={rewind}
-          emptyHint="Ask about whatever you're looking at — it's sent along as context."
-        />
-      </div>
-
       <ToolApprovalBar
         approvals={approvals}
         visible={open}
@@ -197,46 +199,67 @@ export default function OmniChat({
         onAlwaysAllow={(a) => void alwaysAllow(a)}
       />
 
-      {error && (
-        <ErrorNotice
-          error={error}
-          actions={
-            <button
-              type="button"
-              onClick={retry}
-              disabled={busy}
-              className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
-            >
-              Retry
-            </button>
-          }
-        />
+      {headsDownMode ? (
+        <QuickTaskPanel open={open} provider={provider} model={model} />
+      ) : (
+        <>
+          <div
+            ref={threadRef}
+            className="min-h-[280px] flex-1 space-y-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950/50 p-3"
+          >
+            <ChatMessages
+              messages={messages}
+              streaming={streaming}
+              busy={busy}
+              thinking={thinking}
+              activity={activity}
+              onRewind={rewind}
+              emptyHint="Ask about whatever you're looking at — it's sent along as context."
+            />
+          </div>
+
+          {error && (
+            <ErrorNotice
+              error={error}
+              actions={
+                <button
+                  type="button"
+                  onClick={retry}
+                  disabled={busy}
+                  className="rounded-md border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-50"
+                >
+                  Retry
+                </button>
+              }
+            />
+          )}
+
+          <McpConnectionBar visible={open} />
+
+          <QueuedMessages
+            queued={queued.map((q) => q.text)}
+            held={queueHeld}
+            onRemove={removeQueued}
+            onSendNext={sendNextQueued}
+          />
+
+          <ChatComposer
+            value={input}
+            onChange={setInput}
+            onSubmit={submit}
+            busy={busy}
+            placeholder="Ask anything about what you're looking at…"
+            submitLabel="Send"
+            textareaClassName="min-h-24"
+            onStop={stop}
+            onQueue={queue}
+          />
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <VoiceControls voice={voice} compact />
+            <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
+          </div>
+        </>
       )}
-
-      <McpConnectionBar visible={open} />
-
-      <QueuedMessages
-        queued={queued.map((q) => q.text)}
-        held={queueHeld}
-        onRemove={removeQueued}
-        onSendNext={sendNextQueued}
-      />
-
-      <ChatComposer
-        value={input}
-        onChange={setInput}
-        onSubmit={submit}
-        busy={busy}
-        placeholder="Ask anything about what you're looking at…"
-        submitLabel="Send"
-        textareaClassName="min-h-24"
-        onStop={stop}
-        onQueue={queue}
-      />
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <VoiceControls voice={voice} compact />
-        <p className="text-xs text-zinc-600">Esc to hide · keeps running in the background</p>
-      </div>
     </div>
   );
 

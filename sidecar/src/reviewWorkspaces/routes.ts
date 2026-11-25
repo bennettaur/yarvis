@@ -11,6 +11,7 @@ import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import { MAX_NAMED_TICKETS } from "../pr/tickets.ts";
 import { COMMIT_SHA_PATTERN, type PrRef } from "../pr/types.ts";
 import { upstackChanges } from "../pr/upstack.ts";
+import { noteSinceReviewTabOpened } from "../reviewPrep/seen.ts";
 import { CONTROL_CHARACTERS } from "../workspaces/files.ts";
 import { harnessIdSchema } from "../workspaces/harnesses.ts";
 import { isSafePathSegment } from "../workspaces/service.ts";
@@ -629,21 +630,25 @@ export function createReviewWorkspaceRoutes(
     const registry = options.rereview?.run?.registry ?? agentRunRegistry;
     const rereviewDeps = options.rereview ?? defaultRereviewDeps(config);
     try {
-      return c.json(
-        await latestRereview(
-          db(),
-          c.req.param("id"),
-          c.req.param("prId"),
-          deps(),
-          (id) => registry.isLive(id),
-          from,
-          {
-            config,
-            settings: rereviewDeps.settings,
-            readerBudgetBytes: rereviewDeps.readerBudgetBytes,
-          },
-        ),
+      const latest = await latestRereview(
+        db(),
+        c.req.param("id"),
+        c.req.param("prId"),
+        deps(),
+        (id) => registry.isLive(id),
+        from,
+        {
+          config,
+          settings: rereviewDeps.settings,
+          readerBudgetBytes: rereviewDeps.readerBudgetBytes,
+        },
       );
+      // Only the Since last review tab reads this, so a read means the user opened it.
+      const { refKey } = await getReviewPr(db(), c.req.param("id"), c.req.param("prId"));
+      await noteSinceReviewTabOpened(db(), refKey).catch((e) =>
+        console.warn("[rereview] could not note the tab was opened:", describeError(e)),
+      );
+      return c.json(latest);
     } catch (e) {
       return fail(c, e);
     }
