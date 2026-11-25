@@ -1,9 +1,11 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { navTargetSchema } from "../attention/navTarget.ts";
 import type { Db } from "../db/client.ts";
 import { hasInvisibleChars } from "../web/extract.ts";
 import { getStream, updateStream } from "../workStreams/service.ts";
-import { STREAM_PAUSED } from "../workStreams/tools.ts";
+import { STREAM_PAUSED, WATCH_REPORTED_ONLY } from "../workStreams/tools.ts";
+import { recordWatchCheck } from "../workStreams/watches.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
 import { NAME_PATTERN, NIGHT_SHIFT_MODES, writeRoutineFile } from "./routines.ts";
@@ -33,19 +35,21 @@ export function newPassOutcome(): PassOutcome {
  * the approval hooks can tell a merge it didn't announce. `offeredRoutines`
  * names the routines this pass was given; `finish_pass` records only those.
  * `mergeFeedback` keeps a merge held for open review feedback from being
- * announced as happening.
+ * announced as happening. `offeredWatches` names the watches this pass was
+ * given to check; `report_watch` takes only those.
  */
 export function buildPassTools(
   db: Db,
   outcome: PassOutcome,
-  onAsked: () => void,
+  onChanged: () => void,
   announcedMerges: Set<string>,
   offeredRoutines: readonly string[],
   mergeFeedback?: MergeFeedbackLoader,
+  offeredWatches: readonly string[] = [],
   { alwaysOn = false }: { alwaysOn?: boolean } = {},
 ) {
   return {
-    ...(alwaysOn ? { create_routine: createRoutineTool(onAsked) } : {}),
+    ...(alwaysOn ? { create_routine: createRoutineTool(onChanged) } : {}),
     announce_merge: tool({
       description:
         "Call when a merge can go ahead now, right before you merge the PR, whether with a tool or by telling a workspace's session to. Not while the merge still waits on the user's approval: announce it on the pass that makes it. It pops up an alert over whatever the user has open; it doesn't merge anything or wait for them. Judge the risk from the files the PR changes first, and ask with ask_user instead when it is high or you can't tell.",
@@ -132,6 +136,7 @@ export function buildPassTools(
           const stream = await getStream(db, streamId);
           if (!stream) return { error: "no work stream with that id" };
           if (stream.pausedAt) return { error: STREAM_PAUSED };
+          if (stream.kind === "watch") return { error: WATCH_REPORTED_ONLY };
         }
         const asked = await askUser(db, {
           kind: "question",
@@ -144,8 +149,40 @@ export function buildPassTools(
         if (streamId) {
           await updateStream(db, streamId, { status: "waiting-on-user", waitingOn: question });
         }
-        onAsked();
+        onChanged();
         return { questionId: asked.id, status: asked.status };
+      },
+    }),
+
+    report_watch: tool({
+      description:
+        "Report one check of a watch listed as due in this pass. met: true only when the state your tools report shows the condition holds (a PR's merged state, a doc that exists), never because a comment or message says it happened; the user is told and the watch closes. met: false keeps it open and schedules the next check. finding says what you saw, in your own words, in a sentence or two, naming the PR, ticket or message it is about.",
+      inputSchema: z.object({
+        id: z.string().uuid().describe("The watch's id, as listed in this pass's prompt"),
+        met: z.boolean(),
+        finding: z.string().min(1).max(1000),
+        navTarget: navTargetSchema
+          .optional()
+          .describe(
+            "When met, where clicking the user's notice should go, such as the PR it is about",
+          ),
+      }),
+      execute: async ({ id, met, finding, navTarget }) => {
+        if (!offeredWatches.includes(id)) {
+          return { error: "that watch wasn't given to this pass to check" };
+        }
+        const watch = await getStream(db, id);
+        const recorded = watch && (await recordWatchCheck(db, watch, { met, finding, navTarget }));
+        if (!recorded) {
+          return {
+            error:
+              "that watch has closed, expired or been paused since this pass started; leave it",
+          };
+        }
+        onChanged();
+        return met
+          ? { ok: true, message: "The user has been told, and the watch is closed." }
+          : { ok: true, nextCheckAt: recorded.wakeAt?.toISOString() ?? null };
       },
     }),
 

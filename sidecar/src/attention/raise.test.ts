@@ -86,6 +86,14 @@ describe("raiseAttention", () => {
     expect(pending.map((i) => i.category)).toEqual(["review"]);
   });
 
+  it("follows a re-raised item's risk level, and clears it when none is given", async () => {
+    const raise = (risk?: "low" | "high") =>
+      raiseAttention(db, { category: "review", kind: "action", title: "x", dedupeKey: "k", risk });
+    expect((await raise("low")).risk).toBe("low");
+    expect((await raise("high")).risk).toBe("high");
+    expect((await raise()).risk).toBeNull();
+  });
+
   it("keeps items without a dedupe key apart", async () => {
     await raiseAttention(db, { category: "general", kind: "message", title: "one" });
     await raiseAttention(db, { category: "general", kind: "message", title: "two" });

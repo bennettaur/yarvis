@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { parseRepoRemote, type Repo, repoPrRef } from "./repos";
+import { PLAYBOOK_KEYS } from "../../sidecar/src/workspaces/playbooks.ts";
+import { PLAYBOOK_FIELDS, parseRepoRemote, type Repo, repoPrRef } from "./repos";
 
 describe("parseRepoRemote", () => {
   it("classifies a GitHub ssh remote", () => {
@@ -125,5 +126,13 @@ describe("repoPrRef", () => {
       repo: "web",
       prId: 42,
     });
+  });
+});
+
+describe("PLAYBOOK_FIELDS", () => {
+  // The sidecar drops a key it doesn't know, so a field missing on either side
+  // loses what the user typed there without an error.
+  it("shows every playbook step the sidecar stores, in the same order", () => {
+    expect(PLAYBOOK_FIELDS.map((f) => f.key)).toEqual([...PLAYBOOK_KEYS]);
   });
 });

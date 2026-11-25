@@ -1,5 +1,5 @@
 {
-  "id": "ef87bc9e-9c43-445e-8216-96bde2aceab9",
+  "id": "cf7826bc-dd3e-4173-8ebb-2472b1e00021",
   "prevId": "894397d8-ff78-4c15-b319-b81048735057",
   "version": "7",
   "dialect": "postgresql",
@@ -733,6 +733,12 @@
         "nav_target": {
           "name": "nav_target",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "risk": {
+          "name": "risk",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -4095,12 +4101,6 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
-        "verification_checks": {
-          "name": "verification_checks",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -4349,6 +4349,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "risk": {
+          "name": "risk",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "backlogged_at": {
+          "name": "backlogged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "note": {
           "name": "note",
           "type": "text",
@@ -4403,6 +4421,21 @@
           "columns": [
             {
               "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "review_preps_state_idx": {
+          "name": "review_preps_state_idx",
+          "columns": [
+            {
+              "expression": "state",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

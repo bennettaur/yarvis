@@ -7,9 +7,13 @@ import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
 import { ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude } from "../agentRuns/testSupport.ts";
+import { publish } from "../attention/hub.ts";
+import { raiseAttention } from "../attention/raise.ts";
+import { updateAttentionStatus } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
 import { agentRuns, attentionItems, reviewPreps, reviewWorkspaces } from "../db/schema.ts";
+import type { ReviewCandidate } from "../github/client.ts";
 import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import { printAgentAnswer, writeAgentAnswers } from "../reviewWorkspaces/fakeAgents.ts";
@@ -26,7 +30,17 @@ import {
   REPORT_SECTIONS,
   type ReportSection,
 } from "../reviewWorkspaces/verification.ts";
-import { prepReview, prepsSettled, type ReviewPrepDeps } from "./service.ts";
+import {
+  needsNoReview,
+  prepAttentionKey,
+  prepReview,
+  prepsSettled,
+  type ReviewPrepDeps,
+  releasePrep,
+  slotsInUse,
+  startBackloggedPreps,
+  watchPrepDismissals,
+} from "./service.ts";
 import type { SizeTierThresholds } from "./sizeTier.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -52,6 +66,9 @@ const config: Config = {
 const ref: PrRef = { provider: "github", owner: "o", repo: "r", number: 1 };
 /** Has no branch on the test remote, so its checkout fails. */
 const ref2: PrRef = { ...ref, number: 2 };
+/** Also have no branch. */
+const ref3: PrRef = { ...ref, number: 3 };
+const ref4: PrRef = { ...ref, number: 4 };
 const pass = { status: "pass", findings: [] };
 const report = {
   summary: "A small change.",
@@ -97,6 +114,7 @@ let kickoff: KickoffDeps;
 let prepDeps: ReviewPrepDeps;
 let stack: PrRef[];
 let maxConcurrent: number;
+let maxReady: number;
 let sizeTiers: SizeTierThresholds;
 let storiesStarted: PrRef[];
 
@@ -184,10 +202,17 @@ exit 1`,
   };
   stack = [];
   maxConcurrent = 2;
+  maxReady = 5;
   prepDeps = {
     kickoff,
-    loadStack: async () => stack,
-    prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent }),
+    loadStack: async (r) =>
+      stack.some(
+        (layer) =>
+          layer.provider === "github" && r.provider === "github" && layer.number === r.number,
+      )
+        ? stack
+        : [r],
+    prepConfig: async () => ({ maxConcurrentVerifications: maxConcurrent, maxReady }),
     tier: {
       sizeTiers: async () => sizeTiers,
       kickOffStory: async (r) => {
@@ -268,7 +293,7 @@ describe("prepReview", () => {
     release();
     await prepsSettled();
     const prep = await prepOf(ref);
-    expect(prep).toMatchObject({ state: "ready", verdict: "review-deeper" });
+    expect(prep).toMatchObject({ state: "ready", verdict: "review-deeper", risk: "low" });
     expect(prep?.headSha).toBeTruthy();
     const items = await prepItems();
     expect(items).toHaveLength(1);
@@ -276,6 +301,7 @@ describe("prepReview", () => {
       kind: "action",
       category: "review",
       title: "Ready for review",
+      risk: "low",
     });
     const body = items[0]?.body ?? "";
     expect(body).toStartWith("r#1: Feature work\nVerdict: Review deeper first (1 medium finding).");
@@ -300,11 +326,13 @@ describe("prepReview", () => {
     expect(await prepOf(ref)).toMatchObject({
       state: "failed",
       note: `${total} of ${total} checks didn't finish.`,
+      risk: null,
     });
     expect(await prepItems()).toEqual([
       expect.objectContaining({
         kind: "action",
         title: "Review prep failed",
+        risk: null,
         body: `r#1: ${total} of ${total} checks didn't finish.`,
       }),
     ]);
@@ -336,12 +364,15 @@ describe("prepReview", () => {
     expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
   });
 
-  it("puts a stack's layers in the workspace it opened for the stack", async () => {
+  it("prepares a whole stack, in the workspace it opened for the stack", async () => {
     stack = [ref, ref2];
-    await prepReview(db, config, ref, prepDeps);
-    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({
       status: "queued",
-      createdWorkspace: false,
+      createdWorkspace: true,
+      stack: ["r#2"],
+    });
+    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+      status: expect.stringMatching(/^already-/),
     });
     await prepsSettled();
     const workspaces = await db.select().from(reviewWorkspaces);
@@ -454,5 +485,258 @@ describe("the attention item", () => {
     });
     await prepsSettled();
     expect(await attention()).toHaveLength(1);
+  });
+});
+
+describe("the review stream", () => {
+  /** PR 1 ends needing a go-ahead (a large PR), which holds its slot. */
+  async function oneSlotHeld(): Promise<void> {
+    maxReady = 1;
+    await prepReview(db, config, ref, prepDeps);
+    await prepsSettled();
+    expect((await prepOf(ref))?.state).toBe("needs-go-ahead");
+  }
+  const releaseHeld = async () =>
+    releasePrep(db, (await prepOf(ref))?.id ?? "", "Done.", { resolveItem: false });
+  /** Started: anything past the backlog. PRs 2 to 4 have no branch, so they end failed. */
+  const started = async (r: PrRef) =>
+    ["queued", "verifying", "failed"].includes((await prepOf(r))?.state ?? "");
+
+  it("backlogs PRs past the limit without opening a workspace, keeping each one's place", async () => {
+    await oneSlotHeld();
+    expect(await prepReview(db, config, ref2, prepDeps)).toEqual({
+      status: "backlogged",
+      pr: "r#2",
+      position: 1,
+    });
+    const first = await prepOf(ref2);
+    expect(await prepReview(db, config, ref3, prepDeps)).toMatchObject({ position: 2 });
+    expect(await prepReview(db, config, ref2, prepDeps)).toMatchObject({
+      status: "backlogged",
+      position: 1,
+    });
+    const again = await prepOf(ref2);
+    expect(again).toMatchObject({ state: "backlog", workspaceId: null });
+    expect(again?.backloggedAt).toEqual(first?.backloggedAt ?? null);
+    expect(
+      await db.select().from(reviewPreps).where(eq(reviewPreps.refKey, "gh:o/r/2")),
+    ).toHaveLength(1);
+    expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 0, dropped: 0 });
+  });
+
+  it("starts the oldest backlogged PR first", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref3, prepDeps);
+    await prepReview(db, config, ref2, prepDeps);
+    await releaseHeld();
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 1, dropped: 0 });
+    expect(await started(ref3)).toBe(true);
+    await prepsSettled();
+    // PR 3's checkout failed, which freed its slot for PR 2 without a pass or the job.
+    expect((await prepOf(ref2))?.state).toBe("failed");
+  });
+
+  it("frees a slot when the user dismisses a prepared PR's item, and starts the next", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    const stop = watchPrepDismissals(db, config, () => prepDeps);
+    try {
+      const [item] = await prepItems();
+      const row = await updateAttentionStatus(db, item?.id ?? "", "dismissed");
+      if (row) publish(row);
+      await until(() => started(ref2), "PR 2 to start");
+    } finally {
+      stop();
+    }
+    await prepsSettled();
+    expect(await prepOf(ref)).toMatchObject({ state: "released", note: "You dismissed it." });
+  });
+
+  it("keeps the slot when the item is only read, and ignores other items", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    const stop = watchPrepDismissals(db, config, () => prepDeps);
+    try {
+      const [item] = await prepItems();
+      const read = await updateAttentionStatus(db, item?.id ?? "", "read");
+      if (read) publish(read);
+      const other = await raiseAttention(db, {
+        category: "review",
+        kind: "action",
+        title: "Something else",
+        dedupeKey: "other:gh:o/r/1",
+      });
+      const dismissed = await updateAttentionStatus(db, other.id, "dismissed");
+      if (dismissed) publish(dismissed);
+      // The watcher filters synchronously, so nothing it would start is pending.
+      await prepsSettled();
+    } finally {
+      stop();
+    }
+    expect((await prepOf(ref))?.state).toBe("needs-go-ahead");
+    expect((await prepOf(ref2))?.state).toBe("backlog");
+  });
+
+  it("doesn't count a failed prep against the limit", async () => {
+    maxReady = 1;
+    await prepReview(db, config, ref2, prepDeps);
+    await prepsSettled();
+    expect((await prepOf(ref2))?.state).toBe("failed");
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({ status: "queued" });
+    await prepsSettled();
+  });
+
+  it("lets a stack go past the limit, and starts nothing else until usage drops below it", async () => {
+    maxReady = 2;
+    stack = [ref, ref2, ref3];
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({
+      status: "queued",
+      stack: ["r#2", "r#3"],
+    });
+    expect(await slotsInUse(db)).toBe(3);
+    expect(await prepReview(db, config, ref4, prepDeps)).toMatchObject({ status: "backlogged" });
+    // Only the PR asked for counts toward a heads-down pass's prep limit.
+    expect((await prepOf(ref))?.requestedAt).toBeTruthy();
+    expect((await prepOf(ref2))?.requestedAt).toBeNull();
+    // Layers 2 and 3 fail their checkout, which brings usage to 1 of 2.
+    await prepsSettled();
+    expect((await prepOf(ref))?.state).toBe("needs-go-ahead");
+    expect((await prepOf(ref4))?.state).toBe("failed");
+  });
+
+  it("skips layers the user is done with or that don't need their review", async () => {
+    stack = [ref, ref2, ref3, ref4];
+    await db.insert(reviewPreps).values({
+      refKey: "gh:o/r/3",
+      ref: ref3,
+      state: "done",
+      attentionKey: prepAttentionKey("gh:o/r/3"),
+    });
+    prepDeps.notNeedingReview = async () => new Set(["gh:o/r/2"]);
+    expect(await prepReview(db, config, ref, prepDeps)).toMatchObject({
+      status: "queued",
+      stack: ["r#4"],
+    });
+    await prepsSettled();
+    expect(await prepOf(ref2)).toBeUndefined();
+    expect((await prepOf(ref3))?.state).toBe("done");
+  });
+
+  it("starts a backlogged stack whole, taking its other backlogged layers with it", async () => {
+    await oneSlotHeld();
+    stack = [ref2, ref3];
+    await prepReview(db, config, ref3, prepDeps);
+    await prepReview(db, config, ref2, prepDeps);
+    await releaseHeld();
+
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 1, dropped: 0 });
+    expect(await started(ref3)).toBe(true);
+    expect(await started(ref2)).toBe(true);
+    await prepsSettled();
+    const [two, three] = [await prepOf(ref2), await prepOf(ref3)];
+    expect(two?.workspaceId).toBe(three?.workspaceId ?? "");
+  });
+
+  it("puts a new pick behind older backlogged PRs even when a slot is free", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    maxReady = 5;
+    expect(await prepReview(db, config, ref3, prepDeps)).toMatchObject({
+      status: "backlogged",
+      position: 2,
+    });
+    await prepsSettled();
+    expect(await started(ref2)).toBe(true);
+    expect(await started(ref3)).toBe(true);
+  });
+
+  it("starts one PR at a time when two arrive at once", async () => {
+    maxReady = 1;
+    const results = await Promise.all([
+      prepReview(db, config, ref, prepDeps),
+      prepReview(db, config, ref2, prepDeps),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(["backlogged", "queued"]);
+    await prepsSettled();
+  });
+
+  it("drops a backlogged PR that no longer needs the user's review", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    await releaseHeld();
+    prepDeps.notNeedingReview = async () => new Set(["gh:o/r/2"]);
+
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 0, dropped: 1 });
+    expect(await prepOf(ref2)).toMatchObject({
+      state: "done",
+      note: "It no longer needed your review.",
+    });
+    expect(await db.select().from(reviewWorkspaces)).toHaveLength(1);
+  });
+
+  it("moves a PR that fails to start to the back, so it can't hold up the rest", async () => {
+    await oneSlotHeld();
+    await prepReview(db, config, ref2, prepDeps);
+    await prepReview(db, config, ref3, prepDeps);
+    await releaseHeld();
+    kickoff.isRegistered = async (r) => {
+      if (r.provider === "github" && r.number === 2) throw new Error("lookup failed");
+      return true;
+    };
+
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 0, dropped: 0 });
+    expect((await prepOf(ref2))?.state).toBe("backlog");
+    expect(await startBackloggedPreps(db, config, prepDeps)).toEqual({ started: 1, dropped: 0 });
+    expect(await started(ref3)).toBe(true);
+    await prepsSettled();
+  });
+});
+
+describe("needsNoReview", () => {
+  const pr = (
+    overrides: Partial<ReviewCandidate> = {},
+    summary: Partial<ReviewCandidate["summary"]> = {},
+  ) =>
+    ({
+      summary: {
+        number: 1,
+        title: "",
+        url: "",
+        owner: "o",
+        repo: "r",
+        author: "them",
+        draft: false,
+        state: "open",
+        createdAt: "",
+        updatedAt: "",
+        ...summary,
+      },
+      merged: false,
+      myReviewStates: [],
+      approvals: 0,
+      changesRequested: 0,
+      reviewDecision: "review_required",
+      changedLines: 1,
+      changedFiles: 1,
+      ...overrides,
+    }) as ReviewCandidate;
+
+  it("is true once a PR is merged, closed, approved, the user's own or reviewed by them", () => {
+    expect(needsNoReview(pr({ merged: true }), "me")).toBe(true);
+    expect(needsNoReview(pr({}, { state: "closed" }), "me")).toBe(true);
+    expect(needsNoReview(pr({ reviewDecision: "approved" }), "me")).toBe(true);
+    expect(needsNoReview(pr({}, { author: "me" }), "me")).toBe(true);
+    expect(needsNoReview(pr({ myReviewStates: ["changes_requested"] }), "me")).toBe(true);
+    expect(needsNoReview(pr({ myReviewStates: ["approved"] }), "me")).toBe(true);
+    // Leaving comments is acting on the PR, as much as approving it.
+    expect(needsNoReview(pr({ myReviewStates: ["commented"] }), "me")).toBe(true);
+  });
+
+  it("is false for an open PR waiting on the user, or one someone else only commented on", () => {
+    expect(needsNoReview(pr(), "me")).toBe(false);
+    expect(needsNoReview(pr({ reviewDecision: "review_required", approvals: 0 }), "me")).toBe(
+      false,
+    );
   });
 });

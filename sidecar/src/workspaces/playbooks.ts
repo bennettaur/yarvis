@@ -1,19 +1,25 @@
 import { z } from "zod";
 
 /**
- * Per-repo prompts for shipping a PR: how to verify, test, deploy, monitor and revert it.
+ * Per-repo prompts for shipping a PR, one per step from CI to production, and for
+ * the Playbook verification check (verify).
  * They are stored in the repo's settings and nowhere else. An agent reads them
  * as the user's own instructions with nobody watching, so text from the repo
  * (a README, a CONTRIBUTING file) must never stand in for them.
  */
+/** In ship-stage order, the order Settings shows them (`PLAYBOOK_FIELDS` in src/lib/repos.ts). */
 export const PLAYBOOK_KEYS = [
+  "ci",
+  "pickReviewer",
+  "feedback",
+  "reviewBeforeMerge",
   "testStaging",
+  "merge",
   "deploy",
   "monitorDeploy",
   "monitorProduction",
   "testProduction",
   "revert",
-  "pickReviewer",
   "verify",
 ] as const;
 
@@ -30,13 +36,17 @@ export const MAX_PLAYBOOK_CHARS = 4000;
 const playbookText = z.string().max(MAX_PLAYBOOK_CHARS).nullish();
 
 export const repoPlaybooksSchema = z.object({
+  ci: playbookText,
+  pickReviewer: playbookText,
+  feedback: playbookText,
+  reviewBeforeMerge: playbookText,
   testStaging: playbookText,
+  merge: playbookText,
   deploy: playbookText,
   monitorDeploy: playbookText,
   monitorProduction: playbookText,
   testProduction: playbookText,
   revert: playbookText,
-  pickReviewer: playbookText,
   verify: playbookText,
 });
 

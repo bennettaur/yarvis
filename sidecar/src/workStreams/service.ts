@@ -5,6 +5,7 @@ import {
   type WorkStreamLink,
   type WorkStreamLinkRef,
   type WorkStreamNote,
+  type WorkStreamShip,
   workStreamLinks,
   workStreams,
 } from "../db/schema.ts";
@@ -45,6 +46,18 @@ export interface CreateStreamInput {
   waitingOn?: string | null;
   wakeAt?: Date | null;
   note?: string;
+  /** Makes it a ship stream for one PR. */
+  ship?: WorkStreamShip | null;
+  /** Makes the stream a watch; see `workStreams/watches.ts`. */
+  watch?: WatchFields;
+}
+
+export interface WatchFields {
+  /** What to look for, in the user's words. */
+  condition: string;
+  /** How long between checks. */
+  everyMinutes: number;
+  expiresAt: Date;
 }
 
 export interface UpdateStreamInput {
@@ -62,6 +75,8 @@ export interface UpdateStreamInput {
   paused?: boolean;
   /** Appended to the notes rather than replacing them. */
   note?: string;
+  /** Written only by `ship.ts`, which decides the stages. */
+  ship?: WorkStreamShip | null;
 }
 
 export interface ListStreamsOptions {
@@ -71,6 +86,8 @@ export interface ListStreamsOptions {
   awakeAt?: Date;
   /** Leave out the streams the user paused. */
   excludePaused?: boolean;
+  /** Only streams of this kind. */
+  kind?: WorkStream["kind"];
 }
 
 export interface LinkToStreamInput {
@@ -117,10 +134,15 @@ function appendNote(existing: WorkStreamNote[], note: string, at: Date): WorkStr
 
 export async function createStream(db: Db, input: CreateStreamInput): Promise<WorkStream> {
   const now = new Date();
-  const status = input.status ?? "active";
+  // A watch waits on the world from the start, so it doesn't count as work to push.
+  const status = input.status ?? (input.watch ? "waiting-on-others" : "active");
   const [row] = await db
     .insert(workStreams)
     .values({
+      kind: input.watch ? "watch" : "work",
+      watchCondition: input.watch?.condition.trim() ?? null,
+      watchEveryMinutes: input.watch?.everyMinutes ?? null,
+      expiresAt: input.watch?.expiresAt ?? null,
       title: input.title.trim(),
       summary: input.summary ?? null,
       status,
@@ -130,6 +152,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
       nextAction: input.nextAction ?? null,
       waitingOn: input.waitingOn ?? null,
       wakeAt: input.wakeAt ?? null,
+      ship: input.ship ?? null,
       notes: input.note ? appendNote([], input.note, now) : [],
       closedAt: CLOSED_STREAM_STATUSES.includes(status) ? now : null,
     })
@@ -137,7 +160,7 @@ export async function createStream(db: Db, input: CreateStreamInput): Promise<Wo
   await emitEvent(db, {
     type: "work_stream.created",
     source: "work_streams",
-    payload: { streamId: row!.id, title: row!.title, priority: row!.priority },
+    payload: { streamId: row!.id, title: row!.title, priority: row!.priority, kind: row!.kind },
   });
   return row!;
 }
@@ -181,6 +204,7 @@ export async function listStreams(
   if (statuses.length) conditions.push(inArray(workStreams.status, [...statuses]));
   if (options.projectId) conditions.push(eq(workStreams.projectId, options.projectId));
   if (options.excludePaused) conditions.push(isNull(workStreams.pausedAt));
+  if (options.kind) conditions.push(eq(workStreams.kind, options.kind));
   if (options.awakeAt) {
     const awake = or(isNull(workStreams.wakeAt), lte(workStreams.wakeAt, options.awakeAt));
     if (awake) conditions.push(awake);
@@ -205,7 +229,14 @@ export async function updateStream(
   db: Db,
   id: string,
   patch: UpdateStreamInput,
-  { unlessPaused = false }: { unlessPaused?: boolean } = {},
+  {
+    unlessPaused = false,
+    expectedShip,
+  }: {
+    unlessPaused?: boolean;
+    /** Writes only while `ship` is still this, so two updates can't lose one another's. */
+    expectedShip?: WorkStreamShip | null;
+  } = {},
 ): Promise<WorkStream | null> {
   const [existing] = await db.select().from(workStreams).where(eq(workStreams.id, id));
   if (!existing) return null;
@@ -230,15 +261,22 @@ export async function updateStream(
       ...(patch.paused !== undefined
         ? { pausedAt: patch.paused ? (existing.pausedAt ?? now) : null }
         : {}),
+      ...(patch.ship !== undefined ? { ship: patch.ship } : {}),
       ...(patch.note ? { notes: appendNote(existing.notes, patch.note, now) } : {}),
       ...(closing && !existing.closedAt ? { closedAt: now } : {}),
       ...(reopening ? { closedAt: null } : {}),
       updatedAt: now,
     })
     .where(
-      unlessPaused
-        ? and(eq(workStreams.id, id), isNull(workStreams.pausedAt))
-        : eq(workStreams.id, id),
+      and(
+        eq(workStreams.id, id),
+        unlessPaused ? isNull(workStreams.pausedAt) : undefined,
+        expectedShip === undefined
+          ? undefined
+          : expectedShip === null
+            ? isNull(workStreams.ship)
+            : sql`${workStreams.ship} = ${JSON.stringify(expectedShip)}::jsonb`,
+      ),
     )
     .returning();
   if (row && closing && !existing.closedAt) {
@@ -254,13 +292,17 @@ export async function updateStream(
 /**
  * Drops every open stream, so heads-down mode starts the next run with none.
  * Dropped rather than deleted, so each still reaches the activity log as closed.
+ * Watches stay: each is something the user asked to hear about, not work a
+ * run took on.
  */
 export async function dropOpenStreams(db: Db): Promise<WorkStream[]> {
   const now = new Date();
   const rows = await db
     .update(workStreams)
     .set({ status: "dropped", closedAt: now, updatedAt: now })
-    .where(inArray(workStreams.status, [...OPEN_STREAM_STATUSES]))
+    .where(
+      and(inArray(workStreams.status, [...OPEN_STREAM_STATUSES]), eq(workStreams.kind, "work")),
+    )
     .returning();
   for (const row of rows) {
     await emitEvent(db, {

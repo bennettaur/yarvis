@@ -51,13 +51,28 @@ Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
 
 ### Repo playbooks
 
-Each repo can carry up to eight prompts for shipping a PR, one text area each
-under **Settings → Repositories → Playbooks**: **Test in staging**, **Deploy**,
-**Monitor the deploy**, **Monitor production**, **Test in production**,
-**Revert**, **Pick a reviewer** and **Verify a PR**. **Verify a PR** is what
-the [playbook verification](review-workspaces.md#repo-and-playbook-verification)
-check runs. Write them in plain text, up to 4000
-characters each. A repo with none saved has no playbook.
+Each repo can carry a prompt for each step of shipping a PR, from CI to
+production, one text area each under **Settings → Repositories →
+Playbooks**:
+
+- **CI**: how to handle failing or flaky checks.
+- **Pick a reviewer**: who should review a PR, and how to choose.
+- **Review feedback**: how to handle review comments and change requests.
+- **Review before merge**: what must be true of the review before anything
+  merges, such as approvals, checks or who must sign off. A
+  [ship stream](heads-down.md#shipping-a-pr) checks each item before it
+  merges, and asks you about anything unmet instead of merging.
+- **Merge**: how to merge, e.g. squash or a merge queue. Every merging rule
+  still applies, and enabling auto-merge or queueing the PR counts as
+  merging.
+- **Test in staging**, **Deploy**, **Monitor the deploy**, **Monitor production**,
+  **Test in production** and **Revert**.
+- **Verify a PR**: what the
+  [playbook verification](review-workspaces.md#repo-and-playbook-verification)
+  check runs on a PR.
+
+Write them in plain text, up to 4000 characters each. A repo with none saved
+has no playbook.
 
 Playbooks are stored in Yarvis, never read from the repo. An agent follows them
 as your own words, so only your Settings can supply them, the same reason
@@ -1013,9 +1028,16 @@ takes its stream's category, and **General** when it has none.
 
 The panel groups **Needs you now** by category, with **Review** first and a
 count on each. The bar above the list filters to one category; press it again,
-or **All**, to see everything. Untick **Group** for one list, newest first.
+or **All**, to see everything. Untick **Group** for one list, newest first
+(narrowed to **Review**, it is ordered by risk as below).
 Yarvis remembers the **Group** choice in this browser between sessions. The
 filter resets when the app reloads, so a category can't stay hidden.
+
+A PR that [review prep](review-workspaces.md#review-prep) got ready carries
+the risk its verification report assessed: a **High risk** badge and a red
+edge, **Medium risk** in amber, or **Low risk** in green. Within **Review**,
+high-risk PRs come first, then medium, then low, then items with no badge,
+each newest first. A PR whose report didn't finish has no badge.
 
 ### Messages from Yarvis
 

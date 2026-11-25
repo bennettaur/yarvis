@@ -14,9 +14,16 @@ import {
 } from "../agents/frontmatter.ts";
 import type { RegistryTool } from "../agentTools/store.ts";
 import { hasInvisibleChars } from "../web/extract.ts";
+import emailDrafts from "./routines/email-drafts.md" with { type: "text" };
+import generationReflection from "./routines/generation-reflection.md" with { type: "text" };
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
+import meetingTimes from "./routines/meeting-times.md" with { type: "text" };
+import messagePeople from "./routines/message-people.md" with { type: "text" };
+import offerHelp from "./routines/offer-help.md" with { type: "text" };
 import reviewPrep from "./routines/review-prep.md" with { type: "text" };
+import reviewReflection from "./routines/review-reflection.md" with { type: "text" };
+import slackWatcher from "./routines/slack-watcher.md" with { type: "text" };
 
 /**
  * Routines: recurring jobs a heads-down pass takes on beside the work streams,
@@ -85,10 +92,20 @@ export interface RoutineCatalog {
   userDir: string;
 }
 
+/** The routine that takes over reading Slack from a pass's Messages step when it is on. */
+export const SLACK_WATCHER = "slack-watcher";
+
 const BUILTIN_FILES: { path: string; content: string }[] = [
+  { path: "routines/generation-reflection.md", content: generationReflection },
   { path: "routines/meeting-alarms.md", content: meetingAlarms },
   { path: "routines/meeting-notes.md", content: meetingNotes },
+  { path: "routines/meeting-times.md", content: meetingTimes },
+  { path: "routines/email-drafts.md", content: emailDrafts },
+  { path: "routines/message-people.md", content: messagePeople },
+  { path: "routines/offer-help.md", content: offerHelp },
+  { path: "routines/slack-watcher.md", content: slackWatcher },
   { path: "routines/review-prep.md", content: reviewPrep },
+  { path: "routines/review-reflection.md", content: reviewReflection },
 ];
 
 /** `~/.yarvis/routines`, overridable so tests and a second instance can point elsewhere. */

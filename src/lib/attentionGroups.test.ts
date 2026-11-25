@@ -208,4 +208,29 @@ describe("arrangeAttention", () => {
   it("counts groups per category, including empty ones", () => {
     expect(countByCategory(groups)).toEqual({ review: 1, build: 1, slack: 0, general: 1 });
   });
+
+  it("puts high-risk review items first, then medium, then the rest newest-first", () => {
+    const review = (id: string, seq: number, risk?: "low" | "medium" | "high") =>
+      item({ id, seq, sessionKey: `raise:${id}`, workspaceId: null, category: "review", risk });
+    const mixed = groupAttentionItems([
+      review("none", 6),
+      review("low", 5, "low"),
+      review("high-new", 4, "high"),
+      review("medium", 3, "medium"),
+      review("high-old", 2, "high"),
+      item({ id: "b", seq: 1, category: "build" }),
+    ]);
+    const order = ["high-new", "high-old", "medium", "low", "none"];
+    expect(ids(arrangeAttention(mixed, { groupByCategory: true, categoryFilter: null }))).toEqual([
+      ["review", order],
+      ["build", ["b"]],
+    ]);
+    expect(
+      ids(arrangeAttention(mixed, { groupByCategory: false, categoryFilter: "review" })),
+    ).toEqual([[null, order]]);
+    // A mixed, ungrouped stream stays newest-first.
+    expect(
+      ids(arrangeAttention(mixed, { groupByCategory: false, categoryFilter: null }))[0]?.[1],
+    ).toEqual(["none", "low", "high-new", "medium", "high-old", "b"]);
+  });
 });

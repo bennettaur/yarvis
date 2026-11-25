@@ -84,11 +84,18 @@ fn is_connection_error(e: &sqlx::Error) -> bool {
 /// Migrations run in order, once each, recorded in the schema's own
 /// `_sqlx_migrations` table. Append to the end; never edit one that has
 /// shipped, since its checksum is stored.
-const MIGRATIONS: &[(i64, &str, &str)] = &[(
-    1,
-    "devices, events, the account, setup code and approvals",
-    include_str!("../migrations/0001_init.sql"),
-)];
+const MIGRATIONS: &[(i64, &str, &str)] = &[
+    (
+        1,
+        "devices, events, the account, setup code and approvals",
+        include_str!("../migrations/0001_init.sql"),
+    ),
+    (
+        2,
+        "approvals that cover later requests for a while",
+        include_str!("../migrations/0002_approval_grants.sql"),
+    ),
+];
 
 #[derive(Clone)]
 pub struct Store {

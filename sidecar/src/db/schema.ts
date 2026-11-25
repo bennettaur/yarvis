@@ -1198,6 +1198,8 @@ export type AttentionNavTarget =
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string }
   | { type: "heads-down" }
+  /** An artifact, opened beside the Chat tab. */
+  | { type: "artifact"; id: string }
   /** A PR in a review workspace, opened on one of its tabs. */
   | {
       type: "review-workspace";
@@ -1235,6 +1237,8 @@ export const attentionItems = pgTable(
     body: text("body"),
     status: attentionStatus("status").notNull().default("pending"),
     navTarget: jsonb("nav_target").$type<AttentionNavTarget>(),
+    // A prepared PR's verification risk level, which the stream colours the item by.
+    risk: text("risk").$type<RiskLevel>(),
     // Raw producer payload (e.g. the Claude hook stdin) kept for debugging + future use.
     payload: jsonb("payload"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1615,6 +1619,13 @@ export const workStreamStatus = pgEnum("work_stream_status", [
 ]);
 
 /**
+ * `work` is a thread to push forward. A `watch` only waits for something to
+ * happen ("tell me when Alex merges his PRs"): passes check its condition on
+ * its cadence and close it when the condition is met or it expires.
+ */
+export const workStreamKind = pgEnum("work_stream_kind", ["work", "watch"]);
+
+/**
  * One thread of work the assistant is pushing forward: a ticket to get merged,
  * a Slack message that needs an answer, a review to chase. The unit heads-down
  * mode tracks, so each pass can pick up where the last left off without
@@ -1628,6 +1639,7 @@ export const workStreams = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title").notNull(),
     summary: text("summary"),
+    kind: workStreamKind("kind").notNull().default("work"),
     status: workStreamStatus("status").notNull().default("active"),
     priority: projectItemPriority("priority").notNull().default("medium"),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
@@ -1651,12 +1663,95 @@ export const workStreams = pgTable(
      * up where the stream was.
      */
     pausedAt: timestamp("paused_at", { withTimezone: true }),
+    /**
+     * A watch's condition, in the user's words as the chat put it. Its next
+     * check is `wakeAt`, which a check moves on by `watchEveryMinutes`.
+     */
+    watchCondition: text("watch_condition"),
+    watchEveryMinutes: integer("watch_every_minutes"),
+    /** When a watch gives up and closes, telling the user it expired. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Set when the stream ships one PR: which stage it is at and how each went. */
+    ship: jsonb("ship").$type<WorkStreamShip>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp("closed_at", { withTimezone: true }),
   },
-  (t) => [index("work_streams_status_idx").on(t.status, t.priority)],
+  (t) => [
+    index("work_streams_status_idx").on(t.status, t.priority),
+    check(
+      "work_streams_watch_fields_check",
+      sql`(${t.kind} = 'watch') = (${t.watchCondition} is not null and ${t.watchEveryMinutes} is not null and ${t.expiresAt} is not null)`,
+    ),
+  ],
 );
+
+/**
+ * The stages a ship stream goes through, in order. Up to `merge` the PR is
+ * readied; after it, the merged change is followed into production.
+ */
+export const SHIP_STAGES = [
+  "ci",
+  "reviewer",
+  "feedback",
+  "staging_test",
+  "merge",
+  "deploy",
+  "monitor_deploy",
+  "monitor_production",
+  "test_production",
+  "done",
+] as const;
+
+export type ShipStage = (typeof SHIP_STAGES)[number];
+
+/** How a stage ended. A failed stage stays current until it is retried and passes. */
+export type ShipStageOutcome = "done" | "skipped" | "failed";
+
+export interface ShipStageResult {
+  status: ShipStageOutcome;
+  at: string;
+  /** Why, in the pass's words, or why the app skipped it. */
+  note?: string;
+}
+
+/** One line of what ran and what was seen after merge. */
+export interface ShipLogEntry {
+  at: string;
+  stage: ShipStage;
+  text: string;
+}
+
+export interface WorkStreamShip {
+  /** The GitHub PR being shipped. */
+  repo: string;
+  number: number;
+  url: string;
+  stage: ShipStage;
+  stages: Partial<Record<ShipStage, ShipStageResult>>;
+  /** When production monitoring started, and when its window ends. */
+  monitorStartedAt?: string;
+  monitorUntil?: string;
+  /**
+   * What the deploy, monitor and production-test steps ran and saw, oldest
+   * first. Model-written from what it read, so it is data, not instructions.
+   */
+  log: ShipLogEntry[];
+  /** The last check of the repo's reviewBeforeMerge playbook step, if it has one. */
+  reviewGate?: ShipReviewGate;
+}
+
+/** Every item met, or the user said to merge anyway. An unmet check isn't recorded: it goes to the user. */
+export type ReviewGateResult = "met" | "overridden";
+
+export interface ShipReviewGate {
+  result: ReviewGateResult;
+  /** The PR head commit the check was made against, read from GitHub. A newer one needs a new check. */
+  headSha: string;
+  at: string;
+  /** What the pass checked and saw. Model-written, so it is data, not instructions. */
+  note: string;
+}
 
 /** A note on a work stream: the same shape as a todo's progress note. */
 export type WorkStreamNote = AgentTodoNote;
@@ -2346,11 +2441,13 @@ export type ReviewWorkspace = typeof reviewWorkspaces.$inferSelect;
 export type ReviewWorkspacePr = typeof reviewWorkspacePrs.$inferSelect;
 
 export const REVIEW_PREP_STATES = [
+  "backlog",
   "queued",
   "verifying",
   "ready",
   "failed",
   "needs-go-ahead",
+  "released",
   "done",
 ] as const;
 export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
@@ -2358,11 +2455,19 @@ export type ReviewPrepState = (typeof REVIEW_PREP_STATES)[number];
 export const REVIEW_PREP_VERDICTS = ["changes-needed", "review-deeper", "no-problems"] as const;
 export type ReviewPrepVerdict = (typeof REVIEW_PREP_VERDICTS)[number];
 
+/** The verification report's `risk.level`. */
+export const RISK_LEVELS = ["low", "medium", "high"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
 /**
  * A pull request review prep got ready for the user: the review workspace it
  * went into, how its verification ended, and the attention item it raised.
- * One row per PR; preparing the same PR again reuses it. `done` means its
- * workspace is gone (archived, or closed before it ran) and its items resolved.
+ * One row per PR; preparing the same PR again reuses it. `backlog` means it
+ * is in the backlog for a slot (`reviewPrep.maxReady`) and has no workspace yet.
+ * `released` means the user is done with it (reviewed it, or dismissed its
+ * item) while its workspace stays open, so it no longer holds a slot. `done`
+ * means its workspace is gone (archived, or closed before it ran) and its
+ * items resolved.
  */
 export const reviewPreps = pgTable(
   "review_preps",
@@ -2379,6 +2484,15 @@ export const reviewPreps = pgTable(
     /** The head commit verification last ran against. */
     headSha: text("head_sha"),
     verdict: text("verdict").$type<ReviewPrepVerdict>(),
+    /** The verification report's risk level; null when no report finished. */
+    risk: text("risk").$type<RiskLevel>(),
+    /** When it joined the backlog; the backlog starts the oldest first. */
+    backloggedAt: timestamp("backlogged_at", { withTimezone: true }),
+    /**
+     * When something last asked to prepare this PR, as opposed to it coming
+     * along as a layer of a stack. A heads-down pass's prep limit counts these.
+     */
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
     /** Why it failed or waits for the user, in Yarvis's words. */
     note: text("note"),
     /** The attention item's dedupe key, raised with source `system`. */
@@ -2391,10 +2505,57 @@ export const reviewPreps = pgTable(
   (t) => [
     uniqueIndex("review_preps_ref_key_idx").on(t.refKey),
     index("review_preps_workspace_idx").on(t.workspaceId),
+    index("review_preps_state_idx").on(t.state),
   ],
 );
 
 export type ReviewPrepRow = typeof reviewPreps.$inferSelect;
+
+export const REVIEW_DRAFT_STATUSES = ["open", "accepted", "dropped", "posted"] as const;
+export type ReviewDraftStatus = (typeof REVIEW_DRAFT_STATUSES)[number];
+
+/** What the reviewer did with a draft, kept for learning which drafts are worth writing. */
+export const REVIEW_DRAFT_OUTCOMES = ["accepted", "edited", "dropped"] as const;
+export type ReviewDraftOutcome = (typeof REVIEW_DRAFT_OUTCOMES)[number];
+
+/**
+ * A review comment Yarvis proposes on one line of a PR, for the reviewer to
+ * accept, edit or drop. Nothing is posted until they do. Keyed by PR rather
+ * than review workspace, so the reviewer's answers follow the PR.
+ */
+export const reviewDrafts = pgTable(
+  "review_drafts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** `refKey` of the PR, e.g. `gh:owner/repo/7`. */
+    refKey: text("ref_key").notNull(),
+    /** What wrote it: `verification`, or another reviewer that proposes comments. */
+    source: text("source").notNull(),
+    /** Identifies the same draft across heads within its source, so a re-run updates it. */
+    sourceKey: text("source_key").notNull(),
+    /** Where in the source it came from, as the reviewer sees it: a check's name, "Risk", "Looks off". */
+    label: text("label").notNull(),
+    path: text("path").notNull(),
+    line: integer("line").notNull(),
+    /** The commit `line` refers to. */
+    headSha: text("head_sha").notNull(),
+    title: text("title").notNull(),
+    /** The proposed comment, model-written from the PR's code. */
+    body: text("body").notNull(),
+    /** The reviewer's text, when they changed the proposal before accepting it. */
+    editedBody: text("edited_body"),
+    status: text("status").$type<ReviewDraftStatus>().notNull().default("open"),
+    outcome: text("outcome").$type<ReviewDraftOutcome>(),
+    /** The source no longer reports it at the PR's current head. */
+    stale: boolean("stale").notNull().default(false),
+    postedAt: timestamp("posted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("review_drafts_source_key_idx").on(t.refKey, t.source, t.sourceKey)],
+);
+
+export type ReviewDraftRow = typeof reviewDrafts.$inferSelect;
 
 /**
  * A reviewed PR in a review workspace being watched for new commits

@@ -337,12 +337,15 @@ export default function App() {
         case "heads-down":
           setTab("heads-down");
           break;
+        case "artifact":
+          handleOpenArtifact(target.id);
+          break;
         case "review-workspace":
           handleOpenReview({ workspaceId: target.workspaceId, prId: target.prId, tab: target.tab });
           break;
       }
     },
-    [openOmniChat, handleOpenReview],
+    [openOmniChat, handleOpenReview, handleOpenArtifact],
   );
 
   const openDialog = dialogs.open;

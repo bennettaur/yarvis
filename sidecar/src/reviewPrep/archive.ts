@@ -1,10 +1,15 @@
 import { existsSync } from "node:fs";
-import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { raiseAttention, resolveRaisedAttention } from "../attention/raise.ts";
+import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import {
+  raiseAttention,
+  raisedSessionKeyPrefix,
+  resolveRaisedAttention,
+} from "../attention/raise.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
 import {
   agentRuns,
+  attentionItems,
   mutationRuns,
   type ReviewWorkspacePr,
   reviewPreps,
@@ -31,7 +36,11 @@ import {
   IN_FLIGHT_STATES,
   inFlightPreps,
   isPrepInFlight,
+  RELEASABLE_STATES,
   type ReviewPrepDeps,
+  releasePrep,
+  startBackloggedPreps,
+  whichNeedNoReview,
   whileNoPrepPlaces,
 } from "./service.ts";
 
@@ -46,6 +55,10 @@ import {
  * - Resolves a prepared PR's attention item once its workspace is archived,
  *   by this job or by the user.
  * - Requeues a prep a restart left mid-way.
+ * - Frees the slot of a prepared PR the user is done with: one they reviewed,
+ *   that was approved, merged or closed, or whose item they dismissed.
+ * - Drops backlogged PRs that no longer need the user's review, and starts
+ *   backlogged PRs while slots are free.
  */
 
 export interface ReviewPrepUpkeepDeps {
@@ -100,6 +113,12 @@ export interface UpkeepResult {
   /** Workspaces the user was asked about instead. */
   asked: string[];
   resolved: number;
+  /** Prepared PRs whose slot was freed. */
+  released: number;
+  /** PRs taken out of the backlog. */
+  dropped: number;
+  /** Backlogged PRs started. */
+  started: number;
 }
 
 export async function runReviewPrepUpkeep(
@@ -111,7 +130,51 @@ export async function runReviewPrepUpkeep(
   const requeued = await requeueStalled(db, config, deps, now);
   const { archived, asked } = await archiveDone(db, config, deps, now);
   const resolved = await resolveClosed(db);
-  return { requeued, archived, asked, resolved };
+  const released = await releaseFinished(db, deps.prep);
+  const { started, dropped } = await startBackloggedPreps(db, config, deps.prep);
+  return { requeued, archived, asked, resolved, released, dropped, started };
+}
+
+/** Frees the slots of prepared PRs the user is done with but whose workspace is still open. */
+async function releaseFinished(db: Db, deps: ReviewPrepDeps): Promise<number> {
+  let released = 0;
+  // A dismissal another instance saw, or one made while this one was down.
+  // Only one made since the prep last changed, so dismissing an earlier
+  // round's item doesn't release this one.
+  const dismissed = await db
+    .select({ id: reviewPreps.id })
+    .from(reviewPreps)
+    .where(
+      and(
+        inArray(reviewPreps.state, RELEASABLE_STATES),
+        sql`exists (select 1 from ${attentionItems}
+             where ${attentionItems.sessionKey} = ${raisedSessionKeyPrefix()} || ${reviewPreps.attentionKey}
+               and ${attentionItems.status} = 'dismissed'
+               and ${attentionItems.resolvedAt} >= ${reviewPreps.updatedAt})`,
+      ),
+    );
+  for (const row of dismissed) {
+    if (await releasePrep(db, row.id, "You dismissed it.", { resolveItem: false })) released++;
+  }
+
+  // Opening an item marks it read, which takes it off the bell, so a review
+  // on GitHub, comments included, is how the user says they are done with a
+  // PR they opened.
+  const held = await db
+    .select()
+    .from(reviewPreps)
+    .where(inArray(reviewPreps.state, RELEASABLE_STATES));
+  if (held.length === 0) return released;
+  const done = await whichNeedNoReview(
+    held.map((row) => row.ref),
+    deps,
+  );
+  for (const row of held) {
+    if (!done.has(row.refKey)) continue;
+    const note = "You reviewed it, it was approved, or it merged or closed.";
+    if (await releasePrep(db, row.id, note, { resolveItem: true })) released++;
+  }
+  return released;
 }
 
 async function requeueStalled(
@@ -294,8 +357,7 @@ async function resolveClosed(db: Db): Promise<number> {
     .leftJoin(reviewWorkspaces, eq(reviewWorkspaces.id, reviewPreps.workspaceId))
     .where(
       and(
-        ne(reviewPreps.state, "done"),
-        notInArray(reviewPreps.state, IN_FLIGHT_STATES),
+        notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "backlog", "done"]),
         or(isNull(reviewPreps.workspaceId), eq(reviewWorkspaces.status, "archived")),
       ),
     );
@@ -312,7 +374,7 @@ async function resolveClosed(db: Db): Promise<number> {
           row.workspaceId
             ? eq(reviewPreps.workspaceId, row.workspaceId)
             : isNull(reviewPreps.workspaceId),
-          notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "done"]),
+          notInArray(reviewPreps.state, [...IN_FLIGHT_STATES, "backlog", "done"]),
         ),
       )
       .returning({ id: reviewPreps.id });
@@ -327,15 +389,21 @@ async function resolveClosed(db: Db): Promise<number> {
 export const reviewPrepJob: JobDefinition = {
   name: "review-prep",
   description:
-    "Every 15 minutes, archive the review workspaces that review prep opened once you're done with their PRs, and pick up a prep a restart interrupted.",
+    "Every 15 minutes, archive the review workspaces that review prep opened once you're done with their PRs, pick up a prep a restart interrupted, and start backlogged PRs as slots free up.",
   schedule: { kind: "interval", everyMs: 15 * 60 * 1000 },
   run: async ({ db, config }) => {
     const result = await runReviewPrepUpkeep(db, config, defaultUpkeepDeps(db, config));
     const changed =
-      result.requeued + result.archived.length + result.asked.length + result.resolved;
+      result.requeued +
+      result.archived.length +
+      result.asked.length +
+      result.resolved +
+      result.released +
+      result.dropped +
+      result.started;
     return {
       skipped: changed === 0,
-      detail: `archived ${result.archived.length}, asked about ${result.asked.length}, resolved ${result.resolved}, requeued ${result.requeued}`,
+      detail: `archived ${result.archived.length}, asked about ${result.asked.length}, resolved ${result.resolved}, requeued ${result.requeued}, released ${result.released}, dropped from the backlog ${result.dropped}, started from the backlog ${result.started}`,
     };
   },
 };

@@ -11,11 +11,14 @@ import {
   reviewPreps,
   workStreamLinks,
   workStreams,
+  workspaceRepoPr,
+  workspaceRepos,
 } from "../db/schema.ts";
 import { resolveApproval } from "../mcp/approvals.ts";
 import type { ApprovalHooks } from "../mcp/chatTools.ts";
 import { stripInvisible } from "../web/extract.ts";
 import { OPEN_STREAM_STATUSES, refKeyOf } from "../workStreams/service.ts";
+import { AFTER_MERGE_STAGES } from "../workStreams/ship.ts";
 import type { ClaudeSessionMessenger } from "../workspaces/claudeSession.ts";
 import { getRepo } from "../workspaces/service.ts";
 import {
@@ -132,7 +135,7 @@ async function isReviewPrepCall(
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(reviewPreps)
-    .where(gte(reviewPreps.updatedAt, reviewPrepSince));
+    .where(gte(reviewPreps.requestedAt, reviewPrepSince));
   return (row?.count ?? 0) < MAX_PREPS_PER_PASS;
 }
 
@@ -172,7 +175,8 @@ function numberArg(args: unknown, key: string): number | null {
 /**
  * Whether something is linked, by a chat turn, to a stream that is still open
  * and not paused. A paused stream's work waits for the user's approval, like
- * work on no stream at all.
+ * work on no stream at all. A watch only reports, so a ticket or workspace
+ * linked to one isn't work the user put in the loop's hands.
  */
 async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean> {
   const rows = await db
@@ -183,6 +187,7 @@ async function isChatLinkedToOpenStream(db: Db, refKey: string): Promise<boolean
       and(
         eq(workStreamLinks.refKey, refKey),
         eq(workStreamLinks.createdBy, "chat"),
+        eq(workStreams.kind, "work"),
         inArray(workStreams.status, [...OPEN_STREAM_STATUSES]),
         isNull(workStreams.pausedAt),
       ),
@@ -282,12 +287,19 @@ export async function decideCall(
   if (FILING_TOOLS.has(tool)) return "run";
   if (await isReviewPrepCall(db, tool, args, reviewPrepSince)) return "run";
   if (await startsPlannedWork(db, tool, args)) return "run";
-  const mergeNeedsUser = mergeHeld || (!withinWorkingHours && isMergeCall(tool, args));
-  if (WORKSPACE_TOOLS.has(tool) && !mergeNeedsUser) {
+  const needsUser =
+    mergeHeld || (!withinWorkingHours && isMergeCall(tool, args)) || revertsOrDeploys(tool, args);
+  if (WORKSPACE_TOOLS.has(tool) && !needsUser) {
     const workspaceId = stringArg(args, "workspaceId");
-    if (workspaceId && (await isPushedWorkspace(db, workspaceId))) return "run";
+    if (
+      workspaceId &&
+      (await isPushedWorkspace(db, workspaceId)) &&
+      !(await shipsMergedWork(db, workspaceId))
+    ) {
+      return "run";
+    }
   }
-  if (tool.startsWith("mcp:") && !mergeNeedsUser && (await isToolUnattended(db, tool))) {
+  if (tool.startsWith("mcp:") && !needsUser && (await isToolUnattended(db, tool))) {
     return "run";
   }
   // Grants are good for this run only, and for a day: what was approved may
@@ -314,9 +326,16 @@ const PR_NUMBER_ARGS = [
 
 const PR_URL = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/;
 
-/** Tool names that merge a PR: `merge_pull_request`, `mergePullRequest`, `merge`, … */
+/**
+ * Tool names that merge a PR: `merge_pull_request`, `mergePullRequest`, `merge`, …
+ * Turning on auto-merge or putting a PR in a merge queue merges it later with
+ * nobody asked again, so `enable_auto_merge` and `add_to_merge_queue` count too.
+ */
 const MERGE_TOOL =
-  /^(merge|squash_merge|accept_merge_request|complete_pull_request)|merge_?(pull_?request|pr|merge_?request|mr)$/i;
+  /^(merge|squash_merge|accept_merge_request|complete_pull_request)|merge_?(pull_?request|pr|merge_?request|mr)$|auto_?merge|merge_?queue|enqueue_?(pull_?request|pr)\b/i;
+
+/** Tools that back out of an auto-merge or a queue, which merges nothing. */
+const STOPS_A_MERGE = /^(disable|remove|dequeue|cancel|delete)/i;
 
 /** Tools that only read about merges, like `get_merge_status` or `list_merged_prs`. */
 const READS_ABOUT_MERGES = /^(get|list|search|check|can|is|has)|status|base|mergeab|merged/i;
@@ -340,7 +359,9 @@ export function mergeCallTarget(
 ): { repo: string; number: number } | null {
   if (!tool.startsWith("mcp:")) return null;
   const name = tool.slice(tool.lastIndexOf(":") + 1);
-  if (!MERGE_TOOL.test(name) || READS_ABOUT_MERGES.test(name)) return null;
+  if (!MERGE_TOOL.test(name) || READS_ABOUT_MERGES.test(name) || STOPS_A_MERGE.test(name)) {
+    return null;
+  }
 
   for (const key of ["url", "prUrl", "pr_url", "pullRequestUrl"]) {
     const match = stringArg(args, key)?.match(PR_URL);
@@ -357,6 +378,8 @@ export function mergeCallTarget(
 /**
  * Whether an instruction to a workspace's session asks it to merge a PR.
  * "Resolve the merge conflicts" or "merge main into the branch" doesn't.
+ * Auto-merge and a merge queue count on their own, since a session can only
+ * apply them to its own PR; "enqueue" needs a PR named, like "merge" does.
  */
 export function isMergeInstruction(instruction: string | null): boolean {
   if (!instruction) return false;
@@ -364,7 +387,9 @@ export function isMergeInstruction(instruction: string | null): boolean {
     /merge conflicts?|merge (in )?(the )?(main|master|base|origin)\b/gi,
     "",
   );
-  return /\b(squash[- ])?merge\b/i.test(text) && /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
+  if (/\bauto[- ]?merge\b|\bmerge[- ]queue\b/i.test(text)) return true;
+  const namesPr = /\b(PRs?|pull requests?)\b|#\d+/i.test(text);
+  return namesPr && /\b(squash[- ])?merge\b|\benqueue\b/i.test(text);
 }
 
 /**
@@ -382,6 +407,159 @@ function sessionText(tool: string, args: unknown): string | null | undefined {
     return rest ? `${command} ${rest}` : command;
   }
   return undefined;
+}
+
+/** Read verbs an MCP tool's name can start with, as in `get_revert_status` or `listRollbacks`. */
+const READ_VERBS: ReadonlySet<string> = new Set([
+  "get",
+  "list",
+  "search",
+  "describe",
+  "view",
+  "show",
+  "read",
+  "fetch",
+  "find",
+]);
+
+/** Words in a tool's name that chain a second action, as in `check_and_rollback`. */
+const CHAINING_WORDS: ReadonlySet<string> = new Set(["and", "then"]);
+
+const REVERT_WORDS: ReadonlySet<string> = new Set([
+  "revert",
+  "reverts",
+  "rollback",
+  "rollbacks",
+  "undo",
+  "backout",
+]);
+
+const DEPLOY_WORDS: ReadonlySet<string> = new Set([
+  "deploy",
+  "deploys",
+  "redeploy",
+  "deployment",
+  "deployments",
+  "release",
+  "promote",
+  "rollout",
+  "publish",
+]);
+
+/** A tool name's words, lower-cased: `cancelAndRoll-back` is `cancel and roll back`. */
+function nameWords(tool: string): string[] {
+  const name = tool.slice(tool.lastIndexOf(":") + 1);
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  // "roll back" and "back out" as two words mean the same as one.
+  return words.flatMap((word, i) =>
+    (word === "roll" && words[i + 1] === "back") || (word === "back" && words[i + 1] === "out")
+      ? [`${word}${words[i + 1]}`]
+      : (word === "back" && words[i - 1] === "roll") || (word === "out" && words[i - 1] === "back")
+        ? []
+        : [word],
+  );
+}
+
+/** Whether an MCP tool only reads: it starts with a read verb and chains no other action. */
+function isReadOnlyName(words: string[]): boolean {
+  return READ_VERBS.has(words[0] ?? "") && !words.some((w) => CHAINING_WORDS.has(w));
+}
+
+/** An MCP tool named like a revert or rollback that isn't only reading about one. */
+function isRevertTool(tool: string): boolean {
+  if (!tool.startsWith("mcp:")) return false;
+  const words = nameWords(tool);
+  return words.some((w) => REVERT_WORDS.has(w)) && !isReadOnlyName(words);
+}
+
+/** An MCP tool named like a deploy or release that isn't only reading about one. */
+function isDeployTool(tool: string): boolean {
+  if (!tool.startsWith("mcp:")) return false;
+  const words = nameWords(tool);
+  return words.some((w) => DEPLOY_WORDS.has(w)) && !isReadOnlyName(words);
+}
+
+const REVERT_VERB =
+  /\b(revert(s|ed|ing)?|roll(s|ed|ing)?[ -]?back|rollback|undo(es|ne|ing)?|back(s|ed|ing)? out)\b/i;
+
+/** What a revert has to name to be about shipped work: a PR, merge, commit (or SHA), deploy or branch. */
+const SHIPPED_WORK =
+  /\b(PRs?|pull requests?|merges?|commits?|deploy\w*|releases?|prod|production|main|master)\b|#\d+|\b[0-9a-f]{7,40}\b/i;
+
+/**
+ * Deploying, or shipping, promoting, releasing or rolling out to production
+ * within one sentence (`[^.\n]*`).
+ */
+const DEPLOY_VERB =
+  /\b(re-?)?deploy(s|ed|ing|ments?)?\b|\brollout\b|\b(ship|promote|release|roll(s|ing)?[ -]?out)\b[^.\n]*\bprod(uction)?\b/i;
+
+/**
+ * Whether an instruction to a workspace's session reverts shipped work or
+ * deploys. Reverting a line in the session's own branch ("revert your change
+ * to foo.ts") doesn't count, so a revert has to name shipped work. It reads
+ * words, so it is a best-effort net: it asks about "fix the deploy script"
+ * too, and can miss a revert phrased some other way, or written with
+ * lookalike letters from another alphabet.
+ */
+export function isRevertOrDeployInstruction(instruction: string | null): boolean {
+  if (!instruction) return false;
+  const text = stripInvisible(instruction).text.normalize("NFKC");
+  return (REVERT_VERB.test(text) && SHIPPED_WORK.test(text)) || DEPLOY_VERB.test(text);
+}
+
+/**
+ * A call that reverts shipped work or deploys: an MCP revert or rollback
+ * tool, or telling a workspace's session to revert, roll back or deploy.
+ * These wait for the user every time, even on a workspace the loop may steer
+ * or with a tool allowed for heads-down mode. An MCP deploy tool the user
+ * allowed for heads-down mode isn't one: allowing it was their go-ahead.
+ */
+export function revertsOrDeploys(tool: string, args: unknown): boolean {
+  const told = sessionText(tool, args);
+  if (told !== undefined) return isRevertOrDeployInstruction(told);
+  return isRevertTool(tool);
+}
+
+/** Calls the decision model never approves: reverts and deploys of every kind. */
+function neverAutoApproved(tool: string, args: unknown): boolean {
+  return revertsOrDeploys(tool, args) || isDeployTool(tool);
+}
+
+/**
+ * Whether a workspace's PR is on an open ship stream that has merged it.
+ * From there anything the session is told can reach production, whatever
+ * the wording, so every instruction waits for the user. The workspace counts
+ * when a stream links it, or links a PR the workspace has.
+ */
+async function shipsMergedWork(db: Db, workspaceId: string): Promise<boolean> {
+  const prs = await db
+    .select({ url: workspaceRepoPr.prUrl })
+    .from(workspaceRepoPr)
+    .innerJoin(workspaceRepos, eq(workspaceRepos.id, workspaceRepoPr.workspaceRepoId))
+    .where(eq(workspaceRepos.workspaceId, workspaceId));
+  const refKeys = [
+    refKeyOf({ kind: "workspace", workspaceId }),
+    ...prs.flatMap((pr) =>
+      pr.url ? [refKeyOf({ kind: "pr", provider: "github", url: pr.url })] : [],
+    ),
+  ];
+  const rows = await db
+    .select({ id: workStreams.id })
+    .from(workStreamLinks)
+    .innerJoin(workStreams, eq(workStreams.id, workStreamLinks.streamId))
+    .where(
+      and(
+        inArray(workStreamLinks.refKey, refKeys),
+        inArray(workStreams.status, [...OPEN_STREAM_STATUSES]),
+        inArray(sql<string>`${workStreams.ship}->>'stage'`, [...AFTER_MERGE_STAGES]),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 
 /** A call that merges a PR, through an MCP tool or by telling a workspace's session to. */
@@ -686,9 +864,10 @@ export function passApprovalHooks(
         const question = approvalQuestion(id);
         const situation = approvalSituation(id, args);
         // A failed review is a no, never a reason to drop the question. A
-        // merge outside working hours is never the decision model's to allow.
+        // merge outside working hours, a revert and a deploy are never the
+        // decision model's to allow.
         const reason =
-          review && (withinWorkingHours || !isMergeCall(id, args))
+          review && (withinWorkingHours || !isMergeCall(id, args)) && !neverAutoApproved(id, args)
             ? await autoApproveReason(review, { tool: id, args, description, messages }).catch(
                 (e) => {
                   console.error(

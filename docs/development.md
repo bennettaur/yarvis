@@ -549,7 +549,7 @@ sidecar/        Bun + TS service (Hono)
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
   src/artifacts/   markdown documents and diagrams the assistant writes and reads back
-  src/workStreams/ threads of work heads-down mode pushes forward, and their links
+  src/workStreams/ threads of work heads-down mode pushes forward, their links, and watches
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision
                    specialists (decide.ts) and their playground route

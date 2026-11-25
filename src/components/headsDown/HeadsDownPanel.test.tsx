@@ -45,6 +45,7 @@ const APPROVAL = {
 
 const STREAM = {
   id: "s1",
+  kind: "work",
   title: "Ship the billing PR",
   summary: null,
   status: "waiting-on-user",
@@ -53,6 +54,9 @@ const STREAM = {
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
   pausedAt: null,
+  watchCondition: null,
+  watchEveryMinutes: null,
+  expiresAt: null,
   updatedAt: "2026-10-19T10:00:00.000Z",
   links: [
     {
@@ -72,6 +76,20 @@ const STREAM = {
       observedAt: "2026-10-19T10:00:00.000Z",
     },
   ],
+};
+
+const WATCH = {
+  ...STREAM,
+  id: "s2",
+  kind: "watch",
+  title: "Alex's PRs",
+  status: "waiting-on-others",
+  nextAction: null,
+  waitingOn: null,
+  watchCondition: "Alex merged acme/billing#41",
+  watchEveryMinutes: 180,
+  expiresAt: "2026-10-26T10:00:00.000Z",
+  links: [],
 };
 
 const PASS = {
@@ -117,6 +135,8 @@ const CONFIG = {
   model: null,
   guidance: null,
   maxRoutinesPerPass: 2,
+  shipMonitorWindowMinutes: 60,
+  shipCheckEveryMinutes: 15,
   alwaysOn: false,
   nightShift: null,
   nightShiftMinSleepMinutes: 120,
@@ -203,6 +223,9 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
   model: string | null;
 } = CONFIG;
 
+/** What the review stream route answers; a test may replace it. */
+let reviewStream: unknown = { maxReady: 5, slots: [], backlog: [] };
+
 /** The run the page loads; a test may replace it. */
 let currentRun: typeof RUN | null = RUN;
 let passCounts = { passesToday: 4, maxPassesPerDay: null as number | null };
@@ -260,7 +283,7 @@ stubSidecarApi({
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
-    if (path === "/api/work-streams") return json([STREAM]);
+    if (path === "/api/work-streams") return json([STREAM, WATCH]);
     if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
     if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
@@ -283,6 +306,7 @@ stubSidecarApi({
       if (routinesAnswer === "hang") return new Promise<Response>(() => {});
       return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
     }
+    if (path === "/api/review-prep/stream") return json(reviewStream);
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
@@ -296,7 +320,7 @@ stubSidecarApi({
 const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
-const { linkLabel } = await import("./StreamList");
+const { linkLabel, ShipStages } = await import("./StreamList");
 const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -318,6 +342,7 @@ afterEach(() => {
   passCounts = { passesToday: 4, maxPassesPerDay: null };
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
+  reviewStream = { maxReady: 5, slots: [], backlog: [] };
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -344,6 +369,8 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Where should I ask for review?");
     expect(text).toContain("Waiting on you");
     expect(text).toContain("pr: Add invoices · CI passing");
+    expect(text).toContain("Watching for: Alex merged acme/billing#41 · checks every 3h · until");
+    expect(text).not.toContain("Watching for: null");
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
@@ -358,6 +385,35 @@ describe("HeadsDownPanel", () => {
     const limited = await mount();
     await waitForText(limited, "Passes today: 40 of 40");
     expect(limited.textContent).toContain("Reached today's pass limit");
+  });
+
+  it("shows the review stream: what holds a slot, with its risk, and the backlog", async () => {
+    reviewStream = {
+      maxReady: 2,
+      slots: [
+        { pr: "api#1", state: "ready", risk: "high" },
+        { pr: "api#2", state: "verifying", risk: null },
+        { pr: "api#3", state: "queued", risk: null },
+      ],
+      backlog: [
+        { pr: "web#9", backloggedAt: "2026-10-19T09:00:00.000Z" },
+        { pr: "web#4", backloggedAt: "2026-10-19T09:30:00.000Z" },
+      ],
+    };
+    const host = await mount();
+    await waitForText(host, "Review stream");
+    const text = host.textContent ?? "";
+    expect(text).toContain("3 of 2 prepared (a stack started past the limit) · 2 in the backlog");
+    const row = [...host.querySelectorAll("li")].find((li) => li.textContent?.includes("api#1"));
+    expect(row?.textContent).toContain("ready for review");
+    expect(row?.textContent).toContain("High risk");
+    expect(text.indexOf("web#9")).toBeLessThan(text.indexOf("web#4"));
+  });
+
+  it("leaves the review stream out until review prep has a PR", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).not.toContain("Review stream");
   });
 
   it("lists the routines, and a file that failed to load", async () => {
@@ -957,6 +1013,40 @@ describe("linkLabel", () => {
     );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
+  });
+});
+
+describe("ShipStages", () => {
+  it("shows each stage, where the stream is, and the last thing it saw", async () => {
+    const html = await renderToHtml(
+      createElement(ShipStages, {
+        ship: {
+          repo: "acme/api",
+          number: 12,
+          url: "https://github.com/acme/api/pull/12",
+          stage: "monitor_production",
+          stages: {
+            ci: { status: "done", at: "2026-11-23T10:00:00.000Z" },
+            staging_test: { status: "skipped", at: "2026-11-23T11:00:00.000Z" },
+            deploy: { status: "failed", at: "2026-11-23T12:00:00.000Z" },
+          },
+          monitorUntil: "2026-11-23T16:00:00.000Z",
+          log: [
+            {
+              at: "2026-11-23T15:00:00.000Z",
+              stage: "monitor_production",
+              text: "error rate flat",
+            },
+          ],
+        },
+      }),
+    );
+    const text = textOf(html);
+    expect(text).toContain("Staging test (skipped)");
+    expect(text).toContain("Deploy (failed)");
+    expect(text).toContain("Watching production until");
+    expect(text).toContain("Last logged (Watch production): error rate flat");
+    expect(html).toMatch(/aria-current="step"[^>]*>Watch production</);
   });
 });
 

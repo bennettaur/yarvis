@@ -7,6 +7,7 @@ import {
   type AttentionScope,
   hasAnswerDialog,
   headsDownQuestionId,
+  type RiskLevel,
 } from "./attention";
 
 /**
@@ -114,11 +115,30 @@ export function countByCategory(groups: AttentionGroup[]): Record<AttentionCateg
   return counts;
 }
 
+const RISK_RANK: Record<RiskLevel, number> = { high: 0, medium: 1, low: 2 };
+/** Items with no risk level sort after every level. */
+const NO_RISK_RANK = 3;
+
+/**
+ * High-risk PRs first, so the user can go to them first. The sort is stable,
+ * so each rank stays newest-first as given.
+ */
+function byRisk(groups: AttentionGroup[]): AttentionGroup[] {
+  const rank = (g: AttentionGroup) => (g.lead.risk ? RISK_RANK[g.lead.risk] : NO_RISK_RANK);
+  return [...groups].sort((a, b) => rank(a) - rank(b));
+}
+
+/** Review is ordered by risk; every other category keeps its order. */
+function ordered(category: AttentionCategory | null, groups: AttentionGroup[]): AttentionGroup[] {
+  return category === "review" ? byRisk(groups) : groups;
+}
+
 /**
  * Lays the groups out for the panel. Grouped, the categories come in
  * {@link ATTENTION_CATEGORIES} order, so review work leads; empty ones are left
  * out. Ungrouped, the groups stay newest-first. A group belongs to its lead's
- * category.
+ * category. Review groups are ordered by risk wherever they stand on their own:
+ * in their category's section, or when the stream is narrowed to review.
  */
 export function arrangeAttention(
   groups: AttentionGroup[],
@@ -127,10 +147,16 @@ export function arrangeAttention(
   const shown = view.categoryFilter
     ? groups.filter((g) => g.lead.category === view.categoryFilter)
     : groups;
-  if (!view.groupByCategory) return shown.length > 0 ? [{ category: null, groups: shown }] : [];
+  if (!view.groupByCategory) {
+    if (shown.length === 0) return [];
+    return [{ category: null, groups: ordered(view.categoryFilter, shown) }];
+  }
   return ATTENTION_CATEGORIES.map((category) => ({
     category,
-    groups: shown.filter((g) => g.lead.category === category),
+    groups: ordered(
+      category,
+      shown.filter((g) => g.lead.category === category),
+    ),
   })).filter((section) => section.groups.length > 0);
 }
 

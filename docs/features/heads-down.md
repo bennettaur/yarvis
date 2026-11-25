@@ -58,7 +58,7 @@ both keep it running.
 
 Work streams carry over from one run to the next, so over days the page can
 fill up with work you no longer care about. **Clear old work** drops every open
-work stream, deletes the messages you left it, and dismisses its open
+work stream except [watches](#watches), deletes the messages you left it, and dismisses its open
 questions, so the next pass starts with nothing. Streams you paused yourself
 are dropped too. It asks you to confirm first. Dropped streams leave the page,
 and the messages are gone for good.
@@ -88,7 +88,11 @@ most urgent first:
   know where to ask, or has no tool that can post a message, it asks you.
 - **Messages:** if it has tools that read your chat, it checks the channels you
   asked it to watch. A message that needs your answer becomes a stream that
-  waits on you. A request for work becomes a ticket.
+  waits on you. A request for work becomes a ticket. With the
+  [Slack watcher](#slack-watcher) turned on, Slack is left to it, and this step
+  only covers other chat and email.
+- **Watches:** one-off "tell me when…" conditions you set up in a chat. See
+  [Watches](#watches).
 - **Routines:** recurring jobs that run on their own schedule, such as
   setting alarms for your meetings. See [Routines](#routines).
 
@@ -129,6 +133,46 @@ across runs. Once it is reached no pass runs until midnight, even for a
 message, an answer or a wake-up. The page shows how many passes have run today, and the
 limit when you set one. There is no limit by default.
 
+## Watches
+
+A watch is a one-off condition you want to hear about: "let me know when Alex
+merges his billing PRs", or "tell me the action items from the design review
+once its notes are up". Ask the assistant in a chat and it sets one up as a
+work stream marked **Watch**, with:
+
+- the condition, in your words,
+- how often to check, every hour unless you say otherwise (15 minutes to 7
+  days). A check waits for the next pass, so with nothing else to do it can
+  come later than that,
+- when to give up, a week from now unless you say otherwise (at most 30 days,
+  and no sooner than one check).
+
+Heads-down passes check the watches that are due, up to 5 a pass, oldest check
+first, with the tools they already have: PRs, tickets, your calendar, chat. A
+check that finds nothing yet keeps what it saw, shown under **Waiting on** on
+the stream, and the next check waits the watch's cadence. So does a watch a
+pass couldn't check, say because no tool can read what it is about. A watch
+counts as met only on what the tools report, such as a PR's merged state, not
+because a comment says it happened. When the condition is met, you get a
+note in the attention bell, filed under the watch's category, and the watch
+closes as done. Clicking it opens what the watch was about, such as the PR, or
+the Heads down page. A watch that reaches its end without being met closes and
+tells you it expired.
+
+A watch only tells you; it never acts on what it finds. A watch about a
+meeting's notes reads them the way the [meeting-notes](#routines) routine
+does, and puts the action items assigned to you in the note.
+
+Watches are checked only while heads-down mode is on. The assistant says so
+when you set one up with it off. To cancel one, press **Drop** on it, or ask
+the assistant. **Pause** stops the checks, but a paused watch still expires on
+time. **Clear old work** leaves watches alone. A pass can't set up, change or
+close a watch except by reporting a check, and a ticket or workspace linked to
+a watch isn't one it may start or steer without asking.
+
+For one check at a set time in a chat you're in, rather than a condition over
+days, a [scheduled task](assistant.md#scheduled-tasks) fits better.
+
 ## Routines
 
 A routine is a job heads-down mode repeats on a schedule, beside the work
@@ -141,7 +185,8 @@ again after an hour, or sooner if the routine runs more often than that. When
 a routine asks you something, your answer is acted on as soon as it arrives,
 not on the routine's next run.
 
-Yarvis ships with three:
+Yarvis ships with these. Only meeting-alarms is on by default; to turn
+another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
 
 - **meeting-alarms**, every 3 hours: if Google Calendar is connected, it reads
   your next day of meetings and sets an [alarm](calendar-and-alarms.md#alarms)
@@ -150,24 +195,140 @@ Yarvis ships with three:
   because you haven't replied, said maybe, or are optional, it asks you ("Are
   you going to Design review at 2pm?") and sets the alarm on a later pass if
   you say yes.
-- **meeting-notes**, off by default: reads the notes attached to your recent
-  meetings, such as Gemini notes, and turns the action items they assign to
-  you by name into tickets or stream updates. It finds them through the
-  calendar, which lists each meeting's attached files, and needs a tool that
-  can open a Google Doc, such as a Google Drive MCP server. A pass asks before
+- **meeting-notes**, every 4 hours in working hours: reads the notes attached
+  to your recent meetings, such as Gemini notes, and turns the action items
+  they assign to you by name into tickets (engineering work), tasks on your
+  list (anything else) or stream updates. It leaves you one note per meeting
+  in the attention bell listing each item and where it went. It finds them
+  through the calendar, which lists each meeting's attached files, and needs a
+  tool that can open a Google Doc, such as a Google Drive MCP server. A pass asks before
   using an MCP tool until you [allow it](#what-it-does-without-asking). Notes
   record what every attendee said, and filing a ticket doesn't wait for your
   approval, so turn it on only if you're happy for tickets to come from them.
+- **slack-watcher**, every 30 minutes in working hours: finds Slack messages
+  waiting on you. See [Slack watcher](#slack-watcher).
+- **meeting-times**, every 2 hours in working hours: for a meeting you asked it
+  to set up, it reads your calendar and asks you to pick one of up to three
+  free slots. It books the one you pick with the calendar's create call, which
+  asks for your approval before inviting anyone. It can't see other people's
+  calendars, and can't move or cancel an event once it is booked.
+- **email-drafts**, every 2 hours in working hours: drafts replies to emails
+  waiting on you and saves them in your drafts, never sending them, then leaves
+  you a note in the bell. A draft uses only what the thread already says, plus
+  what you told it to share; anything else, it asks first. If it doesn't know what to say, it asks you. It needs
+  `tools:` naming your email tools, including one that creates a draft; if the
+  only tool it has sends mail, it asks you instead of using it.
+- **message-people**, every 4 hours in working hours: looks for follow-ups your
+  work needs, such as an answer you already gave it that someone is waiting
+  on, and asks you before each one, with the exact message: **Send it** or
+  **Don't send**. It sends only on **Send it**, and the post itself still waits
+  for your approval unless you allowed that tool for heads-down mode.
+- **offer-help**, once a day in working hours: leaves you one note in the bell
+  with up to three things it could take on, such as a brief for a meeting
+  coming up or a reply to draft. It doesn't do any of them; tell it which ones
+  you want.
+
 - **review-prep**, off by default, every 30 minutes in working hours: asks the
   `review-scout` [specialist](assistant.md#specialists) which pull requests
   are waiting on your review (and, if you list them in its `config`, which
   are open in repos, by people or for teams you watch), and
   [prepares each one](review-workspaces.md#review-prep): a review workspace, a
   verification report, and then an item in the attention stream. It prepares
-  at most five per run and never comments on, approves or requests anything
-  on a PR. Preparing spends a verification report on each PR, within your
-  report budget. A large or over-budget PR is checked out but waits for you
-  to run the checks; a PR in a repo you haven't registered is skipped.
+  at most five per run, keeps at most five PRs ready for you at once (you
+  can change that) and [backlogs the rest](review-workspaces.md#review-prep),
+  and never comments on, approves or requests anything on a PR. Preparing
+  spends a verification report on each PR, within your report budget. A
+  large or over-budget PR is checked out but waits for you to run the
+  checks; a PR in a repo you haven't registered is skipped. While review
+  prep has PRs ready or backlogged, a **Review stream** box on the Heads down
+  page shows them.
+- **review-reflection**, off by default, weekly in working hours: looks at the
+  PRs you reviewed this week and compares the comments you left with what the
+  verification report flagged on the same PR. A comment and a flag match when
+  they sit on the same file within five lines; the pass judges the rest by
+  meaning. Comments verification missed become suggested changes to the
+  verify-pr skill, the reviewer agents, the review-scout prompt or the
+  verification layer. Flags you never commented near, on several PRs, are
+  listed as likely noise. A PR with no verification report is skipped, and a
+  week with fewer than three has too little to learn from.
+- **generation-reflection**, off by default, weekly in working hours: looks at
+  your PRs merged this week and the review comments other people left on them
+  (bots are left out), compares them with what verification flagged, and
+  suggests changes to the repo's `AGENTS.md`, your Claude instructions, the
+  reviewers or verification. Comments that repeat across PRs count; one-offs
+  and style nitpicks don't.
+
+Both end the same way. The pass stores a report, which is a document you can
+open from the attention stream's **General** item ("Review reflection is
+ready" or "Generation reflection is ready"). It lists the suggested changes,
+each with the PRs that show it. They change nothing: no repo, skill or
+instruction file is edited. To apply them, ask Yarvis in a chat to open a
+workspace on the repo and make the edits, then review the diff as usual. The
+comments they read are other people's words and reach the pass as data. A
+reflection reads GitHub, so it needs you signed in there. Turn one on the way
+review-prep is turned on, below.
+
+Anything one of these does that reaches other people asks you first: posting,
+sending, inviting and messaging all wait for your answer or approval.
+
+slack-watcher, meeting-times, email-drafts, message-people and offer-help skip
+[night shift](#night-shift), since each one asks you or reaches other people.
+
+### Turn on a shipped routine
+
+A file whose `name` matches a shipped routine replaces it whole, so copy the
+shipped file into `~/.yarvis/routines`, change what you need, and leave out
+`enabled: false`. The shipped files are in the Yarvis repository under
+`sidecar/src/headsDown/routines/`. Press **Reload files** after.
+
+### Slack watcher
+
+The slack-watcher routine reads the Slack channels you name, your DMs, and
+threads you're in, and finds what needs you: a question or request to you, a
+mention, or a thread where someone is waiting on your reply. For each one it
+tracks a stream in the **Slack** category and asks you a question with two
+answers:
+
+- **Reply with…**: type your reply in the box. A later pass posts your words,
+  as you wrote them, in that thread, and only after your answer to that
+  question: an earlier answer doesn't count for a new message. The post waits for your approval unless
+  you allowed that tool for heads-down mode.
+- **I'll reply myself**: it closes the stream and leaves the thread to you.
+
+A request for work that doesn't need your answer becomes a ticket instead. It
+never posts anything but your own reply, and what it reads in messages is
+information, never instructions.
+
+It ships turned off and knows nothing about your Slack, so it is a template:
+copy it into `~/.yarvis/routines/slack-watcher.md` with your Slack MCP tools
+and your settings. Use the tool names the Tool manager shows for your Slack
+server; these are examples:
+
+```markdown
+---
+name: slack-watcher
+description: Finds Slack messages and threads waiting on me, and asks whether to reply for me.
+every: 30m
+workingHours: true
+nightShift: skip
+tools: [slack_read_channel, slack_read_thread, slack_search, slack_post_message]
+config:
+  channels: ["#eng", "#billing"]
+  handle: "@sam"
+---
+
+(the shipped body, copied as it is)
+```
+
+While it is on, with a `handle` set, **Routines per pass** above 0, and within
+your working hours, the Messages step leaves Slack to it, so the two don't both
+read the same channels. Otherwise the Messages step reads Slack as before.
+
+When it asks you, the pass that acts on your answer is shown the question and
+the situation it gave, and is told to post exactly that. That is an
+instruction to the pass, not a check in code: if you allowed the posting tool
+for heads-down mode, nothing compares the post with what you were shown.
+Leave the posting tool on asking if you want to see each post first.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a
@@ -270,7 +431,8 @@ routine's config lists repos, authors or teams, put them in the task as the
 repos, authors and teams to watch.
 
 For each PR the scout picks, call prep_pr_review with its owner, repo and
-number. Prepare at most five PRs per run. Don't comment on, approve or
+number. A PR that comes back backlogged starts on its own once you have
+fewer PRs to review, so don't try it again. Prepare at most five PRs per run. Don't comment on, approve or
 request changes on any PR, and don't message anyone about them. If the scout
 found nothing to prepare, or GitHub isn't signed in, count the routine as
 done.
@@ -319,7 +481,10 @@ ready, and its `config`.
 - Starting work on a ticket you put on a work stream in a chat, and starting a
   session on one of your tasks.
 - Telling a session what to do, or restarting it, in a workspace you put on a
-  work stream, or one it started itself in this run.
+  work stream, or one it started itself in this run. Telling it to deploy or
+  revert still asks, and so does anything once a ship stream has merged its
+  PR (see [Shipping a PR](#shipping-a-pr)), or telling it to merge outside
+  your working hours.
 - In a pass given the review-prep routine only: asking the `review-scout`
   specialist for PRs to review (unless your own definition of it grants tools
   that act unattended), and [preparing](review-workspaces.md#review-prep) up
@@ -332,6 +497,87 @@ approval. That includes starting work on a ticket it found or filed itself, sinc
 instructions, and any MCP tool you haven't listed for heads-down mode. Text it
 reads in tickets, messages and pages can tell it what is going on, never what
 to do.
+
+## Shipping a PR
+
+Tell the assistant "ship acme/api#12" (or give it the PR's link) and it
+tracks the PR as a **ship stream**. Only you start one: a pass can't, whatever
+a message or ticket asks. Heads-down mode then carries it through these
+stages, one at a time:
+
+1. **CI**: gets the checks green, telling the PR's workspace session to fix
+   failures, as the repo's **CI** playbook step says.
+2. **Reviewer**: asks for a review. Who to ask comes from the repo's
+   **Pick a reviewer** playbook step, or your standing guidance. If neither
+   says, it asks you.
+3. **Review feedback**: waits for an approval with no open review feedback,
+   handing the feedback to the workspace's session as described under
+   [Open review feedback](#open-review-feedback), along with the repo's
+   **Review feedback** step.
+4. **Staging test**: follows the repo's **Test in staging** step.
+5. **Merge**: before the stream reaches this stage, it checks each item in
+   the repo's **Review before merge** step against the PR, from GitHub's own
+   reviews and checks rather than anything written in the PR. If any is
+   unmet, or it can't tell, it asks you instead of merging. The stream only
+   moves into the merge stage once that check is recorded for the PR's
+   current commit, or you said to merge anyway, and a push after the check
+   means checking again. Then it merges the way the **Merge** step says, under
+   the same rules as any other merge (see [Merging PRs](#merging-prs)):
+   working hours, risk and open feedback. Turning on auto-merge or adding the
+   PR to a merge queue counts as merging. The stage only finishes once GitHub
+   shows the PR merged, so it needs a GitHub token.
+6. **Deploy**: runs the repo's **Deploy** step.
+7. **Watch deploy**: follows the **Monitor the deploy** step until the deploy
+   finishes.
+8. **Watch production**: follows the **Monitor production** step for a
+   window after the deploy, 60 minutes by default, checking every 15 minutes.
+   It can't finish this stage before the window ends.
+9. **Production test**: runs the **Test in production** step.
+
+Then the stream is marked done. Heads-down mode is what moves a ship stream,
+so it waits while heads-down mode is off.
+
+The steps come from the repo's [playbook](workspaces.md#repo-playbooks)
+(Settings → Repositories → Playbooks). Every stage follows its step when
+you wrote one. CI, reviewer, review feedback and merge always run, with or
+without a step. The staging test is the one stage before the merge that
+exists only to run its step, like the stages after the merge: with no step
+there is nothing to run, so one you left empty is skipped and shown as
+skipped. If the repo isn't registered in Yarvis, nothing is skipped for you,
+and a pass marks one of those stages skipped only once you've said to. Whether a stage passed
+is the pass's judgement, apart from the merge. The Heads down page shows each
+ship stream's stages, which one it is at, which were skipped or failed, what it is waiting
+on, and the last thing it logged.
+
+Anything that reaches production or other people waits for your approval, as
+elsewhere in heads-down mode. On top of that:
+
+- A revert always asks you: telling a workspace's session to revert or roll
+  back shipped work, or any MCP tool named like a revert or rollback. That
+  holds even for a workspace it may steer, a tool you allowed for heads-down
+  mode, or with auto mode on.
+- Telling a workspace's session to deploy always asks you too. An MCP deploy
+  tool you allowed for heads-down mode still runs without asking, since
+  allowing it was your go-ahead, but auto mode never approves one.
+- Once a ship stream has merged its PR, every instruction to that PR's
+  workspace session asks you, whatever it says.
+
+It spots reverts and deploys by the tool's name and the instruction's wording
+("revert PR #12", "git revert 3f2a9c1", "deploy the api", "roll back the
+release"). It can miss one phrased some other way, and it asks about some
+that aren't, such as "fix the deploy script". These rules apply to every
+heads-down pass, not only ship streams.
+
+If a check after the merge, or the production test, looks wrong, it marks the
+stage failed, puts the stream on you, and raises an action in the attention
+bell under **Build**. It then proposes the revert from the repo's **Revert**
+playbook step, which waits for your approval. It never reverts on its own.
+That action stays until you clear it, even if a later check passes. A stage
+that fails before the merge, like a staging test, raises the same action
+without proposing a revert, and the action clears once the stage passes.
+
+What it ran and saw at each stage is logged on the stream, up to the latest
+50 entries.
 
 ## Merging PRs
 
@@ -529,6 +775,9 @@ Under **Pace and working hours** on the page:
   need more.
 - **Routines per pass**: the most [routines](#routines) one pass takes on, up
   to 10. 0 turns them off, including the meeting alarms.
+- How long a [ship stream](#shipping-a-pr) watches production after its
+  deploy (60 minutes by default, 0 for no minimum, up to a day), and how
+  often it checks in that time (every 15 minutes by default, from 5 to 240).
 - Your working hours. Outside them it sleeps longer, doesn't tag anyone in
   a message, and asks before merging a PR. Pick **Any time is fine to tag
   people** to drop all three limits, merges included. These are kept per
@@ -539,8 +788,8 @@ Under **Pace and working hours** on the page:
   card and can remove it here. A tool whose description or schema changes has
   to be allowed again, like auto-approval in the Tool manager.
 
-The guidance, pace, routines per pass, working hours, always-on, night shift
-and pass limit are stored in
+The guidance, pace, routines per pass, ship monitoring, working hours,
+always-on, night shift and pass limit are stored in
 `~/.yarvis/settings.json` under `headsDown` (see
 [Configuration](../configuration.md)). Which MCP tools it may
 use is kept in the database with the tool's other consent, not in that file.

@@ -21,11 +21,13 @@ import { buildPrReviewTools } from "../pr/reviewTools.ts";
 import { buildPrReviewStartTools } from "../pr/startReviewTools.ts";
 import { buildProjectTools } from "../projects/tools.ts";
 import { buildQuestionTools } from "../questions/tools.ts";
+import { buildReflectionTools } from "../reflections/tools.ts";
 import { buildReviewPrepTools } from "../reviewPrep/tools.ts";
 import { buildScheduledTaskTools, type ScheduledTaskTurnContext } from "../scheduledTasks/tools.ts";
 import { buildTodoTools } from "../todos/tools.ts";
 import { buildMergeReviewTools } from "../verify/tools.ts";
 import { buildWebTools } from "../web/tools.ts";
+import { githubPrStateCheck } from "../workStreams/ship.ts";
 import { buildWorkStreamTools } from "../workStreams/tools.ts";
 import { buildWorkspaceTools } from "../workspaces/tools.ts";
 import { type AttentionState, buildAttentionTools, newAttentionState } from "./attentionTools.ts";
@@ -110,7 +112,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
     projects: buildProjectTools(db),
     todos: buildTodoTools(db),
     artifacts: buildArtifactTools(db, { writer: artifactWriter, reads: untrustedReads }),
-    workStreams: buildWorkStreamTools(db, { unattended }),
+    workStreams: buildWorkStreamTools(db, { unattended, checkPr: githubPrStateCheck(config) }),
     headsDown: buildHeadsDownTools(db),
     events: buildEventTools(db),
     digest: buildDigestTools(db, config),
@@ -126,6 +128,7 @@ export function builtinToolFamilies(deps: BuiltinToolDeps): Record<string, Recor
       ...buildReviewPrepTools(db, config),
     },
     mergeReview: buildMergeReviewTools(config),
+    reflections: buildReflectionTools(db, config),
     calendar: buildCalendarTools(db, config),
     alarms: buildAlarmTools(db, config, { unattended }),
     browser: buildBrowserTools(),
