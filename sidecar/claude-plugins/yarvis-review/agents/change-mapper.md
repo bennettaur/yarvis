@@ -43,10 +43,35 @@ You work from `index.md`, not from every patch. In this order:
   - `title`: at most 8 words, naming the change, not the files.
   - `description`: at most 35 words on what changes and why it matters to a
     reviewer.
-  - `risk`: `high` when a mistake here breaks users, data, money, security or a
-    contract other code relies on; `medium` when it breaks a feature in a way
-    tests would likely miss; `low` for the rest (tests, docs, renames, wiring,
-    config bumps).
+  - `risk`: how bad a mistake in this theme would be, before any proof:
+    - `high`: it breaks users, loses or exposes data, costs money, weakens
+      security, or breaks a contract other code relies on.
+    - `medium`: it breaks a feature for users in a way they can't easily
+      work around.
+    - `low`: a mistake is an annoyance with a workaround, or is recoverable
+      (a lost draft, a wrong label, a setting that needs toggling again).
+    - `none`: no mistake here can hurt anyone: tests, wiring that only
+      passes a value through, renames, and docs that are accurate. Docs that
+      are wrong or misleading are `low`; docs that tell a reader to do
+      something unsafe are `high`.
+    Judge from what a mistake does, not from how much code changed or how
+    central the file is. Most themes in most PRs are `low` or `none`.
+  - `riskWhy`: for any risk but `none`, at most 35 words naming the failure
+    and who it hurts: "A forged ticket key in page text could start an
+    agent on the wrong repo without the user asking." Not "check the
+    injection defences". Empty for `none`.
+  - `proofs`: what in the PR shows the risk is handled, at most 4: a test
+    that fails if the theme is wrong, a guard or check that contains it, a
+    flag that keeps it off. Each is `text` (at most 20 words, what it
+    proves) with the `path` and head `line` of the test or guard. Read the
+    tests before you say there are none: Grep for the changed function's
+    name in test files. Empty when you found none.
+  - `unmitigated`: for any risk but `none`, at most 35 words on what the
+    proofs leave uncovered, said as what to add to the PR ("Add a test that
+    a ticket key seen only on screen is not used without confirmation").
+    Empty when the proofs cover the risk.
+  - Never write "check X", "verify X" or "ship and watch" in any field: say
+    what could go wrong and what shows it doesn't.
   - `cohesion`: how the theme relates to `intent`.
     - `core`: it is what the PR is for.
     - `supporting`: the core needs it, such as tests, wiring, docs, a type it
@@ -81,6 +106,9 @@ Reply with one JSON object and nothing else:
       "title": "…",
       "description": "…",
       "risk": "medium",
+      "riskWhy": "…",
+      "proofs": [{ "text": "…", "path": "src/x.test.ts", "line": 30 }],
+      "unmitigated": "",
       "cohesion": "core",
       "question": "",
       "files": [{ "path": "src/x.ts", "lines": { "start": 10, "end": 42 } }]

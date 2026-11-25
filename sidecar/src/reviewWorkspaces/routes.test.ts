@@ -981,7 +981,12 @@ ${printAgentAnswer(fakeDir)}`,
     items: { section: string; theme: string; latest: Run | null; result: Run | null }[];
     report: {
       summary?: string;
-      mustRead?: { path: string; reason: string; flags: { note: string; line?: number }[] }[];
+      mustRead?: {
+        path: string;
+        reason: string;
+        why: string;
+        flags: { note: string; line?: number }[];
+      }[];
       tests?: { status: string; findings: unknown[] };
       quality?: { status: string; findings: unknown[] };
       malice?: { status: string; findings: unknown[]; tripwires?: unknown[] };
@@ -1163,6 +1168,7 @@ ${printAgentAnswer(fakeDir)}`,
       {
         path: "src/a.ts",
         reason: "the change",
+        why: "",
         flags: [{ note: "b is never read; check it is used", line: 2 }],
       },
     ]);

@@ -122,6 +122,15 @@ is unproven or sensitive, and every reorganization, one sentence naming what
 a reviewer should confirm: "`chargeCard` still refuses a zero amount after
 the refactor", not "check the logic". Leave it empty for the rest.
 
+`proof`: for a `proven` or `partial` change, the test that shows it works:
+`text` (at most 20 words, what the test shows), with its `path` and head
+`line`. Null when there is none.
+
+`fix`: for a `partial` or `unproven` change, at most 40 words on what the
+author could add to prove or contain it, specific enough to post on the PR
+as it stands: "Add a test that a retried charge with the same idempotency
+key bills once." Empty for a `proven` change.
+
 Give `path` and the head `line` of each change. A folded entry can give the
 folder it covers as `path`, with no line.
 
@@ -150,19 +159,29 @@ list, not by repeating it:
 
 - `clientImpact`: one sentence, at most 25 words, on what a client or user
   would see if this change is wrong. "None: internal only." when that is true.
-- `mitigations`: at most 3, each at most 12 words, naming the control and
-  where it is ("Behind the `new_checkout` flag, off by default", "Tests cover
-  the split and retry paths"). Don't list what the tests cover case by case.
-  Passing CI and "the change is small" are not mitigations. Empty when there
-  are none; never list generic good practice.
+- `mitigations`: at most 3, each tied to the risk it limits. `text` (at most
+  12 words) names the control ("Behind the `new_checkout` flag, off by
+  default"); `addresses` is the exact `title` of the concern or change it
+  limits; `path` and head `line` say where the control is. Don't list what
+  the tests cover case by case: that goes in a change's `proof`. Passing CI
+  and "the change is small" are not mitigations. Empty when there are none;
+  never list generic good practice.
 - `changes`: every change in your group. `title` at most 12 words, `check`
-  at most 40.
-- `concerns`: at most 5, most serious first. `title` at most 12 words,
-  `detail` at most 40 words saying what could go wrong and when. Cite `path`
-  and head `line` when there is one. A concern about other code ("callers
-  could…") names a caller you found with Grep that is actually affected;
-  otherwise drop it. No concern is better than a vague one; a low-risk PR
-  usually has none.
+  and `fix` at most 40.
+- `concerns`: at most 5, most serious first. `title` at most 12 words, in
+  plain words a reader new to the code follows ("Hiding the voice controls
+  leaves the mic recording", not "Mode switch hides mic controls").
+  `detail` at most 40 words: what goes wrong, when, and who sees it.
+  `severity`: `high` when it should block the merge, `medium` when it should
+  be fixed soon, `low` when it is worth knowing. `fix`: at most 40 words,
+  the change that would resolve or contain it ("Stop the recorder when the
+  controls unmount, or keep the mic toggle visible in heads-down mode");
+  when the root cause is a design choice, name it ("The whole screen is
+  passed as context; pass only the selection, fenced as page text"). Cite
+  `path` and head `line` when there is one. A concern about other code
+  ("callers could…") names a caller you found with Grep that is actually
+  affected; otherwise drop it. No concern is better than a vague one; a
+  low-risk PR usually has none.
 - No praise, no restating the change, no hedging.
 
 Reply with one JSON object and nothing else:
@@ -171,12 +190,12 @@ Reply with one JSON object and nothing else:
 {
   "level": "low",
   "clientImpact": "…",
-  "mitigations": ["…"],
-  "concerns": [{ "title": "…", "detail": "…", "path": "src/x.ts", "line": 12 }],
+  "mitigations": [{ "text": "…", "addresses": "Retry a failed charge once", "path": "src/payments/charge.ts", "line": 52 }],
+  "concerns": [{ "title": "…", "detail": "…", "severity": "medium", "fix": "…", "path": "src/x.ts", "line": 12 }],
   "changes": [
-    { "title": "Retry a failed charge once", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": true, "count": 1, "check": "A retried charge can't bill the card twice", "path": "src/payments/charge.ts", "line": 40 },
-    { "title": "Sort the staff queue-depth view by age", "kind": "logic", "reach": "local", "evidence": "partial", "internal": true, "count": 1, "check": "The queue-depth view still lists every queue, oldest first", "path": "src/staff/QueueDepth.tsx", "line": 22 },
-    { "title": "Comment and naming cleanups", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6, "check": "", "path": "src/payments/", "line": null }
+    { "title": "Retry a failed charge once", "kind": "logic", "reach": "core", "evidence": "partial", "sensitive": true, "count": 1, "check": "A retried charge can't bill the card twice", "proof": { "text": "A declined charge is retried once", "path": "src/payments/charge.test.ts", "line": 88 }, "fix": "Add a test that a retry after a timeout reuses the idempotency key", "path": "src/payments/charge.ts", "line": 40 },
+    { "title": "Sort the staff queue-depth view by age", "kind": "logic", "reach": "local", "evidence": "partial", "internal": true, "count": 1, "check": "The queue-depth view still lists every queue, oldest first", "proof": null, "fix": "Add a test with two queues of different ages", "path": "src/staff/QueueDepth.tsx", "line": 22 },
+    { "title": "Comment and naming cleanups", "kind": "passive", "reach": "leaf", "evidence": "proven", "count": 6, "check": "", "proof": null, "fix": "", "path": "src/payments/", "line": null }
   ]
 }
 ```

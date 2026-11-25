@@ -272,7 +272,17 @@ export function draftComments(
       }
     }
     for (const c of report.risk?.concerns ?? []) {
-      add({ ...c, section: "risk", source: "Risk", severity: "medium", pickedByDefault: false });
+      // Concerns from before they carried a severity read as medium.
+      const severity = c.severity ?? "medium";
+      if (severity === "low") continue;
+      add({
+        ...c,
+        detail: c.fix ? `${c.detail}\nSuggested fix: ${c.fix}` : c.detail,
+        section: "risk",
+        source: "Risk",
+        severity,
+        pickedByDefault: severity === "high",
+      });
     }
   }
 

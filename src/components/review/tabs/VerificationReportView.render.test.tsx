@@ -41,7 +41,7 @@ const report: VerificationReport = {
 };
 
 describe("VerificationReportView", () => {
-  it("leads with the summary, then must-reads, risk and the checks", async () => {
+  it("groups the sections under the questions a review answers, each saying what it is for", async () => {
     const text = textOf(
       await renderToHtml(
         createElement(VerificationReportView, {
@@ -50,11 +50,79 @@ describe("VerificationReportView", () => {
         }),
       ),
     );
-    const order = ["Summary", "Must read", "Risk", "Checks"].map((h) => text.indexOf(h));
+    const order = [
+      "What is it trying to do?",
+      "Summary",
+      "Must read",
+      "Is it safe to ship?",
+      "Risk",
+      "Test quality",
+      "Does it meet the quality bar?",
+      "Complexity",
+    ].map((h) => text.indexOf(h));
     expect(order.every((at) => at >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // No claims or malice result, so neither question is shown.
+    expect(text).not.toContain("Does it do what it claims?");
+    expect(text).not.toContain("Anything malicious or unrelated?");
+    expect(text).toContain("The files where your reading can change the outcome.");
+    expect(text).toContain("Whether the tests would catch a mistake in this change.");
     expect(text).toContain("src/cache.ts:10–40");
     expect(text).toContain("medium risk");
+    // A report from before mitigations named a risk still shows its bare one.
+    expect(text).toContain("Other mitigations in the PR:Short TTL");
+  });
+
+  it("asks a must-read's question, says why it matters, and shows its diff on request", async () => {
+    const patch = [
+      "@@ -8,4 +8,5 @@",
+      " before",
+      "-old eviction",
+      "+new eviction",
+      "+evict on write",
+      " after",
+    ].join("\n");
+    const loaded: string[] = [];
+    const { host, unmount } = await mountForInteraction(
+      createElement(VerificationReportView, {
+        report: {
+          ...report,
+          mustRead: [
+            {
+              path: "src/cache.ts",
+              reason: "Does a write evict the cached profile?",
+              why: "Users would see their old profile after editing it.",
+              lines: { start: 9, end: 10 },
+            },
+          ],
+        },
+        onOpen: { open: () => {}, canOpen: () => true },
+        loadPatch: async (path) => {
+          loaded.push(path);
+          return patch;
+        },
+      }),
+    );
+    try {
+      const text = textOf(host.innerHTML);
+      expect(text).toContain("Answer while reading: Does a write evict the cached profile?");
+      expect(text).toContain("Why it matters: Users would see their old profile after editing it.");
+      expect(loaded).toEqual([]);
+      const details = [...host.querySelectorAll("details")].find((d) =>
+        d.textContent?.includes("Show the diff"),
+      );
+      if (!details) throw new Error("no diff snippet");
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+      await waitFor(() => !!details.querySelector("pre"), "the snippet");
+      // Lines 9 and 10 and the removed line between them; not the context around them.
+      expect(details.querySelector("pre")?.textContent).toBe(
+        "-old eviction9+new eviction10+evict on write",
+      );
+      expect(loaded).toEqual(["src/cache.ts"]);
+    } finally {
+      unmount();
+    }
   });
 
   it("shows the impact band, what to check, and every change behind a fold", async () => {
@@ -114,26 +182,110 @@ describe("VerificationReportView", () => {
         },
       },
     };
-    const text = textOf(
-      await renderToHtml(
-        createElement(VerificationReportView, {
-          report: scored,
-          onOpen: { open: () => {}, canOpen: () => true },
-        }),
-      ),
+    const html = await renderToHtml(
+      createElement(VerificationReportView, {
+        report: scored,
+        onOpen: { open: () => {}, canOpen: () => true },
+      }),
     );
-    expect(text).toContain("high impact · 4/5");
+    const text = textOf(html);
+    expect(text).toContain("Impact 4/5 · high");
     // The agent's level matches the band's, so it isn't shown twice.
     expect(text).not.toContain("high risk");
     expect(text).toContain("4 passive, 2 logic changes");
     expect(text).toContain("raised from moderate by the number of changes");
-    expect(text).toContain("A write evicts the cached profile");
-    expect(text).toContain("logic · core · partly tested");
-    expect(text).toContain("Every change (4)");
-    expect(text).toContain("logic · local · partly tested · internal only");
-    expect(text).toContain("logic · local · partly tested · sensitive");
-    expect(text).not.toContain("sensitive · internal only");
-    expect(text).toContain("passive · core · partly tested · 4 like it");
+    expect(text).toContain("Confirm: A write evicts the cached profile");
+    expect(text).toContain("Every scored change (4)");
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    // Every trait is a labelled chip that explains itself on hover.
+    const traits = (title: string) => {
+      const li = [...host.querySelectorAll("li")].find((l) => l.textContent?.startsWith(title));
+      return [...(li?.querySelectorAll("span[title]") ?? [])].map((s) => s.textContent);
+    };
+    expect(traits("Sort the staff view")).toEqual([
+      "2/5",
+      "logic",
+      "reach: local",
+      "partly tested",
+      "internal only",
+    ]);
+    expect(traits("Gate the staff view")).toEqual([
+      "3/5",
+      "logic",
+      "reach: local",
+      "partly tested",
+      "sensitive",
+    ]);
+    expect(traits("Tidy comments")).toEqual([
+      "1/5",
+      "passive",
+      "reach: core",
+      "partly tested",
+      "×4",
+    ]);
+    expect(host.querySelector('span[title^="Reach: used from five"]')?.textContent).toBe(
+      "reach: core",
+    );
+  });
+
+  it("shows the score before and after the PR's tests, a concern's fix, and each mitigation under its risk", async () => {
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            risk: {
+              ...risk,
+              level: "medium",
+              mitigations: [
+                {
+                  text: "Short TTL",
+                  addresses: "No invalidation on write",
+                  path: "src/cache.ts",
+                  line: 3,
+                },
+                { text: "Behind the cache flag", addresses: "Something else" },
+              ],
+              concerns: [
+                {
+                  title: "No invalidation on write",
+                  detail: "Edits stay stale.",
+                  severity: "high",
+                  fix: "Evict the profile in the write path.",
+                },
+              ],
+              impact: {
+                band: 3,
+                potentialBand: 4,
+                highestChangeBand: 3,
+                load: 2,
+                raisedByVolume: 0,
+                counts: {
+                  passive: 0,
+                  reorganization: 0,
+                  addition: 0,
+                  removal: 0,
+                  interface: 0,
+                  logic: 1,
+                },
+                changes: [],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Potential 4/5→With its tests 3/5 · moderate");
+    expect(text).toContain("Suggested fix: Evict the profile in the write path.");
+    expect(text).toContain(
+      "Edits stay stale.Suggested fix: Evict the profile in the write path.Limited by:Short TTLsrc/cache.ts:3",
+    );
+    expect(text).toContain(
+      "Other mitigations in the PR:Behind the cache flag (limits: Something else)",
+    );
   });
 
   it("shows the agent's level beside the band when the agent judged it stricter", async () => {
@@ -178,10 +330,10 @@ describe("VerificationReportView", () => {
         }),
       ),
     );
-    expect(text).toContain("low impact · 2/5");
+    expect(text).toContain("Impact 2/5 · low");
     expect(text).toContain("high risk");
-    expect(text).not.toContain("Needs attention");
-    expect(text).toContain("Every change (1)");
+    expect(text).not.toContain("Changes that need your attention");
+    expect(text).toContain("Every scored change (1)");
   });
 
   it("shows only the band when the agent's level matches it", async () => {
@@ -216,9 +368,145 @@ describe("VerificationReportView", () => {
         }),
       ),
     );
-    expect(text).toContain("moderate impact · 3/5");
+    expect(text).toContain("Impact 3/5 · moderate");
     expect(text).not.toContain("medium risk");
     expect(text).not.toContain("raised from");
+  });
+
+  it("gives each theme its change, risk and proof, and lists outliers under unrelated changes", async () => {
+    const theme = {
+      cohesion: "core" as const,
+      question: "",
+      files: [{ path: "src/cache.ts" }],
+    };
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            changeMap: {
+              intent: "Cache user lookups.",
+              unmapped: [],
+              themes: [
+                {
+                  ...theme,
+                  title: "Serve lookups from the cache",
+                  description: "Reads hit the cache first.",
+                  risk: "high",
+                  riskWhy: "A stale entry shows a user someone else's profile.",
+                  proofs: [{ text: "Keys by user id", path: "src/cache.test.ts", line: 4 }],
+                  unmitigated: "Add a test that a write evicts the entry.",
+                },
+                {
+                  ...theme,
+                  title: "Log cache misses",
+                  description: "Counts misses.",
+                  risk: "low",
+                  riskWhy: "A wrong count misleads tuning.",
+                  proofs: [],
+                  unmitigated: "",
+                },
+                {
+                  ...theme,
+                  title: "Document the cache",
+                  description: "Adds a README section.",
+                  risk: "none",
+                  riskWhy: "",
+                  proofs: [],
+                  unmitigated: "",
+                },
+                {
+                  ...theme,
+                  title: "Older theme",
+                  description: "From a report before proofs.",
+                  risk: "medium",
+                },
+                {
+                  ...theme,
+                  title: "Bump the linter",
+                  description: "Upgrades biome.",
+                  risk: "low",
+                  cohesion: "outlier",
+                  question: "Why bump the linter here?",
+                },
+              ],
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain(
+      "Change: Reads hit the cache first.Risk: A stale entry shows a user someone else's profile.Proof it's handled:Keys by user idsrc/cache.test.ts:4Not covered: Add a test that a write evicts the entry.",
+    );
+    expect(text).toContain("A wrong count misleads tuning.Proof it's handled: None found");
+    expect(text).toContain("no riskDocument the cacheChange: Adds a README section.src/cache.ts");
+    // A report from before proofs says nothing either way.
+    expect(text).toContain("Change: From a report before proofs.src/cache.ts");
+    expect(text).toContain("Anything malicious or unrelated?");
+    expect(text).toContain("Unrelated changes");
+    expect(text).toContain("Bump the linter · Why bump the linter here?");
+  });
+
+  it("lists every scored change under the change map theme its file is in", async () => {
+    const change = {
+      kind: "logic" as const,
+      reach: "local" as const,
+      evidence: "partial" as const,
+      sensitive: false,
+      count: 1,
+      check: "",
+      band: 3 as const,
+    };
+    const risk = report.risk as NonNullable<VerificationReport["risk"]>;
+    const text = textOf(
+      await renderToHtml(
+        createElement(VerificationReportView, {
+          report: {
+            ...report,
+            changeMap: {
+              intent: "Cache user lookups.",
+              unmapped: [],
+              themes: [
+                {
+                  title: "Serve lookups from the cache",
+                  description: "d",
+                  risk: "medium",
+                  cohesion: "core",
+                  question: "",
+                  files: [{ path: "src/cache.ts" }],
+                },
+              ],
+            },
+            risk: {
+              ...risk,
+              impact: {
+                band: 3,
+                highestChangeBand: 3,
+                load: 4,
+                raisedByVolume: 0,
+                counts: {
+                  passive: 0,
+                  reorganization: 0,
+                  addition: 0,
+                  removal: 0,
+                  interface: 0,
+                  logic: 2,
+                },
+                changes: [
+                  { ...change, title: "Read through the cache", path: "src/cache.ts" },
+                  { ...change, title: "Retry the lookup", path: "src/lookup.ts" },
+                ],
+              },
+            },
+          },
+          onOpen: { open: () => {}, canOpen: () => true },
+        }),
+      ),
+    );
+    expect(text).toContain("Grouped by the change map's themes.");
+    expect(text).toContain("Serve lookups from the cacheRead through the cachesrc/cache.ts");
+    expect(text).toContain("In no themeRetry the lookupsrc/lookup.ts");
   });
 
   it("links only paths the PR has, and shows any other as plain text", async () => {

@@ -389,6 +389,122 @@ describe("verificationReportMarkdown", () => {
     expect(md).toContain("- `big.ts`: Too large.");
   });
 
+  it("carries why a must-read matters, a theme's risk and proof, the score before tests, fixes and what each mitigation limits", () => {
+    const full: VerificationReport = {
+      ...report,
+      mustRead: [
+        {
+          path: "src/upload.ts",
+          reason: "Does the loop stop after three tries?",
+          why: "A failing upload would retry forever.",
+        },
+      ],
+      changeMap: {
+        intent: "Retry failed uploads.",
+        unmapped: [],
+        themes: [
+          {
+            title: "Retry uploads",
+            description: "Retries a failed upload.",
+            risk: "high",
+            riskWhy: "A retry loop with no cap hangs the client.",
+            proofs: [{ text: "Gives up after three", path: "src/upload.test.ts", line: 20 }],
+            unmitigated: "Add a test for a timeout.",
+            cohesion: "core",
+            question: "",
+            files: [{ path: "src/upload.ts" }],
+          },
+          {
+            title: "Docs",
+            description: "Documents the retry.",
+            risk: "none",
+            riskWhy: "",
+            proofs: [],
+            unmitigated: "",
+            cohesion: "supporting",
+            question: "",
+            files: [{ path: "README.md" }],
+          },
+          {
+            title: "Wiring",
+            description: "Passes the option through.",
+            risk: "low",
+            riskWhy: "A wrong default turns retries off.",
+            proofs: [],
+            unmitigated: "",
+            cohesion: "supporting",
+            question: "",
+            files: [{ path: "src/app.ts" }],
+          },
+        ],
+      },
+      risk: {
+        level: "high",
+        clientImpact: "Uploads may loop.",
+        mitigations: [
+          { text: "Behind a flag", addresses: "Unbounded retry", path: "src/flags.ts", line: 4 },
+        ],
+        concerns: [
+          {
+            title: "Unbounded retry",
+            detail: "No cap.",
+            severity: "high",
+            fix: "Cap the loop at three.",
+          },
+        ],
+        impact: {
+          band: 3,
+          potentialBand: 5,
+          highestChangeBand: 3,
+          load: 1,
+          raisedByVolume: 0,
+          counts: {
+            passive: 0,
+            reorganization: 0,
+            addition: 0,
+            removal: 0,
+            interface: 0,
+            logic: 1,
+          },
+          changes: [
+            {
+              title: "Retry loop",
+              kind: "logic",
+              reach: "shared",
+              evidence: "partial",
+              sensitive: false,
+              count: 1,
+              check: "That it stops.",
+              proof: { text: "Retries once", path: "src/upload.test.ts", line: 8 },
+              fix: "Add a test that it gives up.",
+              band: 3,
+            },
+          ],
+        },
+      },
+    };
+    const md = verificationReportMarkdown(input({ report: full }));
+    expect(md).toContain(
+      "- `src/upload.ts`: Does the loop stop after three tries? Why: A failing upload would retry forever.",
+    );
+    expect(md).toContain(
+      "- **Retry uploads** (core, high risk)\n  > Retries a failed upload.\n  > Risk: A retry loop with no cap hangs the client.\n  > Proof the risk is handled:\n  > - Gives up after three (`src/upload.test.ts:20`)\n  > Not covered: Add a test for a timeout.",
+    );
+    // No risk needs no proof, and says nothing about it.
+    expect(md).toContain("- **Docs** (supporting, no risk)\n  > Documents the retry.\n  > Files:");
+    expect(md).toContain("  > No proof the risk is handled was found.");
+    expect(md).toContain("Impact 3/5 (highest single change 3/5). 5/5 before its tests count.");
+    expect(md).toContain(
+      "  > Proof: Retries once (`src/upload.test.ts:8`)\n  > To prove it: Add a test that it gives up.",
+    );
+    expect(md).toContain(
+      "Mitigations:\n\n- Behind a flag (limits: Unbounded retry) (`src/flags.ts:4`)",
+    );
+    expect(md).toContain(
+      "- **[high] Unbounded retry**\n  > No cap.\n  > Suggested fix: Cap the loop at three.",
+    );
+  });
+
   it("says when the report can't tell which files its checks read", () => {
     expect(verificationReportMarkdown(input())).toContain(
       "## Coverage\n\nThis report doesn't record which files its checks read.",

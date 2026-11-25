@@ -105,8 +105,8 @@ describe("the report schema", () => {
       }),
     );
     expect(parsed.mustRead).toEqual([
-      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 }, flags: [] },
-      { path: "src/b.ts", reason: "second", lines: undefined, flags: [] },
+      { path: "src/a.ts", reason: "core", why: "", lines: { start: 10, end: 40 }, flags: [] },
+      { path: "src/b.ts", reason: "second", why: "", lines: undefined, flags: [] },
     ]);
     expect(audit.droppedMustReads).toEqual(["../../etc/passwd"]);
   });
@@ -184,15 +184,69 @@ describe("the report schema", () => {
         risk: {
           level: "high",
           clientImpact: "x".repeat(1000),
-          mitigations: ["a", "b", "c", "d"],
+          mitigations: ["a", "b", "c", "d", "e", "f"],
           concerns: [{ title: "t".repeat(500), detail: "d" }],
         },
       }),
     );
     expect(parsed.risk?.clientImpact.length).toBe(240);
     expect(parsed.risk?.clientImpact.endsWith("…")).toBe(true);
-    expect(parsed.risk?.mitigations).toEqual(["a", "b", "c"]);
+    expect(parsed.risk?.mitigations.map((m) => m.text)).toEqual(["a", "b", "c", "d", "e"]);
     expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
+  });
+
+  it("ties each mitigation to the risk it limits, and still reads a bare one", () => {
+    const parsed = schema.parse(
+      report({
+        risk: {
+          level: "low",
+          clientImpact: "",
+          mitigations: [
+            "Older answer",
+            {
+              text: "Tests cover the retry",
+              addresses: "Retry failed uploads",
+              path: "./src/a.test.ts",
+              line: 12,
+            },
+          ],
+          concerns: [],
+        },
+      }),
+    );
+    expect(parsed.risk?.mitigations).toEqual([
+      { text: "Older answer", addresses: "", path: undefined, line: undefined },
+      {
+        text: "Tests cover the retry",
+        addresses: "Retry failed uploads",
+        path: "src/a.test.ts",
+        line: 12,
+      },
+    ]);
+  });
+
+  it("orders concerns by severity and keeps the fix, reading a concern with neither as medium", () => {
+    const parsed = schema.parse(
+      report({
+        risk: {
+          level: "low",
+          clientImpact: "",
+          mitigations: [],
+          concerns: [
+            { title: "Old shape", detail: "d" },
+            { title: "Minor", detail: "d", severity: "low", fix: null },
+            { title: "Mic stays live", detail: "d", severity: "high", fix: "Stop it on hide." },
+          ],
+        },
+      }),
+    );
+    expect(
+      parsed.risk?.concerns.map((c) => ({ title: c.title, severity: c.severity, fix: c.fix })),
+    ).toEqual([
+      { title: "Mic stays live", severity: "high", fix: "Stop it on hide." },
+      { title: "Old shape", severity: "medium", fix: "" },
+      { title: "Minor", severity: "low", fix: "" },
+    ]);
   });
 
   describe("risk's impact", () => {
@@ -243,6 +297,23 @@ describe("the report schema", () => {
           ).risk?.impact?.changes[0]?.count,
       );
       expect(counts).toEqual([1, 1, 1000]);
+    });
+
+    it("scores what the PR would be with nothing proven beside what its tests leave", () => {
+      const proven = change({
+        reach: "local",
+        evidence: "proven",
+        proof: { text: "Fails without the retry", path: "./src/a.test.ts", line: 9 },
+      });
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes: [proven] } }));
+      // Logic in local code: 3 by the table, 2 once proven, 4 with no proof.
+      expect(parsed.risk?.impact).toMatchObject({ band: 2, potentialBand: 4 });
+      expect(parsed.risk?.impact?.changes[0]?.proof).toEqual({
+        text: "Fails without the retry",
+        path: "src/a.test.ts",
+        line: 9,
+      });
+      expect(parsed.risk?.impact?.changes[0]?.fix).toBe("");
     });
 
     it("keeps the agent's level when it listed no changes", () => {
@@ -747,6 +818,34 @@ describe("the change map", () => {
     files: paths.map((path) => ({ path })),
   });
 
+  it("keeps why a theme is risky and the proof against it, and puts no-risk themes last", () => {
+    const parsed = verificationReportSchema({ ...limits, sections: ["changeMap"] }).parse({
+      changeMap: {
+        intent: "Retry failed uploads.",
+        themes: [
+          { ...theme("Docs", "core", ["src/c.ts"]), risk: "none" },
+          {
+            ...theme("Retry uploads", "core", ["src/a.ts"]),
+            risk: "high",
+            riskWhy: "A retry that repeats a finished upload stores the file twice.",
+            proofs: [
+              { text: "A retry after success is a no-op", path: "./src/a.test.ts", line: 3 },
+            ],
+            unmitigated: "Add a test for a retry after a timeout.",
+          },
+        ],
+      },
+    });
+    const [retry, docs] = parsed.changeMap?.themes ?? [];
+    expect(docs?.risk).toBe("none");
+    expect(retry).toMatchObject({
+      risk: "high",
+      riskWhy: "A retry that repeats a finished upload stores the file twice.",
+      proofs: [{ text: "A retry after success is a no-op", path: "src/a.test.ts", line: 3 }],
+      unmitigated: "Add a test for a retry after a timeout.",
+    });
+  });
+
   it("keeps an outlier that shares a file with the core, orders themes, and asks only outliers", () => {
     const parsed = verificationReportSchema({
       ...limits,
@@ -777,6 +876,9 @@ describe("the change map", () => {
           risk: "medium",
           cohesion: "core",
           question: "",
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/a.ts", lines: undefined }],
         },
         {
@@ -785,6 +887,9 @@ describe("the change map", () => {
           risk: "medium",
           cohesion: "supporting",
           question: "",
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/b.ts", lines: undefined }],
         },
         {
@@ -794,6 +899,9 @@ describe("the change map", () => {
           cohesion: "outlier",
           // The agent left it empty; an outlier always gets something to ask.
           question: 'Why is "Bump the timeout" part of this PR?',
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/a.ts", lines: { start: 40, end: 41 } }],
         },
       ],
@@ -1350,7 +1458,7 @@ describe("putting a section's answers together", () => {
     expect(combined).toEqual({
       level: "high",
       clientImpact: "impact 2",
-      mitigations: ["m1a", "m1b", "m2a"],
+      mitigations: ["m1a", "m1b", "m2a", "m2b", "m3a"],
       concerns: [
         { title: "c2", detail: "d" },
         { title: "c1", detail: "d" },

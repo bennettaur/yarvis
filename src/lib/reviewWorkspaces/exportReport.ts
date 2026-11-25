@@ -16,6 +16,7 @@ import { type Assessment, SUGGESTION_LABEL } from "./decision";
 import type { MutationRun } from "./mutation";
 import {
   APPROACH_LABEL,
+  asMitigation,
   CHECK_LABEL,
   type ChecklistItem,
   coverageKnown,
@@ -26,6 +27,7 @@ import {
   type VerificationClaims,
   type VerificationFinding,
   type VerificationFlow,
+  type VerificationProof,
   type VerificationReport,
 } from "./verification";
 
@@ -108,6 +110,8 @@ function entry(title: string, suffix: string, details: (string | null)[]): strin
   return `- **${oneLine(title)}**${suffix}${body.join("")}`;
 }
 
+const proofLine = (p: VerificationProof) => `${oneLine(p.text)}${locationSuffix(p.path, p.line)}`;
+
 function findingList(findings: readonly VerificationFinding[]): string {
   if (findings.length === 0) return "No findings.";
   return findings
@@ -163,7 +167,8 @@ function summarySection(report: VerificationReport): string | null {
         const where = f.line ? ` (line ${f.line})` : "";
         return `\n  - Looks off${where}: ${oneLine(f.note)}`;
       });
-      return `- ${code(`${m.path}${lineRangeSuffix(m.lines)}`)}: ${oneLine(m.reason)}${flags.join("")}`;
+      const why = m.why ? ` Why: ${oneLine(m.why)}` : "";
+      return `- ${code(`${m.path}${lineRangeSuffix(m.lines)}`)}: ${oneLine(m.reason)}${why}${flags.join("")}`;
     });
     parts.push(`### Must read\n\n${mustRead.join("\n")}`);
   }
@@ -175,8 +180,17 @@ function changeMapSection(changeMap: VerificationChangeMap | undefined): string 
   const themes = changeMap.themes.map((t) => {
     const files = t.files.map((f) => code(`${f.path}${lineRangeSuffix(f.lines)}`)).join(", ");
     const question = t.question ? `Question for the author: ${t.question}` : null;
-    return entry(t.title, ` (${t.cohesion}, ${t.risk} risk)`, [
+    // Older reports have no proof fields, so say nothing about proof rather than "none found".
+    const proofs = t.proofs?.length
+      ? `Proof the risk is handled:\n${t.proofs.map((p) => `- ${proofLine(p)}`).join("\n")}`
+      : t.proofs && t.risk !== "none"
+        ? "No proof the risk is handled was found."
+        : null;
+    return entry(t.title, ` (${t.cohesion}, ${t.risk === "none" ? "no" : t.risk} risk)`, [
       t.description,
+      t.riskWhy ? `Risk: ${t.riskWhy}` : null,
+      proofs,
+      t.unmitigated ? `Not covered: ${t.unmitigated}` : null,
       `Files: ${files}`,
       question,
     ]);
@@ -217,15 +231,30 @@ function riskSection(risk: VerificationReport["risk"]): string | null {
       const traits = ` (band ${c.band}, ${c.kind}, ${c.reach}, evidence ${c.evidence}${sensitive})`;
       return entry(c.title, `${traits}${locationSuffix(c.path, c.line)}`, [
         c.check ? `Check: ${c.check}` : null,
+        c.proof ? `Proof: ${proofLine(c.proof)}` : null,
+        c.fix ? `To prove it: ${c.fix}` : null,
       ]);
     });
-    const bands = `Impact ${impact.band}/5 (highest single change ${impact.highestChangeBand}/5).`;
+    const potential =
+      impact.potentialBand && impact.potentialBand !== impact.band
+        ? ` ${impact.potentialBand}/5 before its tests count.`
+        : "";
+    const bands = `Impact ${impact.band}/5 (highest single change ${impact.highestChangeBand}/5).${potential}`;
     parts.push(`${bands}\n\n${changes.join("\n")}`);
   }
-  if (risk.mitigations.length > 0) parts.push(`Mitigations:\n\n${bullets(risk.mitigations)}`);
+  if (risk.mitigations.length > 0) {
+    const mitigations = risk.mitigations.map(asMitigation).map((m) => {
+      const limits = m.addresses ? ` (limits: ${oneLine(m.addresses)})` : "";
+      return `- ${oneLine(m.text)}${limits}${locationSuffix(m.path, m.line)}`;
+    });
+    parts.push(`Mitigations:\n\n${mitigations.join("\n")}`);
+  }
   if (risk.concerns.length > 0) {
     const concerns = risk.concerns.map((c) =>
-      entry(c.title, locationSuffix(c.path, c.line), [c.detail]),
+      entry(c.severity ? `[${c.severity}] ${c.title}` : c.title, locationSuffix(c.path, c.line), [
+        c.detail,
+        c.fix ? `Suggested fix: ${c.fix}` : null,
+      ]),
     );
     parts.push(`Concerns:\n\n${concerns.join("\n")}`);
   }

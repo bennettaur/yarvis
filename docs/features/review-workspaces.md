@@ -318,15 +318,34 @@ is quoted, line breaks in one-line fields are flattened, and hidden and
 control characters are stripped, so that text can't pass for part of the
 report's own structure.
 
-Below the checklist, the report shows each check's newest result. A section
-whose result is from an older head is marked "older head". Every file and
-line in the report opens the diff there.
+Below the checklist, the report shows each check's newest result, grouped
+under the questions a review answers:
+
+1. **What is it trying to do?** The summary, the must-read files and the
+   change map.
+2. **Does it do what it claims?** The claims.
+3. **Is it safe to ship?** Risk, test quality, performance and observability.
+4. **Anything malicious or unrelated?** The malicious-intent check, and the
+   change map's outliers.
+5. **Does it meet the quality bar?** The simpler approach, complexity,
+   comments and code quality.
+
+Each question and each section opens with a line saying what it is for. A
+section whose result is from an older head is marked "older head". Every
+file and line in the report opens the diff there.
 
 - **Change map** groups the change into themes, such as "retry failed uploads"
   or "tests for the retry", so you can review one theme at a time. It opens
-  with one sentence on what the PR is for. Each theme lists its files (and the
-  lines, when it is only part of a file), how risky it is, and how it fits
-  that goal:
+  with one sentence on what the PR is for. Each theme says what changes, how
+  risky it is and why, what in the PR shows the risk is handled (a test or a
+  guard, each linking to its line) or **None found**, and what that proof
+  leaves uncovered. Its risk is **high** when a mistake breaks users, data,
+  money, security or a contract; **medium** when it breaks a feature;
+  **low** when it is an annoyance with a workaround, such as a lost draft;
+  and **no risk** when no mistake there can hurt anyone, such as accurate
+  docs or tests. Wrong docs are low risk, and docs that tell a reader to do
+  something unsafe are high. A theme also lists its files (and the lines,
+  when it is only part of a file) and how it fits that goal:
   - **Core** is what the PR is for.
   - **Supporting** is something the core needs, such as tests, wiring, docs
     or a refactor that makes room for it.
@@ -336,8 +355,10 @@ line in the report opens the diff there.
   A change the description mentions can still be an outlier, if the goal
   doesn't need it. An outlier inside a file the core also changes is its own
   theme, with the lines it covers. An outlier comes with a question for the
-  author, which **Post to PR** posts as a comment on its first file. Changed files no theme names are listed
-  under **In no theme**.
+  author, which **Post to PR** posts as a comment on its first file. A
+  theme whose proof leaves something uncovered can be posted too, saying
+  what to add. Changed files no theme names are listed under **In no
+  theme**.
 - **Claims** lists what the PR's title, description and linked tickets say it
   does. Each claim is marked **Verified**, **Partial**, **Missing**,
   **Contradicted** or **Can't tell**, with the code behind the verdict. A
@@ -388,15 +409,25 @@ line in the report opens the diff there.
 - **Code quality** looks for code that goes against the language's or the
   codebase's own practice, weak error handling, and names that mislead.
   Complexity, comments and logging are left to their own checks.
-- **Risk** scores the PR's impact from 1 (minimal) to 5 (very high). The
-  agent classifies each change by what it does (a comment edit, a move, an
-  addition, a changed interface or changed logic), how much code depends on
-  what changed, and whether tests prove it. A change whose mistakes could
-  only reach your own staff, such as a read-only internal dashboard, scores
-  one lower. Yarvis scores those the same way every time, and raises the
-  score when the PR bundles many changes that alter existing behavior. Changes
-  that score high are listed under **Needs attention** with what to check,
-  and every change is listed behind **Every change**.
+- **Risk** scores the PR's impact from 1 (minimal) to 5 (very high): how far
+  a mistake could spread. The agent classifies each change by what it does
+  (a comment edit, a move, an addition, a changed interface or changed
+  logic), how much code depends on what changed, and whether tests prove it.
+  Each of those shows as a label you can hover to see what it means. A
+  change whose mistakes could only reach your own staff, such as a read-only
+  internal dashboard, scores one lower. Yarvis scores those the same way
+  every time, and raises the score when the PR bundles many changes that
+  alter existing behavior. It shows two scores when they differ: **Potential**,
+  what the PR would score if none of it were proven, and **With its tests**,
+  what is left once the PR's tests count.
+
+  **Problems found** lists the agent's concerns, high ones boxed in red,
+  each with a suggested fix. **Changes that need your attention** are the
+  ones scoring 4 or 5, each with what to confirm, the test that proves it
+  if there is one, and what to add to prove it, which is what **Post to PR**
+  sends. A mitigation, such as a feature flag, shows under the problem or
+  change it limits. **Every scored change** lists the rest, grouped by the
+  change map's themes when there is one.
 - **Simpler approach** rates the PR as a whole, where the complexity check
   looks at its code line by line. One agent reads the description and the
   code, then searches the checkout for something the PR could have reused or
@@ -413,6 +444,11 @@ there isn't one. See
 The report shows only the checks that have a result. When two checks found
 the same problem in results for the same head, it is shown once, under the
 check that comes first: test quality before code quality, for example.
+
+Each must-read file comes with a question to answer while reading it, and
+why it matters: what goes wrong, and for whom, if the answer is no. **Show
+the diff** opens the part of the diff the question is about, without leaving
+the report.
 
 Under each must-read file, the report lists anything in it that already looks
 off or unclear, marked **Looks off**, such as a branch that looks inverted or a
@@ -459,9 +495,9 @@ and concerns, findings and the simpler-approach rating.
   concern: it is right, or it is a real risk you accept.
 - **Reject…**: it is wrong or not useful. Say why in your own words; a
   rejection needs a reason.
-- **Change rating…**, on findings and change map themes: right, but rated too
-  high or too low. A finding moves between low, medium and high; a theme's
-  risk can also go to **No risk**.
+- **Change rating…**, on findings, risk concerns and change map themes:
+  right, but rated too high or too low. A finding or concern moves between
+  low, medium and high; a theme's risk can also go to **No risk**.
 
 What you said shows under the item, with **Undo**, which takes back what you
 said but not anything you posted. It is kept per item and per run, along with
