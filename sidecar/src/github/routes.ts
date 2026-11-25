@@ -131,9 +131,12 @@ const viewedSchema = z.object({
 });
 
 // The merge / auto-merge body carries the chosen strategy. GitHub defaults to a
-// merge commit when omitted, so `method` is optional.
+// merge commit when omitted, so `method` is optional. `headSha` is the commit
+// the user reviewed and is required: GitHub refuses the merge if the branch has
+// moved since, and a merge nobody pinned is one nobody reviewed.
 const mergeSchema = z.object({
   method: z.enum(["MERGE", "SQUASH", "REBASE"]).optional(),
+  headSha: z.string().regex(/^[0-9a-f]{40}$/, "expected a commit sha"),
 });
 
 /**
@@ -270,14 +273,15 @@ export function createGithubRoutes(config: Config): Hono {
     }
   });
 
-  // Changed files with unified-diff patches for the in-app review view.
+  // Changed files with unified-diff patches for the in-app review view, and the
+  // commit they were read at, which a merge from that view is pinned to.
   router.get("/pr/:owner/:repo/:number/files", async (c) => {
     const gh = client();
     if (!gh) return missingTokenResponse(c);
     const params = parsePrParams(c.req.param("owner"), c.req.param("repo"), c.req.param("number"));
     if ("error" in params) return c.json({ error: params.error }, 400);
     try {
-      return c.json(await gh.prFiles(params.owner, params.repo, params.number));
+      return c.json(await gh.prFilesAtHead(params.owner, params.repo, params.number));
     } catch (e) {
       return githubErrorResponse(c, e);
     }
@@ -381,6 +385,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.repo,
         params.number,
         parsed.data.method ?? "MERGE",
+        parsed.data.headSha,
       );
       await retireGuide(db(), { provider: "github", ...params });
       void emitEvent(db(), {
@@ -411,6 +416,7 @@ export function createGithubRoutes(config: Config): Hono {
         params.repo,
         params.number,
         parsed.data.method ?? "MERGE",
+        parsed.data.headSha,
       );
       return c.json({ ok: true });
     } catch (e) {

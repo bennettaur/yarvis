@@ -91,6 +91,13 @@ as two. If the branch lookup fails or is slow, the list loads without nesting.
 - A file with review comments shows a speech bubble with the count. That count
   includes replies and resolved threads.
 
+On GitHub, **Merge** and auto-merge in the PR's header are pinned to the
+commit the diff on screen was loaded at. If someone has pushed since, GitHub
+refuses the merge; reload the PR and look again. While the diff is still
+loading, or a push landed as it loaded, merging is refused until it reloads.
+GitHub lists at most 3,000 changed files. A bigger PR shows those and says
+the rest aren't shown, and you merge it on GitHub instead.
+
 ### Comment on a PR
 
 Review comments are posted to the PR straight away, on GitHub and Azure DevOps

@@ -32,6 +32,28 @@ struct YarvisMacApp: App {
                 Button("Sign Out") { Task { await app.signOut() } }
                     .disabled(app.server == nil || app.signingOut)
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { app.openSettings() }
+                    .keyboardShortcut(",", modifiers: .command)
+                    .disabled(app.client == nil)
+            }
+            // The web UI's page shortcuts: Cmd-1… for the pages in nav order,
+            // and Cmd-Shift-] / Cmd-Shift-[ to cycle through all of them.
+            CommandMenu("Go") {
+                ForEach(Array(Section.top.filter(\.takesDigit).enumerated()), id: \.element) { index, page in
+                    Button(page.title) { app.section = page }
+                        .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+                }
+                Button(Section.review.title) { app.section = .review }
+                Divider()
+                Button("Next Page") { app.cycleSection(by: 1) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Button("Previous Page") { app.cycleSection(by: -1) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Divider()
+                Button("Attention") { app.attentionOpen.toggle() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+            }
         }
 
         Window("Yarvis Web", id: "web") {
@@ -53,12 +75,18 @@ struct RootView: View {
         Group {
             if app.client == nil {
                 SignInView()
+            } else if let settings = app.settings, settings.vaultNeedsUnlock {
+                VaultUnlockView(model: settings)
+                    .safeAreaInset(edge: .top) {
+                        if let alarms = app.alarms, !alarms.ringing.isEmpty { AlarmVaultBanner(model: alarms) }
+                    }
             } else {
                 MainView()
             }
         }
         .onChange(of: app.webUIRequests) { openWindow(id: "web") }
-        .sheet(isPresented: Binding(get: { app.codeRequest != nil }, set: { if !$0 { app.answerCode(nil) } })) {
+        .sheet(isPresented: Binding(get: { app.codeRequest != nil && !app.alarmTakeoverShowing },
+                                    set: { if !$0 && !app.alarmTakeoverShowing { app.answerCode(nil) } })) {
             CodePromptView()
         }
     }
@@ -70,32 +98,96 @@ struct MainView: View {
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
-            List(Section.allCases, id: \.self, selection: Binding($app.section)) { section in
-                Label(section.title, systemImage: section.symbol)
-                    .badge(section == .attention ? (app.attention?.count ?? 0) : 0)
+            List(selection: Binding($app.section)) {
+                ForEach(Section.top, id: \.self) { page in
+                    Label(page.title, systemImage: page.symbol)
+                }
             }
             .navigationSplitViewColumnWidth(min: 160, ideal: 180)
-            .safeAreaInset(edge: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(app.device?.name ?? "").font(.caption)
-                    Text(app.server?.host ?? "").font(.caption2).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-            }
+            .safeAreaInset(edge: .bottom) { sidebarFooter }
         } detail: {
-            switch app.section {
-            case .chat: if let chat = app.chat { ChatView(chat: chat) }
-            case .attention: if let attention = app.attention { AttentionView(model: attention) }
-            case .terminals: if let terminals = app.terminals { TerminalsView(model: terminals) }
+            page
+                .navigationTitle(app.section.title)
+                .inspector(isPresented: $app.attentionOpen) {
+                    if let attention = app.attention {
+                        AttentionView(model: attention)
+                            .inspectorColumnWidth(min: 300, ideal: 380, max: 520)
+                    }
+                }
+        }
+        .overlay {
+            if let alarms = app.alarms, let ringing = alarms.takeoverQueue.first {
+                AlarmTakeoverView(model: alarms, alarm: ringing, remaining: alarms.takeoverQueue.count - 1)
             }
         }
         .toolbar {
-            ToolbarItem {
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button { app.showWebUI() } label: { Label("Web UI", systemImage: "globe") }
-                    .help("Open the full web UI for screens this app doesn't have")
+                    .help("Open the full web UI for pages this app doesn't have")
+                AttentionBell()
             }
         }
+        .headsDownPopups()
+    }
+
+    @ViewBuilder private var page: some View {
+        switch app.section {
+        case .chat: if let chat = app.chat { ChatView(chat: chat) }
+        case .terminal: if let terminals = app.terminals { TerminalsView(model: terminals) }
+        case .workspaces: if let workspaces = app.workspaces { WorkspacesView(model: workspaces) }
+        case .review: if let review = app.review { ReviewView(model: review) }
+        case .calendar: if let calendar = app.calendar { CalendarView(model: calendar) }
+        case .alarms: if let alarms = app.alarms { AlarmsView(model: alarms) }
+        case .settings: if let settings = app.settings { SettingsView(model: settings) }
+        case .headsDown: if let headsDown = app.headsDown { HeadsDownView(model: headsDown) }
+        }
+    }
+
+    /// Settings sits at the bottom of the sidebar, as in the web UI's rail,
+    /// under who and where this device is signed in.
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { app.openSettings() } label: {
+                Label(Section.settings.title, systemImage: Section.settings.symbol)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .background(app.section == .settings ? Color.accentColor.opacity(0.2) : .clear,
+                        in: RoundedRectangle(cornerRadius: 5))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.device?.name ?? "").font(.caption)
+                Text(app.server?.host ?? "").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+}
+
+/// The toolbar bell: how many things are waiting, and the panel that lists them.
+struct AttentionBell: View {
+    @Environment(AppModel.self) private var app
+
+    var body: some View {
+        let count = (app.attention?.count ?? 0) + (app.alarms?.ringing.count ?? 0)
+        Button { app.attentionOpen.toggle() } label: {
+            Label("Attention", systemImage: count > 0 ? "bell.badge.fill" : "bell")
+                .foregroundStyle(count > 0 ? .orange : .primary)
+                .overlay(alignment: .topTrailing) {
+                    if count > 0 {
+                        Text("\(count)")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 4)
+                            .background(.orange, in: Capsule())
+                            .foregroundStyle(.white)
+                            .offset(x: 8, y: -6)
+                    }
+                }
+        }
+        .help(count > 0 ? "\(count) waiting for you" : "Nothing is waiting")
     }
 }
 

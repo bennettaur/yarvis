@@ -42,7 +42,9 @@ export default function PrFileList({
   viewed: Set<string>;
   onToggleViewed: (path: string) => void;
 }) {
-  const { data, error, loading } = usePrFiles(prRef);
+  const fileSet = usePrFiles(prRef);
+  const { error, loading } = fileSet;
+  const data = fileSet.data?.files;
   // Review threads for the per-file comment counts, and the head commit the file
   // links are pinned to. Beside the diffs this is already subscribed; a standalone
   // Omni widget pays one detail fetch so its counts show too.
@@ -102,7 +104,7 @@ export default function PrFileList({
               onToggleViewed={onToggleViewed}
               prRef={prRef}
               prUrl={prUrl}
-              headSha={detail.data?.headSha ?? ""}
+              headSha={fileSet.data?.headSha ?? detail.data?.headSha ?? ""}
               commentCount={commentCounts.get(node.file.filename) ?? 0}
             />
           )}

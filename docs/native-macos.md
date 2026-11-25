@@ -14,15 +14,49 @@ natively, and lists what in the API gets in its way.
   or the Android client's authors, would mirror.
 - `YarvisMac`: the SwiftUI app.
 
-Native: sign-in and sign-out, the code prompt for `reauth_required`, the
-events socket, chat (threads, streamed replies as markdown, tool activity,
-Stop, the tool approval bar), attention (items, server approvals, answering
-`ask_user` questions and permission prompts, dismissing, opening), and
-terminals in SwiftTerm. New attention items post a macOS notification when
-the app runs as `Yarvis.app`.
+The app is laid out like the web UI: a sidebar with the Chat, Terminal,
+Workspaces, Review, Calendar, Alarms and Heads down pages in the web's
+order and Settings at the bottom, and the attention bell as a panel.
+`AppModel` routes between pages as the web's `App.tsx` does: an
+attention item, a `yarvis://` link or a workspace mention opens the
+chat thread, workspace, review workspace or terminal pane it names
+(`openReview` is the web's `handleOpenReview`), and a PTY id is
+routed by the surface that owns it (`tab:terminal/…` to Terminal,
+`ws-claude:<id>` and `ws:<id>/…` to Workspaces).
 
-In a `WKWebView`: everything else, including first-run setup, the vault
-unlock screen, devices and Settings.
+Native:
+
+- Sign-in and sign-out, the code prompt for `reauth_required`, the
+  events socket and the vault unlock screen.
+- Chat: tabs with concurrent turns, queued messages, reasoning, tool
+  cards, edit and resend, the approval bar, artifacts and the MCP
+  connection bar.
+- Terminals: tabs and split panes in SwiftTerm, with a layout kept per
+  surface in the web's shape.
+- Workspaces: the list, the detail page with its agent and terminals,
+  provisioning, new workspaces, archiving, changed and all files, diffs
+  with review comments, and the editor.
+- Review workspaces: every tab of the web's Review page. Diffs and files
+  are an `NSTableView` with a Myers line diff and a small tokenizer for
+  highlighting instead of Monaco, so code navigation is the sidecar's
+  text search only. The verification Flow diagram is Mermaid in a
+  locked-down `WKWebView` (bundled by `make-app.sh` from
+  `node_modules`); the guide's flow graph is drawn natively. Azure's
+  viewed files are kept on this Mac per server.
+- Calendar: agenda, week, month and day views, and meeting alarms.
+- Alarms: the list, and a takeover driven by `alarm.fire` and
+  `alarm.release` events and the `/api/alarms/stream` SSE.
+- Heads-down mode: the run, questions and approvals, work streams,
+  messages, routines, settings and the merge pop-ups. The live pass
+  comes from `/api/heads-down/stream`, which only sends what happens
+  after it connects, so the lists are read again on each connect.
+- Settings: devices, pairing tokens and the account.
+- Attention: items, server approvals, answering `ask_user` questions
+  and permission prompts, dismissing and opening. New attention items
+  post a macOS notification when the app runs as `Yarvis.app`.
+
+In a `WKWebView`: everything else, including first-run setup, the PRs list, tasks,
+memory, and the rest of Settings.
 
 Checked against a real `yarvis-server` with the sidecar off: sign-in with a
 passphrase and TOTP, `/api/devices/me`, signing out with
