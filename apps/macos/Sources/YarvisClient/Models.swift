@@ -247,7 +247,7 @@ public struct AttentionItem: Codable, Sendable, Identifiable, Equatable {
     public var updatedAt: String
 
     /// A heads-down pass's question. It has its own kind and its own answer
-    /// routes, on the web's Heads down page, so it isn't a `question` item.
+    /// routes on the Heads down page, so it isn't a `question` item.
     public var isHeadsDown: Bool {
         source == "system" && kind != "question" && (sessionKey?.hasPrefix("heads-down:") ?? false)
     }

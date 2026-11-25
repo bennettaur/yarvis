@@ -117,6 +117,7 @@ struct MainView: View {
                 AttentionBell()
             }
         }
+        .headsDownPopups()
     }
 
     @ViewBuilder private var page: some View {
@@ -125,6 +126,7 @@ struct MainView: View {
         case .terminal: if let terminals = app.terminals { TerminalsView(model: terminals) }
         case .workspaces: if let workspaces = app.workspaces { WorkspacesView(model: workspaces) }
         case .settings: if let settings = app.settings { SettingsView(model: settings) }
+        case .headsDown: if let headsDown = app.headsDown { HeadsDownView(model: headsDown) }
         }
     }
 
