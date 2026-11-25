@@ -3,22 +3,42 @@ import Foundation
 import Observation
 import YarvisClient
 
+/// The pages in the sidebar, in the web UI's nav order. Settings is pinned
+/// to the bottom, as in the web UI's rail.
 enum Section: String, Hashable, CaseIterable {
-    case chat, attention, terminals
+    case chat, terminal, workspaces, review, calendar, alarms
+    case headsDown = "heads-down"
+    case settings
+
+    static let top: [Section] = [.chat, .terminal, .workspaces, .review, .calendar, .alarms, .headsDown]
+
+    /// Review is off the Cmd-digit shortcuts, as in the web UI, so the pages
+    /// after it keep their numbers.
+    var takesDigit: Bool { self != .review }
 
     var title: String {
         switch self {
         case .chat: return "Chat"
-        case .attention: return "Attention"
-        case .terminals: return "Terminals"
+        case .terminal: return "Terminal"
+        case .workspaces: return "Workspaces"
+        case .review: return "Review"
+        case .calendar: return "Calendar"
+        case .alarms: return "Alarms"
+        case .headsDown: return "Heads down"
+        case .settings: return "Settings"
         }
     }
 
     var symbol: String {
         switch self {
         case .chat: return "bubble.left.and.bubble.right"
-        case .attention: return "bell"
-        case .terminals: return "terminal"
+        case .terminal: return "terminal"
+        case .workspaces: return "square.stack.3d.up"
+        case .review: return "checklist"
+        case .calendar: return "calendar"
+        case .alarms: return "alarm"
+        case .headsDown: return "scope"
+        case .settings: return "gearshape"
         }
     }
 }
@@ -31,13 +51,23 @@ final class AppModel {
     private(set) var device: Device?
     /// Why the app last signed out on its own, shown on the sign-in screen.
     var signOutReason: String?
-    var section: Section = .chat
+    var section: Section = Section(rawValue: UserDefaults.standard.string(forKey: "section") ?? "") ?? .chat {
+        didSet { UserDefaults.standard.set(section.rawValue, forKey: "section") }
+    }
+    /// The attention panel, which slides in from the bell like the web UI's.
+    var attentionOpen = false
     /// A code prompt is up while this is set; the sheet resumes it.
     var codeRequest: CheckedContinuation<String?, Never>?
 
     private(set) var chat: ChatModel?
     private(set) var attention: AttentionModel?
     private(set) var terminals: TerminalsModel?
+    private(set) var workspaces: WorkspacesModel?
+    private(set) var review: ReviewModel?
+    private(set) var settings: SettingsModel?
+    private(set) var calendar: CalendarModel?
+    private(set) var alarms: AlarmsModel?
+    private(set) var headsDown: HeadsDownModel?
     private var events: EventStream?
     private var eventsTask: Task<Void, Never>?
     /// Changes on every connect and sign-out, so a 401 or 4401 that an older
@@ -79,7 +109,14 @@ final class AppModel {
         chat = ChatModel(app: self, client: client)
         attention = AttentionModel(app: self, client: client)
         terminals = TerminalsModel(app: self, client: client)
+        workspaces = WorkspacesModel(app: self, client: client)
+        review = ReviewModel(app: self, client: client)
+        settings = SettingsModel(app: self, client: client)
+        calendar = CalendarModel(app: self, client: client)
+        alarms = AlarmsModel(app: self, client: client)
+        headsDown = HeadsDownModel(app: self, client: client)
         attention?.start()
+        alarms?.start()
         startEvents(server: server, token: token, connection: connection)
         if device == nil {
             Task { self.device = try? await client.me() }
@@ -95,7 +132,7 @@ final class AppModel {
                 guard let self else { return }
                 switch update {
                 case .event(let e): self.handle(e)
-                case .lagged: self.attention?.reloadApprovals()
+                case .lagged: self.resync()
                 case .signedOut: self.serverSignedOut(connection: connection)
                 case .refused, .disconnected: break
                 }
@@ -108,15 +145,32 @@ final class AppModel {
         case "approval.requested", "approval.answered":
             attention?.reloadApprovals()
         case "sidecar.started":
-            chat?.reloadSessions()
             attention?.reload()
-        case "pty.started", "pty.exited":
-            // These two can arrive in either order, so read the list again
-            // rather than patch it from them.
-            terminals?.reload()
         default:
             break
         }
+        chat?.handle(event)
+        terminals?.handle(event)
+        workspaces?.handle(event)
+        review?.handle(event)
+        settings?.handle(event)
+        calendar?.handle(event)
+        alarms?.handle(event)
+        headsDown?.handle(event)
+    }
+
+    /// Events were missed (`lagged`), so every page reads its data again.
+    private func resync() {
+        attention?.reloadApprovals()
+        attention?.reload()
+        chat?.resync()
+        terminals?.resync()
+        workspaces?.resync()
+        review?.resync()
+        settings?.resync()
+        calendar?.resync()
+        alarms?.resync()
+        headsDown?.resync()
     }
 
     /// True from the user pressing Sign Out until the app has forgotten the token.
@@ -162,6 +216,12 @@ final class AppModel {
         attention?.stop()
         chat?.stop()
         terminals?.stop()
+        workspaces?.stop()
+        review?.stop()
+        settings?.stop()
+        calendar?.stop()
+        alarms?.stop()
+        headsDown?.stop()
     }
 
     /// Drops the token and everything signed in with it, and shows sign-in.
@@ -177,10 +237,23 @@ final class AppModel {
         chat = nil
         attention = nil
         terminals = nil
+        workspaces = nil
+        review = nil
+        settings = nil
+        calendar = nil
+        alarms = nil
+        headsDown = nil
         self.server = nil
         signOutReason = reason
         codeRequest?.resume(returning: nil)
         codeRequest = nil
+    }
+
+    /// A ringing alarm covers the main window. Sheets wait until it's
+    /// answered, since an overlay can't cover a sheet. Behind a locked vault
+    /// there is no main window, and a banner shows the alarm instead.
+    var alarmTakeoverShowing: Bool {
+        !(alarms?.takeoverQueue.isEmpty ?? true) && settings?.vaultNeedsUnlock != true
     }
 
     /// Why the last code was refused, shown in the prompt.
@@ -211,6 +284,81 @@ final class AppModel {
 
     func showWebUI() {
         webUIRequests += 1
+    }
+
+    // MARK: Moving between pages
+
+    /// Steps through every page, Settings included, wrapping around.
+    func cycleSection(by step: Int) {
+        let all = Section.allCases
+        let index = all.firstIndex(of: section) ?? 0
+        section = all[(index + step + all.count) % all.count]
+    }
+
+    func openChat(sessionId: String) {
+        section = .chat
+        chat?.openSession(sessionId)
+    }
+
+    /// Shows the workspace, and brings `focusSessionKey` (one of its terminal
+    /// panes, or its agent) into view when given.
+    func openWorkspace(id: String, focusSessionKey: String? = nil) {
+        section = .workspaces
+        workspaces?.open(id: id, focusSessionKey: focusSessionKey)
+    }
+
+    /// Opens the page that owns a PTY session, as the web's
+    /// `attentionSurfaceOf` routes it: a workspace's agent or panes go to the
+    /// Workspaces page, `tab:terminal/…` panes to the Terminal page. False for
+    /// an id neither owns.
+    @discardableResult
+    func openTerminalSession(_ key: String) -> Bool {
+        if key.hasPrefix(agentSessionPrefix) {
+            openWorkspace(id: String(key.dropFirst(agentSessionPrefix.count)), focusSessionKey: key)
+            return true
+        }
+        let surface = key.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
+        if surface.hasPrefix("ws:") {
+            openWorkspace(id: String(surface.dropFirst(3)), focusSessionKey: key)
+            return true
+        }
+        if surface == "tab:terminal", terminals?.focus(sessionKey: key) == true {
+            section = .terminal
+            return true
+        }
+        return false
+    }
+
+    /// Shows a review workspace with one of its PRs brought forward. Links,
+    /// attention items and the Workspaces page's PR rows all land here, so
+    /// each opens the same tab the same way.
+    func openReview(_ request: OpenReviewRequest) {
+        section = .review
+        review?.open(request)
+    }
+
+    func openSettings(tab: String? = nil) {
+        section = .settings
+        if let tab { settings?.open(tab: tab) }
+    }
+
+    /// Follows an in-app `yarvis://` link from a reply or an artifact. False
+    /// when the link isn't one this app knows, so the caller can leave it inert.
+    @discardableResult
+    func open(link: URL) -> Bool {
+        guard link.scheme == "yarvis", let place = YarvisPlace(link) else { return false }
+        switch place {
+        case .workspace(let id): openWorkspace(id: id)
+        case .tab(let name):
+            if let page = Section(rawValue: name) {
+                section = page
+            } else {
+                showWebUI()
+            }
+        case .settings(let tab): openSettings(tab: tab)
+        case .artifact, .setup, .tour: return false
+        }
+        return true
     }
 
     func openInBrowser() {

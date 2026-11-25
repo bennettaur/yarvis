@@ -732,6 +732,20 @@ export function reviewExternalId(nodeId: string): string {
   return `github:review:${nodeId}`;
 }
 
+export interface RevertPr {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  mergedAt: string;
+}
+
+export interface BranchCommit {
+  sha: string;
+  message: string;
+  url: string;
+}
+
 /** One review the viewer submitted, as the contributions API reports it. */
 export interface ReviewContribution {
   /** The review's GraphQL node id. */
@@ -2466,6 +2480,63 @@ export class GitHubClient {
       commits: typeof body.ahead_by === "number" ? body.ahead_by : null,
       rewritten: body.status === "diverged" || body.status === "behind",
     };
+  }
+
+  /** Merged PRs titled "Revert ..." since `since`, with their body for the reference to the original. */
+  async mergedRevertPrs(owner: string, repo: string, since: Date): Promise<RevertPr[]> {
+    const day = since.toISOString().slice(0, 10);
+    const query = `repo:${owner}/${repo} is:pr is:merged in:title Revert merged:>=${day}`;
+    const data = await this.api<{ items?: any[] }>(
+      `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
+    );
+    return (data.items ?? []).flatMap((item) =>
+      item.pull_request?.merged_at && new Date(item.pull_request.merged_at) >= since
+        ? [
+            {
+              number: item.number,
+              title: String(item.title ?? ""),
+              body: String(item.body ?? ""),
+              url: String(item.html_url ?? ""),
+              mergedAt: String(item.pull_request.merged_at),
+            },
+          ]
+        : [],
+    );
+  }
+
+  /** Commits on `branch` since `since`, for the ones whose message says they revert another. */
+  async recentCommits(
+    owner: string,
+    repo: string,
+    branch: string,
+    since: Date,
+  ): Promise<BranchCommit[]> {
+    const items = await this.api<any[]>(
+      `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branch)}&since=${encodeURIComponent(since.toISOString())}&per_page=100`,
+    );
+    return items.map((item) => ({
+      sha: String(item.sha),
+      message: String(item.commit?.message ?? ""),
+      url: String(item.html_url ?? ""),
+    }));
+  }
+
+  /** Numbers of the PRs that contain `sha`. */
+  async prNumbersForCommit(owner: string, repo: string, sha: string): Promise<number[]> {
+    const items = await this.api<any[]>(`/repos/${owner}/${repo}/commits/${sha}/pulls`);
+    return items.map((item) => Number(item.number)).filter(Number.isInteger);
+  }
+
+  async commitMessage(owner: string, repo: string, sha: string): Promise<string> {
+    const data = await this.api<{ commit?: { message?: string } }>(
+      `/repos/${owner}/${repo}/commits/${sha}`,
+    );
+    return data.commit?.message ?? "";
+  }
+
+  async defaultBranch(owner: string, repo: string): Promise<string> {
+    const data = await this.api<{ default_branch?: string }>(`/repos/${owner}/${repo}`);
+    return data.default_branch ?? "main";
   }
 
   /**

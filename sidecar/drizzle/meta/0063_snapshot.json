@@ -1,6 +1,6 @@
 {
-  "id": "d6e526dc-13ab-466b-90bb-b47dfd178e10",
-  "prevId": "d0aeff19-4a25-4a4f-93ce-4bf57e5f7e56",
+  "id": "1f16d5f7-0d2a-4d78-87a8-b8186b9497bc",
+  "prevId": "98111662-c3ea-4cb3-89f8-8fdeb594541a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4073,8 +4073,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.review_drafts": {
-      "name": "review_drafts",
+    "public.revert_investigations": {
+      "name": "revert_investigations",
       "schema": "",
       "columns": {
         "id": {
@@ -4084,125 +4084,99 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "ref_key": {
-          "name": "ref_key",
-          "type": "text",
+        "repo_id": {
+          "name": "repo_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_key": {
-          "name": "source_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "label": {
-          "name": "label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "line": {
-          "name": "line",
+        "original_number": {
+          "name": "original_number",
           "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
-        "head_sha": {
-          "name": "head_sha",
+        "original_title": {
+          "name": "original_title",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "title": {
-          "name": "title",
+        "original_url": {
+          "name": "original_url",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "body": {
-          "name": "body",
+        "revert_kind": {
+          "name": "revert_kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "edited_body": {
-          "name": "edited_body",
+        "revert_ref": {
+          "name": "revert_ref",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
+        },
+        "revert_title": {
+          "name": "revert_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revert_url": {
+          "name": "revert_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
         },
         "status": {
           "name": "status",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'open'"
+          "default": "'detected'"
         },
-        "outcome": {
-          "name": "outcome",
-          "type": "text",
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
-        "stale": {
-          "name": "stale",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "posted_at": {
-          "name": "posted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
+        "detected_at": {
+          "name": "detected_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
         },
-        "updated_at": {
-          "name": "updated_at",
+        "started_at": {
+          "name": "started_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+          "notNull": false
+        },
+        "ready_at": {
+          "name": "ready_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
-        "review_drafts_source_key_idx": {
-          "name": "review_drafts_source_key_idx",
+        "revert_investigations_original_idx": {
+          "name": "revert_investigations_original_idx",
           "columns": [
             {
-              "expression": "ref_key",
+              "expression": "repo_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "source",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "source_key",
+              "expression": "original_number",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4214,7 +4188,34 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "revert_investigations_repo_id_repos_id_fk": {
+          "name": "revert_investigations_repo_id_repos_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "repos",
+          "columnsFrom": [
+            "repo_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "revert_investigations_workspace_id_workspaces_id_fk": {
+          "name": "revert_investigations_workspace_id_workspaces_id_fk",
+          "tableFrom": "revert_investigations",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

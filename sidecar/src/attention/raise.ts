@@ -38,7 +38,7 @@ export interface RaiseAttentionInput {
  * Keyed by source too, so an agent re-raising a key can't rewrite an item the
  * app itself raised.
  */
-function sessionKeyFor(source: AttentionSource, dedupeKey: string): string {
+export function raisedSessionKey(source: AttentionSource, dedupeKey: string): string {
   return `raise:${source}:${dedupeKey}`;
 }
 
@@ -50,7 +50,7 @@ export async function raiseAttention(
   const source = input.source ?? "system";
   const item = await createAttention(db, {
     source,
-    sessionKey: input.dedupeKey ? sessionKeyFor(source, input.dedupeKey) : null,
+    sessionKey: input.dedupeKey ? raisedSessionKey(source, input.dedupeKey) : null,
     kind: input.kind,
     category: input.category,
     title: input.title,
@@ -72,7 +72,7 @@ export async function resolveRaisedAttention(
 ): Promise<void> {
   const rows = await clearAttentionScope(
     db,
-    { sessionKey: sessionKeyFor(source, dedupeKey) },
+    { sessionKey: raisedSessionKey(source, dedupeKey) },
     "resolved",
   );
   for (const row of rows) publish(row);

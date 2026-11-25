@@ -71,9 +71,19 @@ func encodeQueryValue(_ s: String) -> String {
 }
 
 /// Percent-encodes one path segment. Ids such as `ws:<id>/<tab>/<pane>` hold
-/// slashes, which must not become path separators.
+/// slashes, which must not become path separators, and a segment that is
+/// `.` or `..` would be read as moving up the path, so its dots are encoded.
 public func encodePathSegment(_ s: String) -> String {
+    if s == "." || s == ".." { return String(repeating: "%2E", count: s.count) }
     var allowed = CharacterSet.urlPathAllowed
     allowed.remove(charactersIn: "/?#%")
     return s.addingPercentEncoding(withAllowedCharacters: allowed) ?? s
+}
+
+/// The key a setting is saved under for one server. Chat tabs, terminal
+/// layouts and the selected workspace hold that server's ids, so each server
+/// keeps its own copy: another server would open them as empty chats and
+/// start shells under the saved pane ids.
+public func serverScopedKey(_ key: String, server: URL) -> String {
+    "\(server.absoluteString)|\(key)"
 }

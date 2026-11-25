@@ -339,7 +339,7 @@ interface ReviewWorkspaceDetail extends ReviewWorkspace {
 }
 
 /** A PR as the workspace list shows it: the setup log is only read on demand. */
-type ReviewWorkspacePrSummary = Omit<ReviewWorkspacePr, "setupLog">;
+export type ReviewWorkspacePrSummary = Omit<ReviewWorkspacePr, "setupLog">;
 
 async function prsFor(db: Db, workspaceId: string): Promise<ReviewWorkspacePr[]> {
   return db
