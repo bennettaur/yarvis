@@ -145,9 +145,9 @@ and sidecar jobs run only the tests a change can reach
 (`scripts/affected-tests.ts`; `bun run test:affected` and
 `bun run sidecar:test:affected` do the same locally), and the native app jobs
 run only when `apps/macos/` or `apps/android/` changed; pushes to main run
-everything, and `nightly.yml` builds both apps. A file tests read from disk
-rather than import is invisible to that selection, so add it to the suite's
-`fullRunOn` list. Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+everything, and `nightly.yml` builds both apps. A file that tests read from
+disk rather than import is invisible to that selection. Add it to the suite's
+`fullRunOn` list in `scripts/affected-tests.ts`. Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a

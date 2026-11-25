@@ -31,7 +31,9 @@ mise exec -- ./gradlew testDebugUnitTest assembleDebug lint
 ```
 
 The debug APK lands in `app/build/outputs/apk/debug/app-debug.apk`. CI runs the
-same command (the `android` job in `.github/workflows/ci.yml`).
+same command (the `android` job in `.github/workflows/ci.yml`) on pull requests
+that change this folder and on pushes to main. The nightly workflow runs it too
+and attaches the APK to the `nightly` release as `yarvis-android-debug.apk`.
 
 ## Install on a phone
 

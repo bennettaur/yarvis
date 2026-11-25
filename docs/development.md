@@ -137,7 +137,9 @@ On a pull request, the frontend and sidecar jobs run only the test files that
 import a changed file, directly or not (`scripts/affected-tests.ts`, built on
 `bun test --changed`). A change Bun can't trace through imports runs the whole
 suite instead: the lockfile, `package.json`, the test preloads and config, the
-sidecar's migrations, or `ci.yml` itself. Pushes to main always run every test.
+sidecar's migrations, or `ci.yml` itself. A few tests that read repo files
+from disk or scan the source tree run every time (`alwaysRun` in the script).
+Pushes to main always run every test.
 To run the same selection locally, against where your branch left
 `origin/main`:
 

@@ -24,8 +24,8 @@ env:
 
 jobs:
   # Which app folders a pull request touches, so each app job runs only when
-  # its own folder changed. Pushes to main and manual runs build every app,
-  # and the nightly workflow builds them all either way.
+  # its own folder (or this workflow) changed. Pushes to main and manual runs
+  # build every app, and the nightly workflow builds them all either way.
   changes:
     name: Changed apps
     runs-on: ubuntu-latest
