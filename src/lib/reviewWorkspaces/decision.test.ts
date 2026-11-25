@@ -411,7 +411,19 @@ describe("drafting a request for changes", () => {
       level: "medium",
       clientImpact: "",
       mitigations: [],
-      concerns: [{ title: "Stale reads", detail: "d", path: "src/cache.ts", line: 70 }],
+      concerns: [
+        // From before concerns carried a severity: read as medium.
+        { title: "Stale reads", detail: "d", path: "src/cache.ts", line: 70 },
+        {
+          title: "Mic stays live",
+          detail: "Hidden controls leave it recording.",
+          severity: "high",
+          fix: "Stop it on hide.",
+          path: "src/chat.tsx",
+          line: 4,
+        },
+        { title: "Nit", detail: "d", severity: "low", path: "src/chat.tsx", line: 5 },
+      ],
     },
     tests: {
       status: "issues",
@@ -429,7 +441,7 @@ describe("drafting a request for changes", () => {
   };
   const all = new Set(["claims", "changeMap", "tests", "risk"]);
 
-  it("ticks what a reviewer would almost always raise, and leaves low ones out", () => {
+  it("ticks what a reviewer would almost always raise, and leaves low findings out", () => {
     const drafts = draftComments(report, [ci("bad", "1 of 4 failing")], all);
     expect(
       drafts.map((d) => [d.source, d.title, d.severity, d.pickedByDefault, d.path, d.line]),
@@ -440,9 +452,17 @@ describe("drafting a request for changes", () => {
       ["Unfinished work", "TODO in eviction", "medium", false, "src/cache.ts", 50],
       ["Test quality", "No eviction test", "high", true, "src/cache.ts", 12],
       ["Risk", "Stale reads", "medium", false, "src/cache.ts", 70],
+      ["Risk", "Mic stays live", "high", true, "src/chat.tsx", 4],
+      // A low concern is still drafted, unticked: its severity is the agent's call.
+      ["Risk", "Nit", "low", false, "src/chat.tsx", 5],
       ["CI", "tests: failed", "high", true, undefined, undefined],
     ]);
+    // No fix, no "Suggested fix" line.
+    expect(drafts[5]?.body).not.toContain("Suggested fix");
     expect(drafts[2]?.body).toContain("> Why the timeout?");
+    expect(drafts[6]?.body).toContain(
+      "Hidden controls leave it recording.\n> Suggested fix: Stop it on hide.",
+    );
   });
 
   it("names each comment by what it's about, so the name holds when the report changes", () => {
@@ -472,7 +492,7 @@ describe("drafting a request for changes", () => {
     const test = drafts.find((d) => d.title === "No eviction test");
     expect(test?.path).toBeUndefined();
     expect(reviewSummary(drafts.filter((d) => d.pickedByDefault))).toBe(
-      "Requesting changes based on the verification report.\n\n**No eviction test** (verification report: Test quality, high)\n\n> d\n\n2 more comments are on the diff.",
+      "Requesting changes based on the verification report.\n\n**No eviction test** (verification report: Test quality, high)\n\n> d\n\n**Mic stays live** (verification report: Risk, high)\n\n> Hidden controls leave it recording.\n> Suggested fix: Stop it on hide.\n\n2 more comments are on the diff.",
     );
   });
 

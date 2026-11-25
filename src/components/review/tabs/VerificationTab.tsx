@@ -898,6 +898,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             actions={reportActions}
             currentSections={currentSections}
             upstack={upstack}
+            diffSource={{ workspaceId, pr }}
           />
         )}
       </div>
