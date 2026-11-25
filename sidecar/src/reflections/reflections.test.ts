@@ -85,6 +85,7 @@ describe("matching", () => {
       ["claims", "gap"],
     ]);
     expect(flagsOf(null)).toEqual([]);
+    expect(flagsOf(report).some((f) => f.section === "risk")).toBe(false);
   });
 
   it("flags risk concerns at the report's risk level", () => {
@@ -146,6 +147,53 @@ describe("gatherReviewReflection", () => {
     expect(data.unmatchedComments).toBe(1);
     expect(data.flagsWithoutComment).toBe(2);
     expect(data.draftOutcomes).toEqual([]);
+  });
+
+  it("matches a comment to a risk concern, and returns feedback when signed in", async () => {
+    const withRisk = {
+      risk: {
+        level: "high",
+        concerns: [{ title: "Double charge", detail: "d", path: "pay.ts", line: 40 }],
+      },
+    } as unknown as ChecklistReport;
+    const asked = {
+      id: "row-1",
+      refKey: "az:org/proj/repo/7",
+      runId: "run-1",
+      section: "risk",
+      kind: "concern",
+      itemKey: "double-charge",
+      item: { title: "Double charge", detail: "x".repeat(400) },
+      verdict: null,
+      rating: null,
+      reason: null,
+      actions: ["asked" as const],
+      updatedAt: now.toISOString(),
+    };
+    const data = await gatherReviewReflection(
+      db,
+      config,
+      { days: 7 },
+      {
+        now: () => now,
+        github: github({
+          1: detail("octocat", [thread("pay.ts", 42, comment("me", "this retries the charge"))]),
+          2: detail("octocat", []),
+        }),
+        report: async (key) => (key === "gh:o/r/1" ? withRisk : null),
+        feedback: async () => ({ feedback: [asked, { ...asked, id: "row-2" }], truncated: false }),
+      },
+    );
+    expect(data.prs[0]?.flags.map((f) => [f.section, f.severity, f.matched])).toEqual([
+      ["risk", "high", true],
+    ]);
+    expect(data.flagsWithoutComment).toBe(0);
+    const [first] = data.reportFeedback;
+    expect(first).toMatchObject({ pr: "az:org/proj/repo/7", path: null, line: null, reason: null });
+    expect(first?.detail).toBe(`${"x".repeat(300)}…`);
+    expect(data.feedbackBySection).toEqual([
+      { section: "risk", accepted: 0, rejected: 0, rerated: 0, posted: 0, asked: 2 },
+    ]);
   });
 
   it("leaves out the user's own PRs and says when GitHub isn't signed in", async () => {

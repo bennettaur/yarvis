@@ -54,6 +54,8 @@ function fenceFeedback(item: ItemFeedback, nonce: string): ItemFeedback {
     title: wrap(item.title),
     detail: wrap(item.detail),
     path: item.path === null ? null : wrap(item.path),
+    // The client sends it as free text, though the app only ever fills in a level.
+    reportRating: item.reportRating === null ? null : wrap(item.reportRating),
     reason: item.reason === null ? null : wrap(item.reason),
   };
 }

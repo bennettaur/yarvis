@@ -27,9 +27,13 @@ const MAX_PRS = 15;
 const MAX_COMMENTS_PER_PR = 30;
 const MAX_FLAGS_PER_PR = 30;
 const COMMENT_CHARS = 600;
-/** Most feedback rows a reflection reads, newest first, so the prompt stays a size a model can weigh. */
+/**
+ * Most feedback rows a reflection reads, newest first. Lower than
+ * `feedbackSince`'s own default because this prompt also carries every PR's
+ * comments and flags.
+ */
 const MAX_FEEDBACK = 120;
-/** The report's own text is context for the verdict, so less of it is kept than of a comment. */
+/** The report's own text is only context for the user's verdict, so it is kept short. */
 const FEEDBACK_ITEM_CHARS = 300;
 
 export interface Flag {
@@ -155,24 +159,25 @@ function clip(text: string, max = COMMENT_CHARS): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function labelOfRefKey(key: string): string {
+/** `owner/repo#n` for a GitHub PR; any other key is passed through as it is. */
+function prLabelOfRefKey(key: string): string {
   const ref = parseRefKey(key);
   return ref?.provider === "github" ? prLabel(ref.owner, ref.repo, ref.number) : key;
 }
 
 function itemFeedbackOf(row: ReportFeedback): ItemFeedback {
   return {
-    pr: labelOfRefKey(row.refKey),
+    pr: prLabelOfRefKey(row.refKey),
     section: row.section,
     kind: row.kind,
-    title: row.item.title,
+    title: clip(row.item.title, FEEDBACK_ITEM_CHARS),
     detail: clip(row.item.detail, FEEDBACK_ITEM_CHARS),
-    path: row.item.path ?? null,
+    path: row.item.path ? clip(row.item.path, FEEDBACK_ITEM_CHARS) : null,
     line: row.item.line ?? null,
     reportRating: row.item.rating ?? null,
     verdict: row.verdict,
     rating: row.rating,
-    reason: row.reason,
+    reason: row.reason ? clip(row.reason) : null,
     actions: row.actions,
   };
 }
@@ -194,7 +199,12 @@ export function tallyFeedback(items: ItemFeedback[]): FeedbackTally[] {
 }
 
 /** Read from the database, so it is there even when GitHub isn't. */
-async function loadFeedback(db: Db, from: Date, deps: ReflectionDeps, unavailable: string[]) {
+async function loadFeedback(
+  db: Db,
+  from: Date,
+  deps: ReflectionDeps,
+  unavailable: string[],
+): Promise<Pick<ReviewReflectionData, "reportFeedback" | "feedbackBySection">> {
   const load = deps.feedback ?? ((since: Date) => feedbackSince(db, since, MAX_FEEDBACK));
   try {
     const { feedback, truncated } = await load(from);
@@ -228,12 +238,13 @@ export function flagsOf(report: ChecklistReport | null): Omit<Flag, "matched">[]
   };
   for (const key of CHECK_SECTIONS) add(key, report[key]?.findings);
   add("claims", report.claims?.gaps);
+  const risk = report.risk;
   // A concern has no severity of its own, so it takes the report's risk level.
-  const level = report.risk?.level ?? "unrated";
-  add(
-    "risk",
-    report.risk?.concerns.map((c) => ({ ...c, severity: level })),
-  );
+  if (risk)
+    add(
+      "risk",
+      risk.concerns.map((c) => ({ ...c, severity: risk.level })),
+    );
   return out;
 }
 

@@ -250,9 +250,9 @@ another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
   verify-pr skill, the reviewer agents, the review-scout prompt or the
   verification layer. Flags you never commented near, on several PRs, are
   listed as likely noise. It also reads the feedback you gave on report items
-  in a review workspace (accepted, rejected with your reason, or rerated, and
-  whether you posted or asked about them), which it weighs above the comment
-  matching: sections whose items you keep rejecting, and ratings you keep
+  in a review workspace: what you accepted, rejected or rerated, your reasons,
+  and what you posted or asked about. It weighs that above the comment
+  matching. Sections whose items you keep rejecting, and ratings you keep
   changing, become suggestions aimed at your reasons. A PR with no
   verification report is skipped, and a week with fewer than three reports
   and no feedback has too little to learn from.
