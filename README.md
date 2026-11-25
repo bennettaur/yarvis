@@ -122,6 +122,9 @@ but it isn't notarized, so macOS blocks its first launch.
 - [Configuration](docs/configuration.md): where secrets and settings live,
   the `settings.json` reference, embeddings, 1Password, and environment
   variables. There is a starter [`settings.example.json`](docs/settings.example.json).
+- [Running the server](docs/server.md): running `yarvis-server` on its own,
+  reaching it over Tailscale or a Caddy reverse proxy, connecting the Android
+  app, and signing commits with 1Password's SSH agent.
 - [Running the local speech server](docs/voice-server.md): the local
   speech-to-text and text-to-speech server for voice.
 - [Development](docs/development.md): architecture, commands, tests, running a
