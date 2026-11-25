@@ -8,6 +8,7 @@ import {
   mutationTargets,
   readStrykerReport,
   relatedTests,
+  TEST_RUN_CPU_LIMIT_SECONDS,
   testCommand,
 } from "./mutation.ts";
 
@@ -103,16 +104,40 @@ describe("relatedTests", () => {
 });
 
 describe("testCommand", () => {
+  const limitPrefix = `ulimit -t ${TEST_RUN_CPU_LIMIT_SECONDS} && exec`;
+
   it("quotes every path, so a file name can't add shell syntax", () => {
     expect(testCommand("/bin/bun", "frontend", ["src/a;rm -rf x.test.ts"])).toBe(
-      "'/bin/bun' test './src/a;rm -rf x.test.ts'",
+      `${limitPrefix} '/bin/bun' test './src/a;rm -rf x.test.ts'`,
     );
   });
 
   it("runs the sidecar suite from sidecar/, with paths relative to it", () => {
     expect(testCommand("/bin/bun", "sidecar", ["sidecar/src/b.test.ts"])).toBe(
-      "cd sidecar && '/bin/bun' test './src/b.test.ts'",
+      `cd sidecar && ${limitPrefix} '/bin/bun' test './src/b.test.ts'`,
     );
+  });
+
+  it("fails the run when the test command can't start", () => {
+    const result = Bun.spawnSync(["sh", "-c", testCommand("/no/such/bun", "frontend", [])]);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("kills a run that outlives its limit, even inside a busy loop", () => {
+    const dir = mkdtempSync(join(tmpdir(), "verify-limit-"));
+    try {
+      writeFileSync(
+        join(dir, "spin.test.ts"),
+        "import { it } from 'bun:test';\nit('spins', () => { for (;;) {} });\n",
+      );
+      const command = testCommand(process.execPath, "frontend", ["spin.test.ts"], 1);
+      // The spawn timeout is only a backstop so a broken limit fails the test
+      // instead of hanging it. It kills with SIGTERM, not SIGXCPU.
+      const result = Bun.spawnSync(["sh", "-c", command], { cwd: dir, timeout: 20_000 });
+      expect(result.signalCode).toBe("SIGXCPU");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
