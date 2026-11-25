@@ -407,6 +407,11 @@ of priority, or a standing instruction such as "when Alex asks if the billing
 PR is ready, send him the link". The next pass acts on it, and later passes
 keep it in mind for the rest of this run.
 
+You can also add a work stream from anywhere with one line. In Omni Chat,
+switch to **Send to heads down**, type something like "get this PR merged",
+and check the stream it proposes before saving. See
+[Send to heads down](quick-chat.md#send-to-heads-down).
+
 ## What it has been doing
 
 **Work streams** lists each thread with what it's waiting on, its next step,

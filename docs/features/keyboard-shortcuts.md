@@ -70,6 +70,7 @@ why tabs cycle on other keys here. See [Review workspaces](review-workspaces.md)
 | Shift+Enter | New line |
 | A / D | Approve / deny the tool call in the approval bar |
 | Esc | Hide Omni Chat (the reply keeps streaming) |
+| Cmd+Shift+H | In Omni Chat, switch to [Send to heads down](quick-chat.md#send-to-heads-down) |
 
 ## Editor
 
