@@ -73,7 +73,9 @@ export async function getSizeTierConfig(): Promise<SizeTierThresholds> {
   };
 }
 
-const SNAPSHOT = /(^|\/)__snapshots__\/|\.snap$/;
+/** A file in a `__snapshots__` folder, or a `.snap` file anywhere. */
+const SNAPSHOT_DIR = /(^|\/)__snapshots__\//;
+const SNAPSHOT_FILE = /\.snap$/;
 /** Drizzle's migration metadata: a journal and one schema snapshot per migration. */
 const MIGRATION_META = /(^|\/)meta\/(_journal\.json|\d+_snapshot\.json)$/;
 
@@ -82,7 +84,9 @@ const MIGRATION_META = /(^|\/)meta\/(_journal\.json|\d+_snapshot\.json)$/;
  * `bulkKind` already skims, test snapshots, and migration metadata.
  */
 export function isGenerated(path: string, bulk?: BulkClass): boolean {
-  return !!bulk?.skim || SNAPSHOT.test(path) || MIGRATION_META.test(path);
+  return (
+    !!bulk?.skim || SNAPSHOT_DIR.test(path) || SNAPSHOT_FILE.test(path) || MIGRATION_META.test(path)
+  );
 }
 
 export interface PrepSize {
