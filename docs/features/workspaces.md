@@ -1010,7 +1010,7 @@ Every item has a category, so you can see what kind of work is waiting:
 
 | Category | What it holds |
 | --- | --- |
-| **Review** | Other people's pull requests, such as verification reports and guided reviews |
+| **Review** | Other people's pull requests, such as verification reports and guided reviews, a PR updated since your review, and reminders about reviews you started or haven't opened |
 | **Build** | Your own work, such as workspace sessions, your PRs and merges |
 | **Slack** | Chat messages waiting for an answer |
 | **General** | Everything else, such as scheduled tasks and heads-down questions |
@@ -1021,9 +1021,16 @@ takes its stream's category, and **General** when it has none.
 
 The panel groups **Needs you now** by category, with **Review** first and a
 count on each. The bar above the list filters to one category; press it again,
-or **All**, to see everything. Untick **Group** for one list, newest first.
+or **All**, to see everything. Untick **Group** for one list, newest first
+(narrowed to **Review**, it is ordered by risk as below).
 Yarvis remembers the **Group** choice in this browser between sessions. The
 filter resets when the app reloads, so a category can't stay hidden.
+
+A PR that [review prep](review-workspaces.md#review-prep) got ready carries
+the risk its verification report assessed: a **High risk** badge and a red
+edge, **Medium risk** in amber, or **Low risk** in green. Within **Review**,
+high-risk PRs come first, then medium, then low, then items with no badge,
+each newest first. A PR whose report didn't finish has no badge.
 
 ### Messages from Yarvis
 

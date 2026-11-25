@@ -5,6 +5,7 @@ import {
   type AttentionItemRow,
   type AttentionNavTarget,
   attentionItems,
+  type RiskLevel,
 } from "../db/schema.ts";
 
 /**
@@ -36,6 +37,7 @@ export interface CreateAttentionInput {
   title: string;
   body?: string | null;
   navTarget?: AttentionNavTarget | null;
+  risk?: RiskLevel | null;
   payload?: unknown;
 }
 
@@ -79,6 +81,7 @@ export async function createAttention(
         title: input.title,
         body: input.body ?? null,
         navTarget: input.navTarget ?? null,
+        risk: input.risk ?? null,
         payload: (input.payload ?? null) as AttentionItemRow["payload"],
       })
       // Coalesce onto the live pending row for this (sessionKey, kind). The
@@ -92,6 +95,7 @@ export async function createAttention(
           title: input.title,
           body: input.body ?? null,
           navTarget: input.navTarget ?? null,
+          risk: input.risk ?? null,
           payload: (input.payload ?? null) as AttentionItemRow["payload"],
           updatedAt: new Date(),
         },

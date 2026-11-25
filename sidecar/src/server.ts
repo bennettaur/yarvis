@@ -16,6 +16,7 @@ import { redactSecrets } from "./llm/errors.ts";
 import { chooseEmbedder } from "./memory/embedder.ts";
 import { sweepStaleGuides } from "./pr/guides.ts";
 import { createReadiness } from "./readiness.ts";
+import { watchPrepDismissals } from "./reviewPrep/service.ts";
 import { sweepContextDirs } from "./reviewWorkspaces/agentContext.ts";
 import { sweepMutantCopies } from "./reviewWorkspaces/mutantCopy.ts";
 import {
@@ -118,6 +119,8 @@ if (config.databaseUrl) {
       // Yarvis's git refuses a clone with a symlink in its git data either way;
       // this raises the workspace alert when it does, on every instance.
       registerSymlinkAlerts(getDb(config.databaseUrl as string).db);
+      // A dismissal reaches the instance whose route handled it, so every one listens.
+      watchPrepDismissals(getDb(config.databaseUrl as string).db, config);
       // Every instance sweeps its own agent runs, secondaries included: only the
       // instance that started a run can know its process is gone.
       failInterruptedAgentRuns(getDb(config.databaseUrl as string).db, instance.name, bootedAt)

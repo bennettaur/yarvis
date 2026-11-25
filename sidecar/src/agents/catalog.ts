@@ -8,6 +8,7 @@ import complexityRouter from "./definitions/complexity-router.md" with { type: "
 import mergeReviewer from "./definitions/merge-reviewer.md" with { type: "text" };
 import planner from "./definitions/planner.md" with { type: "text" };
 import projectManager from "./definitions/project-manager.md" with { type: "text" };
+import reviewScout from "./definitions/review-scout.md" with { type: "text" };
 import sessionSummarizer from "./definitions/session-summarizer.md" with { type: "text" };
 import specialistPicker from "./definitions/specialist-picker.md" with { type: "text" };
 import workScout from "./definitions/work-scout.md" with { type: "text" };
@@ -108,6 +109,7 @@ const MAX_STEPS_CEILING = 30;
 /** The definitions this repo ships, embedded at build time. */
 const BUILTIN_FILES: { path: string; content: string }[] = [
   { path: "definitions/work-scout.md", content: workScout },
+  { path: "definitions/review-scout.md", content: reviewScout },
   { path: "definitions/project-manager.md", content: projectManager },
   { path: "definitions/activity-consolidator.md", content: activityConsolidator },
   { path: "definitions/session-summarizer.md", content: sessionSummarizer },

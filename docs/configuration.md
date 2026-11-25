@@ -203,7 +203,7 @@ enabled = true   # the server signs git commits with a key in the vault
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
-**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+**Keep signing in 1Password.** Leave the vault off and keep the
 key where it is:
 
 ```toml
@@ -218,7 +218,40 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
-for approval on the laptop itself.
+for approval on the Mac it runs on. [Running the server](server.md#commit-signing-and-the-ssh-agent)
+explains how the server picks the socket and walks through both setups.
+
+### Moving secrets to another store
+
+`yarvis-server secrets migrate` copies your secrets from one store to another,
+in any direction between `keychain`, `onepassword` and `vault`:
+
+```bash
+yarvis-server secrets migrate --from keychain --to vault
+```
+
+- **The source is only read.** It keeps its copy, so you can switch back. Remove
+  it yourself once the new store works.
+- **The vault.** It asks for the vault passphrase (`--passphrase-stdin` reads it
+  from stdin). If you're moving into the vault and there isn't one yet, it
+  offers to create it, as `vault init` would, and prints the recovery key. It
+  checks the source has secrets first, so it never leaves an empty vault.
+- **Stop the server first** when it already uses the vault. A running server
+  keeps its own copy of the vault in memory and would write over what was
+  copied, so the command refuses while the server answers on its address.
+- **1Password.** It uses the vault and item set in **Settings → Credentials →
+  Secret store**, and may ask you to approve `op` in 1Password.
+- **When both hold a secret.** If the destination already has a key with a
+  different value, nothing is copied. The command lists those keys, never their
+  values. Run it again with `--force-source` to take the source's values, or
+  `--force-dest` to keep the destination's. Either way, keys only the source has
+  are added and keys only the destination has are kept.
+- **Then switch.** Set `backend` under `[secrets]` in `server.toml` to the new
+  store and restart the server. The command prints the line when it isn't set
+  already.
+
+Settings' own **Secret store** switch still moves between the Keychain and
+1Password. It copies only into an empty store, and it can't reach the vault.
 
 ### `PATH` for a server launchd starts
 
@@ -329,8 +362,10 @@ has written your providers and MCP servers into it.
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `prVerification` | `sections`, the user's overrides of each verification check's Claude Code `model` (`sonnet`, `opus` or `haiku`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), by section name; a check with no override runs on its default (Opus at high effort for `risk` and `malice`, Haiku at low effort for `comments` and `observability`, Sonnet at medium effort for the rest). A `model` saved before checks had their own is ignored. `harness`, the id of the Claude Code, OpenCode or Pi [agent harness](features/workspaces.md#agent-harnesses) the checks run with; left out, the built-in agent. `harnessModels`, by harness id, the model an OpenCode or Pi harness runs each tier on (`provider/model`, optionally OpenCode's `#variant` or Pi's `:level`): `opus`, `sonnet` and `haiku`. Also `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
-| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
+| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised. The `pr-updates` job runs it with the same model and budget whatever `autoStart` says, and asks first instead of starting a run estimated over the budget | Settings → PR review |
+| `reviewPrep` | `maxConcurrentVerifications` (2, from 1 to 5): how many PRs [review prep](features/review-workspaces.md#review-prep) verifies at once; the rest wait their turn. `maxReady` (5, from 1 to 50): how many PRs review prep keeps ready or being prepared at once; further PRs wait in a backlog, and a stack is prepared whole even past this | Edit the file by hand |
 | `revertInvestigation` | `autoStart` (off by default): starts the investigation of a detected revert of your PR straight away instead of raising a bell item to ask first. See [Revert investigations](features/workspaces.md#revert-investigations) | Edit `settings.json`, or `PUT /api/revert-investigations/settings` |
+| `stalledWork` | [Reminders about stalled work](features/assistant.md#reminders-about-stalled-work): `enabled` (on by default) and `thresholdHours`, the hours an item waits before its first reminder, by attention category: `review` (24), `build` (48), `slack` (8) and `general` (24), each from 1 to 720 | Edit the file by hand |
 | `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |

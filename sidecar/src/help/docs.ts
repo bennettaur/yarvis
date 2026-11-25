@@ -19,6 +19,7 @@ import terminals from "../../../docs/features/terminals.md" with { type: "text" 
 import voice from "../../../docs/features/voice.md" with { type: "text" };
 import workspaces from "../../../docs/features/workspaces.md" with { type: "text" };
 import gettingStarted from "../../../docs/getting-started.md" with { type: "text" };
+import server from "../../../docs/server.md" with { type: "text" };
 import voiceServer from "../../../docs/voice-server.md" with { type: "text" };
 
 /**
@@ -34,6 +35,7 @@ import voiceServer from "../../../docs/voice-server.md" with { type: "text" };
 const DOCS: Record<string, string> = {
   "getting-started": gettingStarted,
   configuration,
+  server,
   "voice-server": voiceServer,
   "features/agent-field": agentField,
   "features/assistant": assistant,

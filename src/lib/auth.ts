@@ -259,17 +259,63 @@ export interface Approval {
   createdAt: number;
   /** After this the server denies it. */
   expiresAt: number;
+  /**
+   * Set when approving may also cover later requests: the longest it may, in
+   * seconds. A signature approval offers this.
+   */
+  maxAllowForSecs?: number;
 }
 
 /** The approvals still waiting on an answer. */
 export const listApprovals = () => get<Approval[]>("/api/approvals", "approvals");
 
-/** Answers an approval. A 409 means another device answered first. */
-export async function answerApproval(id: string, approve: boolean): Promise<void> {
+/**
+ * Answers an approval. `allowForSecs` lets an approval cover later requests
+ * for that long, when the approval offers it. A 409 means another device
+ * answered first.
+ */
+export async function answerApproval(
+  id: string,
+  approve: boolean,
+  allowForSecs?: number,
+): Promise<void> {
   const res = await serverFetch(`/api/approvals/${encodeURIComponent(id)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ approve }),
+    body: JSON.stringify(allowForSecs === undefined ? { approve } : { approve, allowForSecs }),
   });
   await ensureOk(res, "answer approval");
+}
+
+/** The server's own commit-signing agent, as `GET /api/vault/ssh-agent` reports it. */
+export interface SshAgentStatus {
+  enabled: boolean;
+  publicKey?: string;
+  socketPath?: string;
+  /** While commits are signed without asking, when that ends by the server's clock. */
+  grantExpiresAt?: number;
+  /** The same, as milliseconds left when the server answered. */
+  grantRemainingMs?: number;
+  /**
+   * When the grant ends by this device's clock, worked out on arrival from
+   * `grantRemainingMs`. Use this one: the two clocks can differ.
+   */
+  grantEndsAt?: number;
+}
+
+/** The signing agent's status, or `null` when the server runs without one. */
+export async function getSshAgentStatus(): Promise<SshAgentStatus | null> {
+  const res = await serverFetch("/api/vault/ssh-agent");
+  if (res.status === 404) return null;
+  await ensureOk(res, "signing agent");
+  const status = (await res.json()) as SshAgentStatus;
+  return status.grantRemainingMs === undefined
+    ? status
+    : { ...status, grantEndsAt: Date.now() + status.grantRemainingMs };
+}
+
+/** Goes back to asking before every signature. */
+export async function endSigningGrant(): Promise<void> {
+  const res = await serverFetch("/api/vault/ssh-agent/grant", { method: "DELETE" });
+  await ensureOk(res, "stop signing without asking");
 }

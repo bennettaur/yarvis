@@ -25,6 +25,7 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import { listReviewDrafts, type ReviewDrafts } from "../../../lib/reviewWorkspaces/drafts";
 import {
   type FeedbackInput,
   type ReportFeedback,
@@ -128,6 +129,28 @@ export function useVerificationChecklist(
     () => verificationChecklist(workspaceId, prId),
     SIDECAR_FRESHNESS,
   );
+}
+
+/**
+ * The PR's draft comments. The key carries the head and the report's newest
+ * results, so a push or a finished check reads them again: the sidecar brings
+ * them in line with the report on every read.
+ */
+export function draftsKey(
+  prId: string,
+  headSha: string | null,
+  checklist: VerificationChecklist | null,
+): string {
+  const results = checklist?.items.map((i) => i.result?.id ?? "").join(",") ?? "";
+  return `${reviewWorkspacePrefix(prId)}drafts:${headSha ?? ""}:${results}`;
+}
+
+export function useReviewDrafts(
+  workspaceId: string,
+  prId: string,
+  key: string,
+): Resource<ReviewDrafts> {
+  return useCachedResource(key, () => listReviewDrafts(workspaceId, prId), SIDECAR_FRESHNESS);
 }
 
 /** What CI, scanners and bots said about the PR. A provider call, so held longer. */

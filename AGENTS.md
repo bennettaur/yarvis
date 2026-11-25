@@ -140,7 +140,15 @@ CI (`.github/workflows/ci.yml`) runs all of the above (frontend tests, sidecar
 tests, the server tests and the e2e against a `pgvector/pgvector:pg16`
 service container, the frontend,
 sidecar and `video/` typechecks, biome, `bun audit --prod`, `cargo fmt --check`,
-`cargo clippy`, `cargo test`, `cargo audit`). Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
+`cargo clippy`, `cargo test`, `cargo audit`). On a pull request the frontend
+and sidecar jobs run only the tests a change can reach
+(`scripts/affected-tests.ts`; `bun run test:affected` and
+`bun run sidecar:test:affected` do the same locally), and the Rust and native
+app jobs run only when their own folder (`src-tauri/`, `server/`,
+`apps/macos/`, `apps/android/`) changed; pushes to main run
+everything, and `nightly.yml` builds both apps. A file that tests read from
+disk rather than import is invisible to that selection. Add it to the suite's
+`fullRunOn` list in `scripts/affected-tests.ts`. Every job in it runs on a read-only `GITHUB_TOKEN` — ci.yml
 sets that default itself, so a job that needs to write back to GitHub has to
 say so in its own `permissions:` block, where review can see it — and its
 actions are pinned to commit SHAs, with the ref they were resolved from in a
@@ -994,6 +1002,15 @@ report there and leaves the fixes to the author.
   back is fenced
   before the chat model reads it, and the file list is the model's claim, so
   `filesInFolder` keeps only files that really are inside the folder.
+- A review comment Yarvis proposes is a row in `review_drafts`
+  (`reviewWorkspaces/drafts.ts`), keyed by PR, never a post. A source adds
+  its drafts only through `syncReviewDrafts`, with a `sourceKey` that stays
+  the same across heads (no line in it) and a body already made safe to post
+  under the reviewer's account (`draftCommentBody`: mentions broken, model
+  text quoted). The verification report is synced when the drafts list is
+  read. Only `postAcceptedDrafts`, from the reviewer's click, sends anything,
+  and a sync puts an accepted draft whose text or line changed back to
+  undecided, so what posts is always what the reviewer saw.
 - Delegation is files, not rows. A specialist (`sidecar/src/agents/`) is a
   markdown file: frontmatter for its tools, model (or complexity tier — see
   `sidecar/src/llm/complexity.ts`) and step budget, body as its system prompt.

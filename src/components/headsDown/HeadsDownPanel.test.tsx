@@ -205,6 +205,9 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
   model: string | null;
 } = CONFIG;
 
+/** What the review stream route answers; a test may replace it. */
+let reviewStream: unknown = { maxReady: 5, slots: [], backlog: [] };
+
 /** The run the page loads; a test may replace it. */
 let currentRun: typeof RUN | null = RUN;
 let passCounts = { passesToday: 4, maxPassesPerDay: null as number | null };
@@ -285,6 +288,7 @@ stubSidecarApi({
       if (routinesAnswer === "hang") return new Promise<Response>(() => {});
       return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
     }
+    if (path === "/api/review-prep/stream") return json(reviewStream);
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
@@ -320,6 +324,7 @@ afterEach(() => {
   passCounts = { passesToday: 4, maxPassesPerDay: null };
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
+  reviewStream = { maxReady: 5, slots: [], backlog: [] };
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -360,6 +365,35 @@ describe("HeadsDownPanel", () => {
     const limited = await mount();
     await waitForText(limited, "Passes today: 40 of 40");
     expect(limited.textContent).toContain("Reached today's pass limit");
+  });
+
+  it("shows the review stream: what holds a slot, with its risk, and the backlog", async () => {
+    reviewStream = {
+      maxReady: 2,
+      slots: [
+        { pr: "api#1", state: "ready", risk: "high" },
+        { pr: "api#2", state: "verifying", risk: null },
+        { pr: "api#3", state: "queued", risk: null },
+      ],
+      backlog: [
+        { pr: "web#9", backloggedAt: "2026-10-19T09:00:00.000Z" },
+        { pr: "web#4", backloggedAt: "2026-10-19T09:30:00.000Z" },
+      ],
+    };
+    const host = await mount();
+    await waitForText(host, "Review stream");
+    const text = host.textContent ?? "";
+    expect(text).toContain("3 of 2 prepared (a stack started past the limit) · 2 in the backlog");
+    const row = [...host.querySelectorAll("li")].find((li) => li.textContent?.includes("api#1"));
+    expect(row?.textContent).toContain("ready for review");
+    expect(row?.textContent).toContain("High risk");
+    expect(text.indexOf("web#9")).toBeLessThan(text.indexOf("web#4"));
+  });
+
+  it("leaves the review stream out until review prep has a PR", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).not.toContain("Review stream");
   });
 
   it("lists the routines, and a file that failed to load", async () => {

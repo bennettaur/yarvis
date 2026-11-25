@@ -1,5 +1,8 @@
 import type { Db } from "../db/client.ts";
+import { stalledWorkJob } from "../digest/stalled.ts";
 import { revertInvestigationJob } from "../revertInvestigation/job.ts";
+import { reviewPrepJob } from "../reviewPrep/archive.ts";
+import { prUpdatesJob } from "../reviewPrep/updates.ts";
 import { scheduledTasksJob } from "../scheduledTasks/job.ts";
 import {
   getAgentJob,
@@ -26,6 +29,9 @@ export function allJobs(): JobDefinition[] {
     ccSessionDigestJob,
     ...consolidationJobs,
     scheduledTasksJob(),
+    reviewPrepJob,
+    prUpdatesJob,
+    stalledWorkJob,
   ];
 }
 

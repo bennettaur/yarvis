@@ -204,8 +204,11 @@ describe("loadRoutines", () => {
     const { routines, problems } = await loadRoutines();
     expect(problems).toEqual([]);
     expect(routines.map((r) => [r.name, r.enabled])).toEqual([
+      ["generation-reflection", false],
       ["meeting-alarms", true],
       ["meeting-notes", false],
+      ["review-prep", false],
+      ["review-reflection", false],
     ]);
   });
 

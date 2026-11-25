@@ -161,7 +161,7 @@ export async function backgroundSettled(): Promise<void> {
 }
 
 /** The active review workspace already holding `ref`, most recently opened first. */
-async function findReviewWorkspacePr(
+export async function findReviewWorkspacePr(
   db: Db,
   ref: PrRef,
 ): Promise<{ workspaceId: string; prId: string } | null> {

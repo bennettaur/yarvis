@@ -26,6 +26,9 @@ export const ATTENTION_CATEGORIES = ["review", "build", "slack", "general"] as c
 export type AttentionCategory = (typeof ATTENTION_CATEGORIES)[number];
 export type AttentionStatus = "pending" | "read" | "resolved" | "dismissed";
 
+/** A verification report's risk level, mirroring the sidecar's `RISK_LEVELS`. */
+export type RiskLevel = "low" | "medium" | "high";
+
 /** Where clicking an item should take the user; mirrors the sidecar union. */
 export type AttentionNavTarget =
   | { type: "workspace-claude"; workspaceId: string }
@@ -39,8 +42,15 @@ export type AttentionNavTarget =
   | { type: "issue"; provider: string; sourceKey: string; externalId: string }
   | { type: "task"; taskId: string }
   | { type: "heads-down" }
+  /** An artifact, opened beside the Chat tab. */
+  | { type: "artifact"; id: string }
   /** A PR in a review workspace, opened on one of its tabs. */
-  | { type: "review-workspace"; workspaceId: string; prId: string; tab?: "verification" };
+  | {
+      type: "review-workspace";
+      workspaceId: string;
+      prId: string;
+      tab?: "verification" | "since-review";
+    };
 
 export interface AttentionItem {
   id: string;
@@ -54,6 +64,8 @@ export interface AttentionItem {
   body: string | null;
   status: AttentionStatus;
   navTarget: AttentionNavTarget | null;
+  /** A prepared PR's verification risk level; null for every other item. */
+  risk?: RiskLevel | null;
   /** What the producer attached; a `question` item carries `{ questionId }`. */
   payload?: unknown;
   createdAt: string;
