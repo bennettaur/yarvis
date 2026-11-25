@@ -4,6 +4,7 @@ import postgres from "postgres";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
+import { createWorkStreamRoutes } from "./routes.ts";
 import { createStream } from "./service.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
@@ -103,5 +104,92 @@ describe("/api/work-streams", () => {
       400,
     );
     expect((await app.request("/api/work-streams/not-a-uuid", { headers: auth })).status).toBe(404);
+  });
+});
+
+describe("quick task", () => {
+  const proposal = {
+    title: "Merge the billing PR",
+    kind: "ship",
+    focus: "Get it merged once CI is green.",
+    priority: "high",
+    links: [
+      {
+        ref: { kind: "pr", provider: "github", url: "https://github.com/o/r/pull/5" },
+        title: "r #5",
+      },
+    ],
+  };
+
+  it("creates nothing when proposing, and a stream with its links on confirm", async () => {
+    const quick = createApp(config);
+    const bad = await quick.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({ ...proposal, title: "" }),
+    });
+    expect(bad.status).toBe(400);
+    expect(await sql`select 1 from work_streams`).toHaveLength(0);
+
+    const res = await quick.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify(proposal),
+    });
+    expect(res.status).toBe(201);
+    const stream = (await res.json()) as { summary: string; links: { kind: string }[] };
+    expect(stream.summary).toBe("Kind: ship. Get it merged once CI is green.");
+    expect(stream.links.map((l) => l.kind)).toEqual(["pr"]);
+  });
+
+  it("rejects a PR link that is not http(s)", async () => {
+    const res = await app.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        ...proposal,
+        links: [{ ref: { kind: "pr", provider: "github", url: "javascript:alert(1)" } }],
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("proposes without writing anything, and reports a failed model call", async () => {
+    const ok = createWorkStreamRoutes(config, { propose: async () => proposal as never });
+    const body = JSON.stringify({ message: "ship it", provider: "p", model: "m" });
+    const res = await ok.request("/quick-task/propose", { method: "POST", body });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { title: string }).title).toBe(proposal.title);
+    expect(await sql`select 1 from work_streams`).toHaveLength(0);
+
+    const bad = await ok.request("/quick-task/propose", {
+      method: "POST",
+      body: JSON.stringify({ message: "", provider: "p", model: "m" }),
+    });
+    expect(bad.status).toBe(400);
+
+    const failing = createWorkStreamRoutes(config, {
+      propose: async () => {
+        throw new Error("model down");
+      },
+    });
+    expect((await failing.request("/quick-task/propose", { method: "POST", body })).status).toBe(
+      502,
+    );
+  });
+
+  it("refuses to save a link to a workspace that doesn't exist", async () => {
+    const res = await app.request("/api/work-streams/quick-task", {
+      method: "POST",
+      headers: jsonAuth,
+      body: JSON.stringify({
+        ...proposal,
+        links: [
+          { ref: { kind: "workspace", workspaceId: "00000000-0000-4000-8000-000000000000" } },
+        ],
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await sql`select 1 from work_streams`).toHaveLength(0);
   });
 });

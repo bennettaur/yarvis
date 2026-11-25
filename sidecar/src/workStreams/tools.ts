@@ -63,7 +63,7 @@ const webUrl = z
   .url()
   .refine((u) => /^https?:\/\//i.test(u), "must be an http(s) URL");
 
-const linkRef = z.discriminatedUnion("kind", [
+export const linkRef = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("ticket"),
     provider: z.enum(["github", "jira", "azure-boards"]),
