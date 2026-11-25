@@ -178,6 +178,54 @@ type RunRow = Omit<ChecklistRun, "live" | "current" | "headSha"> & {
   meta: Record<string, unknown>;
 };
 
+/** The PR's verification runs, newest first. */
+async function verificationRunRows(db: Db, refKey: string): Promise<RunRow[]> {
+  return db
+    .select({
+      id: agentRuns.id,
+      status: agentRuns.status,
+      error: agentRuns.error,
+      costUsd: agentRuns.costUsd,
+      startedAt: agentRuns.startedAt,
+      finishedAt: agentRuns.finishedAt,
+      meta: agentRuns.meta,
+    })
+    .from(agentRuns)
+    .where(
+      and(eq(agentRuns.kind, VERIFICATION_RUN_KIND), sql`${agentRuns.meta}->>'refKey' = ${refKey}`),
+    )
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(MAX_RUNS_READ);
+}
+
+/**
+ * The report a PR's newest results make, read by ref alone: no workspace is
+ * needed, so it works for a PR whose review workspace is long gone. Null when
+ * no section ever answered.
+ */
+export async function storedReportFor(db: Db, refKey: string): Promise<ChecklistReport | null> {
+  const rows = await verificationRunRows(db, refKey);
+  const results = await newestAnswers(db, rows);
+  const answers: SectionAnswer[] = [];
+  for (const section of REPORT_SECTIONS) {
+    const answer = results.get(section);
+    if (!answer) continue;
+    const meta = answer.row.meta;
+    answers.push({
+      section,
+      headSha: typeof meta.headSha === "string" ? meta.headSha : null,
+      runId: answer.row.id,
+      startedAt: answer.row.startedAt,
+      report: answer.report,
+    });
+  }
+  const newest = answers.reduce<SectionAnswer | null>(
+    (a, b) => (!a || b.startedAt > a.startedAt ? b : a),
+    null,
+  );
+  return assembleReport(answers, newest?.headSha ?? null);
+}
+
 /**
  * The PR's checklist: each section's latest run and newest result, and the
  * report those results make.
@@ -192,7 +240,7 @@ export async function verificationChecklist(
   settings: () => Promise<VerificationRunConfig>,
 ): Promise<VerificationChecklist> {
   const pr = await getReviewPr(db, workspaceId, prId);
-  const rows = await verificationRuns(db, pr.refKey);
+  const rows = await verificationRunRows(db, pr.refKey);
 
   const toRun = (row: RunRow): ChecklistRun => {
     const { meta, ...rest } = row;
@@ -253,26 +301,6 @@ export async function verificationChecklist(
   };
 }
 
-/** The PR's verification runs, newest first. */
-function verificationRuns(db: Db, refKey: string): Promise<RunRow[]> {
-  return db
-    .select({
-      id: agentRuns.id,
-      status: agentRuns.status,
-      error: agentRuns.error,
-      costUsd: agentRuns.costUsd,
-      startedAt: agentRuns.startedAt,
-      finishedAt: agentRuns.finishedAt,
-      meta: agentRuns.meta,
-    })
-    .from(agentRuns)
-    .where(
-      and(eq(agentRuns.kind, VERIFICATION_RUN_KIND), sql`${agentRuns.meta}->>'refKey' = ${refKey}`),
-    )
-    .orderBy(desc(agentRuns.startedAt))
-    .limit(MAX_RUNS_READ);
-}
-
 /**
  * The report from the sections whose newest answer was made at the PR's
  * current head: what still holds for the code as it is now. Null when no
@@ -284,7 +312,7 @@ export async function reportAtHead(
 ): Promise<VerificationReport | null> {
   const headSha = pr.headSha;
   if (!headSha) return null;
-  const answers = await newestAnswers(db, await verificationRuns(db, pr.refKey));
+  const answers = await newestAnswers(db, await verificationRunRows(db, pr.refKey));
   const current: SectionAnswer[] = [];
   for (const [section, { row, report }] of answers) {
     if (row.meta.headSha !== headSha) continue;

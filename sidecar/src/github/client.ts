@@ -674,14 +674,16 @@ query($q:String!,$viewer:String!,$limit:Int!){
   }
 }`;
 
+const REVIEW_CANDIDATE_FIELDS = `
+  ${PR_INVOLVEMENT_FIELDS}
+  additions deletions changedFiles reviewDecision
+  latestOpinionatedReviews(first:50){ nodes{ state } }
+`;
+
 const REVIEW_CANDIDATE_SEARCH_QUERY = `
 query($q:String!,$viewer:String!,$limit:Int!){
   search(type:ISSUE, query:$q, first:$limit){
-    nodes{ ... on PullRequest {
-      ${PR_INVOLVEMENT_FIELDS}
-      additions deletions changedFiles reviewDecision
-      latestOpinionatedReviews(first:50){ nodes{ state } }
-    } }
+    nodes{ ... on PullRequest { ${REVIEW_CANDIDATE_FIELDS} } }
   }
 }`;
 
@@ -721,6 +723,20 @@ function toPrInvolvement(node: any): PrInvolvement {
       // A PENDING review is an unsubmitted draft only the viewer can see; it
       // says nothing about their verdict, so it would only add noise.
       .filter((s: ReviewerState) => s !== "pending"),
+  };
+}
+
+function toReviewCandidate(node: any): ReviewCandidate {
+  const states: string[] = (node.latestOpinionatedReviews?.nodes ?? []).map((r: any) =>
+    String(r?.state ?? "").toUpperCase(),
+  );
+  return {
+    ...toPrInvolvement(node),
+    approvals: states.filter((st) => st === "APPROVED").length,
+    changesRequested: states.filter((st) => st === "CHANGES_REQUESTED").length,
+    reviewDecision: toReviewDecision(node.reviewDecision),
+    changedLines: (Number(node.additions) || 0) + (Number(node.deletions) || 0),
+    changedFiles: Number(node.changedFiles) || 0,
   };
 }
 
@@ -849,22 +865,32 @@ export interface PrNumberRef {
   number: number;
 }
 
+function lookupVariables(refs: PrNumberRef[], viewerLogin: string): Record<string, unknown> {
+  const variables: Record<string, unknown> = { viewer: viewerLogin };
+  refs.forEach((ref, i) => {
+    variables[`o${i}`] = ref.owner;
+    variables[`r${i}`] = ref.repo;
+    variables[`n${i}`] = ref.number;
+  });
+  return variables;
+}
+
 /**
  * Builds a single GraphQL operation that fetches every ref by alias, so N PRs
  * cost one request rather than N. Aliases and variable names are index-derived
  * (never caller-supplied), so nothing from a ref reaches the query text.
  */
-function buildPrLookupQuery(count: number): string {
+function buildPrLookupQuery(count: number, fields: string = PR_INVOLVEMENT_FIELDS): string {
   const varDecls = Array.from(
     { length: count },
     (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
   ).join(",");
-  const fields = Array.from(
+  const lookups = Array.from(
     { length: count },
     (_, i) =>
-      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_INVOLVEMENT_FIELDS} } }`,
+      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${fields} } }`,
   ).join("\n");
-  return `query($viewer:String!,${varDecls}){\n${fields}\n}`;
+  return `query($viewer:String!,${varDecls}){\n${lookups}\n}`;
 }
 
 /**
@@ -1561,21 +1587,28 @@ export class GitHubClient {
       viewer: viewerLogin,
       limit,
     });
-    return (data.search?.nodes ?? [])
-      .filter((n) => n?.number)
-      .map((node) => {
-        const states: string[] = (node.latestOpinionatedReviews?.nodes ?? []).map((r: any) =>
-          String(r?.state ?? "").toUpperCase(),
-        );
-        return {
-          ...toPrInvolvement(node),
-          approvals: states.filter((st) => st === "APPROVED").length,
-          changesRequested: states.filter((st) => st === "CHANGES_REQUESTED").length,
-          reviewDecision: toReviewDecision(node.reviewDecision),
-          changedLines: (Number(node.additions) || 0) + (Number(node.deletions) || 0),
-          changedFiles: Number(node.changedFiles) || 0,
-        };
-      });
+    return (data.search?.nodes ?? []).filter((n) => n?.number).map(toReviewCandidate);
+  }
+
+  /**
+   * The named PRs as review candidates, in one request, in the order asked:
+   * null for a ref that no longer resolves (repo gone, PR deleted, access
+   * lost), so callers can match answers to what they asked about.
+   */
+  async lookupReviewCandidates(
+    refs: PrNumberRef[],
+    viewerLogin: string,
+  ): Promise<(ReviewCandidate | null)[]> {
+    if (refs.length === 0) return [];
+    const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
+      buildPrLookupQuery(refs.length, REVIEW_CANDIDATE_FIELDS),
+      lookupVariables(refs, viewerLogin),
+      { allowPartial: true },
+    );
+    return refs.map((_ref, i) => {
+      const node = data[`pr${i}`]?.pullRequest;
+      return node?.number ? toReviewCandidate(node) : null;
+    });
   }
 
   /**
@@ -1585,15 +1618,9 @@ export class GitHubClient {
    */
   async lookupInvolvement(refs: PrNumberRef[], viewerLogin: string): Promise<PrInvolvement[]> {
     if (refs.length === 0) return [];
-    const variables: Record<string, unknown> = { viewer: viewerLogin };
-    refs.forEach((ref, i) => {
-      variables[`o${i}`] = ref.owner;
-      variables[`r${i}`] = ref.repo;
-      variables[`n${i}`] = ref.number;
-    });
     const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
       buildPrLookupQuery(refs.length),
-      variables,
+      lookupVariables(refs, viewerLogin),
       { allowPartial: true },
     );
     const found: PrInvolvement[] = [];

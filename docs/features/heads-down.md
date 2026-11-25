@@ -164,10 +164,39 @@ Yarvis ships with three:
   are open in repos, by people or for teams you watch), and
   [prepares each one](review-workspaces.md#review-prep): a review workspace, a
   verification report, and then an item in the attention stream. It prepares
-  at most five per run and never comments on, approves or requests anything
-  on a PR. Preparing spends a verification report on each PR, within your
-  report budget. A large or over-budget PR is checked out but waits for you
-  to run the checks; a PR in a repo you haven't registered is skipped.
+  at most five per run, keeps at most five PRs ready for you at once (you
+  can change that) and [backlogs the rest](review-workspaces.md#review-prep),
+  and never comments on, approves or requests anything on a PR. Preparing
+  spends a verification report on each PR, within your report budget. A
+  large or over-budget PR is checked out but waits for you to run the
+  checks; a PR in a repo you haven't registered is skipped. While review
+  prep has PRs ready or backlogged, a **Review stream** box on the Heads down
+  page shows them.
+- **review-reflection**, off by default, weekly in working hours: looks at the
+  PRs you reviewed this week and compares the comments you left with what the
+  verification report flagged on the same PR. A comment and a flag match when
+  they sit on the same file within five lines; the pass judges the rest by
+  meaning. Comments verification missed become suggested changes to the
+  verify-pr skill, the reviewer agents, the review-scout prompt or the
+  verification layer. Flags you never commented near, on several PRs, are
+  listed as likely noise. A PR with no verification report is skipped, and a
+  week with fewer than three has too little to learn from.
+- **generation-reflection**, off by default, weekly in working hours: looks at
+  your PRs merged this week and the review comments other people left on them
+  (bots are left out), compares them with what verification flagged, and
+  suggests changes to the repo's `AGENTS.md`, your Claude instructions, the
+  reviewers or verification. Comments that repeat across PRs count; one-offs
+  and style nitpicks don't.
+
+Both end the same way. The pass stores a report, which is a document you can
+open from the attention stream's **General** item ("Review reflection is
+ready" or "Generation reflection is ready"). It lists the suggested changes,
+each with the PRs that show it. They change nothing: no repo, skill or
+instruction file is edited. To apply them, ask Yarvis in a chat to open a
+workspace on the repo and make the edits, then review the diff as usual. The
+comments they read are other people's words and reach the pass as data. A
+reflection reads GitHub, so it needs you signed in there. Turn one on the way
+review-prep is turned on, below.
 
 The **Routines** list on the Heads down page shows each one, how often it
 runs, when a pass last did it, and which ones are your own files. For a
@@ -270,7 +299,8 @@ routine's config lists repos, authors or teams, put them in the task as the
 repos, authors and teams to watch.
 
 For each PR the scout picks, call prep_pr_review with its owner, repo and
-number. Prepare at most five PRs per run. Don't comment on, approve or
+number. A PR that comes back backlogged starts on its own once you have
+fewer PRs to review, so don't try it again. Prepare at most five PRs per run. Don't comment on, approve or
 request changes on any PR, and don't message anyone about them. If the scout
 found nothing to prepare, or GitHub isn't signed in, count the routine as
 done.

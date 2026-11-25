@@ -14,6 +14,7 @@ import { useGroupByCategory } from "../../lib/useGroupByCategory";
 import type { WipItem, WipSource } from "../../lib/wip";
 import LoadingIndicator from "../LoadingIndicator";
 import { sessionTabTitle } from "../shell/terminalTabs/sessionIds";
+import RiskBadge, { RISK_ACCENT } from "./RiskBadge";
 
 /**
  * A right slide-out panel with three streams: "Ringing" (alarms that have fired
@@ -122,7 +123,9 @@ function AttentionGroupRow({
   };
 
   return (
-    <li className="group flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60">
+    <li
+      className={`group flex items-start gap-3 px-4 py-3 hover:bg-zinc-800/60 ${lead.risk ? RISK_ACCENT[lead.risk] : ""}`}
+    >
       <span
         title={KIND_HINT[lead.kind]}
         className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${KIND_DOT[lead.kind]}`}
@@ -130,6 +133,7 @@ function AttentionGroupRow({
       <button type="button" onClick={() => onOpen(lead)} className="min-w-0 flex-1 text-left">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm text-zinc-100">{lead.title}</span>
+          {lead.risk && <RiskBadge risk={lead.risk} />}
           {items.length > 1 && (
             <span
               title={`${items.length} pending items from this ${group.scope.workspaceId ? "workspace" : "tab"}`}
