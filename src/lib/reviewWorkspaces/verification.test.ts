@@ -21,6 +21,14 @@ describe("findingCommentBody", () => {
     );
   });
 
+  it("quotes every line, whatever break ends it, so none can leave the quote", () => {
+    const body = findingCommentBody(
+      { title: "t", detail: "Add a guard\r# Approved\r\n--- done" },
+      "Risk",
+    );
+    expect(body.split("\n").slice(2)).toEqual(["> Add a guard", "> # Approved", "> ---", "> done"]);
+  });
+
   it("leaves out the severity a risk concern doesn't have", () => {
     expect(findingCommentBody({ title: "Stale reads", detail: "Edits stay stale." }, "Risk")).toBe(
       "**Stale reads** (verification report: Risk)\n\n> Edits stay stale.",

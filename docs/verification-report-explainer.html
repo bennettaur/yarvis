@@ -131,11 +131,11 @@
 <!-- ───────────────────────────────────────────── -->
 <section id="in-app">
   <h2>What's in the report</h2>
-  <p>It runs Claude Code on your machine against the PR's checkout. The tab is a checklist grouped by theme, and each check runs on its own when you pick it, so one can be re-run, or fail, without the others. The report below the checklist shows each check's newest result, and every file and line in it opens the diff.</p>
+  <p>It runs Claude Code on your machine against the PR's checkout. The tab is a checklist grouped by theme, and each check runs on its own when you pick it, so one can be re-run, or fail, without the others. The report below the checklist shows each check's newest result, and every file and line in it opens the diff. It is grouped under the five questions a review answers: what the PR is trying to do, whether it does what it claims, whether it is safe to ship, whether anything is malicious or unrelated, and whether it meets the quality bar. Each question and section says in a line what it is for.</p>
   <div class="grid g3">
-    <div class="card"><h3>Summary and must-read files</h3><p>Each must-read file says why it matters, and lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
-    <div class="card"><h3>Risk</h3><p>Each change scored on an impact band from 1 to 5 (see <a href="#risk">below</a>). The band guides your reading rather than deciding a merge. High-band changes appear under <b>Needs attention</b> with what to check, the rest behind <b>Every change</b>.</p></div>
-    <div class="card"><h3>Checks</h3><p>Claims (the description and linked tickets checked against the code), malicious intent, tests, complexity, performance, comments, observability and code quality. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
+    <div class="card"><h3>Summary and must-read files</h3><p>Each must-read file gives a question to answer while reading it and what goes wrong if the answer is no, with the part of the diff it is about one click away. It also lists what already looks off or unclear in it: a branch that looks inverted, a value that seems ignored. These are questions to check while reading, not findings.</p></div>
+    <div class="card"><h3>Change map and risk</h3><p>The change map groups the PR into themes, each with what changes, the risk and why, and the tests or guards that show it is handled, or <b>None found</b>. Risk scores each change on an impact band from 1 to 5 (see <a href="#risk">below</a>), before and after the PR's tests count; lists problems with a suggested fix; and puts each mitigation under the risk it limits. The band guides your reading rather than deciding a merge.</p></div>
+    <div class="card"><h3>Checks</h3><p>Claims (the description and linked tickets checked against the code), malicious intent, tests, bugs, complexity, performance, comments, observability, code quality and improvements. The bugs check hunts for inputs or timing that break the change, traps for the next change, and existing bugs it now reaches. Improvements are refactors the PR points to, kept as follow-ups that never block. Each is a separate agent with its own brief, so one area doesn't crowd out another.</p></div>
     <div class="card"><h3>Simpler approach</h3><p>Rates the PR as a whole. An agent reads the description and code, then searches the checkout for something the PR could have reused, or a smaller change with the same effect.</p></div>
     <div class="card"><h3>Flow diagram</h3><p>Optional. Traces the whole flow the change sits in, from what starts it (a route, a job, a UI action) to where it ends, with the changed steps highlighted. It opens in its own tab rather than in the report.</p></div>
     <div class="card"><h3>Not examined</h3><p>Changed files that no check read in full, worked out from what the agents actually opened. This list appears at the top of the report, each file with the reason.</p></div>
@@ -216,7 +216,8 @@
   </ul>
   <p>Then for the PR: its band is its highest change's band, raised by <b>volume</b>. Many changes in one PR are more likely to include a bad one and harder to revert. Each change adds weight (a folded entry such as "9 comment cleanups" counts nine times): band 1 adds 0, band 2 adds 1, band 3 adds 2, bands 4 and 5 add 4. Additions add nothing: only other new code reaches them, and the edit that wires them in is scored as its own change. A total of 8 or more raises the PR one band, and 16 or more raises it two. Volume alone can raise a PR to band 4 but never to 5. When volume raised the band, the report says so: splitting the PR would lower it.</p>
 
-  <p>Changes at band 4 or above are listed under <b>Needs attention</b> with what to check. A high change with nothing specific to verify says "No check given: read this change." Every change is behind <b>Every change</b>.</p>
+  <p>The report shows two bands when they differ. <b>Potential</b> scores every change as unproven: how much could go wrong with no tests at all. <b>With its tests</b> is the band above: what is left once the PR's tests count. Other mitigations, such as a feature flag, don't change the band; they are listed under the risk they limit.</p>
+  <p>Changes at band 4 or above are listed under <b>Changes that need your attention</b> with what to confirm, the test that proves it, and what to add to prove it. A high change with nothing specific to verify says "No check given: read this change." Every change is behind <b>Every scored change</b>, grouped by the change map's themes, each trait a label you can hover for its meaning.</p>
   <p>The section's overall level is low (bands 1-2), medium (3) or high (4-5), or the agent's own rating if that is higher. The agent's rating covers what the band can't see, such as a failing CI check, or a reading group whose agent failed and listed nothing.</p>
   <div class="callout">
     <p>The table is the same one <code>/verify-pr</code> uses, but the in-app report doesn't check the classification against coverage or the import graph. A change the agent calls proven stays proven. That's why the band here guides your reading rather than deciding anything.</p>
@@ -246,7 +247,7 @@
   <div class="grid g2">
     <div class="card">
       <h3>Where to look, and why</h3>
-      <p>Must-read files with a reason, and under each one what already looks off. <b>Needs attention</b> changes with what to check.</p>
+      <p>Must-read files with a question to answer and why it matters, and under each one what already looks off. <b>Changes that need your attention</b> with what to confirm and what would prove it.</p>
     </div>
     <div class="card">
       <h3>Annotations on the diff itself</h3>

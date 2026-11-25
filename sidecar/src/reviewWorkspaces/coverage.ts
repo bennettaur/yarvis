@@ -78,6 +78,8 @@ export const LANE_CHECKS: Record<string, string> = {
   "yarvis-review:comment-reviewer": "Comment quality",
   "yarvis-review:observability-reviewer": "Observability",
   "yarvis-review:quality-reviewer": "Code quality",
+  "yarvis-review:bug-hunter": "Bugs",
+  "yarvis-review:improvement-reviewer": "Improvements",
 };
 
 /**

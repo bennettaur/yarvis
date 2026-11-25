@@ -203,7 +203,7 @@ enabled = true   # the server signs git commits with a key in the vault
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
-**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+**Keep signing in 1Password.** Leave the vault off and keep the
 key where it is:
 
 ```toml
@@ -218,7 +218,40 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
-for approval on the laptop itself.
+for approval on the Mac it runs on. [Running the server](server.md#commit-signing-and-the-ssh-agent)
+explains how the server picks the socket and walks through both setups.
+
+### Moving secrets to another store
+
+`yarvis-server secrets migrate` copies your secrets from one store to another,
+in any direction between `keychain`, `onepassword` and `vault`:
+
+```bash
+yarvis-server secrets migrate --from keychain --to vault
+```
+
+- **The source is only read.** It keeps its copy, so you can switch back. Remove
+  it yourself once the new store works.
+- **The vault.** It asks for the vault passphrase (`--passphrase-stdin` reads it
+  from stdin). If you're moving into the vault and there isn't one yet, it
+  offers to create it, as `vault init` would, and prints the recovery key. It
+  checks the source has secrets first, so it never leaves an empty vault.
+- **Stop the server first** when it already uses the vault. A running server
+  keeps its own copy of the vault in memory and would write over what was
+  copied, so the command refuses while the server answers on its address.
+- **1Password.** It uses the vault and item set in **Settings → Credentials →
+  Secret store**, and may ask you to approve `op` in 1Password.
+- **When both hold a secret.** If the destination already has a key with a
+  different value, nothing is copied. The command lists those keys, never their
+  values. Run it again with `--force-source` to take the source's values, or
+  `--force-dest` to keep the destination's. Either way, keys only the source has
+  are added and keys only the destination has are kept.
+- **Then switch.** Set `backend` under `[secrets]` in `server.toml` to the new
+  store and restart the server. The command prints the line when it isn't set
+  already.
+
+Settings' own **Secret store** switch still moves between the Keychain and
+1Password. It copies only into an empty store, and it can't reach the vault.
 
 ### `PATH` for a server launchd starts
 

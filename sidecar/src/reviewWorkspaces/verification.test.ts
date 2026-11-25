@@ -69,6 +69,8 @@ function report(overrides: Record<string, unknown> = {}) {
     performance: pass,
     comments: pass,
     observability: pass,
+    bugs: pass,
+    improvements: pass,
     quality: pass,
     approach: { rating: "no-simpler", reason: "Fits.", alternative: "" },
     ...overrides,
@@ -105,8 +107,8 @@ describe("the report schema", () => {
       }),
     );
     expect(parsed.mustRead).toEqual([
-      { path: "src/a.ts", reason: "core", lines: { start: 10, end: 40 }, flags: [] },
-      { path: "src/b.ts", reason: "second", lines: undefined, flags: [] },
+      { path: "src/a.ts", reason: "core", why: "", lines: { start: 10, end: 40 }, flags: [] },
+      { path: "src/b.ts", reason: "second", why: "", lines: undefined, flags: [] },
     ]);
     expect(audit.droppedMustReads).toEqual(["../../etc/passwd"]);
   });
@@ -184,15 +186,69 @@ describe("the report schema", () => {
         risk: {
           level: "high",
           clientImpact: "x".repeat(1000),
-          mitigations: ["a", "b", "c", "d"],
+          mitigations: ["a", "b", "c", "d", "e", "f"].map((text) => ({ text })),
           concerns: [{ title: "t".repeat(500), detail: "d" }],
         },
       }),
     );
     expect(parsed.risk?.clientImpact.length).toBe(240);
     expect(parsed.risk?.clientImpact.endsWith("…")).toBe(true);
-    expect(parsed.risk?.mitigations).toEqual(["a", "b", "c"]);
+    expect(parsed.risk?.mitigations.map((m) => m.text)).toEqual(["a", "b", "c", "d", "e"]);
     expect(parsed.risk?.concerns[0]?.title.length).toBe(100);
+  });
+
+  it("ties each mitigation to the risk it limits, or to none in particular", () => {
+    const parsed = schema.parse(
+      report({
+        risk: {
+          level: "low",
+          clientImpact: "",
+          mitigations: [
+            { text: "Older answer", addresses: null },
+            {
+              text: "Tests cover the retry",
+              addresses: "Retry failed uploads",
+              path: "./src/a.test.ts",
+              line: 12,
+            },
+          ],
+          concerns: [],
+        },
+      }),
+    );
+    expect(parsed.risk?.mitigations).toEqual([
+      { text: "Older answer", addresses: "", path: undefined, line: undefined },
+      {
+        text: "Tests cover the retry",
+        addresses: "Retry failed uploads",
+        path: "src/a.test.ts",
+        line: 12,
+      },
+    ]);
+  });
+
+  it("orders concerns by severity and keeps the fix, reading a concern with neither as medium", () => {
+    const parsed = schema.parse(
+      report({
+        risk: {
+          level: "low",
+          clientImpact: "",
+          mitigations: [],
+          concerns: [
+            { title: "Old shape", detail: "d" },
+            { title: "Minor", detail: "d", severity: "low", fix: null },
+            { title: "Mic stays live", detail: "d", severity: "high", fix: "Stop it on hide." },
+          ],
+        },
+      }),
+    );
+    expect(
+      parsed.risk?.concerns.map((c) => ({ title: c.title, severity: c.severity, fix: c.fix })),
+    ).toEqual([
+      { title: "Mic stays live", severity: "high", fix: "Stop it on hide." },
+      { title: "Old shape", severity: "medium", fix: "" },
+      { title: "Minor", severity: "low", fix: "" },
+    ]);
   });
 
   describe("risk's impact", () => {
@@ -243,6 +299,30 @@ describe("the report schema", () => {
           ).risk?.impact?.changes[0]?.count,
       );
       expect(counts).toEqual([1, 1, 1000]);
+    });
+
+    it("scores what the PR would be with nothing proven beside what its tests leave", () => {
+      const proven = change({
+        reach: "local",
+        evidence: "proven",
+        proof: { text: "Fails without the retry", path: "./src/a.test.ts", line: 9 },
+      });
+      const parsed = schema.parse(report({ risk: { ...report().risk, changes: [proven] } }));
+      // Logic in local code: 3 by the table, 2 once proven, 4 with no proof.
+      expect(parsed.risk?.impact).toMatchObject({ band: 2, potentialBand: 4 });
+      expect(parsed.risk?.impact?.changes[0]?.proof).toEqual({
+        text: "Fails without the retry",
+        path: "src/a.test.ts",
+        line: 9,
+      });
+      expect(parsed.risk?.impact?.changes[0]?.fix).toBe("");
+    });
+
+    it("gives the same potential band as the band when nothing is proven", () => {
+      const parsed = schema.parse(
+        report({ risk: { ...report().risk, changes: [change({ evidence: "unproven" })] } }),
+      );
+      expect(parsed.risk?.impact?.potentialBand).toBe(parsed.risk?.impact?.band);
     });
 
     it("keeps the agent's level when it listed no changes", () => {
@@ -656,6 +736,31 @@ describe("removing duplicate findings across checks", () => {
     ]);
   });
 
+  it("keeps a bug over the same problem in tests, quality or improvements, which can't block", () => {
+    const audit = emptyAudit();
+    const at = (title: string, line: number) => finding(title, { path: "src/a.ts", line });
+    const issues = (title: string, line: number) => ({
+      status: "issues",
+      findings: [at(title, line)],
+    });
+    const parsed = verificationReportSchema(limits, audit).parse(
+      report({
+        bugs: issues("saveFeedback: a second save drops the first", 20),
+        tests: issues("saveFeedback second save has no test", 21),
+        quality: issues("saveFeedback second save is not awaited", 20),
+        improvements: issues("saveFeedback: queue saves so a second save waits", 22),
+      }),
+    );
+    expect(parsed.bugs?.findings.map((f) => f.title)).toEqual([
+      "saveFeedback: a second save drops the first",
+    ]);
+    expect(audit.droppedDuplicates.map((d) => [d.section, d.keptIn])).toEqual([
+      ["tests", "bugs"],
+      ["quality", "bugs"],
+      ["improvements", "bugs"],
+    ]);
+  });
+
   it("tells the same problem from a different one at the same place", () => {
     // Pairs a real run's checks reported within three lines of each other.
     const same: [string, string][] = [
@@ -747,6 +852,44 @@ describe("the change map", () => {
     files: paths.map((path) => ({ path })),
   });
 
+  it("keeps why a theme is risky and the proof against it, and puts no-risk themes last", () => {
+    const parsed = verificationReportSchema({ ...limits, sections: ["changeMap"] }).parse({
+      changeMap: {
+        intent: "Retry failed uploads.",
+        themes: [
+          { ...theme("Docs", "core", ["src/c.ts"]), risk: "none" },
+          { ...theme("Wire the option", "core", ["src/b.ts"]), risk: "low", proofs: null },
+          {
+            ...theme("Retry uploads", "core", ["src/a.ts"]),
+            risk: "high",
+            riskWhy: "A retry that repeats a finished upload stores the file twice.",
+            proofs: [
+              { text: "A retry after success is a no-op", path: "./src/a.test.ts", line: 3 },
+              ...["b", "c", "d", "e"].map((t) => ({ text: t })),
+            ],
+            unmitigated: "Add a test for a retry after a timeout.",
+          },
+        ],
+      },
+    });
+    const themes = parsed.changeMap?.themes ?? [];
+    expect(themes.map((t) => t.risk)).toEqual(["high", "low", "none"]);
+    const [retry, wire] = themes;
+    // At most four proofs; none given reads as an empty list.
+    expect(retry?.proofs).toHaveLength(4);
+    expect(wire?.proofs).toEqual([]);
+    expect(retry).toMatchObject({
+      risk: "high",
+      riskWhy: "A retry that repeats a finished upload stores the file twice.",
+      unmitigated: "Add a test for a retry after a timeout.",
+    });
+    expect(retry?.proofs[0]).toEqual({
+      text: "A retry after success is a no-op",
+      path: "src/a.test.ts",
+      line: 3,
+    });
+  });
+
   it("keeps an outlier that shares a file with the core, orders themes, and asks only outliers", () => {
     const parsed = verificationReportSchema({
       ...limits,
@@ -777,6 +920,9 @@ describe("the change map", () => {
           risk: "medium",
           cohesion: "core",
           question: "",
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/a.ts", lines: undefined }],
         },
         {
@@ -785,6 +931,9 @@ describe("the change map", () => {
           risk: "medium",
           cohesion: "supporting",
           question: "",
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/b.ts", lines: undefined }],
         },
         {
@@ -794,6 +943,9 @@ describe("the change map", () => {
           cohesion: "outlier",
           // The agent left it empty; an outlier always gets something to ask.
           question: 'Why is "Bump the timeout" part of this PR?',
+          riskWhy: "",
+          proofs: [],
+          unmitigated: "",
           files: [{ path: "src/a.ts", lines: { start: 40, end: 41 } }],
         },
       ],
@@ -1334,6 +1486,33 @@ describe("putting a section's answers together", () => {
     });
   });
 
+  it("keeps a lower group's high concern over the top group's medium ones", () => {
+    const risk = (level: string, concerns: unknown[]) => ({
+      level,
+      clientImpact: "",
+      mitigations: [],
+      concerns,
+      changes: [],
+    });
+    const mediums = ["m1", "m2", "m3", "m4", "m5"].map((title) => ({
+      title,
+      detail: "d",
+      severity: "medium",
+    }));
+    const combined = combineSectionAnswers("risk", [
+      risk("high", mediums),
+      risk("low", [{ title: "Mic stays live", detail: "d", severity: "high" }]),
+    ]);
+    const parsed = verificationReportSchema({ ...limits, sections: ["risk"] }).parse(combined);
+    expect(parsed.risk?.concerns.map((c) => c.title)).toEqual([
+      "Mic stays live",
+      "m1",
+      "m2",
+      "m3",
+      "m4",
+    ]);
+  });
+
   it("takes risk's level and client impact from its highest group, and every group's changes", () => {
     const risk = (level: string, n: number) => ({
       level,
@@ -1350,7 +1529,7 @@ describe("putting a section's answers together", () => {
     expect(combined).toEqual({
       level: "high",
       clientImpact: "impact 2",
-      mitigations: ["m1a", "m1b", "m2a"],
+      mitigations: ["m1a", "m1b", "m2a", "m2b", "m3a"],
       concerns: [
         { title: "c2", detail: "d" },
         { title: "c1", detail: "d" },

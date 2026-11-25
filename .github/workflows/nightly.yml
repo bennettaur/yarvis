@@ -34,6 +34,16 @@ jobs:
           Settings → Privacy & Security → Open Anyway**.
 
           See "Nightly builds" in docs/development.md for the details.
+
+          ### Native clients
+
+          `Yarvis-native-macos.zip` is the native macOS client (apps/macos),
+          signed the same ad-hoc way. `yarvis-android-debug.apk` is a debug
+          build of the Android client (apps/android), for testing only: it is
+          debuggable, so anything with adb access to the phone can read its
+          stored device token. Each nightly is signed with a different debug
+          key, so uninstall the previous one before
+          `adb install yarvis-android-debug.apk`.
           NOTES
           gh release create nightly --prerelease --title "Nightly Release" --notes-file release-notes.md
 
@@ -153,5 +163,98 @@ jobs:
         run: |
           find src-tauri/target/release/bundle -type f \( -name "*.dmg" -o -name "*.msi" -o -name "*.exe" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.tar.gz" \) | while read -r file; do
             echo "Uploading $file..."
+            gh release upload nightly "$file" --clobber
+          done
+
+  # CI builds the native apps only on pull requests that change them, so this
+  # is where every night's main gets built and tested for both. The builds
+  # run SwiftPM and Gradle dependencies, so they get a read-only token and
+  # hand their output to publish-native-apps, which runs no build code.
+  macos-app:
+    name: Native macOS app
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # SwiftTerm's manifest needs Swift 6.2, which the runner's default Xcode
+      # may predate, so the newest installed Xcode is picked.
+      - name: Select the newest Xcode
+        run: |
+          xcode="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          swift --version
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      # make-app.sh copies Mermaid out of the root node_modules, and needs no
+      # package's install scripts for it.
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: swift test
+        working-directory: apps/macos
+        run: swift test
+      - name: Build Yarvis.app
+        working-directory: apps/macos
+        run: scripts/make-app.sh
+      # ditto keeps the bundle's code signature intact, which zip does not.
+      - name: Zip Yarvis.app
+        working-directory: apps/macos
+        run: ditto -c -k --keepParent build/Yarvis.app Yarvis-native-macos.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-macos
+          path: apps/macos/Yarvis-native-macos.zip
+          retention-days: 1
+
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Also checks gradle-wrapper.jar against Gradle's published checksums.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+      - name: Test, build and lint
+        working-directory: apps/android
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug lint
+      # A debug build, since there's no release signing key.
+      - name: Name the APK
+        run: cp apps/android/app/build/outputs/apk/debug/app-debug.apk yarvis-android-debug.apk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-android
+          path: yarvis-android-debug.apk
+          retention-days: 1
+
+  publish-native-apps:
+    name: Publish native apps
+    needs: [create-release, macos-app, android]
+    # One app failing to build shouldn't keep the other off the release.
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Attach to the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for name in native-macos native-android; do
+            gh run download "$GITHUB_RUN_ID" -n "$name" -D out || echo "No $name artifact; its build failed."
+          done
+          mkdir -p out
+          find out -type f | while read -r file; do
             gh release upload nightly "$file" --clobber
           done

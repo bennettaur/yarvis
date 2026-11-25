@@ -314,6 +314,22 @@ describe("model choice for guided reviews and line questions", () => {
     expect(((await res.json()) as any).error).toContain("Anthropic");
   });
 
+  it("takes a report item to follow up on, and refuses one past the cap", async () => {
+    const send = (about: string) =>
+      keyedApp.request("/api/pr/insight", {
+        method: "POST",
+        headers: jsonAuth,
+        body: JSON.stringify({ ...askBody, about }),
+      });
+    // Past validation, it fails only on the missing provider key.
+    const ok = await send("Tests: Toggle untested");
+    expect(ok.status).toBe(400);
+    expect(((await ok.json()) as any).error).toContain("Anthropic");
+    const tooLong = await send("x".repeat(20_001));
+    expect(tooLong.status).toBe(400);
+    expect(((await tooLong.json()) as any).error.fieldErrors.about).toBeDefined();
+  });
+
   it("prefers a model named in the request over the saved one", async () => {
     const res = await keyedApp.request("/api/pr/guide", {
       method: "POST",
