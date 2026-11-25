@@ -249,8 +249,13 @@ another on, see [Turn on a shipped routine](#turn-on-a-shipped-routine).
   meaning. Comments verification missed become suggested changes to the
   verify-pr skill, the reviewer agents, the review-scout prompt or the
   verification layer. Flags you never commented near, on several PRs, are
-  listed as likely noise. A PR with no verification report is skipped, and a
-  week with fewer than three has too little to learn from.
+  listed as likely noise. It also reads the feedback you gave on report items
+  in a review workspace (accepted, rejected with your reason, or rerated, and
+  whether you posted or asked about them), which it weighs above the comment
+  matching: sections whose items you keep rejecting, and ratings you keep
+  changing, become suggestions aimed at your reasons. A PR with no
+  verification report is skipped, and a week with fewer than three reports
+  and no feedback has too little to learn from.
 - **generation-reflection**, off by default, weekly in working hours: looks at
   your PRs merged this week and the review comments other people left on them
   (bots are left out), compares them with what verification flagged, and

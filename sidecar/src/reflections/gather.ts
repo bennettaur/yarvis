@@ -3,8 +3,9 @@ import type { Db } from "../db/client.ts";
 import { createGitHubClient, type ReviewContributions } from "../github/client.ts";
 import { describeError } from "../llm/errors.ts";
 import type { PrDetail, PrSummary, ReviewComment } from "../pr/types.ts";
-import { refKey } from "../pr/types.ts";
+import { parseRefKey, refKey } from "../pr/types.ts";
 import { type ChecklistReport, storedReportFor } from "../reviewWorkspaces/checklist.ts";
+import { feedbackSince, type ReportFeedback } from "../reviewWorkspaces/feedback.ts";
 import { CHECK_SECTIONS } from "../reviewWorkspaces/verification.ts";
 import {
   type DraftOutcome,
@@ -26,6 +27,10 @@ const MAX_PRS = 15;
 const MAX_COMMENTS_PER_PR = 30;
 const MAX_FLAGS_PER_PR = 30;
 const COMMENT_CHARS = 600;
+/** Most feedback rows a reflection reads, newest first, so the prompt stays a size a model can weigh. */
+const MAX_FEEDBACK = 120;
+/** The report's own text is context for the verdict, so less of it is kept than of a comment. */
+const FEEDBACK_ITEM_CHARS = 300;
 
 export interface Flag {
   /** The report section that raised it, e.g. `tests` or `claims`. */
@@ -45,6 +50,37 @@ export interface Comment {
   body: string;
   /** Whether a flag sits on the same file near the same line. */
   matched: boolean;
+}
+
+/** The user's judgement of one report item, as they gave it in the review workspace. */
+export interface ItemFeedback {
+  pr: string;
+  section: string;
+  /** What the item was: a finding, a claim gap, a risk concern, a must-read, and so on. */
+  kind: string;
+  title: string;
+  detail: string;
+  path: string | null;
+  line: number | null;
+  /** The severity or risk level the report gave it. */
+  reportRating: string | null;
+  verdict: "accepted" | "rejected" | "rerated" | null;
+  /** For `rerated`: the level the user would give it. */
+  rating: string | null;
+  /** The user's own reason, when they gave one. */
+  reason: string | null;
+  /** What they did with it: posted it on the PR, added it to the workspace, asked about it. */
+  actions: string[];
+}
+
+/** One section's verdicts and actions, counted over the feedback returned. */
+export interface FeedbackTally {
+  section: string;
+  accepted: number;
+  rejected: number;
+  rerated: number;
+  posted: number;
+  asked: number;
 }
 
 export interface ReflectedPr {
@@ -71,6 +107,9 @@ export interface ReviewReflectionData {
   /** Verified PRs only: flags with no comment of the user's near them. */
   flagsWithoutComment: number;
   draftOutcomes: DraftOutcome[];
+  /** The user's item-by-item feedback on reports in the window, on any PR. */
+  reportFeedback: ItemFeedback[];
+  feedbackBySection: FeedbackTally[];
   unavailable: string[];
 }
 
@@ -95,6 +134,8 @@ export interface ReflectionDeps {
   github?: ReflectionGithub;
   /** The newest verification report for a PR, by `refKey`. */
   report?: (refKey: string) => Promise<ChecklistReport | null>;
+  /** The feedback given since a date, newest first. */
+  feedback?: (since: Date) => Promise<{ feedback: ReportFeedback[]; truncated: boolean }>;
   now?: () => Date;
 }
 
@@ -110,11 +151,64 @@ function windowOf(now: Date, days: number): { from: Date; to: Date } {
   return { from: new Date(now.getTime() - days * DAY_MS), to: now };
 }
 
-function clip(text: string): string {
-  return text.length > COMMENT_CHARS ? `${text.slice(0, COMMENT_CHARS)}…` : text;
+function clip(text: string, max = COMMENT_CHARS): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-/** The report's findings and claim gaps as flat flags. */
+function labelOfRefKey(key: string): string {
+  const ref = parseRefKey(key);
+  return ref?.provider === "github" ? prLabel(ref.owner, ref.repo, ref.number) : key;
+}
+
+function itemFeedbackOf(row: ReportFeedback): ItemFeedback {
+  return {
+    pr: labelOfRefKey(row.refKey),
+    section: row.section,
+    kind: row.kind,
+    title: row.item.title,
+    detail: clip(row.item.detail, FEEDBACK_ITEM_CHARS),
+    path: row.item.path ?? null,
+    line: row.item.line ?? null,
+    reportRating: row.item.rating ?? null,
+    verdict: row.verdict,
+    rating: row.rating,
+    reason: row.reason,
+    actions: row.actions,
+  };
+}
+
+/** Counts per section, in the order sections first appear. */
+export function tallyFeedback(items: ItemFeedback[]): FeedbackTally[] {
+  const bySection = new Map<string, FeedbackTally>();
+  for (const item of items) {
+    let tally = bySection.get(item.section);
+    if (!tally) {
+      tally = { section: item.section, accepted: 0, rejected: 0, rerated: 0, posted: 0, asked: 0 };
+      bySection.set(item.section, tally);
+    }
+    if (item.verdict) tally[item.verdict] += 1;
+    if (item.actions.includes("posted-pr")) tally.posted += 1;
+    if (item.actions.includes("asked")) tally.asked += 1;
+  }
+  return [...bySection.values()];
+}
+
+/** Read from the database, so it is there even when GitHub isn't. */
+async function loadFeedback(db: Db, from: Date, deps: ReflectionDeps, unavailable: string[]) {
+  const load = deps.feedback ?? ((since: Date) => feedbackSince(db, since, MAX_FEEDBACK));
+  try {
+    const { feedback, truncated } = await load(from);
+    if (truncated) unavailable.push("older report feedback (only the newest is read)");
+    const reportFeedback = feedback.map(itemFeedbackOf);
+    return { reportFeedback, feedbackBySection: tallyFeedback(reportFeedback) };
+  } catch (e) {
+    console.error("[reflection] could not read report feedback:", describeError(e));
+    unavailable.push("report feedback");
+    return { reportFeedback: [], feedbackBySection: [] };
+  }
+}
+
+/** The report's findings, claim gaps and risk concerns as flat flags. */
 export function flagsOf(report: ChecklistReport | null): Omit<Flag, "matched">[] {
   if (!report) return [];
   const out: Omit<Flag, "matched">[] = [];
@@ -134,6 +228,12 @@ export function flagsOf(report: ChecklistReport | null): Omit<Flag, "matched">[]
   };
   for (const key of CHECK_SECTIONS) add(key, report[key]?.findings);
   add("claims", report.claims?.gaps);
+  // A concern has no severity of its own, so it takes the report's risk level.
+  const level = report.risk?.level ?? "unrated";
+  add(
+    "risk",
+    report.risk?.concerns.map((c) => ({ ...c, severity: level })),
+  );
   return out;
 }
 
@@ -234,6 +334,8 @@ export async function gatherReviewReflection(
 ): Promise<ReviewReflectionData> {
   const { from, to } = windowOf(nowOf(deps), options.days);
   const window = { from: from.toISOString(), to: to.toISOString() };
+  const unavailable: string[] = [];
+  const feedback = await loadFeedback(db, from, deps, unavailable);
   const github = clientFor(config, deps);
   if (!github) {
     return {
@@ -242,15 +344,14 @@ export async function gatherReviewReflection(
       unmatchedComments: 0,
       flagsWithoutComment: 0,
       draftOutcomes: [],
-      unavailable: ["github (not signed in)"],
+      ...feedback,
+      unavailable: [...unavailable, "github (not signed in)"],
     };
   }
   const loadReport = deps.report ?? ((key: string) => storedReportFor(db, key));
   const { login } = await github.viewer();
   const { contributions, truncated } = await github.reviewContributions(from, to);
-  const unavailable = truncated
-    ? ["some reviews (GitHub's contribution window was cut short)"]
-    : [];
+  if (truncated) unavailable.push("some reviews (GitHub's contribution window was cut short)");
 
   const seen = new Set<string>();
   const targets = contributions.filter((c) => {
@@ -278,7 +379,7 @@ export async function gatherReviewReflection(
     prs.map((p) => p.ref),
     from,
   );
-  return { window, prs, ...totals(prs), draftOutcomes, unavailable };
+  return { window, prs, ...totals(prs), draftOutcomes, ...feedback, unavailable };
 }
 
 /**
