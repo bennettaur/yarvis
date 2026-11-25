@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod pty;
 pub mod rate_limit;
 pub mod secret_blob;
+pub mod secret_migration;
 pub mod secret_store;
 pub mod settings;
 pub mod sidecar;
