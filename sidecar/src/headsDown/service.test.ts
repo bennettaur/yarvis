@@ -14,10 +14,12 @@ import {
   decideCall,
   isMergeCall,
   isMergeInstruction,
+  isRevertOrDeployInstruction,
   MAX_PREPS_PER_PASS,
   mergeCallTarget,
   PASS_CONFIRMED_TOOLS,
   passApprovalHooks,
+  revertsOrDeploys,
 } from "./policy.ts";
 import {
   addMessage,
@@ -678,12 +680,49 @@ describe("merge alerts", () => {
     expect(mergeCallTarget("archive_workspace", { pullNumber: 1 })).toBeNull();
   });
 
+  it("counts turning on auto-merge or queueing a PR as a merge, but not undoing either", () => {
+    for (const name of [
+      "enable_pull_request_auto_merge",
+      "enablePullRequestAutoMerge",
+      "enable_automerge",
+      "add_pull_request_to_merge_queue",
+      "enqueue_pull_request",
+      "enqueuePR",
+    ]) {
+      expect(mergeCallTarget(`mcp:gh:${name}`, { pullNumber: 7 })).toEqual({ repo: "", number: 7 });
+    }
+    for (const name of [
+      "disable_pull_request_auto_merge",
+      "remove_from_merge_queue",
+      "dequeue_pull_request",
+      "get_merge_queue",
+      "list_merge_queue_entries",
+      "enqueue_job",
+    ]) {
+      expect(mergeCallTarget(`mcp:gh:${name}`, { pullNumber: 7 })).toBeNull();
+    }
+  });
+
   it("tells an instruction to merge a PR from one about merge conflicts or the base branch", () => {
     expect(isMergeInstruction("Squash-merge the PR now that CI is green")).toBe(true);
     expect(isMergeInstruction("merge #12")).toBe(true);
     expect(isMergeInstruction("Resolve the merge conflicts in the PR and push")).toBe(false);
     expect(isMergeInstruction("merge main into the PR branch and push")).toBe(false);
     expect(isMergeInstruction("fix CI")).toBe(false);
+  });
+
+  it("counts auto-merge, a merge queue and enqueueing a PR as merging", () => {
+    expect(isMergeInstruction("Turn on auto-merge once CI is green")).toBe(true);
+    expect(isMergeInstruction("enable automerge")).toBe(true);
+    expect(isMergeInstruction("Add it to the merge queue")).toBe(true);
+    expect(isMergeInstruction("enqueue PR #12")).toBe(true);
+  });
+
+  it("doesn't count a queue, enqueueing or merge conflicts that aren't about merging the PR", () => {
+    expect(isMergeInstruction("queue the flaky test for a rerun")).toBe(false);
+    expect(isMergeInstruction("enqueue the nightly build")).toBe(false);
+    expect(isMergeInstruction("Resolve the merge conflicts and push")).toBe(false);
+    expect(isMergeInstruction("look at the job queue for PR #12")).toBe(false);
   });
 });
 
@@ -744,4 +783,131 @@ describe("isMergeCall", () => {
       isMergeCall("send_workspace_slash_command", { command: "/merge-pr", arguments: "12" }),
     ).toBe(true);
   });
+});
+
+describe("reverts and deploys", () => {
+  async function pushedWorkspace() {
+    await sql`INSERT INTO workspaces (id, name, slug, status, root_path)
+              VALUES (${workspaceId}, 'billing', 'billing', 'active', '/tmp/ws')`;
+    const stream = await createStream(db, { title: "ship billing" });
+    await linkToStream(db, stream.id, { ref: { kind: "workspace", workspaceId } });
+  }
+
+  async function allowUnattended(tool: string) {
+    await sql`INSERT INTO agent_tools (id, source, name, content_hash, unattended)
+              VALUES (${tool}, 'mcp', ${tool.slice(tool.lastIndexOf(":") + 1)}, 'h', true)`;
+  }
+
+  it("asks before telling a workspace it may steer to revert or deploy", async () => {
+    const run = await startRun(db, null);
+    await pushedWorkspace();
+    const steer = (instruction: string) =>
+      decideCall(db, run, "send_workspace_instruction", { workspaceId, instruction });
+
+    expect(await steer("fix the failing test")).toBe("run");
+    expect(await steer("revert your change to config.ts")).toBe("run");
+    expect(await steer("revert PR #12, production checkout is failing")).toBe("ask");
+    expect(await steer("deploy the api to production")).toBe("ask");
+
+    const args = { workspaceId, instruction: "revert acme/api#12" };
+    const approval = await askQuestion(db, {
+      kind: "approval",
+      question: "Heads-down mode wants to run send_workspace_instruction.",
+      action: "send_workspace_instruction",
+      toolArgs: args,
+    });
+    await answerQuestion(db, memory, approval.id, { choice: "approve" });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+  });
+
+  it("asks before an allowed MCP revert tool, but runs an allowed deploy or read", async () => {
+    const run = await startRun(db, null);
+    const tools = [
+      "mcp:deploys:revert_deploy",
+      "mcp:deploys:check_and_rollback",
+      "mcp:deploys:issue_rollback",
+      "mcp:deploys:trigger_deploy",
+      "mcp:deploys:list_rollbacks",
+    ];
+    for (const tool of tools) await allowUnattended(tool);
+    const decisions = await Promise.all(tools.map((tool) => decideCall(db, run, tool, { id: 1 })));
+    expect(decisions).toEqual(["ask", "ask", "ask", "run", "run"]);
+  });
+
+  it("asks before steering a workspace whose PR a ship stream has merged, whatever it says", async () => {
+    const run = await startRun(db, null);
+    await pushedWorkspace();
+    const args = { workspaceId, instruction: "fix the failing test" };
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+
+    const ship = await createStream(db, {
+      title: "Ship acme/api#12",
+      ship: {
+        repo: "acme/api",
+        number: 12,
+        url: "https://github.com/acme/api/pull/12",
+        stage: "merge",
+        stages: {},
+        log: [],
+      },
+    });
+    await linkToStream(db, ship.id, { ref: { kind: "workspace", workspaceId } });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+
+    await updateStream(db, ship.id, { ship: { ...ship.ship!, stage: "deploy" } });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("ask");
+
+    await updateStream(db, ship.id, { status: "done" });
+    expect(await decideCall(db, run, "send_workspace_instruction", args)).toBe("run");
+  });
+
+  const instructions: [string, boolean][] = [
+    ["revert PR #12, production checkout is failing", true],
+    ["git revert 3f2a9c1 and push to main", true],
+    ["reverted the merge of #12, push it", true],
+    ["undo the merge of #12 and push", true],
+    ["back out #12", true],
+    ["Roll back the deploy of #12", true],
+    ["rollback the release", true],
+    ["Please REVERT PR 12", true],
+    ["re\u200bvert PR 12", true],
+    ["deploy the api to production", true],
+    ["redeploy the api", true],
+    ["Deploying the fix now", true],
+    ["Run the deployment workflow", true],
+    ["promote the build to prod", true],
+    ["ship it to production", true],
+    ["kubectl rollout undo deployment/api", true],
+    ["fix the failing deploy script", true],
+    ["revert the last edit to utils.ts", false],
+    ["revert the typo in README", false],
+    ["push a PR", false],
+    ["promote the helper to a shared module", false],
+    ["", false],
+  ];
+  for (const [instruction, expected] of instructions) {
+    it(`reads ${JSON.stringify(instruction)} as ${expected ? "" : "not "}reverting or deploying`, () => {
+      expect(isRevertOrDeployInstruction(instruction)).toBe(expected);
+    });
+  }
+
+  const tools: [string, unknown, boolean][] = [
+    ["send_workspace_slash_command", { command: "/rollback", arguments: "PR 12" }, true],
+    ["mcp:gh:revert_pull_request", { pullNumber: 12 }, true],
+    ["mcp:x:RollBackRelease", {}, true],
+    ["mcp:x:roll-back", {}, true],
+    ["mcp:x:canary_rollback", {}, true],
+    ["mcp:x:check_and_rollback", {}, true],
+    ["mcp:x:undo_deploy", {}, true],
+    ["mcp:gh:get_revert_status", {}, false],
+    ["mcp:x:listRollbacks", {}, false],
+    ["mcp:revert-bot:list_things", {}, false],
+    ["mcp:x:trigger_deploy", {}, false],
+    ["archive_workspace", {}, false],
+  ];
+  for (const [tool, args, expected] of tools) {
+    it(`reads ${tool} as ${expected ? "" : "not "}reverting or deploying`, () => {
+      expect(revertsOrDeploys(tool, args)).toBe(expected);
+    });
+  }
 });

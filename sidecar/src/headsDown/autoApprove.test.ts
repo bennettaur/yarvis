@@ -237,6 +237,28 @@ describe("a pass's approval hooks with auto mode", () => {
     expect(calls).toEqual([merge]);
   });
 
+  it("never approves a revert or a deploy, however often the user approved the tool", async () => {
+    const run = await startRun(db, "Ship the billing PR");
+    const calls: string[] = [];
+    const hooks = passApprovalHooks(db, run, () => {}, { review: context(deps(true, calls)) });
+    const tools = ["mcp:deploys:revert_deploy", "mcp:deploys:trigger_deploy"];
+    for (const [i, tool] of tools.entries()) {
+      for (const n of [1, 2, 3]) await userAnswers("approve", { id: n }, tool);
+      await hooks.onRequest({ toolCallId: `never-${i}`, id: tool, args: { id: 9 }, reason: null });
+      expect(await waitForApproval(`never-${i}`, { timeoutMs: 1000 })).toBe(false);
+    }
+    expect(calls).toEqual([]);
+    expect(await listAutoApprovals(db)).toEqual([]);
+    const open = await sql`SELECT action FROM heads_down_questions WHERE status = 'open'`;
+    expect(open.map((r) => r.action).sort()).toEqual([...tools].sort());
+
+    // The same review approves a call that neither reverts nor deploys.
+    await userApprovesOthers();
+    await hooks.onRequest({ toolCallId: "never-control", id: TOOL, args, reason: null });
+    expect(await waitForApproval("never-control", { timeoutMs: 1000 })).toBe(true);
+    expect(calls).toEqual([TOOL]);
+  });
+
   it("files an open approval question when the decision model says no", async () => {
     const run = await startRun(db, "Ship the billing PR");
     await userApprovesOthers();

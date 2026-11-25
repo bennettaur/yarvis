@@ -272,6 +272,20 @@ export default function HeadsDownSettings({
         max={10}
         onChange={(v) => set("maxRoutinesPerPass", v)}
       />
+      <NumberField
+        label="Watch production after a ship's deploy (min, 0 for no minimum)"
+        value={draft.shipMonitorWindowMinutes}
+        min={0}
+        max={1440}
+        onChange={(v) => set("shipMonitorWindowMinutes", v)}
+      />
+      <NumberField
+        label="Check production every (min, 5 to 240)"
+        value={draft.shipCheckEveryMinutes}
+        min={5}
+        max={240}
+        onChange={(v) => set("shipCheckEveryMinutes", v)}
+      />
 
       <div className="space-y-2">
         <label className="flex items-center gap-2 text-sm text-zinc-300">

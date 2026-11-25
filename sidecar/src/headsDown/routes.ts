@@ -13,6 +13,9 @@ import {
   HHMM,
   MAX_PASS_TIMEOUT_MINUTES,
   MAX_ROUTINES_PER_PASS,
+  MAX_SHIP_CHECK_MINUTES,
+  MAX_SHIP_MONITOR_WINDOW_MINUTES,
+  MIN_SHIP_CHECK_MINUTES,
   saveHeadsDownConfig,
   startOfLocalDay,
 } from "./config.ts";
@@ -122,6 +125,18 @@ const configSchema = z
       .max(24 * 60)
       .optional(),
     maxPassesPerDay: z.number().int().min(1).max(MAX_PASSES_PER_DAY).nullable().optional(),
+    shipMonitorWindowMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_SHIP_MONITOR_WINDOW_MINUTES)
+      .optional(),
+    shipCheckEveryMinutes: z
+      .number()
+      .int()
+      .min(MIN_SHIP_CHECK_MINUTES)
+      .max(MAX_SHIP_CHECK_MINUTES)
+      .optional(),
   })
   .refine((c) => c.minSleepMinutes <= c.maxSleepMinutes, "min sleep must not exceed max sleep")
   .refine((c) => c.idleSleepMinutes <= c.maxSleepMinutes, "idle sleep must not exceed max sleep");
@@ -247,6 +262,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
         parsed.data.maxPassesPerDay === undefined
           ? stored.maxPassesPerDay
           : parsed.data.maxPassesPerDay,
+      shipMonitorWindowMinutes:
+        parsed.data.shipMonitorWindowMinutes ?? stored.shipMonitorWindowMinutes,
+      shipCheckEveryMinutes: parsed.data.shipCheckEveryMinutes ?? stored.shipCheckEveryMinutes,
     });
     changed();
     // Turning always-on on starts a run now, and lifting a limit that held the loop lets it run.

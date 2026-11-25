@@ -93,6 +93,10 @@ export interface HeadsDownConfig {
   guidance: string | null;
   /** The most routines one pass takes on. 0 turns them off. */
   maxRoutinesPerPass: number;
+  /** How long a ship stream watches production after its deploy, in minutes. */
+  shipMonitorWindowMinutes: number;
+  /** How often it looks while watching, in minutes. */
+  shipCheckEveryMinutes: number;
   /** Start a run whenever none is going, including after a restart. Stopping turns it off. */
   alwaysOn: boolean;
   /** Hours every day when passes are rarer and routines can opt out. Null for none. */
@@ -231,6 +235,32 @@ export interface WorkStreamLink {
   observedAt: string | null;
 }
 
+/** The stages a ship stream goes through, in order. Mirrors `SHIP_STAGES` in the sidecar. */
+export const SHIP_STAGES = [
+  "ci",
+  "reviewer",
+  "feedback",
+  "staging_test",
+  "merge",
+  "deploy",
+  "monitor_deploy",
+  "monitor_production",
+  "test_production",
+  "done",
+] as const;
+
+export type ShipStage = (typeof SHIP_STAGES)[number];
+
+export interface WorkStreamShip {
+  repo: string;
+  number: number;
+  url: string;
+  stage: ShipStage;
+  stages: Partial<Record<ShipStage, { status: "done" | "skipped" | "failed"; at: string }>>;
+  monitorUntil?: string;
+  log: { at: string; stage: ShipStage; text: string }[];
+}
+
 export interface WorkStream {
   id: string;
   title: string;
@@ -242,6 +272,8 @@ export interface WorkStream {
   wakeAt: string | null;
   /** Set while the user has paused it: heads-down mode leaves it alone. */
   pausedAt: string | null;
+  /** Set when the stream ships one PR. */
+  ship: WorkStreamShip | null;
   updatedAt: string;
   links: WorkStreamLink[];
 }
