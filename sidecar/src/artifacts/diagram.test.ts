@@ -170,6 +170,19 @@ describe("arrows and lines", () => {
     });
     expect(() => parseElements([{ id: "l", type: "line", x: 0, y: 0 }])).toThrow(/points/);
   });
+
+  it("rejects a point that isn't exactly two coordinates", () => {
+    const line = (points: number[][]) => ({ id: "l", type: "line", x: 0, y: 0, points });
+    expect(() =>
+      parseElements([
+        line([
+          [0, 0, 0],
+          [1, 1],
+        ]),
+      ]),
+    ).toThrow(DiagramError);
+    expect(() => parseElements([line([[0], [1, 1]])])).toThrow(DiagramError);
+  });
 });
 
 describe("outline points", () => {

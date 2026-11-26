@@ -48,21 +48,31 @@ export type CustomProviderUpdate = Partial<CustomProviderInput>;
 
 const SETTINGS_KEY = "customProviders";
 
-type CustomProvidersSection = Record<string, CustomProviderRow>;
+/** A row as read from the file, whose `models` may have been edited by hand. */
+type StoredRow = Omit<CustomProviderRow, "models"> & { models?: unknown };
+
+type CustomProvidersSection = Record<string, StoredRow>;
 
 /**
- * The file can be edited by hand, and a model written as `{ id, capabilities }`
- * (the catalogue's shape) instead of a bare id broke every caller that joins or
- * renders the list. Such an entry reads as its id; anything else is dropped.
+ * settings.json can be edited by hand, and a model may be written in the
+ * `{ id, capabilities }` shape from `llm/catalog.ts` instead of a bare id.
+ * Callers join and render `models` as strings, so such an entry reads as its
+ * id and anything else is dropped.
  */
-function withModelIds(row: CustomProviderRow): CustomProviderRow {
-  const stored: unknown = row.models;
-  const models = (Array.isArray(stored) ? stored : []).flatMap((m: unknown) => {
+function withModelIds(row: StoredRow): CustomProviderRow {
+  const models = (Array.isArray(row.models) ? row.models : []).flatMap((m: unknown) => {
     if (typeof m === "string") return [m];
-    const id = m && typeof m === "object" ? (m as { id?: unknown }).id : undefined;
-    return typeof id === "string" ? [id] : [];
+    if (typeof m === "object" && m !== null && "id" in m && typeof m.id === "string") {
+      return [m.id];
+    }
+    return [];
   });
   return { ...row, models };
+}
+
+/** An own key only, so an id like `constructor` doesn't find an inherited value. */
+function storedRow(section: CustomProvidersSection | undefined, id: string): StoredRow | null {
+  return section && Object.hasOwn(section, id) ? (section[id] ?? null) : null;
 }
 
 export async function listCustomProviders(): Promise<CustomProviderRow[]> {
@@ -73,8 +83,7 @@ export async function listCustomProviders(): Promise<CustomProviderRow[]> {
 }
 
 export async function getCustomProvider(id: string): Promise<CustomProviderRow | null> {
-  const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
-  const row = section?.[id];
+  const row = storedRow(await readSection<CustomProvidersSection>(SETTINGS_KEY), id);
   return row ? withModelIds(row) : null;
 }
 
@@ -96,9 +105,13 @@ export async function updateCustomProvider(
   patch: CustomProviderUpdate,
 ): Promise<CustomProviderRow | null> {
   return withSection<CustomProvidersSection, CustomProviderRow | null>(SETTINGS_KEY, (current) => {
-    const existing = current?.[id];
+    const existing = storedRow(current, id);
     if (!existing) return { next: current ?? {}, result: null };
-    const row: CustomProviderRow = { ...existing, ...patch, updatedAt: new Date().toISOString() };
+    const row: CustomProviderRow = {
+      ...withModelIds(existing),
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
     return { next: { ...current, [id]: row }, result: row };
   });
 }

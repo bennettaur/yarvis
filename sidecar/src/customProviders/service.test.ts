@@ -85,14 +85,41 @@ describe("customProviders/service", () => {
     expect(await getCustomProvider(row.id)).toBeNull();
   });
 
-  it("reads a hand-edited model object as its id and drops what it can't read", async () => {
-    const row = { ...input, id: "p", createdAt: "x", updatedAt: "x" };
-    const models = ["gpt-4o", { id: "gemini-4-argon", capabilities: ["chat"] }, { name: "x" }, 7];
-    await writeFile(
+  const writeHandEdited = (models: unknown) =>
+    writeFile(
       process.env.YARVIS_SETTINGS_PATH!,
-      JSON.stringify({ customProviders: { p: { ...row, models } } }),
+      JSON.stringify({
+        customProviders: { p: { ...input, id: "p", createdAt: "x", updatedAt: "x", models } },
+      }),
     );
+  const handEditedModels = [
+    "gpt-4o",
+    { id: "gemini-4-argon", capabilities: ["chat"] },
+    { name: "x" },
+    7,
+  ];
+
+  it("reads a hand-edited model object as its id and drops what it can't read", async () => {
+    await writeHandEdited(handEditedModels);
     expect((await getCustomProvider("p"))?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
     expect((await listCustomProviders())[0]?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
+  });
+
+  it("reads a hand-edited models value that isn't a list as no models", async () => {
+    await writeHandEdited("gpt-4o");
+    expect((await getCustomProvider("p"))?.models).toEqual([]);
+  });
+
+  it("saves model ids when an update leaves hand-edited models alone", async () => {
+    await writeHandEdited(handEditedModels);
+    const updated = await updateCustomProvider("p", { name: "renamed" });
+    expect(updated?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
+    expect((await getCustomProvider("p"))?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
+  });
+
+  it("finds no provider under an inherited key", async () => {
+    await createCustomProvider(input);
+    expect(await getCustomProvider("constructor")).toBeNull();
+    expect(await updateCustomProvider("constructor", { name: "x" })).toBeNull();
   });
 });
