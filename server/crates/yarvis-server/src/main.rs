@@ -312,8 +312,8 @@ async fn vault_init(
 ) -> zeroize::Zeroizing<String> {
     if !config.uses_vault() {
         eprintln!(
-            "note: neither secrets.backend = \"vault\" nor ssh_agent.enabled is set, so the \
-             server won't use this vault until one is"
+            "note: neither secrets.backend = \"vault\" nor ssh_agent.enabled = true is set, \
+             so the server won't use this vault until one is"
         );
     }
     let data_dir = &config.server.data_dir;
@@ -366,11 +366,11 @@ async fn secrets_migrate(
     if from == to {
         fail("--from and --to name the same store");
     }
-    // Only a server using the vault holds it in memory, and it writes that
-    // copy back on its next change, which would drop what this adds.
-    let running_server_check = (to == SecretBackendKind::Vault
-        && config.secrets.backend == Some(SecretBackendKind::Vault))
-    .then_some(config.server.bind);
+    // Only a server using the vault holds it in memory, for its secrets or
+    // just the signing key, and it writes that copy back on its next change,
+    // which would drop what this adds.
+    let running_server_check =
+        (to == SecretBackendKind::Vault && config.uses_vault()).then_some(config.server.bind);
     if let Some(bind) = running_server_check {
         refuse_if_running(bind).unwrap_or_else(|e| fail(e));
     }
@@ -794,7 +794,9 @@ async fn start_core(state: &AppState) -> Option<tokio::task::JoinHandle<()>> {
         settings: state.settings.clone(),
         secrets: state.secrets.clone(),
         events: state.events.clone(),
-        vault_unlocked: (state.config.secrets.backend == Some(SecretBackendKind::Vault))
+        vault_unlocked: state
+            .config
+            .secrets_in_vault()
             .then(|| state.vault.subscribe()),
     };
     Some(tokio::spawn(state.sidecar.clone().supervise(deps)))

@@ -13,7 +13,8 @@ const BUTTON =
 const INPUT =
   "w-full rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm font-mono text-zinc-100";
 
-type Vault = AuthStatus["vault"] | "checking";
+/** `unknown`: the status check failed, so a later lock may still be real. */
+type Vault = AuthStatus["vault"] | "checking" | "unknown";
 
 /**
  * Holds the app while the server's vault is locked. The sidecar can't start
@@ -22,6 +23,7 @@ type Vault = AuthStatus["vault"] | "checking";
  */
 export default function VaultGate({ children }: { children: React.ReactNode }) {
   const [vault, setVault] = useState<Vault>("checking");
+  // The event handler below is registered once, so it reads the state here.
   const vaultRef = useRef(vault);
   vaultRef.current = vault;
 
@@ -29,14 +31,15 @@ export default function VaultGate({ children }: { children: React.ReactNode }) {
     getAuthStatus()
       .then((status) => setVault(status.vault))
       // An unreachable server is the sign-in and boot screens' problem.
-      .catch(() => setVault("absent"));
+      .catch(() => setVault("unknown"));
   }, []);
 
   useEffect(() => {
     check();
     return onServerEvent("vault.locked", () => {
-      // A vault that holds only the signing key locks without stopping the
-      // sidecar, so the app stays open; the Approvals section offers the unlock.
+      // "absent" means the secrets live outside the vault, so a lock here is a
+      // vault holding only the signing key. The sidecar keeps running and the
+      // app stays open; the Approvals section offers the unlock.
       if (vaultRef.current === "absent") return;
       // Whatever was loaded came from a sidecar that has stopped.
       clearResourceCache();

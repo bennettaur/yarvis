@@ -16,7 +16,7 @@ let statusFails = false;
 /** Set to hold the next Stop until the test resolves it. */
 let stopHeld: Promise<void> | undefined;
 let serverClockOffsetMs = 0;
-let signingVault: "locked" | "unlocked" = "unlocked";
+let signingVault: "uninitialized" | "locked" | "unlocked" = "unlocked";
 
 const server = stubServerRoutes({
   "GET /api/approvals": () => Response.json(approvals),
@@ -132,10 +132,34 @@ describe("ApprovalsList", () => {
     });
   });
 
-  it("leaves the signing unlock out of the shell's copy", async () => {
+  it("says how to make the vault when signing has none yet", async () => {
     approvals = [];
+    signingVault = "uninitialized";
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("yarvis-server vault init") ?? false,
+      "the init hint",
+    );
+    expect(mounted.host.querySelector('input[type="password"]')).toBeNull();
+  });
+
+  it("leaves the signing unlock out of the shell's copy", async () => {
+    approvals = [signing];
     signingVault = "locked";
-    expect(await renderToHtml(createElement(ApprovalsList, { hideWhenEmpty: true }))).toBe("");
+    const mounted = await mountForInteraction(
+      createElement(ApprovalsList, { hideWhenEmpty: true }),
+    );
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("Sign with SHA256:abc") ?? false,
+      "the request",
+    );
+    await waitFor(
+      () => server.calls.some((c) => c.route === "GET /api/vault/ssh-agent"),
+      "the signing status",
+    );
+    expect(mounted.host.textContent).not.toContain("Commit signing is locked");
   });
 
   it("renders nothing in the shell while nothing waits", async () => {
@@ -487,5 +511,40 @@ describe("ApprovalsList", () => {
       "the banner",
     );
     expect(buttonNamed(mounted.host, "Stop")).toBeUndefined();
+  });
+  it("drops the unlock form when another device unlocks the vault", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      approvals = [];
+      signingVault = "locked";
+      const mounted = await mountForInteraction(createElement(ApprovalsList));
+      unmount = mounted.unmount;
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      await waitFor(
+        () => mounted.host.textContent?.includes("Commit signing is locked") ?? false,
+        "the unlock form",
+      );
+      const socket = fakeSockets()[0];
+      socket?.open();
+
+      signingVault = "unlocked";
+      socket?.sendJson({
+        type: "event",
+        seq: 3, // After the other socket tests: the stream skips a seq it has seen.
+        at: 1,
+        deviceId: null,
+        kind: "vault.unlocked",
+        data: {},
+      });
+
+      await waitFor(
+        () => !(mounted.host.textContent?.includes("Commit signing is locked") ?? true),
+        "the form to go",
+      );
+    } finally {
+      unmount?.();
+      unmount = undefined;
+      restoreSockets();
+    }
   });
 });

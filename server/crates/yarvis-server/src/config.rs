@@ -246,7 +246,14 @@ impl Config {
     /// Whether the server has a vault to unlock: it holds the secrets, the
     /// signing key, or both.
     pub fn uses_vault(&self) -> bool {
-        self.secrets.backend == Some(SecretBackendKind::Vault) || self.ssh_agent.enabled
+        self.secrets_in_vault() || self.ssh_agent.enabled
+    }
+
+    /// Whether the secrets live in the vault, so locking it stops the sidecar.
+    /// A vault holding only the signing key locks without touching anything
+    /// but the agent.
+    pub fn secrets_in_vault(&self) -> bool {
+        self.secrets.backend == Some(SecretBackendKind::Vault)
     }
 
     /// Reads `path`. A missing file gives the defaults, so a first run needs
@@ -495,6 +502,7 @@ mod tests {
                 .unwrap();
         config.validate().unwrap();
         assert!(config.uses_vault());
+        assert!(!config.secrets_in_vault());
         let config: Config = toml::from_str("[secrets]\nbackend = \"keychain\"\n").unwrap();
         assert!(!config.uses_vault());
     }

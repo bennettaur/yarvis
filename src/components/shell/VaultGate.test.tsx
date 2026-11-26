@@ -24,7 +24,10 @@ const server = stubServerRoutes({
     vault = "unlocked";
     return Response.json({ state: "unlocked" });
   },
-  "GET /api/auth/status": () => Response.json({ setupRequired: false, vault }),
+  "GET /api/auth/status": () =>
+    vault === "unreachable"
+      ? Response.json({ error: "starting" }, { status: 503 })
+      : Response.json({ setupRequired: false, vault }),
   "POST /api/vault/unlock/recovery": () => {
     if (!recoveryKeyIsRight) {
       return Response.json({ error: "that doesn't open the vault" }, { status: 403 });
@@ -220,6 +223,34 @@ describe("VaultGate", () => {
       await waitFor(
         () => mounted.host.textContent === "the app, lock seen",
         "the app to stay open after the lock",
+      );
+    } finally {
+      restoreSockets();
+    }
+  });
+
+  it("still gates on a lock after its first status check failed", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      vault = "unreachable";
+      saveDeviceToken("tok-me");
+      const mounted = await mountForInteraction(gate());
+      unmount = mounted.unmount;
+      await waitFor(() => mounted.host.textContent === "the app", "the app");
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      const socket = fakeSockets()[0];
+      socket?.open();
+      socket?.sendJson({
+        type: "event",
+        seq: 4,
+        at: 1,
+        deviceId: null,
+        kind: "vault.locked",
+        data: {},
+      });
+      await waitFor(
+        () => mounted.host.textContent?.includes("vault is locked") ?? false,
+        "the unlock screen after a lock",
       );
     } finally {
       restoreSockets();

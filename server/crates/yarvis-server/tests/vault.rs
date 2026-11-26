@@ -336,10 +336,54 @@ async fn the_agent_uses_the_vault_while_the_secrets_stay_in_the_keychain() {
         created.signing_public_key.unwrap().as_str()
     );
 
-    v.harness
+    let (status, body) = v
+        .harness
         .call("POST", "/api/vault/lock", Some(&token), None)
         .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert!(!v.harness.state.ssh_agent.is_running());
+}
+
+/// A vault holding only the signing key isn't left decrypted with no agent
+/// using it.
+#[tokio::test]
+async fn a_signing_only_vault_locks_again_when_the_agent_cannot_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = dir.path().to_path_buf();
+    config.secrets.backend = Some(SecretBackendKind::Keychain);
+    config.ssh_agent.enabled = true;
+    let created = Vault::init(dir.path(), true, VAULT_PASSPHRASE).unwrap();
+    let v = VaultHarness {
+        harness: Harness::with_config(config).await,
+        dir,
+        recovery_key: created.recovery_key.expose().to_string(),
+    };
+    let token = v.harness.setup().await;
+    // A non-empty directory where the socket goes can't be removed or bound.
+    let socket = ssh_agent::socket_path(&v.harness.state).unwrap();
+    std::fs::create_dir_all(socket.join("in-the-way")).unwrap();
+
+    let (status, body) = v.unlock_with_recovery(&token).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+    assert_eq!(v.state(&token).await, "locked");
+}
+
+#[tokio::test]
+async fn a_signing_only_vault_not_yet_made_reports_uninitialized() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = dir.path().to_path_buf();
+    config.secrets.backend = Some(SecretBackendKind::Keychain);
+    config.ssh_agent.enabled = true;
+    let harness = Harness::with_config(config).await;
+    let token = harness.setup().await;
+    let (_, auth) = harness.call("GET", "/api/auth/status", None, None).await;
+    assert_eq!(auth["vault"], "absent");
+    let (_, agent) = harness
+        .call("GET", "/api/vault/ssh-agent", Some(&token), None)
+        .await;
+    assert_eq!(agent["vault"], "uninitialized");
 }
 
 #[tokio::test]

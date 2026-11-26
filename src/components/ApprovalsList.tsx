@@ -113,10 +113,11 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
     }
   };
 
-  if (hideWhenEmpty && pending.length === 0 && !grantActive) return null;
   // With the secrets kept outside the vault, nothing else asks for the vault
   // passphrase, so signing is unlocked here.
   const signingVault = hideWhenEmpty ? undefined : signing.data?.vault;
+
+  if (hideWhenEmpty && pending.length === 0 && !grantActive) return null;
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
