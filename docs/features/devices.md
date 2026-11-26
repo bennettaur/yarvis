@@ -114,5 +114,7 @@ you:
 - Global shortcuts, such as the ones that open
   [Quick Chat](quick-chat.md) and the clipboard palette from another app.
 - An alarm bringing the window to the front over your other apps. In a
-  browser the alarm still takes over the page, but only while its tab is open.
+  browser the alarm still takes over the page, chimes and flashes the tab's
+  title, but only while its tab is open (see
+  [Calendar and alarms](calendar-and-alarms.md)).
 - **Show in Finder** for a saved voice clip.

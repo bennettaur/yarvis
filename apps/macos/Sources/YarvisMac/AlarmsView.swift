@@ -105,9 +105,6 @@ struct AlarmTakeoverView: View {
                     Text("\(remaining) more \(remaining == 1 ? "alarm" : "alarms") waiting behind this one")
                         .foregroundStyle(.secondary)
                 }
-                if let error = model.takeoverErrors[alarm.id] {
-                    Text(error).foregroundStyle(.red).multilineTextAlignment(.center).frame(maxWidth: 520)
-                }
                 // No Return default, and armed after a moment: a key press or
                 // click meant for whatever was in front can't answer it.
                 HStack(spacing: 14) {
@@ -124,7 +121,9 @@ struct AlarmTakeoverView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .armedAfterAppearing(id: alarm.id)
+                // Longer than an approval's delay: the takeover covers every
+                // screen, so any click anywhere lands on it.
+                .armedAfterAppearing(id: alarm.id, delay: .seconds(1))
             }
             .padding(40)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

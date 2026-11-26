@@ -184,16 +184,21 @@ Native:
   Connecting Google has to happen in a browser on the server's machine,
   since Google sends you back to a loopback address there.
 - **Alarms.** Set, test, snooze, dismiss and cancel alarms. A ringing
-  alarm covers the window on whatever page is open, one at a time. Only
+  alarm covers every screen, over other apps and full-screen spaces,
+  one at a time. Only
   an alarm that fired while the app was running does that. One left
   ringing from before shows under Alarms and in the bell. Sheets wait
   until the alarm is answered. While the vault is locked, a banner over
   the unlock screen shows it instead. The alarm sound plays whether the
   app is in front or not, and gets louder and faster after a minute.
   In the background the app also posts a notification and bounces its
-  Dock icon until you come back. It doesn't take focus, so a window
-  can't jump in front of what you're typing. Answering here, or on
-  another device, stops the sound.
+  Dock icon until you come back. The takeover takes keyboard focus
+  without bringing Yarvis forward, so what you were typing goes nowhere
+  rather than into a window you can't see. Its buttons work only after
+  a second and none answers Return, so a stray click or key can't answer
+  it. Answering here, or on another device, stops the sound and releases
+  the screens, even if the server couldn't be reached to record it; the
+  alarm then stays under Ringing.
 - **Heads down.** Start a run with a focus and an optional stop time,
   then pause, resume, stop, change the stop time or clear old work.
   Needs you lists the pass's questions (answer from the options or in
@@ -210,9 +215,13 @@ Native:
   vault is locked or not set up, an unlock screen replaces the app.
 - **Attention.** The toolbar bell (Shift-Cmd-A) opens a panel of pending
   attention items and server approvals (such as git signatures), live from
-  the attention stream. Answer an `ask_user` question, allow or deny a
+  the attention stream, reloaded every 30 seconds in case it missed
+  something. Items from the same workspace, or the same
+  terminal session, are grouped under their most urgent one. Opening a
+  workspace marks its items read, except questions and permission prompts,
+  which stay until answered. Answer an `ask_user` question, allow or deny a
   Claude Code permission prompt (AskUserQuestion prompts get a question
-  form), dismiss an item, or open it. Opening goes to the chat thread,
+  form), dismiss an item or a whole group, or open it. Opening goes to the chat thread,
   workspace or terminal pane it names, or to the web UI. New items post a
   macOS notification from the wrapped app.
 

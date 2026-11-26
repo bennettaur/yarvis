@@ -156,35 +156,51 @@ struct CalendarJoinLink: View {
     }
 }
 
-/// One timed event placed on a grid.
+/// One timed event placed on a grid, drawn at exactly `size` so its edges
+/// match its start and end times. An event too short for two lines puts its
+/// time beside the title instead of under it.
 struct CalendarEventBlock: View {
     let event: CalendarEvent
     let model: CalendarModel
+    let size: CGSize
+
+    /// The height two lines of text and the padding need.
+    private static let twoLineHeight: CGFloat = 32
+
+    private var fitsTwoLines: Bool { size.height >= Self.twoLineHeight }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            HStack(alignment: .top, spacing: 2) {
+            HStack(alignment: .top, spacing: 3) {
                 Text(event.title).fontWeight(.medium).lineLimit(1)
+                if !fitsTwoLines {
+                    if let start = event.startDate {
+                        Text(start, format: .dateTime.hour().minute()).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let link = event.meetLink { CalendarJoinLink(link: link) }
+                }
                 Spacer(minLength: 0)
                 CalendarAlarmButton(event: event, armed: model.isArmed(event), compact: true) { model.arm(event) }
             }
-            HStack(spacing: 3) {
-                if let start = event.startDate { Text(start, format: .dateTime.hour().minute()) }
-                if let link = event.meetLink {
-                    Text("·")
-                    CalendarJoinLink(link: link)
+            if fitsTwoLines {
+                HStack(spacing: 3) {
+                    if let start = event.startDate { Text(start, format: .dateTime.hour().minute()) }
+                    if let link = event.meetLink {
+                        Text("·")
+                        CalendarJoinLink(link: link)
+                    }
                 }
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
         }
         .font(.system(size: 11))
         .padding(.horizontal, 5)
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.vertical, fitsTwoLines ? 3 : 1)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
         .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 5))
         .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor.opacity(0.5)))
-        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 5))
         .help(event.title)
     }
 }
@@ -329,6 +345,10 @@ struct CalendarWeekView: View {
                     .frame(maxWidth: .infinity)
                 }
             }
+            // Only as tall as the labels. Left flexible, the row splits the
+            // page's height with the hour grid and floats the dates in the middle.
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.bottom, 4)
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 Text("all-day").font(.system(size: 9)).foregroundStyle(.secondary)
@@ -347,6 +367,7 @@ struct CalendarWeekView: View {
                     .padding(1)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
             Divider()
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
@@ -412,9 +433,11 @@ struct CalendarDayColumn: View {
                 ForEach(laid) { item in
                     let place = model.grid.placement(item.event, day: day)
                     let width = geo.size.width / CGFloat(item.lanes)
-                    CalendarEventBlock(event: item.event, model: model)
-                        .frame(width: max(width - 2, 0), height: CGFloat(place.minutes) * perMinute)
-                        .offset(x: width * CGFloat(item.lane) + 1, y: CGFloat(place.startMinute) * perMinute)
+                    // 1pt off each end so back-to-back meetings show a gap.
+                    CalendarEventBlock(event: item.event, model: model,
+                                       size: CGSize(width: max(width - 2, 0),
+                                                    height: max(CGFloat(place.minutes) * perMinute - 2, 0)))
+                        .offset(x: width * CGFloat(item.lane) + 1, y: CGFloat(place.startMinute) * perMinute + 1)
                 }
                 CalendarNow { now in
                     if model.grid.sameDay(day, now) {
@@ -607,10 +630,11 @@ struct CalendarDayView: View {
                 ForEach(laid) { item in
                     let place = model.grid.placement(item.event, day: day)
                     let share = crossLength / CGFloat(item.lanes)
-                    let frame = size(along: CGFloat(place.minutes) * pointsPerMinute, across: max(share - 2, 0))
-                    CalendarEventBlock(event: item.event, model: model)
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(shift(along: CGFloat(place.startMinute) * pointsPerMinute,
+                    // 1pt off each end so back-to-back meetings show a gap.
+                    let frame = size(along: max(CGFloat(place.minutes) * pointsPerMinute - 2, 0),
+                                     across: max(share - 2, 0))
+                    CalendarEventBlock(event: item.event, model: model, size: frame)
+                        .offset(shift(along: CGFloat(place.startMinute) * pointsPerMinute + 1,
                                       across: Self.labelBand + share * CGFloat(item.lane)))
                 }
                 CalendarNow { now in

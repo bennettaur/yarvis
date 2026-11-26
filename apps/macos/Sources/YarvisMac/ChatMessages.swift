@@ -212,7 +212,7 @@ struct ToolCard: View {
 }
 
 /// How long a new approval request ignores clicks and keys.
-private let approvalArmingDelay: Duration = .milliseconds(400)
+let approvalArmingDelay: Duration = .milliseconds(400)
 
 /// The front of the approval queue. A and D answer it from the keyboard while no text field has focus; the bar is
 /// only on screen for the visible tab, so the keys can't answer a hidden one.
@@ -332,13 +332,14 @@ extension View {
     /// Disables approve and deny buttons for a moment after a new request
     /// takes their place, so a double click or a key press meant for the
     /// last one can't answer one the user never saw.
-    func armedAfterAppearing(id: String) -> some View {
-        modifier(ArmedAfterAppearing(id: id))
+    func armedAfterAppearing(id: String, delay: Duration = approvalArmingDelay) -> some View {
+        modifier(ArmedAfterAppearing(id: id, delay: delay))
     }
 }
 
 private struct ArmedAfterAppearing: ViewModifier {
     let id: String
+    let delay: Duration
     @State private var armed = false
 
     func body(content: Content) -> some View {
@@ -346,7 +347,7 @@ private struct ArmedAfterAppearing: ViewModifier {
             .disabled(!armed)
             .task(id: id) {
                 armed = false
-                try? await Task.sleep(for: approvalArmingDelay)
+                try? await Task.sleep(for: delay)
                 armed = true
             }
     }

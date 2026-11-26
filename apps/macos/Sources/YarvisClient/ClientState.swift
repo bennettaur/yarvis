@@ -152,6 +152,10 @@ public struct AttentionInbox: Equatable, Sendable {
         items.removeAll { $0.id == itemId }
     }
 
+    public mutating func remove(itemIds: Set<String>) {
+        items.removeAll { itemIds.contains($0.id) }
+    }
+
     public mutating func loadApprovals(_ pending: [Approval]) -> [Approval] {
         approvals = pending
         let fresh = pending.filter { seen.insert($0.id).inserted }

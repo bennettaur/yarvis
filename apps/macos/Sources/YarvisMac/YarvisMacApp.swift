@@ -115,11 +115,6 @@ struct MainView: View {
                     }
                 }
         }
-        .overlay {
-            if let alarms = app.alarms, let ringing = alarms.takeoverQueue.first {
-                AlarmTakeoverView(model: alarms, alarm: ringing, remaining: alarms.takeoverQueue.count - 1)
-            }
-        }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { app.showWebUI() } label: { Label("Web UI", systemImage: "globe") }

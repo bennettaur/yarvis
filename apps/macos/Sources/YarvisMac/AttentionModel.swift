@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import UserNotifications
@@ -12,6 +13,7 @@ final class AttentionModel {
 
     private(set) var inbox = AttentionInbox()
     var items: [AttentionItem] { inbox.items }
+    var groups: [AttentionGroup] { groupAttention(inbox.items) }
     var approvals: [Approval] { inbox.approvals }
     var count: Int { inbox.count }
     var error: String?
@@ -19,6 +21,13 @@ final class AttentionModel {
     var answering: AttentionItem?
 
     private var streamTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+    private var activationObserver: NSObjectProtocol?
+    private var stopped = false
+
+    /// A backstop for a change the stream missed, such as the items an
+    /// archive resolves after the archive request has returned.
+    private static let pollInterval: Duration = .seconds(30)
 
     init(app: AppModel, client: YarvisClient) {
         self.app = app
@@ -28,10 +37,61 @@ final class AttentionModel {
     func start() {
         reloadApprovals()
         streamTask = Task { await runStream() }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.pollInterval)
+                guard let self else { return }
+                await self.reloadItems()
+            }
+        }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.markViewedWorkspaceRead() }
+        }
+        followViewedWorkspace()
     }
 
     func stop() {
+        stopped = true
         streamTask?.cancel()
+        pollTask?.cancel()
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
+    }
+
+    /// The workspace selected on the Workspaces page, when that page shows.
+    private var viewedWorkspaceId: String? {
+        guard app.section == .workspaces else { return nil }
+        return app.workspaces?.selectedId
+    }
+
+    /// Re-runs `markViewedWorkspaceRead` whenever the items or the workspace on screen change.
+    private func followViewedWorkspace() {
+        guard !stopped else { return }
+        withObservationTracking {
+            _ = viewedWorkspaceId
+            _ = inbox
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followViewedWorkspace() }
+        }
+        markViewedWorkspaceRead()
+    }
+
+    /// Opening the workspace that raised an item counts as seeing it, so it
+    /// doesn't need dismissing by hand, as in the web UI.
+    private func markViewedWorkspaceRead() {
+        guard !stopped, NSApp.isActive, let workspaceId = viewedWorkspaceId else { return }
+        let seen = attentionSeenByViewing(workspaceId: workspaceId, in: inbox.items)
+        guard !seen.isEmpty else { return }
+        inbox.remove(itemIds: Set(seen.map(\.id)))
+        // Per item rather than a workspace clear: the server's `read` clear
+        // spares questions but not permission prompts, which have to stay
+        // until they're answered. Failures stay quiet, since the user didn't
+        // ask for this; the item comes back on the next reload and is retried.
+        Task { [client] in
+            for item in seen { try? await client.setAttentionStatus(id: item.id, "read") }
+        }
     }
 
     /// The stream replays nothing, so each connection starts with a fresh list.
@@ -93,6 +153,16 @@ final class AttentionModel {
     func dismiss(_ item: AttentionItem) {
         inbox.remove(itemId: item.id)
         perform { [client] in try await client.setAttentionStatus(id: item.id, "dismissed") }
+    }
+
+    /// Dismisses the group's items one by one rather than its whole scope, so
+    /// a prompt that arrived after the row was drawn isn't dismissed unseen.
+    func dismiss(_ group: AttentionGroup) {
+        let items = group.items
+        inbox.remove(itemIds: Set(items.map(\.id)))
+        perform { [client] in
+            for item in items { try await client.setAttentionStatus(id: item.id, "dismissed") }
+        }
     }
 
     /// Opens an item: an answer sheet for questions and permission prompts,

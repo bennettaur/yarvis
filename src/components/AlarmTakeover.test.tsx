@@ -2,7 +2,7 @@ import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import type { Alarm } from "../lib/alarms";
 import { fireAlarm, resetAlarms, setAlarms, stubAlarmsApi } from "../test/alarmFixture";
-import { mountForInteraction } from "../test/render";
+import { mountForInteraction, waitFor } from "../test/render";
 
 /**
  * The regression test for issue #201, at the level the bug actually lived: the
@@ -99,5 +99,41 @@ describe("AlarmTakeover", () => {
 
     expect(host.innerHTML).toContain("Second");
     expect(host.innerHTML).not.toContain("First");
+  });
+
+  describe("ringing in a browser tab", () => {
+    it("flashes the alarm in the title, and stops when the takeover unmounts", async () => {
+      document.title = "Yarvis";
+      setAlarms([scheduled("tab-a", "Standup", Date.now())]);
+      await mountTakeover();
+
+      fireAlarm("tab-a");
+      await waitFor(() => document.title === "⏰ Standup", "the title to flash");
+
+      unmount?.();
+      unmount = null;
+      expect(document.title).toBe("Yarvis");
+    });
+
+    it("leaves the ringing to the macOS app inside its web view", async () => {
+      const original = navigator.userAgent;
+      Object.defineProperty(navigator, "userAgent", {
+        value: `${original} YarvisMac`,
+        configurable: true,
+      });
+      try {
+        document.title = "Yarvis";
+        setAlarms([scheduled("mac-a", "Standup", Date.now())]);
+        const host = await mountTakeover();
+
+        fireAlarm("mac-a");
+        await waitFor(() => host.innerHTML.includes("Standup"), "the takeover to show");
+        // Past one flash interval: the title would have changed by now.
+        await new Promise((resolve) => setTimeout(resolve, 1_100));
+        expect(document.title).toBe("Yarvis");
+      } finally {
+        Object.defineProperty(navigator, "userAgent", { value: original, configurable: true });
+      }
+    });
   });
 });

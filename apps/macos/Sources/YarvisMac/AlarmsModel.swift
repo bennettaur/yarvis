@@ -16,12 +16,15 @@ final class AlarmsModel {
     /// don't redraw on every poll.
     private(set) var book = AlarmBook()
     var ringing: [Alarm] { book.ringing }
-    var takeoverQueue: [Alarm] { book.takeoverQueue }
+    /// Leaves out alarms answered here, so the takeover lets go of the screens
+    /// even when the server couldn't record the answer.
+    var takeoverQueue: [Alarm] { book.takeoverQueue.filter { !answeredHere.contains($0.id) } }
     var scheduled: [Alarm] { book.scheduled }
     /// The page's last failed action.
     var error: String?
-    /// The takeover's last failed action, by alarm id.
-    var takeoverErrors: [String: String] = [:]
+    /// Alarms answered on the takeover, until the list stops showing them as
+    /// fired or they fire again.
+    private var answeredHere: Set<String> = []
     private var arming = MeetingArming()
 
     private let ringer = AlarmRinger()
@@ -70,9 +73,11 @@ final class AlarmsModel {
         case "alarm.fire":
             switch AlarmFire(event) {
             case .alarm(let alarm):
+                answeredHere.remove(alarm.id)
                 ringer.fired(alarm.id)
                 update { $0.fired(alarm) }
             case .id(let id):
+                answeredHere.remove(id)
                 ringer.fired(id)
                 update { $0.fired(id: id) }
             case .unreadable:
@@ -105,6 +110,8 @@ final class AlarmsModel {
     private func update(_ change: (inout AlarmBook) -> Bool) {
         var next = book
         if change(&next) { book = next }
+        let ringing = Set(book.ringing.map(\.id))
+        if !answeredHere.isSubset(of: ringing) { answeredHere.formIntersection(ringing) }
         syncRinger()
     }
 
@@ -128,7 +135,7 @@ final class AlarmsModel {
 
     private func syncRinger() {
         guard !stopped else { return }
-        ringer.sync(queue: book.takeoverQueue)
+        ringer.sync(queue: takeoverQueue)
     }
 
     // MARK: Actions
@@ -166,11 +173,13 @@ final class AlarmsModel {
         await run { [client] in try await client.snoozeAlarm(id: alarm.id, minutes: alarmSnoozeMinutes) }
     }
 
-    /// The takeover's actions. The sound stops at once, even when the sidecar
-    /// can't be reached; the error says the choice wasn't recorded.
+    /// The takeover's actions. The sound and the takeover stop at once, even
+    /// when the sidecar can't be reached. The alarm then stays under Ringing,
+    /// and the Alarms page says the choice wasn't recorded.
     func answerTakeover(_ alarm: Alarm, snooze: Bool) async {
         ringer.answer(alarm.id)
-        takeoverErrors[alarm.id] = nil
+        answeredHere.insert(alarm.id)
+        syncRinger()
         do {
             if snooze {
                 try await client.snoozeAlarm(id: alarm.id, minutes: alarmSnoozeMinutes)
@@ -178,7 +187,8 @@ final class AlarmsModel {
                 try await client.acknowledgeAlarm(id: alarm.id)
             }
         } catch {
-            takeoverErrors[alarm.id] = "Couldn't reach Yarvis to record that (\(error.localizedDescription)). Try again."
+            self.error = "Couldn't reach Yarvis to record your answer to “\(alarm.label)” "
+                + "(\(error.localizedDescription)). It's still ringing; answer it again here."
         }
         await refresh()
     }
@@ -217,9 +227,8 @@ final class AlarmsModel {
 
 /// Sounds the alarms in the takeover queue, in front or not, and makes them
 /// noticeable from the background with a notification and a Dock icon that
-/// bounces until the user comes back. It doesn't pull the window forward:
-/// macOS 14 refuses focus stealing, and a window that jumps forward while the
-/// user types can catch keystrokes meant for another app.
+/// bounces until the user comes back. The screen itself is covered by
+/// `AlarmTakeoverPanels`, which shows without taking focus.
 @MainActor
 final class AlarmRinger {
     private var state = AlarmRingState()

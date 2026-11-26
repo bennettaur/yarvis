@@ -563,6 +563,62 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
     }
 }
 
+@Suite struct AttentionGroupTests {
+    func item(_ id: String, seq: Int64, kind: String = "completed", workspace: String? = nil,
+              session: String? = nil) -> AttentionItem {
+        AttentionItem(id: id, seq: seq, source: "claude-hook", sessionKey: session, workspaceId: workspace, kind: kind,
+                      title: id, body: nil, status: "pending", navTarget: nil, payload: nil, createdAt: "a", updatedAt: "b")
+    }
+
+    @Test func groupsByWorkspaceThenSessionKeepingNewestFirst() {
+        let groups = groupAttention([
+            item("w3", seq: 6, workspace: "w", session: "ws-claude:w"),
+            item("s2", seq: 5, session: "tab:terminal/1/0"),
+            item("loose", seq: 4),
+            item("w2", seq: 3, workspace: "w", session: "w/other/0"),
+            item("s1", seq: 2, session: "tab:terminal/1/0"),
+            item("w1", seq: 1, workspace: "w"),
+        ])
+        #expect(groups.map(\.id) == ["workspace:w", "session:tab:terminal/1/0", "item:loose"])
+        #expect(groups[0].items.map(\.id) == ["w3", "w2", "w1"])
+    }
+
+    @Test func theLeadIsTheMostUrgentThenTheNewest() {
+        let groups = groupAttention([
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("idle-new", seq: 3, kind: "idle", workspace: "w"),
+            item("idle-old", seq: 2, kind: "idle", workspace: "w"),
+            item("error", seq: 1, kind: "error", workspace: "w"),
+        ])
+        #expect(groups.first?.lead.id == "idle-new")
+    }
+
+    @Test func aKindThisClientDoesNotKnowNeverLeads() {
+        let groups = groupAttention([
+            item("new-kind", seq: 2, kind: "something-new", workspace: "w"),
+            item("done", seq: 1, kind: "completed", workspace: "w"),
+        ])
+        #expect(groups.first?.lead.id == "done")
+    }
+
+    @Test func removingSeveralItemsLeavesTheRest() {
+        var inbox = AttentionInbox()
+        _ = inbox.loadItems([item("a", seq: 1), item("b", seq: 2), item("c", seq: 3)])
+        inbox.remove(itemIds: ["a", "c"])
+        #expect(inbox.items.map(\.id) == ["b"])
+    }
+
+    @Test func viewingAWorkspaceSeesAllButQuestionsAndPrompts() {
+        let items = [
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("ask", seq: 3, kind: "question", workspace: "w"),
+            item("prompt", seq: 2, kind: "permission", workspace: "w"),
+            item("elsewhere", seq: 1, kind: "completed", workspace: "other"),
+        ]
+        #expect(attentionSeenByViewing(workspaceId: "w", in: items).map(\.id) == ["done"])
+    }
+}
+
 @Suite struct MarkdownBlockTests {
     @Test func splitsCodeHeadingsAndText() {
         let blocks = MarkdownBlock.parse("""

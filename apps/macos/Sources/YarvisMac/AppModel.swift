@@ -74,8 +74,14 @@ final class AppModel {
     /// connection reports late can't sign out the current one.
     private var connection = UUID()
 
+    @ObservationIgnored private let takeoverPanels = AlarmTakeoverPanels()
+
     private static let serverKey = "serverURL"
     private static let revokedMessage = "This device was signed out by the server."
+
+    init() {
+        followTakeover()
+    }
 
     var lastServer: String { UserDefaults.standard.string(forKey: Self.serverKey) ?? "" }
 
@@ -249,11 +255,23 @@ final class AppModel {
         codeRequest = nil
     }
 
-    /// A ringing alarm covers the main window. Sheets wait until it's
-    /// answered, since an overlay can't cover a sheet. Behind a locked vault
-    /// there is no main window, and a banner shows the alarm instead.
+    /// A ringing alarm covers every screen. Sheets wait until it's answered,
+    /// so one isn't left open behind it. Behind a locked vault there is no
+    /// main window, and a banner shows the alarm instead.
     var alarmTakeoverShowing: Bool {
         !(alarms?.takeoverQueue.isEmpty ?? true) && settings?.vaultNeedsUnlock != true
+    }
+
+    /// Shows or hides the takeover panels each time `alarmTakeoverShowing` changes.
+    private func followTakeover() {
+        let showing = withObservationTracking { alarmTakeoverShowing } onChange: { [weak self] in
+            Task { @MainActor in self?.followTakeover() }
+        }
+        if showing, let alarms {
+            takeoverPanels.show(model: alarms)
+        } else {
+            takeoverPanels.hide()
+        }
     }
 
     /// Why the last code was refused, shown in the prompt.
