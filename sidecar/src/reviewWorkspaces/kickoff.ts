@@ -161,7 +161,7 @@ export async function backgroundSettled(): Promise<void> {
 }
 
 /** The active review workspace already holding `ref`, most recently opened first. */
-async function findReviewWorkspacePr(
+export async function findReviewWorkspacePr(
   db: Db,
   ref: PrRef,
 ): Promise<{ workspaceId: string; prId: string } | null> {
@@ -263,8 +263,9 @@ async function startReport(
     deps.review,
     (id) => registryFor(deps).isLive(id),
     deps.verification.settings,
+    deps.verification.repoSettings,
   );
-  const asked = normalizeSections(options.sections);
+  const asked = normalizeSections(options.sections, checklist.defaultSections);
   const items = checklist.items.filter((item) => asked.includes(item.section));
   // Any instance's run counts, as it does for startVerification, which joins it.
   const running = items.filter((item) => item.latest?.status === "running");
@@ -458,6 +459,7 @@ function notify(
     source: "system",
     sessionKey: sessionKeyFor(pr),
     kind,
+    category: "review",
     title,
     body: detail ? `${prName(pr)}: ${detail}` : prName(pr),
     navTarget: {

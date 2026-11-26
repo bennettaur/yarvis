@@ -45,6 +45,7 @@ const APPROVAL = {
 
 const STREAM = {
   id: "s1",
+  kind: "work",
   title: "Ship the billing PR",
   summary: null,
   status: "waiting-on-user",
@@ -53,6 +54,9 @@ const STREAM = {
   waitingOn: "Where should I ask for review?",
   wakeAt: null,
   pausedAt: null,
+  watchCondition: null,
+  watchEveryMinutes: null,
+  expiresAt: null,
   updatedAt: "2026-10-19T10:00:00.000Z",
   links: [
     {
@@ -72,6 +76,20 @@ const STREAM = {
       observedAt: "2026-10-19T10:00:00.000Z",
     },
   ],
+};
+
+const WATCH = {
+  ...STREAM,
+  id: "s2",
+  kind: "watch",
+  title: "Alex's PRs",
+  status: "waiting-on-others",
+  nextAction: null,
+  waitingOn: null,
+  watchCondition: "Alex merged acme/billing#41",
+  watchEveryMinutes: 180,
+  expiresAt: "2026-10-26T10:00:00.000Z",
+  links: [],
 };
 
 const PASS = {
@@ -117,7 +135,16 @@ const CONFIG = {
   model: null,
   guidance: null,
   maxRoutinesPerPass: 2,
+  shipMonitorWindowMinutes: 60,
+  shipCheckEveryMinutes: 15,
+  alwaysOn: false,
+  nightShift: null,
+  nightShiftMinSleepMinutes: 120,
+  maxPassesPerDay: null,
 };
+
+/** What the settings form sends: always-on only when the user changed it. */
+const { alwaysOn: _alwaysOn, ...SENT } = CONFIG;
 
 const ROUTINES = {
   routines: [
@@ -126,8 +153,11 @@ const ROUTINES = {
       description: "Sets an alarm for each meeting",
       everyMinutes: 180,
       workingHoursOnly: false,
+      nightShift: "run",
       enabled: true,
       source: "builtin",
+      tools: [],
+      configKeys: [],
       lastDoneAt: null,
     },
     {
@@ -135,8 +165,11 @@ const ROUTINES = {
       description: "Drafts my standup",
       everyMinutes: 24 * 60,
       workingHoursOnly: true,
+      nightShift: "run",
       enabled: true,
       source: "user",
+      tools: [],
+      configKeys: [],
       lastDoneAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
     },
     {
@@ -144,8 +177,11 @@ const ROUTINES = {
       description: "Triages my inbox",
       everyMinutes: 45,
       workingHoursOnly: false,
+      nightShift: "skip",
       enabled: true,
       source: "user",
+      tools: ["slack_read_channel", "post_message"],
+      configKeys: ["channels", "handle"],
       lastDoneAt: null,
     },
     {
@@ -153,8 +189,11 @@ const ROUTINES = {
       description: "Reads meeting notes",
       everyMinutes: 240,
       workingHoursOnly: true,
+      nightShift: "run",
       enabled: false,
       source: "builtin",
+      tools: [],
+      configKeys: [],
       lastDoneAt: null,
     },
   ],
@@ -184,8 +223,12 @@ let savedConfig: Omit<typeof CONFIG, "provider" | "model"> & {
   model: string | null;
 } = CONFIG;
 
+/** What the review stream route answers; a test may replace it. */
+let reviewStream: unknown = { maxReady: 5, slots: [], backlog: [] };
+
 /** The run the page loads; a test may replace it. */
 let currentRun: typeof RUN | null = RUN;
+let passCounts = { passesToday: 4, maxPassesPerDay: null as number | null };
 
 /** Writes the page made, in order, with their bodies. */
 const writes: { method: string; path: string; body: unknown }[] = [];
@@ -236,10 +279,11 @@ stubSidecarApi({
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
+        ...passCounts,
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
-    if (path === "/api/work-streams") return json([STREAM]);
+    if (path === "/api/work-streams") return json([STREAM, WATCH]);
     if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
     if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
     if (path === "/api/heads-down/messages") return json([]);
@@ -262,6 +306,7 @@ stubSidecarApi({
       if (routinesAnswer === "hang") return new Promise<Response>(() => {});
       return routinesAnswer ? json(routinesAnswer) : json({ error: "disk on fire" }, 500);
     }
+    if (path === "/api/review-prep/stream") return json(reviewStream);
     if (path === "/api/heads-down/allowed-tools") {
       return json([{ id: "mcp:slack:read_channel", name: "read_channel" }]);
     }
@@ -275,7 +320,7 @@ stubSidecarApi({
 const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
-const { linkLabel } = await import("./StreamList");
+const { linkLabel, ShipStages } = await import("./StreamList");
 const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -294,8 +339,10 @@ afterEach(() => {
   streamFrames = [];
   savedConfig = CONFIG;
   currentRun = RUN;
+  passCounts = { passesToday: 4, maxPassesPerDay: null };
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
+  reviewStream = { maxReady: 5, slots: [], backlog: [] };
 });
 
 const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -322,9 +369,51 @@ describe("HeadsDownPanel", () => {
     expect(text).toContain("Where should I ask for review?");
     expect(text).toContain("Waiting on you");
     expect(text).toContain("pr: Add invoices · CI passing");
+    expect(text).toContain("Watching for: Alex merged acme/billing#41 · checks every 3h · until");
+    expect(text).not.toContain("Watching for: null");
     expect(text).toContain("Asked where to request review.");
     expect(text).toContain("Approved on its own");
     expect(text).toContain("Posts the review request the user asked for");
+  });
+
+  it("counts today's passes, against the daily limit when there is one", async () => {
+    const host = await mount();
+    await waitForText(host, "Passes today: 4");
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    passCounts = { passesToday: 40, maxPassesPerDay: 40 };
+    const limited = await mount();
+    await waitForText(limited, "Passes today: 40 of 40");
+    expect(limited.textContent).toContain("Reached today's pass limit");
+  });
+
+  it("shows the review stream: what holds a slot, with its risk, and the backlog", async () => {
+    reviewStream = {
+      maxReady: 2,
+      slots: [
+        { pr: "api#1", state: "ready", risk: "high" },
+        { pr: "api#2", state: "verifying", risk: null },
+        { pr: "api#3", state: "queued", risk: null },
+      ],
+      backlog: [
+        { pr: "web#9", backloggedAt: "2026-10-19T09:00:00.000Z" },
+        { pr: "web#4", backloggedAt: "2026-10-19T09:30:00.000Z" },
+      ],
+    };
+    const host = await mount();
+    await waitForText(host, "Review stream");
+    const text = host.textContent ?? "";
+    expect(text).toContain("3 of 2 prepared (a stack started past the limit) · 2 in the backlog");
+    const row = [...host.querySelectorAll("li")].find((li) => li.textContent?.includes("api#1"));
+    expect(row?.textContent).toContain("ready for review");
+    expect(row?.textContent).toContain("High risk");
+    expect(text.indexOf("web#9")).toBeLessThan(text.indexOf("web#4"));
+  });
+
+  it("leaves the review stream out until review prep has a PR", async () => {
+    const host = await mount();
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).not.toContain("Review stream");
   });
 
   it("lists the routines, and a file that failed to load", async () => {
@@ -336,12 +425,16 @@ describe("HeadsDownPanel", () => {
 
     expect(
       [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
-    ).toEqual(["every 3h", "every 1d, working hours", "every 45m", "off"]);
+    ).toEqual(["every 3h", "every 1d, working hours", "every 45m, skip at night", "off"]);
     expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
     expect(routine("meeting-alarms")).not.toContain("(yours)");
     expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
     expect(routine("standup")).toContain("Last done");
     expect(routine("triage")).toContain("every 45m");
+    expect(routine("triage")).toContain("Tools: slack_read_channel, post_message");
+    expect(routine("triage")).toContain("Settings: channels, handle");
+    expect(routine("standup")).not.toContain("Tools:");
+    expect(routine("standup")).not.toContain("Settings:");
     expect(routine("meeting-notes")).toContain("off");
     expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
     expect(host.textContent).toContain("x.md: 'every' is required");
@@ -666,7 +759,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" },
+      body: { ...SENT, provider: "anthropic", model: "claude-haiku-5-5" },
     });
   });
 
@@ -689,7 +782,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, guidance: "Don't merge during market hours" },
+      body: { ...SENT, guidance: "Don't merge during market hours" },
     });
   });
 
@@ -721,7 +814,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
+      body: { ...SENT, passTimeoutMinutes: 90, maxSleepMinutes: 600 },
     });
   });
 
@@ -746,10 +839,52 @@ describe("HeadsDownSettings", () => {
     };
     await type("0");
     await type("-1");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 0 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 0 });
     await type("10");
     await type("11");
-    expect(await saved()).toEqual({ ...CONFIG, maxRoutinesPerPass: 10 });
+    expect(await saved()).toEqual({ ...SENT, maxRoutinesPerPass: 10 });
+  });
+
+  it("saves always-on, a daily pass limit and night-shift hours", async () => {
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+    const checkbox = (label: string) => {
+      const input = [...host.querySelectorAll("label")]
+        .find((l) => l.textContent?.startsWith(label))
+        ?.querySelector<HTMLInputElement>("input[type=checkbox]");
+      if (!input) throw new Error(`no ${label} checkbox`);
+      return input;
+    };
+    checkbox("Always on").click();
+    checkbox("Limit passes per day").click();
+    checkbox("Night shift").click();
+    await settle(20);
+    buttonNamed(host, "Save").click();
+    await settle();
+
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/config",
+      body: {
+        ...SENT,
+        alwaysOn: true,
+        maxPassesPerDay: 100,
+        nightShift: { start: "23:00", end: "07:00" },
+      },
+    });
+  });
+
+  it("doesn't send always-on unless it was changed, so a stale form can't turn it back on", async () => {
+    // Stop turned it off on the server after this form loaded it as on.
+    savedConfig = { ...CONFIG, alwaysOn: true };
+    const host = await mount();
+    buttonNamed(host, "Show settings").click();
+    await settle(50);
+    buttonNamed(host, "Save").click();
+    await settle();
+    const body = writes.filter((w) => w.path === "/api/heads-down/config").pop()?.body;
+    expect(body).not.toHaveProperty("alwaysOn");
   });
 
   it("goes back to the default chat model", async () => {
@@ -774,7 +909,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: { ...CONFIG, provider: null, model: null },
+      body: { ...SENT, provider: null, model: null },
     });
   });
 
@@ -797,7 +932,7 @@ describe("HeadsDownSettings", () => {
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/config",
-      body: savedConfig,
+      body: { ...SENT, provider: "openai", model: "gpt-x" },
     });
   });
 });
@@ -864,8 +999,6 @@ describe("linkLabel", () => {
   it("says when a review request was sent", () => {
     const label = linkLabel(
       {
-        id: "l",
-        kind: "review-request",
         ref: {
           kind: "review-request",
           channel: "slack",
@@ -875,12 +1008,45 @@ describe("linkLabel", () => {
         },
         title: null,
         state: "no reply yet",
-        observedAt: null,
       },
       new Map(),
     );
     expect(label).toStartWith("review request, sent ");
     expect(label).toEndWith(": #billing-reviews · no reply yet");
+  });
+});
+
+describe("ShipStages", () => {
+  it("shows each stage, where the stream is, and the last thing it saw", async () => {
+    const html = await renderToHtml(
+      createElement(ShipStages, {
+        ship: {
+          repo: "acme/api",
+          number: 12,
+          url: "https://github.com/acme/api/pull/12",
+          stage: "monitor_production",
+          stages: {
+            ci: { status: "done", at: "2026-11-23T10:00:00.000Z" },
+            staging_test: { status: "skipped", at: "2026-11-23T11:00:00.000Z" },
+            deploy: { status: "failed", at: "2026-11-23T12:00:00.000Z" },
+          },
+          monitorUntil: "2026-11-23T16:00:00.000Z",
+          log: [
+            {
+              at: "2026-11-23T15:00:00.000Z",
+              stage: "monitor_production",
+              text: "error rate flat",
+            },
+          ],
+        },
+      }),
+    );
+    const text = textOf(html);
+    expect(text).toContain("Staging test (skipped)");
+    expect(text).toContain("Deploy (failed)");
+    expect(text).toContain("Watching production until");
+    expect(text).toContain("Last logged (Watch production): error rate flat");
+    expect(html).toMatch(/aria-current="step"[^>]*>Watch production</);
   });
 });
 

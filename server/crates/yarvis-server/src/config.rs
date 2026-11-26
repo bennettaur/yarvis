@@ -154,7 +154,8 @@ pub struct SecretsConfig {
 pub struct SshAgentConfig {
     /// Off by default. When off, the server never holds a signing key, and
     /// workspace shells get `upstream_socket` (or the server's own
-    /// `SSH_AUTH_SOCK`) instead. Needs the vault backend, which holds the key.
+    /// `SSH_AUTH_SOCK`) instead. The key lives in the vault, which this turns
+    /// on even when the secrets are kept somewhere else.
     pub enabled: bool,
     /// The agent workspace shells use when `enabled` is off, such as
     /// 1Password's `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`.
@@ -242,6 +243,19 @@ pub enum ConfigError {
 }
 
 impl Config {
+    /// Whether the server has a vault to unlock: it holds the secrets, the
+    /// signing key, or both.
+    pub fn uses_vault(&self) -> bool {
+        self.secrets_in_vault() || self.ssh_agent.enabled
+    }
+
+    /// Whether the secrets live in the vault, so locking it stops the sidecar.
+    /// A vault holding only the signing key locks without touching anything
+    /// but the agent.
+    pub fn secrets_in_vault(&self) -> bool {
+        self.secrets.backend == Some(SecretBackendKind::Vault)
+    }
+
     /// Reads `path`. A missing file gives the defaults, so a first run needs
     /// no setup.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
@@ -277,11 +291,6 @@ impl Config {
             return invalid(
                 "server.bind isn't loopback, and the server only speaks plain HTTP. Put TLS in \
                  front of it (for example `tailscale serve`) and set server.allow_plain_http = true",
-            );
-        }
-        if self.ssh_agent.enabled && self.secrets.backend != Some(SecretBackendKind::Vault) {
-            return invalid(
-                "ssh_agent.enabled needs secrets.backend = \"vault\", which holds the signing key",
             );
         }
         if self.ssh_agent.enabled && self.ssh_agent.upstream_socket.is_some() {
@@ -484,17 +493,29 @@ mod tests {
     }
 
     #[test]
-    fn refuses_the_ssh_agent_without_the_vault() {
+    fn the_ssh_agent_uses_the_vault_whatever_holds_the_secrets() {
         let config: Config = toml::from_str("[ssh_agent]\nenabled = true\n").unwrap();
-        let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("vault"), "{err}");
+        config.validate().unwrap();
+        assert!(config.uses_vault());
+        let config: Config =
+            toml::from_str("[secrets]\nbackend = \"keychain\"\n[ssh_agent]\nenabled = true\n")
+                .unwrap();
+        config.validate().unwrap();
+        assert!(config.uses_vault());
+        assert!(!config.secrets_in_vault());
+        let config: Config = toml::from_str("[secrets]\nbackend = \"keychain\"\n").unwrap();
+        assert!(!config.uses_vault());
     }
 
     #[test]
     fn load_checks_what_it_reads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
-        std::fs::write(&path, "[ssh_agent]\nenabled = true\n").unwrap();
+        std::fs::write(
+            &path,
+            "[ssh_agent]\nenabled = true\nupstream_socket = \"/tmp/agent.sock\"\n",
+        )
+        .unwrap();
         assert!(matches!(Config::load(&path), Err(ConfigError::Invalid(_))));
         std::fs::write(&path, "[server\n").unwrap();
         assert!(matches!(

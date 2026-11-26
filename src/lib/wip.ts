@@ -5,6 +5,7 @@ import type { AttentionNavTarget } from "./attention";
 export interface WipSourcesConfig {
   myPrs: boolean;
   starredPrs: boolean;
+  reviews: boolean;
   issues: boolean;
   tasks: boolean;
   workspaces: boolean;
@@ -23,7 +24,7 @@ export interface WipConfig {
  * need the user *now*); this is the "still in flight" backlog.
  */
 
-export type WipSource = "pr" | "starred-pr" | "issue" | "task" | "workspace";
+export type WipSource = "pr" | "starred-pr" | "review" | "issue" | "task" | "workspace";
 
 export interface WipItem {
   id: string;

@@ -25,12 +25,68 @@ export interface VerificationCheck {
   findings: VerificationFinding[];
 }
 
-export interface VerificationConcern {
-  title: string;
-  detail: string;
+/** A step a repo or playbook check's instructions gave that a read-only run couldn't take. */
+export interface SkippedStep {
+  step: string;
+  reason: string;
+}
+
+/** A check run from instructions written for the repo, by its maintainers or by the user. */
+export interface InstructedCheck extends VerificationCheck {
+  skipped?: SkippedStep[];
+}
+
+/** Mirrors the sidecar's `RepoCommandResult`: a command the repo's instructions asked for, run by Yarvis. */
+export interface RepoCommand {
+  argv: string[];
+  why: string;
+  status: "passed" | "failed" | "not-run";
+  exitCode: number | null;
+  reason: string | null;
+  /** Written by the PR's code: shown as text, never as markup. */
+  output: string;
+}
+
+/** Mirrors the sidecar's `RepoInstructions`: where the repo check's instructions came from. */
+export interface RepoInstructions {
+  branch: string;
+  commit: string;
+  files: string[];
+  omitted: number;
+}
+
+/** A place in the code backing a claim: the test that proves a change, or the guard that contains it. */
+export interface VerificationProof {
+  text: string;
   path?: string;
   line?: number;
 }
+
+/** `severity` and `fix` are absent on a report from before concerns carried them. */
+export interface VerificationConcern {
+  title: string;
+  detail: string;
+  severity?: Severity;
+  /** The change that would resolve or contain it; may be empty. */
+  fix?: string;
+  path?: string;
+  line?: number;
+}
+
+/**
+ * A control that limits a risk. `addresses` is the title of the concern or
+ * change it limits, empty when the agent didn't say. A report from before
+ * mitigations were tied to a risk stores a bare string.
+ */
+export interface VerificationMitigation {
+  text: string;
+  addresses: string;
+  path?: string;
+  line?: number;
+}
+
+export const asMitigation = (m: string | VerificationMitigation): VerificationMitigation =>
+  typeof m === "string" ? { text: m, addresses: "" } : m;
 
 export type ChangeKind =
   | "passive"
@@ -54,6 +110,10 @@ export interface VerificationChange {
   count: number;
   /** What a reviewer should confirm; empty below the attention band. */
   check: string;
+  /** The test that shows it works. Absent when there is none, and on older reports. */
+  proof?: VerificationProof;
+  /** What to add to the PR to prove or contain it; empty or absent for a proven change. */
+  fix?: string;
   path?: string;
   line?: number;
   band: ImpactBand;
@@ -66,6 +126,8 @@ export interface VerificationImpact {
   highestChangeBand: ImpactBand;
   load: number;
   raisedByVolume: number;
+  /** The band with no change proven: the risk before the PR's tests count. Absent on older reports. */
+  potentialBand?: ImpactBand;
   counts: Record<ChangeKind, number>;
   /** Highest band first. */
   changes: VerificationChange[];
@@ -79,7 +141,10 @@ export interface VerificationMustReadFlag {
 
 export interface VerificationMustRead {
   path: string;
+  /** The question to answer while reading. */
   reason: string;
+  /** What goes wrong if a mistake here is missed. Absent or empty on older reports. */
+  why?: string;
   lines?: { start: number; end: number };
   /** Absent on a report from before must-reads carried flags. */
   flags?: VerificationMustReadFlag[];
@@ -145,13 +210,30 @@ export type ThemeCohesion = "core" | "supporting" | "outlier";
 export interface ChangeTheme {
   title: string;
   description: string;
-  risk: "low" | "medium" | "high";
+  risk: ThemeRisk;
+  /** What breaks, and for whom, if the theme is wrong. Absent on older reports. */
+  riskWhy?: string;
+  /** What in the PR shows the risk is handled. Absent on older reports. */
+  proofs?: VerificationProof[];
+  /** What the proofs leave uncovered, as what to add. Absent on older reports. */
+  unmitigated?: string;
   /** How it fits what the PR is for; an outlier isn't needed for it. */
   cohesion: ThemeCohesion;
   /** For an outlier, what to ask the author; empty otherwise. */
   question: string;
   files: { path: string; lines?: { start: number; end: number } }[];
 }
+
+/** `none` is for a theme no mistake in can hurt anyone: accurate docs, tests, a passive rename. */
+export type ThemeRisk = "none" | "low" | "medium" | "high";
+
+/** What a theme's risk is called wherever it is shown. */
+export const THEME_RISK_LABEL: Record<ThemeRisk, string> = {
+  high: "high risk",
+  medium: "medium risk",
+  low: "low risk",
+  none: "no risk",
+};
 
 /** The change grouped into themes. `unmapped` lists changed files no theme names. */
 export interface VerificationChangeMap {
@@ -199,7 +281,7 @@ export interface VerificationReport {
   risk?: {
     level: "low" | "medium" | "high";
     clientImpact: string;
-    mitigations: string[];
+    mitigations: (string | VerificationMitigation)[];
     concerns: VerificationConcern[];
     /** Absent on a report from before changes were scored, or one whose agent listed none. */
     impact?: VerificationImpact;
@@ -215,6 +297,10 @@ export interface VerificationReport {
   comments?: VerificationCheck;
   observability?: VerificationCheck;
   quality?: VerificationCheck;
+  bugs?: VerificationCheck;
+  improvements?: VerificationCheck;
+  repoVerify?: InstructedCheck & { instructions?: RepoInstructions; commands?: RepoCommand[] };
+  playbookVerify?: InstructedCheck;
   approach?: VerificationApproach;
   flow?: VerificationFlow;
   /** Absent on a report from before coverage was counted. */
@@ -245,12 +331,16 @@ export interface VerificationTripwire {
 /** The checks shown as one row each, in the order the report lists them. */
 export const VERIFICATION_CHECKS = [
   "malice",
+  "bugs",
   "tests",
   "complexity",
   "performance",
   "comments",
   "observability",
   "quality",
+  "repoVerify",
+  "playbookVerify",
+  "improvements",
 ] as const;
 export type VerificationCheckKey = (typeof VERIFICATION_CHECKS)[number];
 
@@ -263,6 +353,10 @@ export const CHECK_LABEL: Record<VerificationCheckKey, string> = {
   comments: "Comment quality",
   observability: "Observability",
   quality: "Code quality",
+  bugs: "Bugs",
+  improvements: "Improvements",
+  repoVerify: "Repo verification",
+  playbookVerify: "Playbook verification",
 };
 
 /**
@@ -280,9 +374,26 @@ export const REPORT_SECTIONS = [
 ] as const;
 export type ReportSection = (typeof REPORT_SECTIONS)[number];
 
-/** What runs when no sections are picked: everything but the diagram. */
+/** What each section is called in Settings; mirrors the sidecar's checklist labels. */
+export const SECTION_LABEL: Record<ReportSection, string> = {
+  summary: "Summary and must-read files",
+  changeMap: "Change map",
+  claims: "Claims",
+  risk: "Risk",
+  ...CHECK_LABEL,
+  approach: "Simpler approach",
+  flow: "Flow diagram",
+};
+
+/** The checks that follow instructions written for the repo; mirrors the sidecar's `REPO_SECTIONS`. */
+export const REPO_SECTIONS: readonly ReportSection[] = ["repoVerify", "playbookVerify"];
+
+/**
+ * What runs when no sections are picked, for a repo with no checks of its own
+ * picked: everything but the diagram and the repo's own checks.
+ */
 export const DEFAULT_SECTIONS: readonly ReportSection[] = REPORT_SECTIONS.filter(
-  (s) => s !== "flow",
+  (s) => s !== "flow" && !REPO_SECTIONS.includes(s),
 );
 
 /**
@@ -304,8 +415,9 @@ export function findingCommentBody(
   section: string,
 ): string {
   const tag = finding.severity ? `${section}, ${finding.severity}` : section;
+  // Every line break a renderer honours, or a lone CR could end the quote early.
   const quoted = unmention(finding.detail)
-    .split("\n")
+    .split(/\r\n?|\n|[\u2028\u2029]/)
     .map((line) => `> ${line}`)
     .join("\n");
   const title = unmention(finding.title).replace(/\s+/g, " ").trim();
@@ -328,7 +440,7 @@ export interface ChecklistRun {
   finishedAt: string | null;
 }
 
-export type ChecklistThemeId = "understand" | "correctness" | "risk" | "maintainability";
+export type ChecklistThemeId = "understand" | "correctness" | "risk" | "maintainability" | "repo";
 
 export interface ChecklistItem {
   section: ReportSection;
@@ -355,6 +467,8 @@ export interface VerificationChecklist {
   size: VerificationSize | null;
   /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
   namedTickets: string[];
+  /** The sections the PR's repo runs when none are picked. */
+  defaultSections: ReportSection[];
 }
 
 const path = (workspaceId: string, prId: string) =>

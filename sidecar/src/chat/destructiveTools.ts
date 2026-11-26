@@ -75,6 +75,7 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "create_workspace_session",
   "create_scratch_workspace_session",
   "start_workspace_session",
+  "start_revert_investigation",
   // Clones code that an auto-mode agent will read, and can start a kick-off
   // session a failed provision still owed.
   "add_repo_to_workspace",
@@ -109,6 +110,10 @@ export const DESTRUCTIVE_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   // the PR's code to disk.
   "start_pr_guided_review",
   "start_pr_verification_report",
+  // Opens a review workspace, which clones the PR's code, and spends a
+  // verification report on it. A heads-down pass runs it without asking
+  // (`decideCall`), since it only reaches registered repos within budget.
+  "prep_pr_review",
 ]);
 
 /** What a turn has read so far that someone else wrote. The tools that read it set it. */

@@ -1,6 +1,6 @@
 //! `/api/vault/*`: status, unlock with the vault passphrase or the recovery
 //! key, lock, and changing the passphrase or the recovery key. Every route
-//! answers 404 unless `secrets.backend = "vault"`.
+//! answers 404 unless `secrets.backend = "vault"` or `ssh_agent.enabled`.
 //!
 //! The vault passphrase is not the sign-in passphrase. Sign-in proves who is
 //! asking; the vault passphrase is what decrypts `vault.json`, which anyone
@@ -25,7 +25,6 @@ use crate::AppState;
 use crate::auth::account::check_passphrase_shape;
 use crate::auth::fresh::Fresh;
 use crate::auth::{Admin, Authed, Read};
-use crate::config::SecretBackendKind;
 use crate::error::{ApiError, ApiResult};
 use crate::ssh_agent;
 
@@ -47,7 +46,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
 }
 
 async fn only_with_vault(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if state.config.secrets.backend != Some(SecretBackendKind::Vault) {
+    if !state.config.uses_vault() {
         return ApiError::not_found().into_response();
     }
     next.run(request).await
@@ -246,10 +245,18 @@ async fn unlock_recovery(
 }
 
 /// Everything that follows an unlock: the ssh-agent, when it is on, and the
-/// event. An agent that can't start leaves the vault unlocked, since the
-/// secrets are still needed; its status route shows it isn't running.
+/// event. An agent that can't start leaves a vault holding the secrets
+/// unlocked, since they are still needed; its status route shows it isn't
+/// running. A vault holding only the signing key locks again, since nothing
+/// else needs the key decrypted.
 async fn after_unlock(state: &AppState, device_id: &str, data: Value) -> ApiResult<Json<Value>> {
     if let Err(e) = ssh_agent::start(state) {
+        if !state.config.secrets_in_vault() {
+            ssh_agent::stop_and_lock(state);
+            return Err(ApiError::internal(format!(
+                "the ssh-agent didn't start, so the vault was locked again: {e}"
+            )));
+        }
         tracing::error!("the vault is unlocked but the ssh-agent didn't start: {e}");
     }
     state

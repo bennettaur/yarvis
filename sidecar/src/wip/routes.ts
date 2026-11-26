@@ -9,6 +9,7 @@ const configSchema = z.object({
   sources: z.object({
     myPrs: z.boolean(),
     starredPrs: z.boolean(),
+    reviews: z.boolean(),
     issues: z.boolean(),
     tasks: z.boolean(),
     workspaces: z.boolean(),

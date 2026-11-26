@@ -31,6 +31,11 @@ On this page:
    - **Run script** (optional). It adds a **Run** button that starts the app,
      for example `bun run dev`.
    - **Pull issues**. Tick it to show the repo's issues on the Issues tab.
+   - **Playbooks** (optional). See [Repo playbooks](#repo-playbooks).
+   - **Verification checks** (optional). The verification report checks its
+     PRs run when none are picked, by review prep among others. Untouched, it
+     uses Yarvis's defaults. Repo verification runs only when ticked here; see
+     [Repo and playbook verification](review-workspaces.md#repo-and-playbook-verification).
 3. Optional: install the GitHub CLI and the stack extension for the
    [Stack tab](#stacked-pull-requests)'s grouping and merge button:
    ```bash
@@ -43,6 +48,39 @@ On this page:
 
 Workspaces keep their clones and worktrees under `~/dev/yarvis-workspaces`.
 Set the `YARVIS_WORKSPACES_ROOT` environment variable to use another folder.
+
+### Repo playbooks
+
+Each repo can carry a prompt for each step of shipping a PR, from CI to
+production, one text area each under **Settings → Repositories →
+Playbooks**:
+
+- **CI**: how to handle failing or flaky checks.
+- **Pick a reviewer**: who should review a PR, and how to choose.
+- **Review feedback**: how to handle review comments and change requests.
+- **Review before merge**: what must be true of the review before anything
+  merges, such as approvals, checks or who must sign off. A
+  [ship stream](heads-down.md#shipping-a-pr) checks each item before it
+  merges, and asks you about anything unmet instead of merging.
+- **Merge**: how to merge, e.g. squash or a merge queue. Every merging rule
+  still applies, and enabling auto-merge or queueing the PR counts as
+  merging.
+- **Test in staging**, **Deploy**, **Monitor the deploy**, **Monitor production**,
+  **Test in production** and **Revert**.
+- **Verify a PR**: what the
+  [playbook verification](review-workspaces.md#repo-and-playbook-verification)
+  check runs on a PR.
+
+Write them in plain text, up to 4000 characters each. A repo with none saved
+has no playbook.
+
+Playbooks are stored in Yarvis, never read from the repo. An agent follows them
+as your own words, so only your Settings can supply them, the same reason
+routines are read only from `~/.yarvis`. The assistant and heads-down passes read
+a repo's playbook with the `get_repo_playbook` tool, giving the repo's name or
+`owner/repo`. It returns only the prompts you filled in, and an empty result
+means there is no playbook to follow. Reading one doesn't let an agent merge,
+deploy or revert without asking: those still wait for your approval.
 
 ### The agent command
 
@@ -88,19 +126,52 @@ session doesn't launch right away, Yarvis retries it on the next start. If by
 then you've removed that harness or unticked it, the retry uses your default
 instead.
 
-A Claude Code harness whose command runs `claude` itself, not through a
-wrapper such as `ssh box claude`, can also run a PR's [verification
+A Claude Code harness whose command runs `claude` itself, or an OpenCode or
+Pi harness whose command runs `opencode` or `pi` itself, not through a wrapper such as
+`ssh box claude`, can also run a PR's [verification
 checks](review-workspaces.md), picked in **Settings → PR review** or on the
-Verification tab. Those runs use only the harness's program and its
+Verification tab. Those runs use only the harness's program, found on the
+`PATH` Yarvis started with unless it's an absolute path, and its
 environment, plain and secret, not the rest of its command, so a variable
-the run needs belongs in the environment list rather than before `claude`
-in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
-`NODE_OPTIONS` or `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD` isn't
-offered: those would move the files a run over someone else's code is kept
-from reading. The assistant can't pick a harness for the checks, but the ones
-it starts use the harness set in Settings. Any program running as you can ask
-the app for a harness's secret variables this way, so keep them to keys
-scoped for this use.
+the run needs belongs in the environment list rather than before the
+program in the command. A harness that sets `HOME`, `CLAUDE_CONFIG_DIR`,
+`NODE_OPTIONS`, `CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD`, an
+`XDG_*_HOME` folder, or any `BUN_*` variable, isn't offered, and neither is
+an OpenCode harness that sets an `OPENCODE_*` variable other than the Zen key
+`OPENCODE_API_KEY`, or a Pi harness that sets a `PI_*` variable: those would move the files a run over someone else's
+code is kept from reading, or change how the harness runs. The assistant can't pick a harness for the checks, but the
+ones it starts use the harness set in Settings. Any program running as you
+can ask the app for a harness's secret variables this way, so keep them to
+keys scoped for this use.
+
+An OpenCode harness runs the checks without your own OpenCode setup, the way
+a Claude Code run loads none of your settings: each check's process gets
+empty config and data folders and a home folder of its own, so your
+`opencode.json`, plugins, MCP servers, agents and `/connect` logins don't
+apply, and neither does your `~/.claude/CLAUDE.md`, which OpenCode otherwise
+reads. A provider's key goes
+in the harness's secret environment instead (`ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY` and so on); OpenCode Zen's free models need none. Under
+**Settings → PR review** you give the harness an OpenCode model for each of
+the three tiers the checks run on (`provider/model`, with `#variant` for a
+reasoning effort, since the effort choices apply only to Claude Code). A
+check whose tier has no model doesn't start, and says which to set. Yarvis
+downloads [models.dev](https://models.dev)'s model list once a day and hands
+it to each process, so a model newer than your OpenCode build still works.
+OpenCode runs need macOS, since the sandbox they run in is macOS's.
+
+A Pi harness runs the checks the same way, without your own Pi setup: no
+extensions, skills, MCP servers, `AGENTS.md` or `/login` logins from
+`~/.pi/agent`, and no saved session. Its provider key goes in the harness's
+secret environment (Pi reads OpenCode Zen's from `OPENCODE_API_KEY`), and
+you give it a Pi model for each tier, as `provider/model` with `:level` for
+a thinking level (`anthropic/claude-sonnet-5-5:high`). Pi has no permission
+rules of its own, so it is offered only its read, grep, find and ls tools,
+and the macOS sandbox is what keeps them to the checkout. Grep needs
+ripgrep (`rg`) and find needs `fd` on your `PATH`; Yarvis doesn't let Pi
+download them, and leaves a tool out when its program is missing. Install
+Pi with npm, so the `node` it runs with sits beside it. Pi runs need macOS,
+like OpenCode's.
 
 Only Claude Code harnesses can be resumed after a restart or started with
 Remote Control. Asking for Remote Control with another kind fails rather than
@@ -886,6 +957,38 @@ archived to free its disk space.
 Archived workspaces are hidden from the list. **Show archived** brings them
 back.
 
+## Revert investigations
+
+When a PR you wrote, or one a Yarvis workspace opened, is reverted, Yarvis
+offers to find out why. The `revert-investigation` [job](scheduled-jobs.md)
+runs every hour and only looks at repos you registered. It spots a merged PR
+titled "Revert ..." that names the original, or a commit on the default branch
+saying "This reverts commit ...". It handles each original PR once.
+
+It raises a **Build** item in the [attention bell](#the-attention-bell), "Revert
+of owner/repo#N detected — start investigation?". Nothing starts until you say
+so. Tell the assistant to start it (it lists them with
+`list_revert_investigations`, and asks you first on a spoken turn), or to
+dismiss it. The same actions are on `/api/revert-investigations/:id/start` and
+`/dismiss`. There is no button for them in the app yet.
+
+Starting one opens a workspace on the repo's default branch and a Claude Code
+session on a brief. The brief links the original PR, the revert, the review
+comments and the verification report, and tells the session to read them with
+`gh`. It also carries the revert's text and any deploy and monitoring notes a
+ship stream recorded, fenced as data the session must not take orders from.
+
+The session writes `.yarvis/root-cause.md` in the workspace root: what broke,
+what was missed, why it was missed, and what has to change, with concrete edits
+to `AGENTS.md`, Claude instructions, reviewers or verification. It is told not
+to push, open PRs or comment anywhere. When the file appears, the next run of
+the job raises a note, "Revert investigation for owner/repo#N is ready", that
+opens the workspace.
+
+To skip the question, set `autoStart` under `revertInvestigation` in
+`~/.yarvis/settings.json` (or `PUT /api/revert-investigations/settings`). It is
+off by default. Only GitHub repos are checked.
+
 ## Terminal limit
 
 At most 60 terminal sessions can be live at once, across the Terminal tab and
@@ -894,17 +997,59 @@ every workspace. Opening more fails until you close one. See
 
 ## The attention bell
 
-The bell in the top bar collects everything waiting on you. Mostly that is a
-Claude Code session blocked on a permission prompt or sitting idle waiting for
-input. The hooks Yarvis writes into each workspace's `.claude/settings.json`
-raise these.
+The bell in the top bar collects everything waiting on you, and only that.
+Mostly that is a Claude Code session blocked on a permission prompt or sitting
+idle waiting for input. The hooks Yarvis writes into each workspace's
+`.claude/settings.json` raise these. Questions from Yarvis, heads-down mode and
+coding agents, verification reports that are ready, things Yarvis flagged for
+you to do, and notes it left you are in the bell too. Work that is only in
+progress, such as a guided review you're partway through, is in the panel's
+**In progress** list instead.
 
 Items are tied to the exact terminal that raised them, so a Claude run you
 started by hand in one of a workspace's shell tabs flags *that tab*, not the
 whole workspace. [Terminals](terminals.md#attention-and-yarvis-memory) lists
 the environment variables that make this work.
 
-How the bell behaves:
+### Categories
+
+Every item has a category, so you can see what kind of work is waiting:
+
+| Category | What it holds |
+| --- | --- |
+| **Review** | Other people's pull requests, such as verification reports and guided reviews, a PR updated since your review, and reminders about reviews you started or haven't opened |
+| **Build** | Your own work, such as workspace sessions, your PRs and merges |
+| **Slack** | Chat messages waiting for an answer |
+| **General** | Everything else, such as scheduled tasks and heads-down questions |
+
+A Claude session takes the category of the [work stream](heads-down.md) its
+workspace belongs to, and **Build** when it has none. A heads-down question
+takes its stream's category, and **General** when it has none.
+
+The panel groups **Needs you now** by category, with **Review** first and a
+count on each. The bar above the list filters to one category; press it again,
+or **All**, to see everything. Untick **Group** for one list, newest first
+(narrowed to **Review**, it is ordered by risk as below).
+Yarvis remembers the **Group** choice in this browser between sessions. The
+filter resets when the app reloads, so a category can't stay hidden.
+
+A PR that [review prep](review-workspaces.md#review-prep) got ready carries
+the risk its verification report assessed: a **High risk** badge and a red
+edge, **Medium risk** in amber, or **Low risk** in green. Within **Review**,
+high-risk PRs come first, then medium, then low, then items with no badge,
+each newest first. A PR whose report didn't finish has no badge.
+
+### Messages from Yarvis
+
+Yarvis can leave you a note in the bell, for example to say a check you asked
+it to watch finished. A note is titled **Note from Yarvis**, and something it
+wants you to do is titled **Yarvis flagged something for you**, so neither can
+pass for an alert from the app itself; what it wrote is underneath. A note
+shows in full in the panel and needs no answer.
+**Mark read** clears it, and so does clicking it, which also opens what it
+points at, if anything.
+
+### How the bell behaves
 
 - **Hard to miss.** While anything is pending, an amber band sweeps across the
   top bar towards the bell and the bell rings, every few seconds. A new item

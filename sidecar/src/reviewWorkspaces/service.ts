@@ -339,7 +339,7 @@ interface ReviewWorkspaceDetail extends ReviewWorkspace {
 }
 
 /** A PR as the workspace list shows it: the setup log is only read on demand. */
-type ReviewWorkspacePrSummary = Omit<ReviewWorkspacePr, "setupLog">;
+export type ReviewWorkspacePrSummary = Omit<ReviewWorkspacePr, "setupLog">;
 
 async function prsFor(db: Db, workspaceId: string): Promise<ReviewWorkspacePr[]> {
   return db
@@ -398,13 +398,16 @@ async function requireWorkspace(db: Db, id: string): Promise<ReviewWorkspaceDeta
 export async function createReviewWorkspace(
   db: Db,
   config: Config,
-  input: { name: string; refs?: PrRef[] },
+  input: { name: string; refs?: PrRef[]; openedBy?: ReviewWorkspace["openedBy"] },
   deps: ReviewDeps,
 ): Promise<ReviewWorkspaceDetail> {
   // Path checks first, so a bad ref refuses the whole request instead of
   // leaving a workspace holding half of what was asked for.
   for (const ref of input.refs ?? []) reviewClonePath(config, ref);
-  const [ws] = await db.insert(reviewWorkspaces).values({ name: input.name }).returning();
+  const [ws] = await db
+    .insert(reviewWorkspaces)
+    .values({ name: input.name, openedBy: input.openedBy ?? "user" })
+    .returning();
   if (!ws) throw new Error("failed to create review workspace");
   const seen = new Set<string>();
   for (const ref of input.refs ?? []) {
@@ -962,7 +965,7 @@ export async function requireReadyPr(
   return readyFrom(config, await getReviewPr(db, workspaceId, prId), deps);
 }
 
-function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
+export function readyFrom(config: Config, pr: ReviewWorkspacePr, deps: ReviewDeps): ReadyPr {
   if (pr.status !== "ready" || !pr.headSha || !pr.mergeBaseSha) {
     throw new ReviewWorkspaceError(`pull request is ${pr.status}, not ready`, 409);
   }

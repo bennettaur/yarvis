@@ -64,7 +64,14 @@ async function seedAllTables(): Promise<void> {
     dimensions: schema.EMBED_DIM,
   });
   await db.insert(schema.wipConfig).values({
-    sources: { myPrs: false, starredPrs: true, issues: true, tasks: true, workspaces: true },
+    sources: {
+      myPrs: false,
+      starredPrs: true,
+      reviews: true,
+      issues: true,
+      tasks: true,
+      workspaces: true,
+    },
     issueLabels: ["in-progress"],
   });
   await db.insert(schema.githubPrConfig).values({

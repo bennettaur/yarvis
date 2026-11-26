@@ -80,6 +80,7 @@ const checklist = (
   report: withFlow ? ({ mustRead: [], flow } as never) : null,
   size: null,
   namedTickets: [],
+  defaultSections: [],
 });
 
 async function mount(state: VerificationChecklist) {

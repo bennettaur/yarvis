@@ -3,6 +3,7 @@ import { listProviders, type ProviderInfo } from "../../lib/chat";
 import {
   type AllowedTool,
   type HeadsDownConfig,
+  type NightShift,
   saveHeadsDownConfig,
   setToolAllowed,
   type WorkingHours,
@@ -10,6 +11,8 @@ import {
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DEFAULT_HOURS: WorkingHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
+const DEFAULT_NIGHT: NightShift = { start: "23:00", end: "07:00" };
+const DEFAULT_DAILY_PASSES = 100;
 const SELECT = "min-w-0 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1";
 
 function NumberField({
@@ -133,7 +136,10 @@ export default function HeadsDownSettings({
     setSaving(true);
     setError(null);
     try {
-      await saveHeadsDownConfig(draft);
+      // Stop turns always-on off on the server while this form may still hold
+      // it on, so it is only sent when the user changed it here.
+      const { alwaysOn, ...rest } = draft;
+      await saveHeadsDownConfig(alwaysOn === config.alwaysOn ? rest : draft);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -142,8 +148,25 @@ export default function HeadsDownSettings({
     }
   };
 
+  const night = draft.nightShift;
+
   return (
     <div className="space-y-3">
+      <label className="block space-y-1 text-sm text-zinc-300">
+        <span className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={draft.alwaysOn}
+            onChange={(e) => set("alwaysOn", e.target.checked)}
+          />
+          Always on
+        </span>
+        <span className="block text-xs text-zinc-500">
+          Keeps heads-down mode running with no focus, and starts it again after Yarvis restarts.
+          Pause still pauses it. Stop turns this off.
+        </span>
+      </label>
+
       <div className="space-y-1 text-sm text-zinc-300">
         Model passes run on
         <div className="flex gap-2">
@@ -249,6 +272,85 @@ export default function HeadsDownSettings({
         max={10}
         onChange={(v) => set("maxRoutinesPerPass", v)}
       />
+      <NumberField
+        label="Watch production after a ship's deploy (min, 0 for no minimum)"
+        value={draft.shipMonitorWindowMinutes}
+        min={0}
+        max={1440}
+        onChange={(v) => set("shipMonitorWindowMinutes", v)}
+      />
+      <NumberField
+        label="Check production every (min, 5 to 240)"
+        value={draft.shipCheckEveryMinutes}
+        min={5}
+        max={240}
+        onChange={(v) => set("shipCheckEveryMinutes", v)}
+      />
+
+      <div className="space-y-2">
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={draft.maxPassesPerDay !== null}
+            onChange={(e) => set("maxPassesPerDay", e.target.checked ? DEFAULT_DAILY_PASSES : null)}
+          />
+          Limit passes per day
+        </label>
+        {draft.maxPassesPerDay !== null && (
+          <NumberField
+            label="Most passes in a day"
+            value={draft.maxPassesPerDay}
+            max={1440}
+            onChange={(v) => set("maxPassesPerDay", v)}
+          />
+        )}
+        <p className="text-xs text-zinc-500">
+          Once it is reached, no pass runs until midnight, even for a message or an answer.
+        </p>
+      </div>
+
+      <div className="space-y-2 border-t border-zinc-800 pt-3">
+        <label className="flex items-center gap-2 text-sm text-zinc-300">
+          <input
+            type="checkbox"
+            checked={night !== null}
+            onChange={(e) => set("nightShift", e.target.checked ? DEFAULT_NIGHT : null)}
+          />
+          Night shift
+        </label>
+        {night && (
+          <>
+            <div className="flex items-center gap-2 text-sm text-zinc-300">
+              From
+              <input
+                type="time"
+                value={night.start}
+                onChange={(e) => set("nightShift", { ...night, start: e.target.value })}
+                aria-label="Night shift start"
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1"
+              />
+              to
+              <input
+                type="time"
+                value={night.end}
+                onChange={(e) => set("nightShift", { ...night, end: e.target.value })}
+                aria-label="Night shift end"
+                className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1"
+              />
+            </div>
+            <NumberField
+              label="Shortest sleep at night (min)"
+              value={draft.nightShiftMinSleepMinutes}
+              max={1440}
+              onChange={(v) => set("nightShiftMinSleepMinutes", v)}
+            />
+            <p className="text-xs text-zinc-500">
+              Every day. Passes are further apart, and a routine can slow down or skip these hours
+              with nightShift in its file.
+            </p>
+          </>
+        )}
+      </div>
 
       <div className="space-y-2 border-t border-zinc-800 pt-3">
         <label className="flex items-center gap-2 text-sm text-zinc-300">

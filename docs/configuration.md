@@ -203,7 +203,22 @@ enabled = true   # the server signs git commits with a key in the vault
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
-**Work laptop: keep signing in 1Password.** Leave the vault off and keep the
+**Sign from the vault, keep the secrets in the Keychain.** The agent needs a
+vault for its key, but not for your other secrets:
+
+```toml
+[secrets]
+backend = "keychain"   # or "onepassword", or leave [secrets] out
+
+[ssh_agent]
+enabled = true
+```
+
+Run `yarvis-server vault init` to make the vault and the key. The app opens
+without an unlock screen. Unlock the vault from **Settings → Devices →
+Approvals** to start signing; locking it stops only signing.
+
+**Keep signing in 1Password.** Leave the vault off and keep the
 key where it is:
 
 ```toml
@@ -218,7 +233,40 @@ upstream_socket = "/Users/<you>/Library/Group Containers/2BUA8C4S2C.com.1passwor
 
 With `ssh_agent.enabled = false` the server never makes a signing key or opens
 an agent socket. Workspace shells sign through 1Password's agent, which asks
-for approval on the laptop itself.
+for approval on the Mac it runs on. [Running the server](server.md#commit-signing-and-the-ssh-agent)
+explains how the server picks the socket and walks through both setups.
+
+### Moving secrets to another store
+
+`yarvis-server secrets migrate` copies your secrets from one store to another,
+in any direction between `keychain`, `onepassword` and `vault`:
+
+```bash
+yarvis-server secrets migrate --from keychain --to vault
+```
+
+- **The source is only read.** It keeps its copy, so you can switch back. Remove
+  it yourself once the new store works.
+- **The vault.** It asks for the vault passphrase (`--passphrase-stdin` reads it
+  from stdin). If you're moving into the vault and there isn't one yet, it
+  offers to create it, as `vault init` would, and prints the recovery key. It
+  checks the source has secrets first, so it never leaves an empty vault.
+- **Stop the server first** when it already uses the vault. A running server
+  keeps its own copy of the vault in memory and would write over what was
+  copied, so the command refuses while the server answers on its address.
+- **1Password.** It uses the vault and item set in **Settings → Credentials →
+  Secret store**, and may ask you to approve `op` in 1Password.
+- **When both hold a secret.** If the destination already has a key with a
+  different value, nothing is copied. The command lists those keys, never their
+  values. Run it again with `--force-source` to take the source's values, or
+  `--force-dest` to keep the destination's. Either way, keys only the source has
+  are added and keys only the destination has are kept.
+- **Then switch.** Set `backend` under `[secrets]` in `server.toml` to the new
+  store and restart the server. The command prints the line when it isn't set
+  already.
+
+Settings' own **Secret store** switch still moves between the Keychain and
+1Password. It copies only into an empty store, and it can't reach the vault.
 
 ### `PATH` for a server launchd starts
 
@@ -328,12 +376,15 @@ has written your providers and MCP servers into it.
 | `decisionModel` | `model`, the provider, model (tagged `decision`) and optional `effort` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
 | `prModels` | The provider, model and optional `effort` behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
-| `prVerification` | `sections`, the user's overrides of each verification check's Claude Code `model` (`sonnet`, `opus` or `haiku`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), by section name; a check with no override runs on its default (Opus at high effort for `risk` and `malice`, Haiku at low effort for `comments` and `observability`, Sonnet at medium effort for the rest). A `model` saved before checks had their own is ignored. `harness`, the id of the Claude Code [agent harness](features/workspaces.md#agent-harnesses) the checks run with; left out, the built-in agent. Also `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
-| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised | Settings → PR review |
+| `prVerification` | `sections`, the user's overrides of each verification check's Claude Code `model` (`sonnet`, `opus` or `haiku`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), by section name; a check with no override runs on its default (Opus at high effort for `risk` and `malice`, Haiku at low effort for `comments` and `observability`, Sonnet at medium effort for the rest). A `model` saved before checks had their own is ignored. `harness`, the id of the Claude Code, OpenCode or Pi [agent harness](features/workspaces.md#agent-harnesses) the checks run with; left out, the built-in agent. `harnessModels`, by harness id, the model an OpenCode or Pi harness runs each tier on (`provider/model`, optionally OpenCode's `#variant` or Pi's `:level`): `opus`, `sonnet` and `haiku`. Also `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
+| `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised. The `pr-updates` job runs it with the same model and budget whatever `autoStart` says, and asks first instead of starting a run estimated over the budget | Settings → PR review |
+| `reviewPrep` | `maxConcurrentVerifications` (2, from 1 to 5): how many PRs [review prep](features/review-workspaces.md#review-prep) verifies at once; the rest wait their turn. `maxReady` (5, from 1 to 50): how many PRs review prep keeps ready or being prepared at once; further PRs wait in a backlog, and a stack is prepared whole even past this. `sizeTiers`: when a PR counts as small (`smallMaxLines` 20 and `smallMaxFiles` 2, both at or under) or big (`bigMinLines` 500 or `bigMinFiles` 10, either at or over), which decides the checks review prep runs | Edit the file by hand |
+| `revertInvestigation` | `autoStart` (off by default): starts the investigation of a detected revert of your PR straight away instead of raising a bell item to ask first. See [Revert investigations](features/workspaces.md#revert-investigations) | Edit `settings.json`, or `PUT /api/revert-investigations/settings` |
+| `stalledWork` | [Reminders about stalled work](features/assistant.md#reminders-about-stalled-work): `enabled` (on by default) and `thresholdHours`, the hours an item waits before its first reminder, by attention category: `review` (24), `build` (48), `slack` (8) and `general` (24), each from 1 to 720 | Edit the file by hand |
 | `mutationTesting` | Mutation testing in a review workspace: the Claude Code `planningModel` and `explanationModel` (`sonnet`; `null` uses Claude Code's default) with their budgets, `planningBudgetUsd` (1, at least 0.1) and `explanationBudgetUsd` (0.5, at least 0.05), `maxMutants` (12, up to 30) and `testTimeoutCapSeconds` (300, from 30 to 3600), the longest one test command may run. A mutant's tests get three times the baseline's time, at least 30 seconds, up to that cap. The budgets have no upper limit and stop nothing: they are shown before a pass starts, and a run that goes over them still finishes. | Settings → PR review |
 | `wipConfig` | Which sources feed the **In progress** list in the attention panel (the bell in the top bar), and a GitHub issue label filter | Settings → Work in progress |
 | `jobConfig` | `ccDigestEnabled` and `ccDigestProjectDirs` for the Claude Code transcript digest | Settings → Assistant |
-| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), `passTimeoutMinutes` (20, at most 240), how long one pass may run before it is stopped, the `provider` and `model` its passes run on (unset uses the default chat model), `guidance`, your standing rules for every pass in your own words (`null` for none), and `maxRoutinesPerPass` (2, from 0 to 10), the most routines one pass takes on (0 turns them off, meeting alarms included; routines themselves are files in `~/.yarvis/routines`). Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
+| `headsDown` | Heads-down mode: `minSleepMinutes` (5), `maxSleepMinutes` (120) and `idleSleepMinutes` (60) between passes, `workingHours` (`days` with 0 for Sunday, `start` and `end` as `HH:MM`; Monday to Friday 09:00–17:00 by default; an end at or before the start runs past midnight; `null` for any time), which is also when it may tag people, `userAwayAfterMinutes` (120), `passTimeoutMinutes` (20, at most 240), how long one pass may run before it is stopped, the `provider` and `model` its passes run on (unset uses the default chat model), `guidance`, your standing rules for every pass in your own words (`null` for none), and `maxRoutinesPerPass` (2, from 0 to 10), the most routines one pass takes on (0 turns them off, meeting alarms included; routines themselves are files in `~/.yarvis/routines`), `alwaysOn` (false), which keeps a run going and starts one after a restart, `nightShift` (`start` and `end` as `HH:MM`, every day; `null`, the default, for none) with `nightShiftMinSleepMinutes` (120, at most 1440 and never past `maxSleepMinutes`), the shortest sleep in those hours, and `maxPassesPerDay` (`null` for no limit, at most 1440), the most passes started in one day. `shipMonitorWindowMinutes` (60 minutes, from 0 to 1440) is how long a ship stream watches production after its deploy, and `shipCheckEveryMinutes` (15 minutes, from 5 to 240) how often it checks in that time. Per machine, so a work laptop and a personal one can keep different hours. See [Heads-down mode](features/heads-down.md). | Heads down page |
 | `voiceConfig` | Speech providers and models, voice, speak replies, continuous mode, the active saved voice (`activeVoiceId`, blank for none), and the Voice Studio's translation model (`translationProvider`, `translationModel`) | Settings → Voice, Voice page |
 | `voiceProfiles` | Saved voices. Their cloning clips are files in `~/.yarvis/voices/`. | Voice page |
 | `speechServer` | The local speech server's `port` (8000) | Voice page |
@@ -525,8 +576,15 @@ The tabs in **Settings**, in order:
    model tiers, and a playground to try it), MCP servers Yarvis
    connects to, Yarvis's own MCP endpoint, and the Tool manager, whose tool
    groups start collapsed.
-4. **Repositories.** The repos workspaces can use, the workspace agent
-   command, and the terminal cap.
+4. **Repositories.** The repos workspaces can use, with each repo's setup and
+   run scripts, ticket tracker, verification checks (which report checks
+   its PRs run by default) and playbooks (a prompt of up to 4000
+   characters for each step of shipping a PR, from CI and review to
+   deploying, monitoring and reverting, plus one for verifying a PR; they live with the repo in the
+   database, not in `settings.json`, and agents read them only through the
+   `get_repo_playbook` tool; see
+   [Repo playbooks](features/workspaces.md#repo-playbooks)), the workspace
+   agent command, and the terminal cap.
 5. **PR review.** The Needs review search, the Reviewing lookback, the
    models behind guided reviews and line questions, and the model, budget and
    mutant cap for mutation testing.
@@ -534,7 +592,8 @@ The tabs in **Settings**, in order:
 7. **Embeddings.** The embeddings endpoint.
 8. **Telegram.** Bot token, allowed chats, and the optional second factor.
 9. **Work in progress.** Which sources feed the **In progress** list in the
-   attention panel.
+   attention panel: your open PRs, starred PRs, guided reviews you haven't
+   finished, issues, today's tasks and active workspaces.
 10. **Assistant.** Turn budget, complexity tiers, specialists, and background
     jobs.
 11. **Devices.** The devices signed in to the server, revoking one, creating a

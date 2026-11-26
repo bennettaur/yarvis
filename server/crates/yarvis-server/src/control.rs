@@ -5,8 +5,9 @@
 //! GitHub token into the secrets blob, and ringing an alarm the sidecar found
 //! due (`alarm.fire`) or stopping one (`alarm.release`). It also starts and
 //! ends the locked-down session over a review workspace's PR checkouts
-//! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code
-//! harness's program and environment to a verification run (`harness.runEnv`).
+//! (`claude.spawnReview`, `claude.killReview`), and hands a Claude Code,
+//! OpenCode or Pi harness's program and environment to a verification run
+//! (`harness.runEnv`).
 //!
 //! Security model: the socket lives in the server's private data dir, or
 //! another 0700 folder that `socket_dir` checks, as a mode-0600 file, so only
@@ -32,13 +33,14 @@
 //! can only reach the `oauth` subtree of one MCP server's entry, and
 //! `github.saveToken` only the `github_token` key, never a provider key, the
 //! database URL, or another server's headers. `harness.runEnv` is the one
-//! method that reads a secret back: it answers with one Claude Code harness's
-//! program and environment, that harness's secret variables included, for a
-//! headless verification run the sidecar starts with it. It refuses any other
-//! kind, and never answers with another harness's values or anything else in
-//! the store. Like every method here it trusts any process running as the
-//! user, so such a process can read a Claude Code harness's secrets through
-//! it; that was accepted rather than tying the socket to the sidecar's pid.
+//! method that reads a secret back: it answers with one Claude Code, OpenCode
+//! or Pi harness's kind, program and environment, that harness's secret
+//! variables included, for a headless verification run the sidecar starts with
+//! it. It refuses any other kind, and never answers with another harness's
+//! values or anything else in the store. Like every method here it trusts any
+//! process running as the user, so such a process can read such a harness's
+//! secrets through it; that was accepted rather than tying the socket to the
+//! sidecar's pid.
 //!
 //! The alarm methods don't ring anything here: they append `alarm.fire` and
 //! `alarm.release` to the event log, and each client decides how to show
@@ -506,13 +508,18 @@ mod unix_impl {
         if !crate::harness::is_valid_id(&p.harness) {
             return Err("invalid harness id".into());
         }
-        let (program, env) = pty.headless_harness(&p.harness)?;
-        Ok(run_env_reply(program, env))
+        let run = pty.headless_harness(&p.harness)?;
+        Ok(run_env_reply(run.kind, run.program, run.env))
     }
 
     /// The shape `harnessRunEnvSchema` in `sidecar/src/core/controlClient.ts` reads.
-    pub(super) fn run_env_reply(program: String, env: Vec<(String, String)>) -> Value {
+    pub(super) fn run_env_reply(
+        kind: crate::harness::HarnessKind,
+        program: String,
+        env: Vec<(String, String)>,
+    ) -> Value {
         serde_json::json!({
+            "kind": kind,
             "program": program,
             "env": env.into_iter().collect::<BTreeMap<_, _>>(),
         })
@@ -601,12 +608,17 @@ mod tests {
             serde_json::from_value(json!({ "harness": "bedrock" })).expect("sidecar payload");
         assert_eq!(p.harness, "bedrock");
         let reply = run_env_reply(
-            "/opt/bin/claude".into(),
+            crate::harness::HarnessKind::Opencode,
+            "/opt/bin/opencode".into(),
             vec![("API_KEY".into(), "sk".into())],
         );
         assert_eq!(
             reply,
-            json!({ "program": "/opt/bin/claude", "env": { "API_KEY": "sk" } })
+            json!({
+                "kind": "opencode",
+                "program": "/opt/bin/opencode",
+                "env": { "API_KEY": "sk" }
+            })
         );
     }
 

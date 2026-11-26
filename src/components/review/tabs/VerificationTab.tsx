@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { cancelAgentRun } from "../../../lib/agentRuns";
 import { postPrComment } from "../../../lib/pr/api";
 import { prDetailKey } from "../../../lib/pr/cache";
+import { askAboutLines } from "../../../lib/pr/insights";
 import {
   type RunChoice,
   useVerificationSettings,
@@ -38,6 +39,7 @@ import { Loader } from "../../ai-elements/loader";
 import CopyButton from "../../CopyButton";
 import LoadingIndicator from "../../LoadingIndicator";
 import DecisionPanel from "./DecisionPanel";
+import type { FeedbackController, FindingPoster, ReportActions } from "./ReportItemActions";
 import {
   reportOf,
   useMutationTesting,
@@ -46,16 +48,14 @@ import {
   useReviewViewed,
   useVerificationChecklist,
   useVerificationEvidence,
+  useVerificationFeedback,
   useVerificationUpstack,
   verificationKey,
 } from "./reviewData";
 import { FileNotices, fileNotices } from "./SizeNotices";
 import type { TabContext } from "./types";
-import VerificationReportView, {
-  type FindingPoster,
-  Location,
-  type OpenLocation,
-} from "./VerificationReportView";
+import { reviewInsightsKey } from "./useReviewInsights";
+import VerificationReportView, { Location, type OpenLocation } from "./VerificationReportView";
 
 /** The Yarvis workspace the PR was raised from, if any: where its findings can go as local comments. */
 function useLinkedWorkspace(prRef: PrRef): WorkspaceForPr | null {
@@ -488,14 +488,14 @@ function EvidenceRow({ item, onOpen }: { item: EvidenceItem; onOpen: OpenLocatio
   );
 }
 
-/** Sections worth running next: the defaults with nothing for the PR's head, and nothing going. */
-function suggestedSections(items: ChecklistItem[]): ReportSection[] {
+/** Sections worth running next: the repo's defaults with nothing for the PR's head, and nothing going. */
+function suggestedSections(
+  items: ChecklistItem[],
+  defaults: readonly ReportSection[],
+): ReportSection[] {
   return items
     .filter(
-      (i) =>
-        DEFAULT_SECTIONS.includes(i.section) &&
-        !i.result?.current &&
-        i.latest?.status !== "running",
+      (i) => defaults.includes(i.section) && !i.result?.current && i.latest?.status !== "running",
     )
     .map((i) => i.section);
 }
@@ -517,7 +517,8 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   const checklist = useVerificationChecklist(workspaceId, pr.id);
   const items = checklist.data?.items ?? NO_ITEMS;
   const [pickedSections, setPickedSections] = useState<ReportSection[] | null>(null);
-  const picked = pickedSections ?? suggestedSections(items);
+  const picked =
+    pickedSections ?? suggestedSections(items, checklist.data?.defaultSections ?? DEFAULT_SECTIONS);
   const anyRunning = items.some((i) => i.latest?.status === "running");
   const { refresh } = checklist;
   useEffect(() => {
@@ -573,6 +574,25 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
       ),
     [ctx.prRef, ctx.pr.headSha, ctx.pr.mergeBaseSha, linked],
   );
+  const { feedback, save: saveFeedback } = useVerificationFeedback(workspaceId, pr.id);
+  const reportActions = useMemo((): ReportActions => {
+    const controller: FeedbackController = {
+      runFor: (section) => items.find((i) => i.section === section)?.result?.id ?? null,
+      get: (section, runId, itemKey) =>
+        feedback.find((f) => f.section === section && f.runId === runId && f.itemKey === itemKey),
+      save: saveFeedback,
+    };
+    return {
+      poster,
+      feedback: controller,
+      ask: async (target, question) => {
+        const insight = await askAboutLines(ctx.prRef, { ...target, selection: "", question });
+        // So the diff tabs show it beside the code.
+        invalidate(reviewInsightsKey(ctx.prRef));
+        return insight.answer;
+      },
+    };
+  }, [poster, items, feedback, saveFeedback, ctx.prRef]);
   // An older head's line numbers may point at different code now, so only a
   // section whose result is for the current head can post.
   const currentSections = useMemo(
@@ -622,6 +642,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
   // The report is model-written, so only a path the PR actually has is a link.
   const changed = useReviewChangedFiles(workspaceId, pr);
   const tree = useReviewTree(workspaceId, pr);
+  const changedPaths = useMemo(
+    () => (changed.data ? new Set(changed.data.files.map((f) => f.path)) : undefined),
+    [changed.data],
+  );
   const known = useMemo(
     () => new Set([...(changed.data?.files.map((f) => f.path) ?? []), ...(tree.data?.paths ?? [])]),
     [changed.data, tree.data],
@@ -680,7 +704,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             {harnesses.length > 1 && (
               <select
                 aria-label="Harness for the checks you run"
-                title="Run the checks you start with another Claude Code harness than the one set in Settings"
+                title="Run the checks you start with another Claude Code, OpenCode or Pi harness than the one set in Settings"
                 value={runHarness}
                 onChange={(e) => setRunHarness(e.target.value)}
                 className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs text-zinc-300"
@@ -764,6 +788,7 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
           mutation={mutationRun}
           upstack={upstack}
           currentSections={currentSections}
+          changedPaths={changedPaths}
           onOpen={open}
         />
 
@@ -876,9 +901,10 @@ export default function VerificationTab({ ctx }: { ctx: TabContext }) {
             report={report}
             onOpen={open}
             viewed={viewed.viewed}
-            poster={poster}
+            actions={reportActions}
             currentSections={currentSections}
             upstack={upstack}
+            diffSource={{ workspaceId, pr }}
           />
         )}
       </div>

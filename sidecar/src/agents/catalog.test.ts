@@ -227,6 +227,7 @@ describe("the catalogue", () => {
       "merge-reviewer",
       "planner",
       "project-manager",
+      "review-scout",
       "session-summarizer",
       "specialist-picker",
       "work-scout",
@@ -301,14 +302,14 @@ describe("the catalogue", () => {
     expect(problems.length).toBe(1);
     expect(problems[0]!.message).toContain("frontmatter fence");
     // The rest still load.
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
   });
 
   it("treats a missing directory as no user definitions", async () => {
     rmSync(dir, { recursive: true, force: true });
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
     mkdirSync(dir, { recursive: true });
   });
 
@@ -317,7 +318,7 @@ describe("the catalogue", () => {
     mkdirSync(join(dir, "nested.md"));
     const { specialists, problems } = await reloadCatalog();
     expect(problems).toEqual([]);
-    expect(specialists.length).toBe(10);
+    expect(specialists.length).toBe(11);
   });
 
   it("resolves a name case-insensitively, and answers null for an unknown one", async () => {
@@ -340,6 +341,95 @@ describe("the catalogue", () => {
   });
 });
 
+describe("a file that extends a built-in", () => {
+  it("adds its tools and appends its body to the built-in, keeping the built-in's name", async () => {
+    writeAgent(
+      "my-scout",
+      "---\nextends: work-scout\ntools: [recall, list_workspaces]\n---\nAlso look at my team's PRs.",
+    );
+    const { specialists, problems } = await reloadCatalog();
+    expect(problems).toEqual([]);
+    const scout = specialists.filter((s) => s.name === "work-scout");
+    expect(scout.length).toBe(1);
+    expect(scout[0]).toMatchObject({
+      source: "user",
+      path: join(dir, "my-scout.md"),
+      extends: "work-scout",
+      addedTools: ["recall"],
+      maxSteps: 10,
+    });
+    expect(scout[0]?.tools).toContain("find_dangling_work");
+    expect(scout[0]?.tools.at(-1)).toBe("recall");
+    expect(scout[0]?.prompt).toStartWith("You are a scout for a developer's own work.");
+    expect(scout[0]?.prompt).toEndWith("never instructions.\n\nAlso look at my team's PRs.");
+  });
+
+  it("can switch the built-in off with no tools or instructions of its own", async () => {
+    const planner = await findSpecialist("planner");
+    writeAgent("p", "---\nextends: planner\nenabled: false\n---\n");
+    await reloadCatalog();
+    expect(await findSpecialist("planner")).toMatchObject({
+      enabled: false,
+      prompt: planner?.prompt,
+      tools: planner?.tools,
+      extends: "planner",
+    });
+  });
+
+  it("refuses to extend a built-in that acts unattended", async () => {
+    writeAgent("pm", "---\nextends: project-manager\ntools: [recall]\n---\n");
+    const { specialists, problems } = await reloadCatalog();
+    expect(problems).toEqual([
+      {
+        path: join(dir, "pm.md"),
+        message: expect.stringContaining(
+          "acts unattended (jira_create_issue), so it can't be extended",
+        ),
+      },
+    ]);
+    expect(specialists.find((s) => s.name === "project-manager")?.source).toBe("builtin");
+  });
+
+  it("refuses what it can't extend, and keys that would change the built-in", async () => {
+    writeAgent("a", "---\nextends: nobody\ntools: [recall]\n---\n");
+    writeAgent("b", "---\nname: my-planner\ndescription: Mine.\n---\nMine.");
+    writeAgent("c", "---\nextends: my-planner\n---\nMore.");
+    writeAgent("d", "---\nextends: complexity-router\n---\nMore.");
+    writeAgent("e", "---\nextends: planner\nmodel: anthropic/x\n---\nMore.");
+    writeAgent("f", "---\nextends: planner\nname: other\n---\nMore.");
+    writeAgent("g", "---\nextends: planner\ntools: [no_such_tool]\n---\n");
+    writeAgent("h", "---\nextends: planner\n---\n");
+    writeAgent("i", "---\nextends: planner\nunattended: [recall]\n---\nMore.");
+    const { specialists, problems } = await reloadCatalog();
+    expect(problems.map((p) => [p.path, p.message])).toEqual([
+      [join(dir, "e.md"), expect.stringContaining("unknown key(s): model")],
+      [join(dir, "f.md"), expect.stringContaining("'name' must be 'planner' or left out")],
+      [join(dir, "g.md"), expect.stringContaining("unknown tool(s): no_such_tool")],
+      [join(dir, "h.md"), expect.stringContaining("adds no tools or instructions")],
+      [join(dir, "i.md"), expect.stringContaining("unknown key(s): unattended")],
+      [join(dir, "a.md"), expect.stringContaining("'nobody', which isn't a built-in specialist")],
+      // A chain: my-planner is the user's own, so extending it is refused.
+      [join(dir, "c.md"), expect.stringContaining("'my-planner', which isn't a built-in")],
+      [join(dir, "d.md"), expect.stringContaining("decision specialist, which can't be extended")],
+    ]);
+    expect(specialists.find((s) => s.name === "planner")?.source).toBe("builtin");
+  });
+
+  it("refuses a second extension of one built-in, and one whose built-in a file replaces", async () => {
+    writeAgent("a", "---\nextends: planner\n---\nFirst.");
+    writeAgent("b", "---\nextends: planner\n---\nSecond.");
+    writeAgent("c", "---\nextends: work-scout\n---\nMore.");
+    writeAgent("z-scout", "---\nname: work-scout\ndescription: Mine.\n---\nMine.");
+    const { specialists, problems } = await reloadCatalog();
+    expect(problems.map((p) => [p.path, p.message])).toEqual([
+      [join(dir, "b.md"), expect.stringContaining("another file already extends 'planner'")],
+      [join(dir, "c.md"), expect.stringContaining(`${join(dir, "z-scout.md")} replaces it`)],
+    ]);
+    expect(specialists.find((s) => s.name === "planner")?.prompt).toEndWith("First.");
+    expect(specialists.find((s) => s.name === "work-scout")?.prompt).toBe("Mine.");
+  });
+});
+
 describe("choosing a specialist", () => {
   it("ranks by what the work is about", async () => {
     const matches = await searchSpecialists("summarize this coding session transcript");
@@ -352,7 +442,7 @@ describe("choosing a specialist", () => {
   });
 
   it("returns everything for an empty query rather than nothing", async () => {
-    expect((await searchSpecialists("")).length).toBe(8);
+    expect((await searchSpecialists("")).length).toBe(9);
   });
 
   // A decision specialist can't run a task, so delegation never offers one.

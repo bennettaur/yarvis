@@ -42,6 +42,10 @@ export interface HeadsDownState {
   lastPass: HeadsDownPass | null;
   nextPassAt: string | null;
   openQuestionCount: number;
+  /** Passes started since local midnight, in any run. */
+  passesToday: number;
+  /** The daily pass limit; null for none. */
+  maxPassesPerDay: number | null;
 }
 
 export interface HeadsDownQuestion {
@@ -89,6 +93,22 @@ export interface HeadsDownConfig {
   guidance: string | null;
   /** The most routines one pass takes on. 0 turns them off. */
   maxRoutinesPerPass: number;
+  /** How long a ship stream watches production after its deploy, in minutes. */
+  shipMonitorWindowMinutes: number;
+  /** How often it looks while watching, in minutes. */
+  shipCheckEveryMinutes: number;
+  /** Start a run whenever none is going, including after a restart. Stopping turns it off. */
+  alwaysOn: boolean;
+  /** Hours every day when passes are rarer and routines can opt out. Null for none. */
+  nightShift: NightShift | null;
+  nightShiftMinSleepMinutes: number;
+  /** The most passes in one day. Null for no limit. */
+  maxPassesPerDay: number | null;
+}
+
+export interface NightShift {
+  start: string;
+  end: string;
 }
 
 export type MergeRisk = "low" | "medium" | "high" | "unknown";
@@ -215,8 +235,36 @@ export interface WorkStreamLink {
   observedAt: string | null;
 }
 
+/** The stages a ship stream goes through, in order. Mirrors `SHIP_STAGES` in the sidecar. */
+export const SHIP_STAGES = [
+  "ci",
+  "reviewer",
+  "feedback",
+  "staging_test",
+  "merge",
+  "deploy",
+  "monitor_deploy",
+  "monitor_production",
+  "test_production",
+  "done",
+] as const;
+
+export type ShipStage = (typeof SHIP_STAGES)[number];
+
+export interface WorkStreamShip {
+  repo: string;
+  number: number;
+  url: string;
+  stage: ShipStage;
+  stages: Partial<Record<ShipStage, { status: "done" | "skipped" | "failed"; at: string }>>;
+  monitorUntil?: string;
+  log: { at: string; stage: ShipStage; text: string }[];
+}
+
 export interface WorkStream {
   id: string;
+  /** A watch waits for a condition the user asked to hear about, rather than work to push. */
+  kind: "work" | "watch";
   title: string;
   summary: string | null;
   status: WorkStreamStatus;
@@ -226,6 +274,12 @@ export interface WorkStream {
   wakeAt: string | null;
   /** Set while the user has paused it: heads-down mode leaves it alone. */
   pausedAt: string | null;
+  /** A watch's condition, how often it is checked, and when it gives up; null on other streams. */
+  watchCondition: string | null;
+  watchEveryMinutes: number | null;
+  expiresAt: string | null;
+  /** Set when the stream ships one PR. */
+  ship: WorkStreamShip | null;
   updatedAt: string;
   links: WorkStreamLink[];
 }
@@ -328,8 +382,10 @@ export const setHeadsDownStopAt = (stopAt: string | null) =>
 
 export const getHeadsDownConfig = () => request<HeadsDownConfig>("/api/heads-down/config");
 
-export const saveHeadsDownConfig = (config: HeadsDownConfig) =>
-  request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
+/** `alwaysOn` left out keeps what is stored. */
+export const saveHeadsDownConfig = (
+  config: Omit<HeadsDownConfig, "alwaysOn"> & { alwaysOn?: boolean },
+) => request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
 
 /** A recurring job a pass takes on beside the work streams, read from a markdown file. */
 export interface Routine {
@@ -337,9 +393,15 @@ export interface Routine {
   description: string;
   everyMinutes: number;
   workingHoursOnly: boolean;
+  /** What it does during night shift. */
+  nightShift: "run" | "slow" | "skip";
   enabled: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";
+  /** Tools the file names, mounted for the pass that runs it. */
+  tools: string[];
+  /** The names of the file's `config:` settings. */
+  configKeys: string[];
   /** ISO time of the last pass that reported it done. Null if none has. */
   lastDoneAt: string | null;
 }
@@ -396,6 +458,28 @@ export const dismissQuestion = (id: string) =>
   request<{ dismissed: boolean }>(`/api/heads-down/questions/${id}/dismiss`, "POST");
 
 export const listWorkStreams = () => request<WorkStream[]>("/api/work-streams");
+
+export type QuickTaskKind = "general" | "ship" | "watch";
+
+/** What the sidecar proposes for a one-line message; the user edits it before saving. */
+export interface QuickTaskProposal {
+  title: string;
+  kind: QuickTaskKind;
+  focus: string;
+  priority: WorkStream["priority"];
+  links: { ref: WorkStreamLinkRef; title?: string }[];
+}
+
+export const proposeQuickTask = (input: {
+  message: string;
+  workspaceId?: string;
+  screen?: string;
+  provider: string;
+  model: string;
+}) => request<QuickTaskProposal>("/api/work-streams/quick-task/propose", "POST", input);
+
+export const createQuickTask = (proposal: QuickTaskProposal) =>
+  request<WorkStream>("/api/work-streams/quick-task", "POST", proposal);
 
 export interface WorkStreamPatch {
   status?: WorkStreamStatus;

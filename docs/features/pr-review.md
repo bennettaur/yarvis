@@ -22,7 +22,8 @@ A PR's header here has **Open in review workspace** to move it there.
    Both use the default chat model unless you pick one for each under
    **Settings → PR review → Review models**. A model tagged `reasoning` also
    gets an effort level there. The same section sets the
-   Claude Code harness the verification report runs with, the
+   Claude Code, OpenCode or Pi harness the verification report runs with
+   (and, for an OpenCode or Pi one, its model for each tier), the
    Claude model and effort for each of its checks, and
    the most one report may spend ($2 by default). Each check starts on a model
    matched to its job: Opus at high effort for risk and malicious intent,
@@ -90,6 +91,13 @@ as two. If the branch lookup fails or is slow, the list loads without nesting.
   that file while the files above it load, until you scroll.
 - A file with review comments shows a speech bubble with the count. That count
   includes replies and resolved threads.
+
+On GitHub, **Merge** and auto-merge in the PR's header are pinned to the
+commit the diff on screen was loaded at. If someone has pushed since, GitHub
+refuses the merge; reload the PR and look again. While the diff is still
+loading, or a push landed as it loaded, merging is refused until it reloads.
+GitHub lists at most 3,000 changed files. A bigger PR shows those and says
+the rest aren't shown, and you merge it on GitHub instead.
 
 ### Comment on a PR
 
@@ -188,14 +196,18 @@ the background, and the attention bell tells you when they're done.
 
 - **Guided review**: the agent writes the guide as if you had pressed
   **Guided review**, with the model set for guided reviews under **Settings →
-  PR review**. Open the bell item to read it in the PRs tab. If the PR already
+  PR review**. Open the bell item to read it in the PRs tab. The bell item
+  clears when you move to another step. Until you reach the last step, the
+  review also shows under **In progress** in the attention panel. If the PR already
   has a guide, the assistant tells you how far you got and whether the PR has
   moved on since. It writes a new one only if you ask, and asks you to approve
   that, because a new guide replaces the old one and your place in it.
 - **Verification report**: the report needs a local checkout, so the assistant
   uses the [review workspace](review-workspaces.md) already holding the PR,
   or creates one named after it. It waits for the clone, then starts the
-  report's checks, the defaults unless you name others, each as its own run.
+  report's checks, the repo's default checks (see
+  [Repo and playbook verification](review-workspaces.md#repo-and-playbook-verification))
+  unless you name others, each as its own run.
   The setup script never runs: that still needs your answer in the review
   workspace. A check that already has a result for the PR's current commit,
   or is already running, isn't started again unless you ask for a fresh one.
@@ -211,7 +223,8 @@ the background, and the attention bell tells you when they're done.
   ended, so a dozen agent runs per PR don't all start at once. You can name a
   preset: **quick** (summary, change map and risk), **security** (claims,
   risk, malicious intent and tests), **standard** (the default: every check
-  but the flow diagram) or **full** (everything), and a model or effort that
+  but the flow diagram and the repo's own checks) or **full** (everything,
+  the repo's own checks included where the repo's settings allow them), and a model or effort that
   every check in the queue runs on. The bell rings once when the
   queue finishes, naming each PR and how it went, and you can ask the
   assistant how the queue is going, or to stop it, in the meantime. One queue

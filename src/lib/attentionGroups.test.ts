@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { AttentionItem } from "./attention";
-import { groupAttentionItems, nextAnswerable } from "./attentionGroups";
+import {
+  arrangeAttention,
+  countByCategory,
+  groupAttentionItems,
+  nextAnswerable,
+} from "./attentionGroups";
 
 function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): AttentionItem {
   return {
@@ -8,6 +13,7 @@ function item(overrides: Partial<AttentionItem> & { id: string; seq: number }): 
     sessionKey: "ws-claude:w1",
     workspaceId: "w1",
     kind: "permission",
+    category: "general",
     title: "Fix API",
     body: "Needs permission",
     status: "pending",
@@ -163,5 +169,68 @@ describe("nextAnswerable", () => {
       sessionKey: "heads-down:q2",
     });
     expect(nextAnswerable([other, loose], loose)).toBeNull();
+  });
+});
+
+describe("arrangeAttention", () => {
+  // Newest first: a build item, then a review item, then a general one.
+  const groups = groupAttentionItems([
+    item({ id: "g", seq: 3, sessionKey: null, workspaceId: null, category: "general" }),
+    item({ id: "r", seq: 2, sessionKey: "raise:pr", workspaceId: null, category: "review" }),
+    item({ id: "b", seq: 1, category: "build" }),
+  ]);
+  const ids = (sections: ReturnType<typeof arrangeAttention>) =>
+    sections.map((s) => [s.category, s.groups.map((g) => g.lead.id)]);
+
+  it("groups by category with review first, leaving empty categories out", () => {
+    expect(ids(arrangeAttention(groups, { groupByCategory: true, categoryFilter: null }))).toEqual([
+      ["review", ["r"]],
+      ["build", ["b"]],
+      ["general", ["g"]],
+    ]);
+  });
+
+  it("keeps the stream newest-first when not grouping", () => {
+    expect(ids(arrangeAttention(groups, { groupByCategory: false, categoryFilter: null }))).toEqual(
+      [[null, ["g", "r", "b"]]],
+    );
+  });
+
+  it("filters to one category", () => {
+    expect(
+      ids(arrangeAttention(groups, { groupByCategory: true, categoryFilter: "build" })),
+    ).toEqual([["build", ["b"]]]);
+    expect(arrangeAttention(groups, { groupByCategory: false, categoryFilter: "slack" })).toEqual(
+      [],
+    );
+  });
+
+  it("counts groups per category, including empty ones", () => {
+    expect(countByCategory(groups)).toEqual({ review: 1, build: 1, slack: 0, general: 1 });
+  });
+
+  it("puts high-risk review items first, then medium, then the rest newest-first", () => {
+    const review = (id: string, seq: number, risk?: "low" | "medium" | "high") =>
+      item({ id, seq, sessionKey: `raise:${id}`, workspaceId: null, category: "review", risk });
+    const mixed = groupAttentionItems([
+      review("none", 6),
+      review("low", 5, "low"),
+      review("high-new", 4, "high"),
+      review("medium", 3, "medium"),
+      review("high-old", 2, "high"),
+      item({ id: "b", seq: 1, category: "build" }),
+    ]);
+    const order = ["high-new", "high-old", "medium", "low", "none"];
+    expect(ids(arrangeAttention(mixed, { groupByCategory: true, categoryFilter: null }))).toEqual([
+      ["review", order],
+      ["build", ["b"]],
+    ]);
+    expect(
+      ids(arrangeAttention(mixed, { groupByCategory: false, categoryFilter: "review" })),
+    ).toEqual([[null, order]]);
+    // A mixed, ungrouped stream stays newest-first.
+    expect(
+      ids(arrangeAttention(mixed, { groupByCategory: false, categoryFilter: null }))[0]?.[1],
+    ).toEqual(["none", "low", "high-new", "medium", "high-old", "b"]);
   });
 });

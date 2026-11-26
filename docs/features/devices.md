@@ -94,6 +94,19 @@ commit. They show in a box at the bottom right of every page, and under
 the first answer counts. If another device answered first, the request just
 disappears from the list.
 
+A commit signature can also be approved for a while: on the row below
+**Approve**, next to **Approve and stop asking for**, pick **15 min**,
+**30 min** or **1 hour**, or type a number of minutes up to 60 and press
+**Allow**. Until then the server signs commits without asking, for any
+terminal or agent session on it, and the box says
+until when. Press **Stop** there to go back to asking. Locking the vault or
+restarting the server stops it too. A rebase signs each commit again, so this
+saves you a prompt per commit.
+
+When the server keeps its other secrets outside the vault and the vault holds
+only the signing key, **Settings → Devices → Approvals** shows a passphrase
+field while the vault is locked. Unlock it there to start signing.
+
 ## In a browser versus the desktop app
 
 Everything works in a browser except what belongs to the machine in front of
@@ -105,5 +118,7 @@ you:
 - Global shortcuts, such as the ones that open
   [Quick Chat](quick-chat.md) and the clipboard palette from another app.
 - An alarm bringing the window to the front over your other apps. In a
-  browser the alarm still takes over the page, but only while its tab is open.
+  browser the alarm still takes over the page, chimes and flashes the tab's
+  title, but only while its tab is open (see
+  [Calendar and alarms](calendar-and-alarms.md)).
 - **Show in Finder** for a saved voice clip.

@@ -3,9 +3,16 @@ import YarvisClient
 
 struct AttentionView: View {
     @Bindable var model: AttentionModel
+    @Environment(AppModel.self) private var app
 
     var body: some View {
         List {
+            if let alarms = app.alarms, !alarms.ringing.isEmpty {
+                AlarmRingingSection(model: alarms) {
+                    app.section = .alarms
+                    app.attentionOpen = false
+                }
+            }
             if !model.approvals.isEmpty {
                 SwiftUI.Section("Approvals") {
                     ForEach(model.approvals) { a in
@@ -28,29 +35,59 @@ struct AttentionView: View {
                 if model.items.isEmpty {
                     Text("Nothing waiting.").foregroundStyle(.secondary)
                 }
-                ForEach(model.items) { item in
-                    HStack(alignment: .top) {
-                        Image(systemName: symbol(item.kind)).frame(width: 18)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title).bold()
-                            if let body = item.body { Text(body).lineLimit(3).foregroundStyle(.secondary) }
+                ForEach(model.groups) { group in
+                    if group.items.count == 1 {
+                        row(group.lead)
+                    } else {
+                        DisclosureGroup {
+                            ForEach(group.items) { item in row(item) }
+                        } label: {
+                            groupLabel(group)
                         }
-                        Spacer()
-                        Button(actionLabel(item)) { model.open(item) }
-                        Button { model.dismiss(item) } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.borderless)
-                            .help("Dismiss")
                     }
-                    .padding(.vertical, 2)
                 }
             }
             if let error = model.error {
                 Text(error).foregroundStyle(.red).textSelection(.enabled)
             }
         }
-        .sheet(item: $model.answering) { item in
+        .sheet(item: Binding(get: { app.alarmTakeoverShowing ? nil : model.answering },
+                             set: { if !app.alarmTakeoverShowing { model.answering = $0 } })) { item in
             AnswerSheet(model: model, item: item)
         }
+    }
+
+    private func row(_ item: AttentionItem) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: symbol(item.kind)).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title).bold()
+                if let body = item.body { Text(body).lineLimit(3).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            Button(actionLabel(item)) { model.open(item) }
+            Button { model.dismiss(item) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Dismiss")
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// A group's collapsed row: its most urgent item, a count, and a dismiss for the lot.
+    private func groupLabel(_ group: AttentionGroup) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: symbol(group.lead.kind)).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.lead.title).bold()
+                Text("\(group.items.count) items").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(actionLabel(group.lead)) { model.open(group.lead) }
+            Button { model.dismiss(group) } label: { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+                .help("Dismiss all \(group.items.count)")
+        }
+        .padding(.vertical, 2)
     }
 
     private func actionLabel(_ item: AttentionItem) -> String {

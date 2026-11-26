@@ -31,6 +31,9 @@ import Testing
     @Test func sessionIdsKeepTheirSlashesInsideOneSegment() {
         #expect(encodePathSegment("ws:abc/t1/p2") == "ws:abc%2Ft1%2Fp2")
         #expect(encodePathSegment("a?b#c%d") == "a%3Fb%23c%25d")
+        #expect(encodePathSegment("..") == "%2E%2E")
+        #expect(encodePathSegment(".") == "%2E")
+        #expect(encodePathSegment("a..b") == "a..b")
     }
 }
 
@@ -495,7 +498,7 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
         t.apply(.toolCall(ToolActivity(id: "c1", name: "recall", status: "pending")))
         t.apply(.delta("partial"))
         t.apply(.error(message: "The model refused.", detail: "Try another."))
-        #expect(t.finish(cancelled: false) == .failed("The model refused. Try another."))
+        #expect(t.finish(cancelled: false) == .failed(TurnFailure(message: "The model refused.", detail: "Try another.")))
         #expect(t.reply.isEmpty)
         #expect(t.tools.count == 1)
     }
@@ -560,6 +563,62 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
     }
 }
 
+@Suite struct AttentionGroupTests {
+    func item(_ id: String, seq: Int64, kind: String = "completed", workspace: String? = nil,
+              session: String? = nil) -> AttentionItem {
+        AttentionItem(id: id, seq: seq, source: "claude-hook", sessionKey: session, workspaceId: workspace, kind: kind,
+                      title: id, body: nil, status: "pending", navTarget: nil, payload: nil, createdAt: "a", updatedAt: "b")
+    }
+
+    @Test func groupsByWorkspaceThenSessionKeepingNewestFirst() {
+        let groups = groupAttention([
+            item("w3", seq: 6, workspace: "w", session: "ws-claude:w"),
+            item("s2", seq: 5, session: "tab:terminal/1/0"),
+            item("loose", seq: 4),
+            item("w2", seq: 3, workspace: "w", session: "w/other/0"),
+            item("s1", seq: 2, session: "tab:terminal/1/0"),
+            item("w1", seq: 1, workspace: "w"),
+        ])
+        #expect(groups.map(\.id) == ["workspace:w", "session:tab:terminal/1/0", "item:loose"])
+        #expect(groups[0].items.map(\.id) == ["w3", "w2", "w1"])
+    }
+
+    @Test func theLeadIsTheMostUrgentThenTheNewest() {
+        let groups = groupAttention([
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("idle-new", seq: 3, kind: "idle", workspace: "w"),
+            item("idle-old", seq: 2, kind: "idle", workspace: "w"),
+            item("error", seq: 1, kind: "error", workspace: "w"),
+        ])
+        #expect(groups.first?.lead.id == "idle-new")
+    }
+
+    @Test func aKindThisClientDoesNotKnowNeverLeads() {
+        let groups = groupAttention([
+            item("new-kind", seq: 2, kind: "something-new", workspace: "w"),
+            item("done", seq: 1, kind: "completed", workspace: "w"),
+        ])
+        #expect(groups.first?.lead.id == "done")
+    }
+
+    @Test func removingSeveralItemsLeavesTheRest() {
+        var inbox = AttentionInbox()
+        _ = inbox.loadItems([item("a", seq: 1), item("b", seq: 2), item("c", seq: 3)])
+        inbox.remove(itemIds: ["a", "c"])
+        #expect(inbox.items.map(\.id) == ["b"])
+    }
+
+    @Test func viewingAWorkspaceSeesAllButQuestionsAndPrompts() {
+        let items = [
+            item("done", seq: 4, kind: "completed", workspace: "w"),
+            item("ask", seq: 3, kind: "question", workspace: "w"),
+            item("prompt", seq: 2, kind: "permission", workspace: "w"),
+            item("elsewhere", seq: 1, kind: "completed", workspace: "other"),
+        ]
+        #expect(attentionSeenByViewing(workspaceId: "w", in: items).map(\.id) == ["done"])
+    }
+}
+
 @Suite struct MarkdownBlockTests {
     @Test func splitsCodeHeadingsAndText() {
         let blocks = MarkdownBlock.parse("""
@@ -580,14 +639,7 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
 }
 
 @Suite struct SessionIdTests {
-    @Test func paneIdsHaveAKnownShape() {
-        #expect(isTerminalPaneId("tab:terminal/t1/p1", workspaceIds: []))
-        #expect(isTerminalPaneId("ws:w1/t1/p1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("ws:w2/t1/p1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("ws-claude:w1", workspaceIds: ["w1"]))
-        #expect(!isTerminalPaneId("tab:terminal/t1", workspaceIds: []))
-        #expect(!isTerminalPaneId("tab:terminal//p1", workspaceIds: []))
-        #expect(!isTerminalPaneId("review-claude:x/y/z", workspaceIds: []))
+    @Test func agentSessionIdsArePrefixed() {
         #expect(WorkspaceSummary.agentSessionId(workspaceId: "w1") == "ws-claude:w1")
     }
 }
@@ -651,22 +703,13 @@ final class NeverEndingSSE: URLProtocol, @unchecked Sendable {
             try await YarvisClient(baseURL: base, token: "t", session: session).ptySessions()
         }
     }
+}
 
-    @Test func titlesNameTheWorkspaceOrFolderAndAnExit() {
-        let names = ["w1": "api"]
-        #expect(terminalTitle(PtySession(id: "ws-claude:w1", kind: "agent", workspaceId: "w1", running: true),
-                              workspaceNames: names) == "api")
-        #expect(terminalTitle(PtySession(id: "ws:w1/t/p", kind: "shell", workspaceId: "w1", cwd: "/srv/w1/repo",
-                                         running: true), workspaceNames: names) == "api · repo")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", running: false, exitCode: 2),
-                              workspaceNames: names) == "Terminal (exited 2)")
-        #expect(terminalTitle(PtySession(id: "review-claude:r1", kind: "review", workspaceId: "r1", running: true),
-                              workspaceNames: [:]) == "Review: r1")
-        #expect(terminalTitle(PtySession(id: "ws-claude:w9", kind: "agent", workspaceId: "w9", running: false),
-                              workspaceNames: names) == "Agent (exited)")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "/srv/repo", running: true),
-                              workspaceNames: names) == "repo")
-        #expect(terminalTitle(PtySession(id: "tab:terminal/t/p", kind: "shell", cwd: "", running: true),
-                              workspaceNames: names) == "Terminal")
+@Suite struct ServerScopedKeyTests {
+    @Test func eachServerGetsItsOwnKey() {
+        let a = URL(string: "https://a.example.ts.net")!
+        let b = URL(string: "https://b.example.ts.net")!
+        #expect(serverScopedKey("yarvis.chat.tabs", server: a) != serverScopedKey("yarvis.chat.tabs", server: b))
+        #expect(serverScopedKey("yarvis.chat.tabs", server: a) == serverScopedKey("yarvis.chat.tabs", server: a))
     }
 }

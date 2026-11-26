@@ -5,6 +5,7 @@ import type { NewComment, SeenCommits } from "../../../lib/pr/types";
 import { invalidate, primeCache } from "../../../lib/resourceCache";
 import type { ReviewWorkspacePr } from "../../../lib/reviewWorkspaces/api";
 import { changedFilesKey } from "../../../lib/reviewWorkspaces/cache";
+import type { FeedbackInput, ReportFeedback } from "../../../lib/reviewWorkspaces/feedback";
 import type { MutationRun, MutationTestingState } from "../../../lib/reviewWorkspaces/mutation";
 import {
   type ChecklistItem,
@@ -54,6 +55,9 @@ let cancelled: string[] = [];
 // What the checklist reads as after the cache is invalidated.
 let reread: VerificationChecklist;
 let mutationState: MutationTestingState;
+// The feedback the sidecar has, and what the tab saved.
+let feedbackRows: ReportFeedback[];
+let savedFeedback: FeedbackInput[];
 
 beforeEach(() => {
   resetClipboardWrites();
@@ -62,7 +66,25 @@ beforeEach(() => {
   cancelled = [];
   reread = checklist();
   mutationState = { run: null, headSha: HEAD, blocked: null, sandboxNotes: "" };
+  feedbackRows = [];
+  savedFeedback = [];
   stubReviewApi({
+    verificationFeedback: async () => feedbackRows,
+    saveVerificationFeedback: async (_ws, _pr, input) => {
+      savedFeedback.push(input);
+      return {
+        id: `f${savedFeedback.length}`,
+        runId: input.runId,
+        section: input.section,
+        kind: input.kind,
+        itemKey: input.itemKey,
+        verdict: input.verdict ?? null,
+        rating: input.rating ?? null,
+        reason: input.reason ?? null,
+        actions: input.action ? [input.action] : [],
+        updatedAt: "",
+      };
+    },
     getMutationTesting: async () => mutationState,
     verificationUpstack: async () => ({ headSha: HEAD, layers: [], note: null }),
     startVerification: async (_ws, prId, sections) => {
@@ -109,6 +131,7 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   changeMap: { theme: "understand", label: "Change map" },
   claims: { theme: "correctness", label: "Claims" },
   tests: { theme: "correctness", label: "Test quality" },
+  bugs: { theme: "correctness", label: "Bugs" },
   performance: { theme: "correctness", label: "Performance" },
   observability: { theme: "correctness", label: "Observability" },
   risk: { theme: "risk", label: "Risk" },
@@ -116,7 +139,10 @@ const ENTRY: Record<ReportSection, { theme: ChecklistThemeId; label: string }> =
   complexity: { theme: "maintainability", label: "Complexity" },
   quality: { theme: "maintainability", label: "Code quality" },
   comments: { theme: "maintainability", label: "Comment quality" },
+  improvements: { theme: "maintainability", label: "Improvements" },
   approach: { theme: "maintainability", label: "Simpler approach" },
+  repoVerify: { theme: "repo", label: "Repo verification" },
+  playbookVerify: { theme: "repo", label: "Playbook verification" },
 };
 
 const run = (over: Partial<ChecklistRun> = {}): ChecklistRun => ({
@@ -157,6 +183,7 @@ const checklist = ({
   report,
   size,
   namedTickets: [],
+  defaultSections: [...DEFAULT_SECTIONS],
 });
 
 /** Every section in `report` answered by one current run. */
@@ -320,6 +347,66 @@ describe("VerificationTab", () => {
     // The one left is the current check's finding, not the older head's.
     expect(posts).toHaveLength(1);
     expect(posts[0]?.closest("li")?.textContent).toContain("Misses the delete path");
+  });
+
+  it("shows the verdicts saved on the run the report shows, and saves new ones against it", async () => {
+    const report: VerificationReport = {
+      ...goodReport,
+      risk: {
+        level: "medium",
+        clientImpact: "None.",
+        mitigations: [],
+        concerns: [
+          { title: "Stale reads", detail: "Edits stay stale.", path: "src/cache.ts", line: 3 },
+          { title: "No eviction", detail: "It grows.", path: "src/cache.ts", line: 9 },
+        ],
+      },
+    };
+    feedbackRows = [
+      {
+        id: "f0",
+        runId: "r-risk",
+        section: "risk",
+        kind: "concern",
+        itemKey: JSON.stringify(["concern", "Stale reads", "src/cache.ts", 3]),
+        verdict: "rejected",
+        rating: null,
+        reason: "Writes go through the cache.",
+        actions: [],
+        updatedAt: "",
+      },
+    ];
+    const host = await mount(
+      checklist({
+        items: {
+          ...answered(report),
+          risk: { latest: run({ id: "r-risk" }), result: run({ id: "r-risk" }) },
+        },
+        report,
+      }),
+    );
+    const item = (title: string) =>
+      [...host.querySelectorAll("li")]
+        .reverse()
+        .find((li) => li.textContent?.includes(title)) as HTMLElement;
+    await waitFor(
+      () => textOf(item("Stale reads").innerHTML).includes("You rejected this"),
+      "the saved verdict",
+    );
+    expect(textOf(item("Stale reads").innerHTML)).toContain("Writes go through the cache.");
+
+    button(item("No eviction"), "Accept risk")?.click();
+    await waitFor(
+      () => textOf(item("No eviction").innerHTML).includes("You accepted this risk"),
+      "the new verdict",
+    );
+    expect(savedFeedback[0]).toMatchObject({
+      runId: "r-risk",
+      section: "risk",
+      verdict: "accepted",
+    });
+    // The row saved before stays shown beside the new one.
+    expect(textOf(item("Stale reads").innerHTML)).toContain("You rejected this");
   });
 
   it("cancels a run going here", async () => {

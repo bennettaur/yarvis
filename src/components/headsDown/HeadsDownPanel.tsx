@@ -31,12 +31,18 @@ import {
   type WorkStream,
 } from "../../lib/headsDown";
 import { combineResources, primeCache, useCachedResource } from "../../lib/resourceCache";
+import {
+  getReviewStream,
+  REVIEW_STREAM_CACHE_KEY,
+  type ReviewStream as ReviewStreamData,
+} from "../../lib/reviewPrep";
 import RefreshingIndicator from "../RefreshingIndicator";
 import AgentMark, { type AgentState } from "./AgentMark";
 import AutoApprovals from "./AutoApprovals";
 import HeadsDownSettings from "./HeadsDownSettings";
 import PassList from "./PassList";
 import QuestionCard from "./QuestionCard";
+import ReviewStream from "./ReviewStream";
 import RoutineList from "./RoutineList";
 import StreamList from "./StreamList";
 import { useLivePass } from "./useLivePass";
@@ -148,11 +154,22 @@ function StopTime({
   );
 }
 
+function dailyLimitReached(state: HeadsDownState): boolean {
+  return state.maxPassesPerDay !== null && state.passesToday >= state.maxPassesPerDay;
+}
+
+function describePassesToday(state: HeadsDownState): string {
+  const limit = state.maxPassesPerDay === null ? "" : ` of ${state.maxPassesPerDay}`;
+  return `Passes today: ${state.passesToday}${limit}`;
+}
+
 /** The header's line about what happens next: paused, working, or when it looks again. */
 function describeNextPass(state: HeadsDownState, run: HeadsDownRun, working: boolean): string {
   if (run.pausedAt !== null)
     return "No passes until you resume it. Its streams and questions are kept.";
   if (working) return "Working now";
+  if (dailyLimitReached(state))
+    return "Reached today's pass limit. It starts again after midnight.";
   if (state.nextPassAt) return `Sleeping until ${new Date(state.nextPassAt).toLocaleTimeString()}`;
   // The sidecar leaves out a next pass that would come after the stop time.
   if (state.lastPass && run.stopAt) return "No more passes before it stops";
@@ -226,6 +243,7 @@ function RunHeader({
               >
                 {describeNextPass(state, run, working)}
               </p>
+              <p className="mt-1 text-xs text-zinc-500">{describePassesToday(state)}</p>
               <StopTime
                 stopAt={run.stopAt}
                 disabled={busy}
@@ -399,6 +417,10 @@ export default function HeadsDownPanel() {
     HEADS_DOWN_CACHE_KEYS.routines,
     listRoutines,
   );
+  const reviewStream = useCachedResource<ReviewStreamData>(
+    REVIEW_STREAM_CACHE_KEY,
+    getReviewStream,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refreshState = state.refresh;
@@ -409,6 +431,7 @@ export default function HeadsDownPanel() {
   const refreshAutoApprovals = autoApprovals.refresh;
   const refreshRoutines = routines.refresh;
   const refreshConfig = config.refresh;
+  const refreshReviewStream = reviewStream.refresh;
   const refreshAll = useCallback(() => {
     void refreshState();
     void refreshQuestions();
@@ -417,6 +440,7 @@ export default function HeadsDownPanel() {
     void refreshMessages();
     void refreshAutoApprovals();
     void refreshRoutines();
+    void refreshReviewStream();
   }, [
     refreshState,
     refreshQuestions,
@@ -425,6 +449,7 @@ export default function HeadsDownPanel() {
     refreshMessages,
     refreshAutoApprovals,
     refreshRoutines,
+    refreshReviewStream,
   ]);
   const live = useLivePass(refreshAll);
   const combined = combineResources([state, questions, streams, passes, messages]);
@@ -487,6 +512,13 @@ export default function HeadsDownPanel() {
         <Section title="Tell it something">
           <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
         </Section>
+
+        {reviewStream.data &&
+          reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
+            <Section title="Review stream">
+              <ReviewStream data={reviewStream.data} />
+            </Section>
+          )}
 
         <Section title="Routines">
           <RoutineList

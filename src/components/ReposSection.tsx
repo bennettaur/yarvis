@@ -5,11 +5,21 @@ import {
   createRepo,
   deleteRepo,
   listRepos,
+  PLAYBOOK_FIELDS,
+  PLAYBOOK_MAX_CHARS,
+  type PlaybookKey,
   type Repo,
+  type RepoPlaybooks,
   type RepoTracker,
   updateRepo,
 } from "../lib/repos";
 import { invalidatePrefix } from "../lib/resourceCache";
+import {
+  DEFAULT_SECTIONS,
+  REPORT_SECTIONS,
+  type ReportSection,
+  SECTION_LABEL,
+} from "../lib/reviewWorkspaces/verification";
 
 interface Draft {
   id?: string;
@@ -24,6 +34,16 @@ interface Draft {
   azureProject: string;
   azureAreaPath: string;
   jiraProjectKey: string;
+  playbooks: Record<PlaybookKey, string>;
+  /** Null keeps Yarvis's default checks, which change with the app. */
+  verificationChecks: ReportSection[] | null;
+}
+
+function playbookDraft(saved: RepoPlaybooks | undefined): Record<PlaybookKey, string> {
+  return Object.fromEntries(PLAYBOOK_FIELDS.map((f) => [f.key, saved?.[f.key] ?? ""])) as Record<
+    PlaybookKey,
+    string
+  >;
 }
 
 function blankDraft(): Draft {
@@ -37,6 +57,8 @@ function blankDraft(): Draft {
     azureProject: "",
     azureAreaPath: "",
     jiraProjectKey: "",
+    playbooks: playbookDraft({}),
+    verificationChecks: null,
   };
 }
 
@@ -53,6 +75,8 @@ function draftFromRepo(r: Repo): Draft {
     azureProject: t?.provider === "azure-boards" ? t.project : "",
     azureAreaPath: t?.provider === "azure-boards" ? (t.areaPath ?? "") : "",
     jiraProjectKey: t?.provider === "jira" ? t.projectKey : "",
+    playbooks: playbookDraft(r.playbooks),
+    verificationChecks: r.verificationChecks,
   };
 }
 
@@ -140,6 +164,10 @@ export default function ReposSection() {
         setError(tracker.error);
         return;
       }
+      if (draft.verificationChecks?.length === 0) {
+        setError("Pick at least one verification check, or use Yarvis's defaults");
+        return;
+      }
       const payload: CreateRepoInput = {
         cloneUrl: draft.cloneUrl.trim(),
         name: draft.name.trim() || undefined,
@@ -147,6 +175,8 @@ export default function ReposSection() {
         runScript: draft.runScript.trim() || null,
         pullIssues: draft.pullIssues,
         tracker: tracker.tracker,
+        playbooks: draft.playbooks,
+        verificationChecks: draft.verificationChecks,
       };
       if (draft.id) {
         await updateRepo(draft.id, payload);
@@ -348,6 +378,36 @@ function DraftEditor({
         )}
       </div>
 
+      <div className="mt-4">
+        <div className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+          Playbooks
+        </div>
+        <p className="mb-2 text-xs text-zinc-500">
+          Your own instructions for shipping a PR in this repo. Agents read them as written here and
+          never from the repo itself.
+        </p>
+        {PLAYBOOK_FIELDS.map((f) => (
+          <label key={f.key} className="mb-3 block text-xs text-zinc-400">
+            <span className="block uppercase tracking-wide">{f.label}</span>
+            <span className="mb-1 block text-zinc-500">{f.hint}</span>
+            <textarea
+              value={draft.playbooks[f.key]}
+              maxLength={PLAYBOOK_MAX_CHARS}
+              rows={3}
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, playbooks: { ...d.playbooks, [f.key]: e.target.value } }))
+              }
+              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm outline-none focus:border-zinc-500"
+            />
+          </label>
+        ))}
+      </div>
+
+      <VerificationChecks
+        picked={draft.verificationChecks}
+        onChange={(verificationChecks) => setDraft((d) => ({ ...d, verificationChecks }))}
+      />
+
       <div className="mt-4 flex justify-end gap-2">
         <button
           onClick={onCancel}
@@ -394,6 +454,60 @@ function ScriptEditor({
   );
 }
 
+/**
+ * The checks a PR in this repo runs when a run names none, review prep's
+ * included. Repo verification follows the repo's own instructions, so it runs
+ * only once ticked here.
+ */
+function VerificationChecks({
+  picked,
+  onChange,
+}: {
+  picked: ReportSection[] | null;
+  onChange: (picked: ReportSection[] | null) => void;
+}) {
+  const shown = picked ?? DEFAULT_SECTIONS;
+  const toggle = (section: ReportSection) =>
+    onChange(
+      REPORT_SECTIONS.filter((s) => (s === section ? !shown.includes(s) : shown.includes(s))),
+    );
+  return (
+    <div className="mt-4">
+      <div className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+        Verification checks
+      </div>
+      <p className="mb-2 text-xs text-zinc-500">
+        The checks a PR here runs by default.{" "}
+        {picked === null ? (
+          "Using Yarvis's defaults."
+        ) : (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="text-indigo-400 hover:text-indigo-300"
+          >
+            Use Yarvis's defaults
+          </button>
+        )}{" "}
+        Repo verification follows this repo's own AGENTS.md and skills from its default branch, and
+        runs only when ticked. Playbook verification needs a Verify a PR playbook above.
+      </p>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+        {REPORT_SECTIONS.map((section) => (
+          <label key={section} className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={shown.includes(section)}
+              onChange={() => toggle(section)}
+            />
+            {SECTION_LABEL[section]}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Labeled({
   label,
   full,
@@ -420,6 +534,7 @@ function RepoCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const playbookCount = Object.keys(repo.playbooks).length;
   return (
     <div className="rounded-lg border border-zinc-800 p-4">
       <div className="flex items-center justify-between">
@@ -450,6 +565,7 @@ function RepoCard({
         <span>{repo.runScript ? "run ✓" : "no run"}</span>
         {repo.pullIssues && <span className="text-indigo-400">issues ✓</span>}
         {repo.tracker && <span>tickets: {trackerLabel(repo.tracker)}</span>}
+        {playbookCount > 0 && <span>playbooks: {playbookCount}</span>}
       </div>
     </div>
   );

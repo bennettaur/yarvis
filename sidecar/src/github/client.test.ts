@@ -753,7 +753,7 @@ describe("github client", () => {
     expect(detail.canDisableAutoMerge).toBe(false);
   });
 
-  it("merges a PR with the chosen method after resolving its node id", async () => {
+  it("merges a PR pinned to the reviewed head after resolving its node id", async () => {
     const bodies: Array<Record<string, any>> = [];
     const capturing = (async (_url: string, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)));
@@ -763,14 +763,16 @@ describe("github client", () => {
       );
     }) as unknown as typeof fetch;
     const gh = new GitHubClient("t", capturing);
-    await gh.mergePullRequest("o", "r", 3, "SQUASH");
+    const head = "a".repeat(40);
+    await gh.mergePullRequest("o", "r", 3, "SQUASH", head);
     // First call resolves the node id; second runs the merge mutation.
     expect(bodies).toHaveLength(2);
     expect(bodies[1]!.query).toContain("mergePullRequest");
-    expect(bodies[1]!.variables).toEqual({ id: "PR_node1", method: "SQUASH" });
+    expect(bodies[1]!.query).toContain("expectedHeadOid:$head");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node1", method: "SQUASH", head });
   });
 
-  it("enables auto-merge with the chosen method", async () => {
+  it("enables auto-merge pinned to the reviewed head", async () => {
     const bodies: Array<Record<string, any>> = [];
     const capturing = (async (_url: string, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)));
@@ -780,9 +782,93 @@ describe("github client", () => {
       );
     }) as unknown as typeof fetch;
     const gh = new GitHubClient("t", capturing);
-    await gh.enableAutoMerge("o", "r", 4, "MERGE");
+    const head = "e".repeat(40);
+    await gh.enableAutoMerge("o", "r", 4, "MERGE", head);
     expect(bodies[1]!.query).toContain("enablePullRequestAutoMerge");
-    expect(bodies[1]!.variables).toEqual({ id: "PR_node2", method: "MERGE" });
+    expect(bodies[1]!.query).toContain("expectedHeadOid:$head");
+    expect(bodies[1]!.variables).toEqual({ id: "PR_node2", method: "MERGE", head });
+  });
+
+  describe("prFilesAtHead", () => {
+    const file = { filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: "@@" };
+    // Answers the PR read with each head in turn, so a test can move the head mid-read.
+    const pushingFetch = (heads: string[]) =>
+      (async (url: string) => {
+        const path = String(url).replace("https://api.github.com", "");
+        const body = path.includes("/files") ? [file] : { head: { sha: heads.shift() } };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }) as unknown as typeof fetch;
+
+    it("names the commit the files were read at", async () => {
+      const head = "c".repeat(40);
+      const gh = new GitHubClient("t", pushingFetch([head, head]));
+      const result = await gh.prFilesAtHead("o", "r", 1);
+      expect(result.headSha).toBe(head);
+      expect(result.files.map((f) => f.filename)).toEqual(["a.ts"]);
+    });
+
+    it("reads the head strictly before and after the file list", async () => {
+      const order: string[] = [];
+      const head = "c".repeat(40);
+      const gh = new GitHubClient("t", (async (url: string) => {
+        const isFiles = String(url).includes("/files");
+        // Head reads answer slowly, so one overlapping the file list would finish after it.
+        if (!isFiles) await new Promise((resolve) => setTimeout(resolve, 10));
+        order.push(isFiles ? "files" : "head");
+        return new Response(JSON.stringify(isFiles ? [file] : { head: { sha: head } }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch);
+      await gh.prFilesAtHead("o", "r", 1);
+      expect(order).toEqual(["head", "files", "head"]);
+    });
+
+    it("reads every page of files, and says when GitHub stopped listing", async () => {
+      const head = "c".repeat(40);
+      const page = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({ ...file, filename: `f${i}.ts` }));
+      // Lists `total` files, 100 a page, but never more than GitHub's 3,000,
+      // and records each request in order.
+      const listing = (total: number, order: string[] = []) =>
+        (async (url: string) => {
+          const match = String(url).match(/\/files\?.*page=(\d+)/);
+          order.push(match ? "files" : "head");
+          const listed = Math.min(total, 3000);
+          const body = match
+            ? page(Math.max(0, Math.min(100, listed - (Number(match[1]) - 1) * 100)))
+            : { head: { sha: head }, changed_files: total };
+          return new Response(JSON.stringify(body), { status: 200 });
+        }) as unknown as typeof fetch;
+
+      const order: string[] = [];
+      const two = await new GitHubClient("t", listing(101, order)).prFilesAtHead("o", "r", 1);
+      expect(two.files).toHaveLength(101);
+      expect(two.incomplete).toBe(false);
+      expect(two.headSha).toBe(head);
+      expect(order).toEqual(["head", "files", "files", "head"]);
+
+      const even = await new GitHubClient("t", listing(200)).prFilesAtHead("o", "r", 1);
+      expect(even.files).toHaveLength(200);
+      expect(even.incomplete).toBe(false);
+
+      const exact = await new GitHubClient("t", listing(3000)).prFilesAtHead("o", "r", 1);
+      expect(exact.files).toHaveLength(3000);
+      expect(exact.incomplete).toBe(false);
+
+      const capped = await new GitHubClient("t", listing(3001)).prFilesAtHead("o", "r", 1);
+      expect(capped.files).toHaveLength(3000);
+      expect(capped.incomplete).toBe(true);
+    });
+
+    it("names no commit when the PR reports no head", async () => {
+      const gh = new GitHubClient("t", pushingFetch([]));
+      expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();
+    });
+
+    it("names no commit when a push lands mid-read", async () => {
+      const gh = new GitHubClient("t", pushingFetch(["c".repeat(40), "d".repeat(40)]));
+      expect((await gh.prFilesAtHead("o", "r", 1)).headSha).toBeNull();
+    });
   });
 
   it("fetches a single PR's list summary", async () => {
@@ -897,6 +983,55 @@ describe("github client", () => {
       throw new Error("should not be called");
     }) as unknown as typeof fetch;
     expect(await new GitHubClient("t", failing).lookupInvolvement([], "me")).toEqual([]);
+  });
+
+  it("looks PRs up as review candidates, with their review decision, in the order asked", async () => {
+    let query = "";
+    const answering = (async (_url: string, init?: RequestInit) => {
+      query = JSON.parse(String(init?.body)).query;
+      return new Response(
+        JSON.stringify({
+          data: {
+            pr0: {
+              pullRequest: {
+                number: 7,
+                title: "Approved",
+                url: "https://github.com/o/r/pull/7",
+                state: "OPEN",
+                createdAt: "2026-07-01",
+                updatedAt: "2026-07-01",
+                author: { login: "them" },
+                repository: { name: "r", owner: { login: "o" } },
+                reviews: { nodes: [{ state: "COMMENTED" }] },
+                additions: 3,
+                deletions: 2,
+                changedFiles: 1,
+                reviewDecision: "APPROVED",
+                latestOpinionatedReviews: { nodes: [{ state: "APPROVED" }] },
+              },
+            },
+            pr1: null,
+          },
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const [pr, gone] = await new GitHubClient("t", answering).lookupReviewCandidates(
+      [
+        { owner: "o", repo: "r", number: 7 },
+        { owner: "gone", repo: "r", number: 8 },
+      ],
+      "me",
+    );
+    // In the order asked, with null for what didn't resolve.
+    expect(gone).toBeNull();
+    expect(query).toContain("reviewDecision");
+    expect(pr).toMatchObject({
+      reviewDecision: "approved",
+      approvals: 1,
+      changedLines: 5,
+      myReviewStates: ["commented"],
+    });
   });
 
   it("disables auto-merge by node id", async () => {
@@ -1497,6 +1632,29 @@ describe("review contributions", () => {
     expect(await gh.submitReview("o", "r", 1, "APPROVE")).toEqual({
       nodeId: "PRR_9",
       commitId: commit,
+    });
+  });
+
+  it("posts line comments together as one COMMENT review at the given commit", async () => {
+    let sent: { url: string; body: unknown } | null = null;
+    const capture = (async (url: string, init?: RequestInit) => {
+      sent = { url: String(url), body: JSON.parse(String(init?.body)) };
+      return new Response(JSON.stringify({ node_id: "PRR_3" }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const result = await new GitHubClient("t", capture).submitCommentReview("o", "r", 1, {
+      commitId: "c".repeat(40),
+      body: "Summary",
+      comments: [{ path: "a.ts", line: 4, body: "Look here" }],
+    });
+    expect(result).toEqual({ nodeId: "PRR_3" });
+    expect(sent as unknown).toEqual({
+      url: "https://api.github.com/repos/o/r/pulls/1/reviews",
+      body: {
+        event: "COMMENT",
+        commit_id: "c".repeat(40),
+        body: "Summary",
+        comments: [{ path: "a.ts", line: 4, side: "RIGHT", body: "Look here" }],
+      },
     });
   });
 

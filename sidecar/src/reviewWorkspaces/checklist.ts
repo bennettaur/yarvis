@@ -8,9 +8,10 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import { agentRuns } from "../db/schema.ts";
+import { agentRuns, type ReviewWorkspacePr } from "../db/schema.ts";
 import { describeError } from "../llm/errors.ts";
 import type { VerificationRunConfig } from "../pr/models.ts";
+import type { PrRef } from "../pr/types.ts";
 import type { Coverage, UnknownCoverage } from "./coverage.ts";
 import { PATCH_LIMITS } from "./patchFiles.ts";
 import { getReviewPr, type ReviewDeps, reviewDiffFacts } from "./service.ts";
@@ -21,6 +22,8 @@ import {
   emptyAudit,
   REPORT_SECTIONS,
   type ReportSection,
+  type RepoVerificationSettings,
+  repoVerificationSettings,
   runSections,
   VERIFICATION_RUN_KIND,
   type VerificationReport,
@@ -33,6 +36,7 @@ export const CHECKLIST_THEMES = [
   { id: "correctness", label: "Correctness and tests" },
   { id: "risk", label: "Risk and impact" },
   { id: "maintainability", label: "Maintainability" },
+  { id: "repo", label: "This repo's own checks" },
 ] as const;
 
 export type ChecklistTheme = (typeof CHECKLIST_THEMES)[number]["id"];
@@ -72,6 +76,12 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Test quality",
     description: "Whether the tests cover the change and would catch it breaking.",
   },
+  bugs: {
+    theme: "correctness",
+    label: "Bugs",
+    description:
+      "Inputs or timing that make the changed code do the wrong thing, traps it sets for the next likely change, and existing bugs it now reaches.",
+  },
   performance: {
     theme: "correctness",
     label: "Performance",
@@ -108,10 +118,27 @@ export const CHECKLIST_ENTRIES: Record<ReportSection, ChecklistEntry> = {
     label: "Comment quality",
     description: "Comments that are wrong, out of date or only restate the code.",
   },
+  improvements: {
+    theme: "maintainability",
+    label: "Improvements",
+    description:
+      "Refactors and design changes the PR points to, such as a root cause it works around, as follow-ups that never block.",
+  },
   approach: {
     theme: "maintainability",
     label: "Simpler approach",
     description: "Whether there is a simpler way to do what the PR does.",
+  },
+  repoVerify: {
+    theme: "repo",
+    label: "Repo verification",
+    description:
+      "The PR verification the repo's own AGENTS.md and skills describe, read from its default branch. Off until turned on for the repo.",
+  },
+  playbookVerify: {
+    theme: "repo",
+    label: "Playbook verification",
+    description: "Your Verify a PR playbook for this repo, from Settings → Repositories.",
   },
 };
 
@@ -157,6 +184,8 @@ export interface VerificationChecklist {
   size: VerificationSize | null;
   /** The tickets the reviewer named for the newest run that read tickets, to offer again. */
   namedTickets: string[];
+  /** The sections the PR's repo runs when none are picked. */
+  defaultSections: ReportSection[];
 }
 
 /** More runs than any PR's checklist needs, so a PR re-run for months can't make the read unbounded. */
@@ -165,6 +194,54 @@ const MAX_RUNS_READ = 300;
 type RunRow = Omit<ChecklistRun, "live" | "current" | "headSha"> & {
   meta: Record<string, unknown>;
 };
+
+/** The PR's verification runs, newest first. */
+async function verificationRunRows(db: Db, refKey: string): Promise<RunRow[]> {
+  return db
+    .select({
+      id: agentRuns.id,
+      status: agentRuns.status,
+      error: agentRuns.error,
+      costUsd: agentRuns.costUsd,
+      startedAt: agentRuns.startedAt,
+      finishedAt: agentRuns.finishedAt,
+      meta: agentRuns.meta,
+    })
+    .from(agentRuns)
+    .where(
+      and(eq(agentRuns.kind, VERIFICATION_RUN_KIND), sql`${agentRuns.meta}->>'refKey' = ${refKey}`),
+    )
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(MAX_RUNS_READ);
+}
+
+/**
+ * The report a PR's newest results make, read by ref alone: no workspace is
+ * needed, so it works for a PR whose review workspace is long gone. Null when
+ * no section ever answered.
+ */
+export async function storedReportFor(db: Db, refKey: string): Promise<ChecklistReport | null> {
+  const rows = await verificationRunRows(db, refKey);
+  const results = await newestAnswers(db, rows);
+  const answers: SectionAnswer[] = [];
+  for (const section of REPORT_SECTIONS) {
+    const answer = results.get(section);
+    if (!answer) continue;
+    const meta = answer.row.meta;
+    answers.push({
+      section,
+      headSha: typeof meta.headSha === "string" ? meta.headSha : null,
+      runId: answer.row.id,
+      startedAt: answer.row.startedAt,
+      report: answer.report,
+    });
+  }
+  const newest = answers.reduce<SectionAnswer | null>(
+    (a, b) => (!a || b.startedAt > a.startedAt ? b : a),
+    null,
+  );
+  return assembleReport(answers, newest?.headSha ?? null);
+}
 
 /**
  * The PR's checklist: each section's latest run and newest result, and the
@@ -178,27 +255,14 @@ export async function verificationChecklist(
   reviewDeps: ReviewDeps,
   isLive: (id: string) => boolean,
   settings: () => Promise<VerificationRunConfig>,
+  repoSettings: (
+    db: Db,
+    ref: PrRef,
+  ) => Promise<RepoVerificationSettings> = repoVerificationSettings,
 ): Promise<VerificationChecklist> {
   const pr = await getReviewPr(db, workspaceId, prId);
-  const rows: RunRow[] = await db
-    .select({
-      id: agentRuns.id,
-      status: agentRuns.status,
-      error: agentRuns.error,
-      costUsd: agentRuns.costUsd,
-      startedAt: agentRuns.startedAt,
-      finishedAt: agentRuns.finishedAt,
-      meta: agentRuns.meta,
-    })
-    .from(agentRuns)
-    .where(
-      and(
-        eq(agentRuns.kind, VERIFICATION_RUN_KIND),
-        sql`${agentRuns.meta}->>'refKey' = ${pr.refKey}`,
-      ),
-    )
-    .orderBy(desc(agentRuns.startedAt))
-    .limit(MAX_RUNS_READ);
+  const { defaultSections } = await repoSettings(db, pr.ref);
+  const rows = await verificationRunRows(db, pr.refKey);
 
   const toRun = (row: RunRow): ChecklistRun => {
     const { meta, ...rest } = row;
@@ -256,7 +320,28 @@ export async function verificationChecklist(
     report: assembleReport(answers, pr.headSha),
     size,
     namedTickets: lastNamedTickets(rows),
+    defaultSections,
   };
+}
+
+/**
+ * The report from the sections whose newest answer was made at the PR's
+ * current head: what still holds for the code as it is now. Null when no
+ * section has answered at that head.
+ */
+export async function reportAtHead(
+  db: Db,
+  pr: ReviewWorkspacePr,
+): Promise<VerificationReport | null> {
+  const headSha = pr.headSha;
+  if (!headSha) return null;
+  const answers = await newestAnswers(db, await verificationRunRows(db, pr.refKey));
+  const current: SectionAnswer[] = [];
+  for (const [section, { row, report }] of answers) {
+    if (row.meta.headSha !== headSha) continue;
+    current.push({ section, headSha, runId: row.id, startedAt: row.startedAt, report });
+  }
+  return assembleReport(current, headSha);
 }
 
 /** The tickets named for the newest run that recorded any, as the reviewer typed them. */

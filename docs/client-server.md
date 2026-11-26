@@ -36,8 +36,9 @@ Built:
 - The web UI as a server client: sign-in, a vault unlock screen, Settings →
   Devices, and an approvals list.
 - The thin Tauri app, which starts a local server or connects to a remote one.
-- A first native macOS app (`apps/macos/`): chat, attention and approvals,
-  and terminals natively, the rest in a web view. See
+- A native macOS app (`apps/macos/`) laid out like the web UI: chat,
+  terminals, workspaces, Settings (devices and the account) and attention
+  natively, the rest in a web view. See
   [native-macos.md](native-macos.md).
 - An end-to-end test (`bun run e2e`, `e2e/`) that drives the real server and
   the built UI in Chromium, signing in with TOTP codes it computes.
@@ -256,7 +257,7 @@ origins = ["http://localhost:7878"]
 # backend = "keychain"          # "vault" | "keychain" | "onepassword"
 
 [ssh_agent]
-enabled = false                 # the server's own ssh-agent; needs "vault"
+enabled = false                 # the server's own ssh-agent; its key is in the vault
 # upstream_socket = "..."       # the agent workspace shells use when it's off
 
 [sidecar]
@@ -279,8 +280,13 @@ names a backend, it wins, and Settings can only change which 1Password item a
 `configuredSecretBackend` (`null` when `secretBackend` decides), so Settings
 shows the store really in use and offers no switch the server would refuse.
 
-The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
-since the vault is where the signing key lives.
+`ssh_agent.enabled = true` turns the vault on whatever `secrets.backend`
+says, since the vault is where the signing key lives (`Config::uses_vault`).
+With another backend the vault holds only the key: its routes answer, but
+`/api/auth/status` reports `vault: "absent"`, so no client holds the app
+behind the unlock screen, and locking it stops the agent and nothing else.
+`GET /api/vault/ssh-agent` reports the vault's state, which is where a client
+learns signing needs an unlock.
 
 **Home server (the Intel Mac mini).** `backend = "vault"`, `ssh_agent.enabled =
 true`. The server starts locked. The vault passphrase or the recovery key
@@ -381,83 +387,30 @@ would make that immediate; it is a possible follow-up.
 
 ## Running it
 
-Every setup needs Postgres with pgvector (see "Postgres").
+[server.md](server.md) has the step-by-step setups: the server the desktop
+app starts, a server run on its own under launchd, reaching it through
+`tailscale serve` or a Caddy reverse proxy, connecting the Android app, and
+commit signing with the server's agent or 1Password's. Every setup needs
+Postgres with pgvector (see "Postgres").
 
-**A single Mac (the Tauri app).** Nothing to configure.
+The three deployments differ in where secrets and the signing key live:
 
-1. Install and open the app. It writes `server.toml` into its app data folder,
-   starts the bundled `yarvis-server` on a loopback port, and pairs itself with
-   `yarvis-server device add`, keeping the token in the Keychain.
-2. Secrets stay wherever Settings says (the Keychain unless you chose
-   1Password), and workspace shells get 1Password's SSH agent when it exists.
-3. For the actions that need a fresh device (minting or revoking devices,
-   account changes, switching the secrets backend), open
-   `http://localhost:<port>` in a browser on the same Mac, with the port from
-   `bind` in `<app data>/server.toml`, and set up the account with the code in
-   `<app data>/server/setup-code`. The app's own token can't do them. The app
-   keeps its port across restarts when it is free.
-
-**A home server with the vault and ssh-agent, behind `tailscale serve`.** The
-server runs on an always-on Mac and you reach it from anywhere on the tailnet.
-
-1. Build the UI (`bun run build`) and the server
-   (`cargo build --release --manifest-path server/Cargo.toml`).
-2. Write `~/.yarvis/server.toml`, with your machine's tailnet name:
-
-   ```toml
-   [server]
-   bind = "127.0.0.1:7878"              # tailscale serve connects here
-   data_dir = "/Users/me/.yarvis/server"
-   web_dir = "/Users/me/yarvis/dist"
-   # launchd's PATH misses Homebrew and mise, where claude, git, gh and bun are
-   path = "/Users/me/.local/share/mise/shims:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
-   [auth]
-   origins = ["https://mac-mini.example-tailnet.ts.net"]
-
-   [secrets]
-   backend = "vault"
-
-   [ssh_agent]
-   enabled = true
-   ```
-
-   The bind stays on loopback, so `allow_plain_http` isn't needed: TLS ends
-   at `tailscale serve`, on the same machine.
-3. Run `yarvis-server vault init`, choose the vault passphrase, and write
-   down the recovery key it prints. Add the signing key it prints to GitHub
-   as a signing key.
-4. Set the database, with `[database] url` in `server.toml` or
-   `YARVIS_DATABASE_URL` in the LaunchAgent's environment, unless the default
-   `postgres://localhost:5432/yarvis` is right. Start the server (a LaunchAgent
-   keeps it running), then
-   `tailscale serve --bg 7878` to publish it as
-   `https://mac-mini.example-tailnet.ts.net`.
-5. Open that URL, enter the setup code from `<data_dir>/setup-code`, choose
-   the sign-in passphrase, scan the QR code into an authenticator app, confirm
-   a code, and save the backup codes. The vault unlock screen comes next; enter
-   the vault passphrase. The sidecar starts once the vault is open.
-6. Every commit a workspace shell signs waits for an approval, which any
-   device with `approve` can give from the approvals box. Locking the vault
-   stops the sidecar and the agent until the next unlock.
-7. To pair a Tauri app with this server, make its token on the server with
-   `yarvis-server device add --name Laptop --scopes read,chat,terminal,approve`,
-   so its terminals work.
-
-**The work laptop, with 1Password and no server agent, reached remotely.**
-Secrets and the signing key stay in 1Password, and the server never holds a
-key.
-
-1. Use the Tauri app as on a single Mac, or run the server yourself with
-   `[secrets] backend = "onepassword"` and `[ssh_agent] enabled = false`. A
-   server under launchd also needs `upstream_socket` set to 1Password's agent
-   socket (see "Deployments").
-2. To reach it from another device, publish its port (the `bind` in its
-   `server.toml`) with `tailscale serve` as for the home server, and add the
-   laptop's `https://` tailnet URL to `auth.origins`.
-3. Commits are signed by 1Password's agent, which asks on the laptop. So while
-   you're away from the laptop, workspace sessions can run but can't sign
-   commits; nothing in the server works around that.
+- **A single Mac (the Tauri app).** The app writes `server.toml` into its app
+  data folder, starts the bundled `yarvis-server` on a loopback port, and
+  pairs itself with `yarvis-server device add`, keeping the token in the
+  Keychain. That token can't do what needs a fresh device (minting or
+  revoking devices, account changes, switching the secrets backend), so those
+  happen in a browser signed in to the same server.
+- **A home server with the vault and ssh-agent.** The server runs under
+  launchd on an always-on Mac, with `backend = "vault"` and the agent on, and
+  is reached through `tailscale serve`. Every signature waits for an approval
+  from any device with `approve`. Locking the vault stops the sidecar and the
+  agent until the next unlock.
+- **A Mac with 1Password and no server agent.** Secrets and the
+  signing key stay in 1Password, and the server never holds a key. Commits
+  are signed by 1Password's agent, which asks on that Mac. While you're
+  away from it, workspace sessions can run but can't sign commits;
+  nothing in the server works around that.
 
 ## Clients
 
@@ -522,8 +475,9 @@ hashes never appear in a response, except the one time a token is created.
 Auth (no token needed):
 
 - `GET  /api/auth/status` → `{ setupRequired, vault: "absent"|"uninitialized"|"locked"|"unlocked" }`.
-  `absent` means the backend isn't `vault`; `uninitialized` means it is, but
-  `yarvis-server vault init` hasn't run.
+  `absent` means the backend isn't `vault`, even when a vault holds the
+  signing key, so no client holds the app behind the unlock screen;
+  `uninitialized` means it is, but `yarvis-server vault init` hasn't run.
 - `POST /api/auth/setup/start` `{ code, passphrase, deviceName }` →
   `{ enrollmentId, secret, otpauthUri, qrSvg }`. `code` is the setup code,
   `secret` is base32, and `qrSvg` is an SVG document. A short passphrase is
@@ -616,16 +570,27 @@ Events and approvals:
     `vault.recovery_key_rotated` follow those changes.
   - `pty.started`: `{ id, kind, workspaceId }`, as in `GET /api/pty`.
   - `pty.exited`: `{ id, code }`.
+  - `ssh_agent.grant_started` (`{ expiresAt, keyFingerprint }`, from the
+    device that allowed it), `ssh_agent.grant_ended` (`{ reason: "stopped" }`)
+    and `ssh_agent.signed` (`{ keyFingerprint, hashAlgorithm, grantedBy,
+    grantExpiresAt }`, one per signature made without asking). See the
+    ssh-agent below. `grant_ended` is sent only when a device stops a grant:
+    expiry sends nothing, and a lock sends `vault.locked`.
 - `GET  /api/approvals` (`read`) → the pending ones, oldest first:
-  `[{ id, kind, summary, data, createdAt, expiresAt }]`. `kind` names the
-  requester (`git.sign`), `summary` is the line to show, `data` is the
-  requester's own details (for `git.sign`, `keyFingerprint` and
+  `[{ id, kind, summary, data, createdAt, expiresAt, maxAllowForSecs? }]`.
+  `kind` names the requester (`git.sign`), `summary` is the line to show,
+  `data` is the requester's own details (for `git.sign`, `keyFingerprint` and
   `hashAlgorithm`), and times are milliseconds since the epoch.
-- `POST /api/approvals/{id}` `{ approve: bool }` (`approve`). The first answer
-  wins. Later answers get `409`, and so does an answer after the approval
-  timed out. No answer in time, a restart, or a requester that stops waiting
-  all count as a denial; `approval.answered` then has `deviceId: null` and a
-  `reason`.
+  `maxAllowForSecs` is set when approving may also cover later requests, and
+  is the longest it may.
+- `POST /api/approvals/{id}` `{ approve: bool, allowForSecs? }` (`approve`).
+  The first answer wins. Later answers get `409`, and so does an answer after
+  the approval timed out. No answer in time, a restart, or a requester that
+  stops waiting all count as a denial; `approval.answered` then has
+  `deviceId: null` and a `reason`. `allowForSecs` lets an approval cover later
+  requests for that long; it is `400` on a denial, on an approval without
+  `maxAllowForSecs`, or past it, and nothing is recorded then.
+  `approval.answered` carries it as `allowForSecs`.
 
 Core (what `invoke` did; one route per command, JSON body = the command's
 arguments with the same camelCase keys the frontend passes to `invoke` today,
@@ -740,8 +705,11 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
 
   The first client to report a viewport owns the PTY size. A client takes it
   over by typing or sending `focus`, and the PTY is then resized to that
-  client's last viewport. A non-owner's viewport is recorded but not applied.
-  When the owner disconnects, the size stays until the next client types or
+  client's last viewport. Replies a terminal sends on its own (answers to
+  cursor, device-attribute, mode and colour queries, and focus-out) reach the
+  PTY but don't take over the size, since every attached terminal sends them.
+  A non-owner's viewport is recorded but not applied. When the owner
+  disconnects, the size stays until the next client types or
   focuses. A client whose socket stops draining is resynced rather than
   slowing the others down, and one whose send blocks for 10 seconds is
   dropped. Revoking the device closes its terminals with `4401`.
@@ -776,7 +744,8 @@ agent. That socket exists only while the vault is unlocked, so a shell signs
 while it's open and fails to sign while it's locked, including a shell started
 while it was locked.
 
-Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
+Vault (only when `secrets.backend = "vault"` or `ssh_agent.enabled = true`;
+every route is 404 otherwise):
 
 The vault has its own passphrase, separate from the sign-in passphrase, and
 the two should differ. Sign-in proves who is asking a running server; the
@@ -808,9 +777,14 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   working. It needs the same proof as a passphrase change: otherwise a stolen
   fresh device could rotate the key, then use the new key to replace the
   passphrase.
-- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath? }`,
-  with the key and socket only while the agent runs; 404 when
-  `ssh_agent.enabled = false`.
+- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, vault, publicKey?,
+  socketPath?, grantExpiresAt?, grantRemainingMs? }`, where `vault` is
+  `"uninitialized"|"locked"|"unlocked"`, with the key and socket only while the
+  agent runs and the grant fields only while signing is allowed without
+  asking; 404 when `ssh_agent.enabled = false`. A client counts down from
+  `grantRemainingMs`, since its clock may not match the server's.
+- `DELETE /api/vault/ssh-agent/grant` (`approve`) → `204`. Goes back to
+  asking before every signature. Also `204` when no grant was active.
 
 The ssh-agent listens on `ssh-agent.sock` (`0600`) in the data dir (or the
 folder above, for a long data dir or a `socket_dir`) while the
@@ -820,6 +794,21 @@ refusing anything else before asking anyone. Each signature is an approval of ki
 fingerprint in the summary; SSHSIG carries only a hash of the commit, so there
 is no repo or message to show. No answer in 60 seconds, a denial, or a lock
 while it waits refuses the signature and fails `git commit`.
+
+An approver can also allow signing for a while, up to an hour
+(`allowForSecs` on the answer), as 1Password's agent does. Until it ends,
+signatures are made without asking, for any process that can reach the
+socket, and each one appends `ssh_agent.signed`; one that can't be recorded is
+refused. A grant whose `ssh_agent.grant_started` can't be recorded is
+dropped, though the signature that was approved still goes ahead; a
+signature made in the moment between appends its own `ssh_agent.signed`,
+which can land just before the grant's start. A grant ends by whichever of the wall clock and a monotonic
+clock runs out first, so a Mac that sleeps through it wakes with it ended,
+and setting the clock back can't stretch it. Of two grants, the one that ends
+later is kept. The grant is kept only in memory, so locking the vault, the
+agent stopping or a restart ends it, as does `DELETE /api/vault/ssh-agent/grant`.
+It never widens what is signed: the namespace and hash checks still come
+first.
 
 Pairing a device that can't sign in itself:
 

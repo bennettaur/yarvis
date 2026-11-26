@@ -674,6 +674,28 @@ query($q:String!,$viewer:String!,$limit:Int!){
   }
 }`;
 
+const REVIEW_CANDIDATE_FIELDS = `
+  ${PR_INVOLVEMENT_FIELDS}
+  additions deletions changedFiles reviewDecision
+  latestOpinionatedReviews(first:50){ nodes{ state } }
+`;
+
+const REVIEW_CANDIDATE_SEARCH_QUERY = `
+query($q:String!,$viewer:String!,$limit:Int!){
+  search(type:ISSUE, query:$q, first:$limit){
+    nodes{ ... on PullRequest { ${REVIEW_CANDIDATE_FIELDS} } }
+  }
+}`;
+
+/** A PR someone might want the viewer to review, with what deciding that needs. */
+export interface ReviewCandidate extends PrInvolvement {
+  approvals: number;
+  changesRequested: number;
+  reviewDecision: ReviewDecision | null;
+  changedLines: number;
+  changedFiles: number;
+}
+
 /**
  * Shapes a GraphQL PullRequest node into a PrInvolvement. GraphQL's
  * `PullRequestState` splits closed into CLOSED/MERGED where the REST search only
@@ -704,12 +726,40 @@ function toPrInvolvement(node: any): PrInvolvement {
   };
 }
 
+function toReviewCandidate(node: any): ReviewCandidate {
+  const states: string[] = (node.latestOpinionatedReviews?.nodes ?? []).map((r: any) =>
+    String(r?.state ?? "").toUpperCase(),
+  );
+  return {
+    ...toPrInvolvement(node),
+    approvals: states.filter((st) => st === "APPROVED").length,
+    changesRequested: states.filter((st) => st === "CHANGES_REQUESTED").length,
+    reviewDecision: toReviewDecision(node.reviewDecision),
+    changedLines: (Number(node.additions) || 0) + (Number(node.deletions) || 0),
+    changedFiles: Number(node.changedFiles) || 0,
+  };
+}
+
 /**
  * The event-log `externalId` for a GitHub review, shared by the in-app submit
  * and the review sync so each recognises what the other logged.
  */
 export function reviewExternalId(nodeId: string): string {
   return `github:review:${nodeId}`;
+}
+
+export interface RevertPr {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  mergedAt: string;
+}
+
+export interface BranchCommit {
+  sha: string;
+  message: string;
+  url: string;
 }
 
 /** One review the viewer submitted, as the contributions API reports it. */
@@ -815,22 +865,32 @@ export interface PrNumberRef {
   number: number;
 }
 
+function lookupVariables(refs: PrNumberRef[], viewerLogin: string): Record<string, unknown> {
+  const variables: Record<string, unknown> = { viewer: viewerLogin };
+  refs.forEach((ref, i) => {
+    variables[`o${i}`] = ref.owner;
+    variables[`r${i}`] = ref.repo;
+    variables[`n${i}`] = ref.number;
+  });
+  return variables;
+}
+
 /**
  * Builds a single GraphQL operation that fetches every ref by alias, so N PRs
  * cost one request rather than N. Aliases and variable names are index-derived
  * (never caller-supplied), so nothing from a ref reaches the query text.
  */
-function buildPrLookupQuery(count: number): string {
+function buildPrLookupQuery(count: number, fields: string = PR_INVOLVEMENT_FIELDS): string {
   const varDecls = Array.from(
     { length: count },
     (_, i) => `$o${i}:String!,$r${i}:String!,$n${i}:Int!`,
   ).join(",");
-  const fields = Array.from(
+  const lookups = Array.from(
     { length: count },
     (_, i) =>
-      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${PR_INVOLVEMENT_FIELDS} } }`,
+      `pr${i}: repository(owner:$o${i},name:$r${i}){ pullRequest(number:$n${i}){ ${fields} } }`,
   ).join("\n");
-  return `query($viewer:String!,${varDecls}){\n${fields}\n}`;
+  return `query($viewer:String!,${varDecls}){\n${lookups}\n}`;
 }
 
 /**
@@ -1516,6 +1576,41 @@ export class GitHubClient {
     return (data.search?.nodes ?? []).filter((n) => n?.number).map(toPrInvolvement);
   }
 
+  /** Search for PRs to review, with each one's size and the reviews standing on it. */
+  async searchReviewCandidates(
+    query: string,
+    viewerLogin: string,
+    limit = 30,
+  ): Promise<ReviewCandidate[]> {
+    const data = await this.graphql<{ search?: { nodes?: any[] } }>(REVIEW_CANDIDATE_SEARCH_QUERY, {
+      q: query,
+      viewer: viewerLogin,
+      limit,
+    });
+    return (data.search?.nodes ?? []).filter((n) => n?.number).map(toReviewCandidate);
+  }
+
+  /**
+   * The named PRs as review candidates, in one request, in the order asked:
+   * null for a ref that no longer resolves (repo gone, PR deleted, access
+   * lost), so callers can match answers to what they asked about.
+   */
+  async lookupReviewCandidates(
+    refs: PrNumberRef[],
+    viewerLogin: string,
+  ): Promise<(ReviewCandidate | null)[]> {
+    if (refs.length === 0) return [];
+    const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
+      buildPrLookupQuery(refs.length, REVIEW_CANDIDATE_FIELDS),
+      lookupVariables(refs, viewerLogin),
+      { allowPartial: true },
+    );
+    return refs.map((_ref, i) => {
+      const node = data[`pr${i}`]?.pullRequest;
+      return node?.number ? toReviewCandidate(node) : null;
+    });
+  }
+
   /**
    * Fetches the named PRs (with the viewer's reviews) in one request. Refs that
    * no longer resolve — repo renamed, PR deleted, access lost — are dropped
@@ -1523,15 +1618,9 @@ export class GitHubClient {
    */
   async lookupInvolvement(refs: PrNumberRef[], viewerLogin: string): Promise<PrInvolvement[]> {
     if (refs.length === 0) return [];
-    const variables: Record<string, unknown> = { viewer: viewerLogin };
-    refs.forEach((ref, i) => {
-      variables[`o${i}`] = ref.owner;
-      variables[`r${i}`] = ref.repo;
-      variables[`n${i}`] = ref.number;
-    });
     const data = await this.graphql<Record<string, { pullRequest?: any } | null>>(
       buildPrLookupQuery(refs.length),
-      variables,
+      lookupVariables(refs, viewerLogin),
       { allowPartial: true },
     );
     const found: PrInvolvement[] = [];
@@ -2140,6 +2229,42 @@ export class GitHubClient {
   }
 
   /**
+   * The changed files together with the commit they were read at, so a merge
+   * can be pinned to the diff the reviewer saw. The file list doesn't name its
+   * commit, so the head is read before it and again after, one request at a
+   * time: a head read that overlapped the list could see a push the list
+   * missed. When the two reads differ a push landed mid-read, and `headSha`
+   * is null. `incomplete` is set when the list is shorter than the PR's own
+   * file count, which happens past GitHub's 3,000-file listing cap.
+   */
+  async prFilesAtHead(
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<{ headSha: string | null; files: PrFile[]; incomplete: boolean }> {
+    const readHead = async () => {
+      const pr = await this.api<any>(`/repos/${owner}/${repo}/pulls/${number}`);
+      const changedFiles: unknown = pr.changed_files;
+      return {
+        sha: (pr.head?.sha as string | undefined) ?? null,
+        changedFiles: typeof changedFiles === "number" ? changedFiles : null,
+      };
+    };
+    const before = await readHead();
+    const listed = await this.allPrFiles(owner, repo, number);
+    const after = await readHead();
+    const files = listed.files;
+    // A full last page alone can't tell a PR of exactly 3,000 files from a cut-off list.
+    const incomplete =
+      before.changedFiles === null ? listed.incomplete : files.length < before.changedFiles;
+    return {
+      headSha: before.sha && before.sha === after.sha ? before.sha : null,
+      files,
+      incomplete,
+    };
+  }
+
+  /**
    * Marks a draft pull request as ready for review (the GraphQL equivalent of
    * the "Ready for review" button). GitHub keys this mutation by the PR's node
    * id, not its number, so a tiny preflight resolves the id first.
@@ -2159,39 +2284,44 @@ export class GitHubClient {
    * equivalent of the green "Merge" button). Keyed by the PR's node id, so a
    * preflight resolves it first. GitHub rejects a method the repo disallows or
    * a PR that isn't currently mergeable; the error is surfaced to the caller.
+   * GitHub also refuses once the branch has moved past `expectedHeadSha`, so a
+   * push landing after the review can't merge unreviewed.
    */
   async mergePullRequest(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!){
-        mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
+        mergePullRequest(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
-      { id, method },
+      { id, method, head: expectedHeadSha },
     );
   }
 
   /**
    * Arms auto-merge: GitHub merges the PR automatically once its branch
    * protections pass. Requires the repo to allow auto-merge and the chosen
-   * method; GitHub rejects otherwise.
+   * method; GitHub rejects otherwise. `expectedHeadSha` pins the commit as
+   * it does for {@link mergePullRequest}.
    */
   async enableAutoMerge(
     owner: string,
     repo: string,
     number: number,
     method: MergeMethod,
+    expectedHeadSha: string,
   ): Promise<void> {
     const id = await this.resolvePrNodeId(owner, repo, number);
     await this.graphql<unknown>(
-      `mutation($id:ID!,$method:PullRequestMergeMethod!){
-        enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method}){ clientMutationId }
+      `mutation($id:ID!,$method:PullRequestMergeMethod!,$head:GitObjectID!){
+        enablePullRequestAutoMerge(input:{pullRequestId:$id, mergeMethod:$method, expectedHeadOid:$head}){ clientMutationId }
       }`,
-      { id, method },
+      { id, method, head: expectedHeadSha },
     );
   }
 
@@ -2320,6 +2450,50 @@ export class GitHubClient {
   }
 
   /**
+   * Posts one non-blocking review (COMMENT) holding several line comments, so
+   * the author gets one notification and the comments post together or not at
+   * all. Every line has to be inside the diff at `commitId`: GitHub refuses
+   * the whole review otherwise.
+   */
+  async submitCommentReview(
+    owner: string,
+    repo: string,
+    number: number,
+    input: {
+      commitId: string;
+      body: string;
+      comments: { path: string; line: number; body: string }[];
+    },
+  ): Promise<{ nodeId: string | null }> {
+    const res = await this.fetchImpl(
+      `${this.endpoints.api}/repos/${owner}/${repo}/pulls/${number}/reviews`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          event: "COMMENT",
+          commit_id: input.commitId,
+          body: input.body,
+          comments: input.comments.map((c) => ({
+            path: c.path,
+            line: c.line,
+            side: "RIGHT",
+            body: c.body,
+          })),
+        }),
+      },
+    );
+    if (!res.ok) throw await githubErrorFrom(res, "submit review");
+    const review = (await res.json().catch(() => null)) as { node_id?: unknown } | null;
+    return { nodeId: typeof review?.node_id === "string" ? review.node_id : null };
+  }
+
+  /**
    * The viewer's submitted reviews on one PR and the commit each was made on,
    * newest last. Drafts (`PENDING`) are left out: nobody has seen them.
    */
@@ -2374,6 +2548,63 @@ export class GitHubClient {
       commits: typeof body.ahead_by === "number" ? body.ahead_by : null,
       rewritten: body.status === "diverged" || body.status === "behind",
     };
+  }
+
+  /** Merged PRs titled "Revert ..." since `since`, with their body for the reference to the original. */
+  async mergedRevertPrs(owner: string, repo: string, since: Date): Promise<RevertPr[]> {
+    const day = since.toISOString().slice(0, 10);
+    const query = `repo:${owner}/${repo} is:pr is:merged in:title Revert merged:>=${day}`;
+    const data = await this.api<{ items?: any[] }>(
+      `/search/issues?q=${encodeURIComponent(query)}&per_page=50&sort=created&order=desc`,
+    );
+    return (data.items ?? []).flatMap((item) =>
+      item.pull_request?.merged_at && new Date(item.pull_request.merged_at) >= since
+        ? [
+            {
+              number: item.number,
+              title: String(item.title ?? ""),
+              body: String(item.body ?? ""),
+              url: String(item.html_url ?? ""),
+              mergedAt: String(item.pull_request.merged_at),
+            },
+          ]
+        : [],
+    );
+  }
+
+  /** Commits on `branch` since `since`, for the ones whose message says they revert another. */
+  async recentCommits(
+    owner: string,
+    repo: string,
+    branch: string,
+    since: Date,
+  ): Promise<BranchCommit[]> {
+    const items = await this.api<any[]>(
+      `/repos/${owner}/${repo}/commits?sha=${encodeURIComponent(branch)}&since=${encodeURIComponent(since.toISOString())}&per_page=100`,
+    );
+    return items.map((item) => ({
+      sha: String(item.sha),
+      message: String(item.commit?.message ?? ""),
+      url: String(item.html_url ?? ""),
+    }));
+  }
+
+  /** Numbers of the PRs that contain `sha`. */
+  async prNumbersForCommit(owner: string, repo: string, sha: string): Promise<number[]> {
+    const items = await this.api<any[]>(`/repos/${owner}/${repo}/commits/${sha}/pulls`);
+    return items.map((item) => Number(item.number)).filter(Number.isInteger);
+  }
+
+  async commitMessage(owner: string, repo: string, sha: string): Promise<string> {
+    const data = await this.api<{ commit?: { message?: string } }>(
+      `/repos/${owner}/${repo}/commits/${sha}`,
+    );
+    return data.commit?.message ?? "";
+  }
+
+  async defaultBranch(owner: string, repo: string): Promise<string> {
+    const data = await this.api<{ default_branch?: string }>(`/repos/${owner}/${repo}`);
+    return data.default_branch ?? "main";
   }
 
   /**

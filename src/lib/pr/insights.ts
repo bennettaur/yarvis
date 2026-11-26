@@ -51,6 +51,8 @@ export interface AskAboutLinesInput {
   /** The selected lines as rendered, so the agent sees what the reader sees. */
   selection: string;
   question: string;
+  /** A verification report's item the question follows up on; the sidecar fences it. */
+  about?: string;
 }
 
 /**

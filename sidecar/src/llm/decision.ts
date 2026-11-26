@@ -105,6 +105,12 @@ export interface DecisionRequest<T> {
    * model.
    */
   systemOne?: SystemOneDecision<T>;
+  /**
+   * The most tokens an Ollama model may reply with. Defaults to a verdict's
+   * worth; a caller whose answer carries free text and URLs needs more, or
+   * the JSON is cut off mid-answer.
+   */
+  ollamaMaxTokens?: number;
   /** Injected by tests in place of the network. Used on the Ollama and System One paths. */
   fetchImpl?: typeof fetch;
 }
@@ -156,7 +162,11 @@ export async function decide<T>(
       ],
       format: z.toJSONSchema(request.schema),
       // A judgement should come out the same way twice.
-      options: { temperature: 0, num_ctx: OLLAMA_NUM_CTX, num_predict: OLLAMA_NUM_PREDICT },
+      options: {
+        temperature: 0,
+        num_ctx: OLLAMA_NUM_CTX,
+        num_predict: request.ollamaMaxTokens ?? OLLAMA_NUM_PREDICT,
+      },
       timeoutMs: DECISION_TIMEOUT_MS,
       signal,
       fetchImpl: request.fetchImpl,

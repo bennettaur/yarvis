@@ -105,7 +105,14 @@ test that writes settings should still set its own path per test.
 The lockdown on headless agent runs (`sidecar/src/agentRuns/`) is checked
 against the real Claude Code by `bun run sidecar/src/agentRuns/canary.ts`, which
 needs a signed-in `claude` and network access, so no suite runs it. Run it after
-upgrading Claude Code or changing how those runs are started.
+upgrading Claude Code or changing how those runs are started. It covers Claude
+Code only. An OpenCode run's lockdown (`agentRuns/opencode.ts`) is checked by
+the tests against a fake `opencode` and, for the sandbox profile, the real
+`sandbox-exec`; check it against a real OpenCode by hand after upgrading
+OpenCode, with a checkout whose `opencode.json` and `.opencode/plugins` try
+to run code. A Pi run (`agentRuns/pi.ts`) is the same: a fake `pi` in the
+tests, the real `sandbox-exec` running Node under its profile, and a real Pi
+by hand after upgrading it.
 
 Frontend tests use `bun test` with happy-dom. The preload in
 `src/test/setup.ts` registers the DOM, pins the timezone and stubs the Tauri
@@ -125,6 +132,29 @@ in `afterAll`), never their own `mock.module` of it, and render with `renderToHt
 CI (`.github/workflows/ci.yml`) runs the frontend and sidecar tests (against a
 `pgvector/pgvector:pg16` container), both typechecks, Biome, `bun audit --prod`,
 `cargo fmt --check`, `cargo clippy`, `cargo test` and `cargo audit`.
+
+On a pull request, the frontend and sidecar jobs run only the test files that
+import a changed file, directly or not (`scripts/affected-tests.ts`, built on
+`bun test --changed`). A change Bun can't trace through imports runs the whole
+suite instead: the lockfile, `package.json`, the test preloads and config, the
+sidecar's migrations, or `ci.yml` itself. A few tests that read repo files
+from disk or scan the source tree run every time (`alwaysRun` in the script).
+Pushes to main always run every test.
+To run the same selection locally, against where your branch left
+`origin/main`:
+
+```bash
+bun run test:affected
+bun run sidecar:test:affected     # needs the test database, as above
+```
+
+Cargo has nothing like `--changed`, so the Rust jobs are gated by folder
+instead: the `src-tauri` jobs (fmt, clippy, tests) run on a pull request only
+when it changes `src-tauri/`, and the server job only when it changes
+`server/`. The native macOS and Android app jobs work the same way for
+`apps/macos/` and `apps/android/`, and the nightly workflow builds and tests
+both apps every night. `cargo audit` always runs, since a new advisory doesn't
+need a code change.
 
 ## Verifying a PR for merge
 
@@ -397,6 +427,9 @@ Workspaces are shared too: both instances create worktrees under
 
 `.github/workflows/nightly.yml` publishes a `.dmg` to the
 [`nightly` release](https://github.com/bennettaur/yarvis/releases/tag/nightly).
+It also tests and builds the native clients and attaches them: the macOS app
+from `apps/macos/scripts/make-app.sh`, zipped, and a debug APK of the Android
+app.
 
 Build a release locally with `bun run tauri:build`, not `bun run tauri build`.
 It layers `src-tauri/tauri.release.conf.json` over the main config, which
@@ -516,12 +549,13 @@ sidecar/        Bun + TS service (Hono)
   src/projects/    projects: status, focus, tracked tickets with priorities
   src/todos/       the assistant's own todo list
   src/artifacts/   markdown documents and diagrams the assistant writes and reads back
-  src/workStreams/ threads of work heads-down mode pushes forward, and their links
+  src/workStreams/ threads of work heads-down mode pushes forward, their links, and watches
   src/headsDown/   the heads-down loop: passes, its tool policy, questions, messages and routines
   src/agents/      specialists and bounded delegated runs; decision
                    specialists (decide.ts) and their playground route
-  src/agentRuns/   headless Claude Code runs streamed to the UI, and the
-                   Claude Code plugins shipped to them
+  src/agentRuns/   headless Claude Code, OpenCode and Pi runs streamed to the UI,
+                   the Claude Code plugins shipped to them, and the models.dev
+                   catalog OpenCode runs read
   src/claudeTasks/ tasks the assistant hands to a headless Claude Code run in
                    an empty folder, with no workspace
   src/help/        the user docs, embedded, and the tools the Yarvis guide reads them with
@@ -530,7 +564,8 @@ sidecar/        Bun + TS service (Hono)
   src/scheduledTasks/
                    prompts the assistant schedules for itself in a chat, their
                    tools, and the job that runs them
-  src/digest/      dangling work, next-work ranking, weekly summary, dismissals
+  src/digest/      dangling work, next-work ranking, weekly summary, dismissals,
+                   stalled-work reminders (`stalled.ts`)
   src/github/      GitHub PR dashboard and review, sign-in (device flow), error
                    explanations and rate-limit backoff
   src/azure/       Azure DevOps PR dashboard and review
@@ -550,6 +585,9 @@ sidecar/        Bun + TS service (Hono)
                    verification checklist: one run per section, the report
                    put together from each section's newest result
                    (`verification.ts`, `checklist.ts`)
+  src/reviewPrep/  review prep: its queue and verification slots, the upkeep
+                   job that archives what it opened, and the alerts for PRs
+                   updated since your review (`updates.ts`)
   src/mcp/         MCP client: connected servers, OAuth, tool registry, approvals
   src/mcpServer/   the MCP endpoint Yarvis serves
   src/attention/   attention stream: hook ingest, SSE, clearing, held

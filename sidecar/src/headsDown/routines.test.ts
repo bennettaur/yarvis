@@ -3,7 +3,17 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dueRoutines, loadRoutines, parseEvery, parseRoutine, type Routine } from "./routines.ts";
+import {
+  dueRoutines,
+  loadRoutines,
+  parseEvery,
+  parseRoutine,
+  type Routine,
+  reloadRoutines,
+  resolveRoutineTools,
+  routineCatalog,
+  writeRoutineFile,
+} from "./routines.ts";
 
 const file = (frontmatter: string, body = "Do the thing.") =>
   `---\n${frontmatter}\n---\n\n${body}\n`;
@@ -16,6 +26,9 @@ function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {
     everyMinutes,
     workingHoursOnly: false,
     enabled: true,
+    tools: [],
+    config: {},
+    nightShift: "run",
     source: "user",
     ...extra,
   };
@@ -53,8 +66,8 @@ describe("parseRoutine", () => {
 
   it("rejects an unknown key, a missing cadence, one too short, and an empty body", () => {
     const base = "name: x\ndescription: y";
-    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h\ntools: a`), "user")).toThrow(
-      "unknown key(s): tools",
+    expect(() => parseRoutine("a.md", file(`${base}\nevery: 1h\ntool: a`), "user")).toThrow(
+      "unknown key(s): tool",
     );
     expect(() => parseRoutine("a.md", file(base), "user")).toThrow("'every' is required");
     expect(() => parseRoutine("a.md", file(`${base}\nevery: soon`), "user")).toThrow(
@@ -89,6 +102,91 @@ describe("parseRoutine", () => {
   });
 });
 
+describe("a routine's tools and config", () => {
+  const base = "name: slack-watch\ndescription: Watches Slack\nevery: 1h";
+
+  it("reads the tools it names and a flat config map, as text", () => {
+    const parsed = parseRoutine(
+      "a.md",
+      file(
+        `${base}\ntools: [slack_read_channel, "mcp:0000:post", slack_read_channel]\nconfig:\n  channels: [eng, "#ops", 42]\n  handle: "@me"\n  maxPerRun: 3\n  quiet: false`,
+      ),
+      "user",
+    );
+    expect(parsed.tools).toEqual(["slack_read_channel", "mcp:0000:post"]);
+    expect(parsed.config).toEqual({
+      channels: ["eng", "#ops", "42"],
+      handle: "@me",
+      maxPerRun: "3",
+      quiet: "false",
+    });
+  });
+
+  it("defaults both to empty, and takes a comma-separated tool list", () => {
+    expect(parseRoutine("a.md", file(base), "user")).toMatchObject({ tools: [], config: {} });
+    expect(parseRoutine("a.md", file(`${base}\ntools: a, b`), "user").tools).toEqual(["a", "b"]);
+  });
+
+  it("refuses a nested config, a bad key, a tool name with spaces, and too much of either", () => {
+    const bad = (extra: string) => () => parseRoutine("a.md", file(`${base}\n${extra}`), "user");
+    expect(bad("config: eng")).toThrow("'config' must be a map");
+    expect(bad("config:\n  slack:\n    channel: eng")).toThrow(
+      "'config.slack' must be text or a list of text",
+    );
+    expect(bad("config:\n  list: [[a]]")).toThrow("'config.list' item 1 must be text");
+    expect(bad("config:\n  1st: a")).toThrow("must start with a letter");
+    expect(bad("tools: [post message]")).toThrow("with no spaces: post message");
+    expect(bad(`tools: [${Array.from({ length: 21 }, (_, i) => `t${i}`).join(", ")}]`)).toThrow(
+      "at most 20 tools",
+    );
+    expect(bad(`config:\n  long: ${"x".repeat(2001)}`)).toThrow("cannot be longer than 2000");
+    const keys = Array.from({ length: 21 }, (_, i) => `  k${i}: v`).join("\n");
+    expect(bad(`config:\n${keys}`)).toThrow("at most 20 keys");
+  });
+});
+
+describe("resolveRoutineTools", () => {
+  const registry = [
+    { id: "builtin:list_events", name: "list_events", policy: "always" },
+    { id: "mcp:s1:post_message", name: "post_message", policy: "search" },
+    { id: "mcp:s2:post_message", name: "post_message", policy: "search" },
+    { id: "mcp:s1:delete_channel", name: "delete_channel", policy: "disabled" },
+    { id: "builtin:remember", name: "remember", policy: "always" },
+  ] as const;
+
+  it("matches a name or an id, and says why the rest didn't match", () => {
+    const resolved = resolveRoutineTools(
+      [
+        routine("watch", 60, {
+          tools: ["post_message", "builtin:list_events", "delete_channel", "nope", "remember"],
+        }),
+        routine("plain", 60),
+        routine("again", 60, { tools: ["mcp:s1:post_message", "list_events"] }),
+      ],
+      registry,
+      new Set(["builtin:remember"]),
+    );
+    expect(resolved.ids).toEqual(["builtin:list_events", "mcp:s1:post_message"]);
+    expect(resolved.byRoutine.get("watch")).toEqual([
+      {
+        tool: "post_message",
+        matchedIds: [],
+        problem:
+          "2 tools have that name; name one by its id: mcp:s1:post_message, mcp:s2:post_message",
+      },
+      { tool: "builtin:list_events", matchedIds: ["builtin:list_events"], problem: null },
+      { tool: "delete_channel", matchedIds: [], problem: "turned off in the Tool manager" },
+      { tool: "nope", matchedIds: [], problem: "no tool by that name is installed" },
+      { tool: "remember", matchedIds: [], problem: "not available in heads-down mode" },
+    ]);
+    expect(resolved.byRoutine.get("again")?.map((m) => m.matchedIds)).toEqual([
+      ["mcp:s1:post_message"],
+      ["builtin:list_events"],
+    ]);
+    expect(resolved.byRoutine.has("plain")).toBe(false);
+  });
+});
+
 describe("loadRoutines", () => {
   let dir: string;
   const original = process.env.YARVIS_ROUTINES_DIR;
@@ -106,9 +204,22 @@ describe("loadRoutines", () => {
     const { routines, problems } = await loadRoutines();
     expect(problems).toEqual([]);
     expect(routines.map((r) => [r.name, r.enabled])).toEqual([
+      ["email-drafts", false],
+      ["generation-reflection", false],
       ["meeting-alarms", true],
       ["meeting-notes", false],
+      ["meeting-times", false],
+      ["message-people", false],
+      ["offer-help", false],
+      ["review-prep", false],
+      ["review-reflection", false],
+      ["slack-watcher", false],
     ]);
+    // A template: the user's own file names their Slack tools and fills these in.
+    expect(routines.find((r) => r.name === "slack-watcher")).toMatchObject({
+      tools: [],
+      config: { channels: [], handle: "" },
+    });
   });
 
   it("lets a user file replace a shipped one, and reports a broken file", async () => {
@@ -275,5 +386,111 @@ describe("dueRoutines", () => {
         lastOffered: new Map([["flaky", hoursAgo(4)]]),
       }).map((r) => r.name),
     ).toEqual(["quick", "flaky"]);
+  });
+});
+
+describe("nightShift in a routine", () => {
+  const parse = (frontmatter: string) =>
+    parseRoutine("x.md", file(`name: x\ndescription: x\nevery: 1h\n${frontmatter}`), "user");
+
+  it("runs at night unless the file says otherwise", () => {
+    expect(parse("").nightShift).toBe("run");
+    expect(parse("nightShift: slow").nightShift).toBe("slow");
+    expect(parse("nightShift: skip").nightShift).toBe("skip");
+  });
+
+  it("refuses a value it doesn't know", () => {
+    expect(() => parse("nightShift: never")).toThrow("'nightShift' must be run, slow or skip");
+  });
+});
+
+describe("dueRoutines at night", () => {
+  const now = new Date("2026-10-27T03:00:00Z");
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 60 * 60_000);
+  const routines = [
+    routine("runs", 60),
+    routine("slows", 60, { nightShift: "slow" }),
+    routine("skips", 60, { nightShift: "skip" }),
+  ];
+  const input = {
+    routines,
+    now,
+    withinWorkingHours: true,
+    limit: 5,
+    lastOffered: new Map<string, Date>(),
+  };
+
+  it("holds a skip routine and stretches a slow one's cadence", () => {
+    const lastDone = new Map(routines.map((r) => [r.name, hoursAgo(2)]));
+    const names = (nightShift: boolean) =>
+      dueRoutines({ ...input, lastDone, duringNightShift: nightShift }).map((r) => r.name);
+    expect(names(false)).toEqual(["runs", "skips", "slows"]);
+    expect(names(true)).toEqual(["runs"]);
+    const longAgo = new Map(routines.map((r) => [r.name, hoursAgo(4)]));
+    expect(
+      dueRoutines({ ...input, lastDone: longAgo, duringNightShift: true }).map((r) => r.name),
+    ).toEqual(["runs", "slows"]);
+  });
+});
+
+describe("writeRoutineFile", () => {
+  let dir: string;
+  const original = process.env.YARVIS_ROUTINES_DIR;
+
+  beforeEach(async () => {
+    dir = join(mkdtempSync(join(tmpdir(), "routines-write-")), "routines");
+    process.env.YARVIS_ROUTINES_DIR = dir;
+    await reloadRoutines();
+  });
+  afterEach(async () => {
+    rmSync(dir, { recursive: true, force: true });
+    process.env.YARVIS_ROUTINES_DIR = original;
+    await reloadRoutines();
+  });
+
+  const standup = {
+    name: "standup-notes",
+    description: "Drafts my standup: what I merged, reviewed and commented on.",
+    every: "1d",
+    workingHours: true,
+    nightShift: "skip" as const,
+    body: "Leave a three-line summary in your notes.",
+  };
+
+  it("writes a file the loader reads back, and the catalogue has it straight away", async () => {
+    const written = await writeRoutineFile(standup);
+    expect(written).toEqual({ path: join(dir, "standup-notes.md") });
+    const loaded = (await routineCatalog()).routines.find((r) => r.name === "standup-notes");
+    expect(loaded).toMatchObject({
+      description: standup.description,
+      everyMinutes: 24 * 60,
+      workingHoursOnly: true,
+      nightShift: "skip",
+      source: "user",
+      prompt: expect.stringContaining("three-line summary"),
+    });
+  });
+
+  it("refuses a name already in use rather than replacing that routine", async () => {
+    expect(await writeRoutineFile({ ...standup, name: "meeting-alarms" })).toEqual({
+      error: "a routine named 'meeting-alarms' already exists",
+    });
+    await writeRoutineFile(standup);
+    expect(await writeRoutineFile(standup)).toEqual({
+      error: "a routine named 'standup-notes' already exists",
+    });
+  });
+
+  it("refuses what the loader would refuse, and writes nothing", async () => {
+    const result = await writeRoutineFile({ ...standup, every: "5m" });
+    expect(result).toEqual({ error: expect.stringContaining("'every' cannot be shorter") });
+    expect((await loadRoutines()).routines.some((r) => r.name === "standup-notes")).toBe(false);
+  });
+
+  it("refuses to write through a symlinked folder", async () => {
+    const target = mkdtempSync(join(tmpdir(), "routines-target-"));
+    symlinkSync(target, dir);
+    expect(await writeRoutineFile(standup)).toEqual({ error: `${dir} is a symlink` });
+    rmSync(target, { recursive: true, force: true });
   });
 });

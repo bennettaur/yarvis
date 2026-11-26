@@ -12,6 +12,7 @@ import { CUT_SHORT_RESULT } from "../db/schema.ts";
 import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
 import { startPass, startRun, stopRun } from "./service.ts";
+import { setWakeHandler } from "./wake.ts";
 
 const url = process.env.TEST_DATABASE_URL ?? "postgres://localhost:5432/yarvis_test";
 const sql = postgres(url, { max: 1 });
@@ -141,6 +142,14 @@ describe("/api/heads-down", () => {
     await createStream(db, { title: "Ship billing" });
     await createStream(db, { title: "Chase review", status: "waiting-on-others" });
     await createStream(db, { title: "Old fix", status: "done" });
+    await createStream(db, {
+      title: "Tell me when billing ships",
+      watch: {
+        condition: "billing shipped",
+        everyMinutes: 60,
+        expiresAt: new Date(Date.now() + 1e8),
+      },
+    });
     await post("/messages", { body: "watch #billing-intake" });
     await askUser(db, { kind: "question", question: "Which repo?" });
 
@@ -149,8 +158,16 @@ describe("/api/heads-down", () => {
     expect(await res.json()).toEqual({ droppedStreams: 2, deletedMessages: 1 });
 
     const streams = await sql`SELECT status, closed_at FROM work_streams ORDER BY title`;
-    expect(streams.map((r) => r.status)).toEqual(["dropped", "done", "dropped"]);
-    expect(streams.every((r) => r.closed_at !== null)).toBe(true);
+    // A watch is the user's request to hear about something, so it stays.
+    expect(streams.map((r) => r.status)).toEqual([
+      "dropped",
+      "done",
+      "dropped",
+      "waiting-on-others",
+    ]);
+    expect(
+      streams.filter((r) => r.status !== "waiting-on-others").every((r) => r.closed_at !== null),
+    ).toBe(true);
     expect(await get("/messages")).toEqual([]);
     expect(await get("/questions")).toEqual([]);
     const items = await sql`SELECT status FROM attention_items`;
@@ -298,6 +315,81 @@ describe("/api/heads-down", () => {
     expect(await get("/config")).toMatchObject({ maxRoutinesPerPass: 10 });
   });
 
+  describe("always-on, night shift and the pass limit", () => {
+    const valid = {
+      minSleepMinutes: 5,
+      maxSleepMinutes: 120,
+      idleSleepMinutes: 60,
+      workingHours: null,
+      userAwayAfterMinutes: 120,
+      provider: null,
+      model: null,
+    };
+    const put = (body: unknown) =>
+      app.request("/api/heads-down/config", {
+        method: "PUT",
+        headers: jsonAuth,
+        body: JSON.stringify(body),
+      });
+    let wakes = 0;
+    beforeEach(async () => {
+      wakes = 0;
+      setWakeHandler(() => wakes++);
+      await put({ ...valid, alwaysOn: false, nightShift: null, maxPassesPerDay: null });
+      wakes = 0;
+    });
+    afterAll(() => setWakeHandler(null));
+
+    it("keeps them when a client doesn't send them, and clears night shift and the limit with null", async () => {
+      const set = {
+        alwaysOn: true,
+        nightShift: { start: "23:00", end: "07:00" },
+        nightShiftMinSleepMinutes: 90,
+        maxPassesPerDay: 40,
+      };
+      expect((await put({ ...valid, ...set })).status).toBe(200);
+      expect((await put(valid)).status).toBe(200);
+      expect(await get("/config")).toMatchObject(set);
+      expect((await put({ ...valid, nightShift: null, maxPassesPerDay: null })).status).toBe(200);
+      expect(await get("/config")).toMatchObject({ nightShift: null, maxPassesPerDay: null });
+    });
+
+    it("refuses values it can't use", async () => {
+      for (const bad of [
+        { maxPassesPerDay: 0 },
+        { maxPassesPerDay: 1441 },
+        { maxPassesPerDay: 1.5 },
+        { nightShiftMinSleepMinutes: 0 },
+        { nightShift: { start: "9pm", end: "07:00" } },
+        { alwaysOn: "yes" },
+      ]) {
+        expect((await put({ ...valid, ...bad })).status).toBe(400);
+      }
+    });
+
+    it("wakes the loop when always-on is turned on, and not for other changes", async () => {
+      await put({ ...valid, alwaysOn: true });
+      expect(wakes).toBe(1);
+      await put({ ...valid, alwaysOn: true });
+      await put({ ...valid, guidance: "be brief" });
+      expect(wakes).toBe(1);
+    });
+
+    it("wakes the loop when a raised limit lets it run again, and counts today's passes", async () => {
+      const run = await startRun(db, null);
+      for (let i = 0; i < 3; i++) await startPass(db, run.id, (await createSession(db)).id);
+      const yesterday = await startPass(db, run.id, (await createSession(db)).id);
+      await sql`UPDATE heads_down_passes SET started_at = now() - interval '1 day' WHERE id = ${yesterday.id}`;
+      await put({ ...valid, maxPassesPerDay: 3 });
+      expect(await get("")).toMatchObject({ passesToday: 3, maxPassesPerDay: 3 });
+
+      await put({ ...valid, maxPassesPerDay: 2 });
+      expect(wakes).toBe(0);
+      await put({ ...valid, maxPassesPerDay: 5 });
+      expect(wakes).toBe(1);
+    });
+  });
+
   it("lists the routines with when each was last done, and reloads the files", async () => {
     const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
     const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
@@ -322,8 +414,11 @@ describe("/api/heads-down", () => {
         description: expect.any(String),
         everyMinutes: 180,
         workingHoursOnly: false,
+        nightShift: "run",
         enabled: true,
         source: "builtin",
+        tools: [],
+        configKeys: [],
         lastDoneAt: "2026-10-27T12:00:00.000Z",
       });
       expect(body.routines).toContainEqual(
@@ -332,7 +427,7 @@ describe("/api/heads-down", () => {
 
       writeFileSync(
         join(routinesDir, "standup.md"),
-        "---\nname: standup\ndescription: Standup notes\nevery: 1d\n---\n\nWrite them.\n",
+        "---\nname: standup\ndescription: Standup notes\nevery: 1d\ntools: [post_message]\nconfig:\n  channel: eng\n---\n\nWrite them.\n",
       );
       writeFileSync(join(routinesDir, "broken.md"), "no frontmatter");
       // Served from the cache until reloaded.
@@ -344,7 +439,13 @@ describe("/api/heads-down", () => {
         problems: { path: string }[];
       };
       expect(reloaded.routines).toContainEqual(
-        expect.objectContaining({ name: "standup", source: "user", everyMinutes: 24 * 60 }),
+        expect.objectContaining({
+          name: "standup",
+          source: "user",
+          everyMinutes: 24 * 60,
+          tools: ["post_message"],
+          configKeys: ["channel"],
+        }),
       );
       expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
     } finally {

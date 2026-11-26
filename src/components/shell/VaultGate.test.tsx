@@ -1,6 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { createElement, useEffect, useState } from "react";
 import { deviceToken, saveDeviceToken, signOut } from "../../lib/server";
+import { onServerEvent } from "../../lib/serverEvents";
 import { fakeSockets, installFakeSockets } from "../../test/fakeSocket";
 import { mountForInteraction, waitFor } from "../../test/render";
 import { stubServerRoutes } from "../../test/serverRoutes";
@@ -23,7 +24,10 @@ const server = stubServerRoutes({
     vault = "unlocked";
     return Response.json({ state: "unlocked" });
   },
-  "GET /api/auth/status": () => Response.json({ setupRequired: false, vault }),
+  "GET /api/auth/status": () =>
+    vault === "unreachable"
+      ? Response.json({ error: "starting" }, { status: 503 })
+      : Response.json({ setupRequired: false, vault }),
   "POST /api/vault/unlock/recovery": () => {
     if (!recoveryKeyIsRight) {
       return Response.json({ error: "that doesn't open the vault" }, { status: 403 });
@@ -59,6 +63,13 @@ async function submit(host: HTMLElement, secret: string, { recovery }: { recover
   type(host.querySelector("input") as HTMLInputElement, secret);
   await waitFor(() => !button(host, "Unlock").disabled, "the unlock button");
   button(host, "Unlock").click();
+}
+
+/** Stands in for the app, and says when it has seen the vault lock. */
+function SeesLock() {
+  const [seen, setSeen] = useState(false);
+  useEffect(() => onServerEvent("vault.locked", () => setSeen(true)), []);
+  return createElement("p", null, seen ? "the app, lock seen" : "the app");
 }
 
 const gate = () => createElement(VaultGate, null, createElement("p", null, "the app"));
@@ -172,6 +183,66 @@ describe("VaultGate", () => {
       socket?.sendJson({
         type: "event",
         seq: 1,
+        at: 1,
+        deviceId: null,
+        kind: "vault.locked",
+        data: {},
+      });
+      await waitFor(
+        () => mounted.host.textContent?.includes("vault is locked") ?? false,
+        "the unlock screen after a lock",
+      );
+    } finally {
+      restoreSockets();
+    }
+  });
+
+  it("stays open when a vault holding only the signing key locks", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      vault = "absent";
+      saveDeviceToken("tok-me");
+      const mounted = await mountForInteraction(
+        createElement(VaultGate, null, createElement(SeesLock)),
+      );
+      unmount = mounted.unmount;
+      await waitFor(() => mounted.host.textContent === "the app", "the app");
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      const socket = fakeSockets()[0];
+      socket?.open();
+      socket?.sendJson({
+        type: "event",
+        seq: 2,
+        at: 1,
+        deviceId: null,
+        kind: "vault.locked",
+        data: {},
+      });
+      // The child's update lands in the same render as any the gate makes,
+      // so its text only shows if the gate kept it mounted.
+      await waitFor(
+        () => mounted.host.textContent === "the app, lock seen",
+        "the app to stay open after the lock",
+      );
+    } finally {
+      restoreSockets();
+    }
+  });
+
+  it("still gates on a lock after its first status check failed", async () => {
+    const restoreSockets = installFakeSockets();
+    try {
+      vault = "unreachable";
+      saveDeviceToken("tok-me");
+      const mounted = await mountForInteraction(gate());
+      unmount = mounted.unmount;
+      await waitFor(() => mounted.host.textContent === "the app", "the app");
+      await waitFor(() => fakeSockets().length > 0, "the events socket");
+      const socket = fakeSockets()[0];
+      socket?.open();
+      socket?.sendJson({
+        type: "event",
+        seq: 4,
         at: 1,
         deviceId: null,
         kind: "vault.locked",

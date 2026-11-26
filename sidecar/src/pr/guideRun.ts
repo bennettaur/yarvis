@@ -1,7 +1,9 @@
+import { publish } from "../attention/hub.ts";
+import { prNavTarget } from "../attention/navTarget.ts";
 import { clearAttentionScope, createAttention } from "../attention/service.ts";
 import type { Config } from "../config.ts";
 import type { Db } from "../db/client.ts";
-import type { AttentionNavTarget, PrGuideRow } from "../db/schema.ts";
+import type { PrGuideRow } from "../db/schema.ts";
 import { emitEvent } from "../events/service.ts";
 import { describeError, redactSecrets } from "../llm/errors.ts";
 import { modelCompactAtTokens, resolveModelWithOllama } from "../llm/providers.ts";
@@ -17,44 +19,37 @@ import { type PrRef, refKey } from "./types.ts";
  * `start_pr_guided_review` tool so both save, notify and log the same way.
  */
 
-/** Where the attention stream should send the user for this pull request. */
-function navTargetFor(ref: PrRef): AttentionNavTarget {
-  return ref.provider === "github"
-    ? { type: "pr", owner: ref.owner, repo: ref.repo, number: ref.number }
-    : { type: "azure-pr", org: ref.org, project: ref.project, repo: ref.repo, prId: ref.prId };
-}
-
 /** The attention item for a guide is keyed per PR, so re-generating coalesces. */
 export const guideSessionKey = (ref: PrRef) => `pr-guide:${refKey(ref)}`;
 
-const stepLabel = (guide: PrGuideRow) =>
-  `Step ${guide.currentStep + 1} of ${guide.steps.length}` +
-  (guide.steps[guide.currentStep] ? ` · ${guide.steps[guide.currentStep]!.path}` : "");
+const stepCount = (guide: PrGuideRow) =>
+  guide.steps.length === 1 ? "1 step" : `${guide.steps.length} steps`;
 
 /**
- * Keeps the attention stream in step with a guide's progress. The item
- * coalesces on (sessionKey, kind), so regenerating or advancing updates the
- * one live entry rather than stacking. Reaching the last step resolves it —
- * the review is no longer in progress, and a finished guide sitting in the
- * panel would read as outstanding work.
+ * Tells the user a guide they asked for is ready to read. The item is keyed per
+ * PR, so regenerating updates it, and reading the guide resolves it: a review
+ * the user is partway through is work in progress, not something waiting on them.
  */
-export async function syncGuideAttention(db: Db, ref: PrRef, guide: PrGuideRow): Promise<void> {
-  const sessionKey = guideSessionKey(ref);
-  const finished = guide.currentStep >= guide.steps.length - 1;
-  if (finished) {
-    await clearAttentionScope(db, { sessionKey }, "resolved");
-    return;
-  }
-  await createAttention(db, {
+async function announceGuideReady(db: Db, ref: PrRef, guide: PrGuideRow): Promise<void> {
+  const item = await createAttention(db, {
     source: "system",
-    sessionKey,
-    kind: "info",
+    sessionKey: guideSessionKey(ref),
+    // `completed` also resolves an earlier run's "Guided review failed" item.
+    kind: "completed",
+    category: "review",
     // The PR's title is the author's text, so it goes in the body, where it
     // can't pose as an app alert.
-    title: "PR review in progress",
-    body: guide.title ? `${guide.title}: ${stepLabel(guide)}` : stepLabel(guide),
-    navTarget: navTargetFor(ref),
+    title: "Guided review ready",
+    body: guide.title ? `${guide.title}: ${stepCount(guide)}` : stepCount(guide),
+    navTarget: prNavTarget(ref),
   });
+  publish(item);
+}
+
+/** Resolves a PR's guide items once the user has started reading the guide. */
+export async function resolveGuideAttention(db: Db, ref: PrRef): Promise<void> {
+  const rows = await clearAttentionScope(db, { sessionKey: guideSessionKey(ref) }, "resolved");
+  for (const row of rows) publish(row);
 }
 
 export type ResolvedPrModel = { selection: { provider: string; model: string } } & Awaited<
@@ -102,6 +97,8 @@ export interface WriteGuideInput {
   signal?: AbortSignal;
   /** Replaces the guide agent, for tests. */
   runTour?: typeof generateTour;
+  /** Saves the guide without its "ready" bell item, for a caller that reports it in its own. */
+  quiet?: boolean;
 }
 
 /**
@@ -124,7 +121,7 @@ export async function writeGuide(
     contextTokens: await modelCompactAtTokens(config, provider, model),
   });
   const guide = await saveGuide(db, { ref, headSha, steps, graph, title, url });
-  await syncGuideAttention(db, ref, guide);
+  if (!input.quiet) await announceGuideReady(db, ref, guide);
   void emitEvent(db, {
     type: "pr.guide.generated",
     source: ref.provider,
@@ -172,6 +169,8 @@ export async function kickOffGuide(
     source?: PrCodeSource;
     /** Replaces the guide agent, for tests. */
     runTour?: typeof generateTour;
+    /** No bell item when it is ready; a failure still raises one. */
+    quiet?: boolean;
   } = {},
 ): Promise<GuideKickoff> {
   // Claimed before the first await, so a second ask in the meantime joins this one.
@@ -209,6 +208,7 @@ export async function kickOffGuide(
       url: prWebUrl(ref, config.secrets.azureDevopsOrgUrl),
       signal: AbortSignal.timeout(GUIDE_TIMEOUT_MS),
       runTour: options.runTour,
+      quiet: options.quiet,
     })
       .catch(async (e) => {
         console.error("[pr] guide generation failed:", describeError(e));
@@ -216,9 +216,10 @@ export async function kickOffGuide(
           source: "system",
           sessionKey: guideSessionKey(ref),
           kind: "error",
+          category: "review",
           title: "Guided review failed",
           body: `${detail.title}: the agent run failed. See Settings → Diagnostics.`,
-          navTarget: navTargetFor(ref),
+          navTarget: prNavTarget(ref),
         }).catch(() => undefined);
       })
       .finally(release);

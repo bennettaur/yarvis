@@ -63,7 +63,7 @@ export interface PrReviewStartDeps {
 }
 
 /** The open PRs of a GitHub stack, bottom layer first. */
-async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
+export async function openStackRefs(config: Config, ref: PrRef): Promise<PrRef[]> {
   if (ref.provider !== "github") throw new StackError("Only GitHub PRs can be stacked.");
   const token = config.secrets.githubToken;
   if (!token) throw new StackError("GitHub isn't signed in under Settings → Credentials.");
@@ -130,7 +130,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .enum(PRESET_NAMES)
           .optional()
           .describe(
-            "quick: summary, change map and risk. security: claims, risk, malicious intent and tests. standard (the default): every check but the flow diagram. full: everything.",
+            "quick: summary, change map and risk. security: claims, risk, malicious intent and tests. standard (the default): every check but the flow diagram and the repo's own checks. full: everything, the repo's own checks included where the repo allows them (reported as failed to start where it doesn't).",
           ),
         sections: z
           .array(z.enum(REPORT_SECTIONS))
@@ -239,7 +239,7 @@ export function buildPrReviewStartTools(db: Db, config: Config, deps: PrReviewSt
           .max(REPORT_SECTIONS.length)
           .optional()
           .describe(
-            "Which sections to run; 'summary' is the summary and must-read files, and a list without it has none. 'changeMap' groups the change into themes and flags outliers; 'claims' checks the title, description and linked tickets against the code. Omit for the defaults; 'flow' (a flow diagram) is off unless named.",
+            "Which sections to run; 'summary' is the summary and must-read files, and a list without it has none. 'changeMap' groups the change into themes and flags outliers; 'claims' checks the title, description and linked tickets against the code. Omit for the repo's default checks, which the user picks per repo in Settings; 'flow' (a flow diagram) is off unless named there or here. 'repoVerify' runs the repo's own PR verification (its AGENTS.md and skills, read from the default branch) and 'playbookVerify' the user's Verify a PR playbook; each runs only where the repo's settings allow it, and is reported as failed to start otherwise.",
           ),
         confirmed: z
           .boolean()

@@ -75,6 +75,32 @@ describe("attention ingest route", () => {
     expect(rows[0]!.kind).toBe("permission");
   });
 
+  it("files a session's item under its workspace's work stream, else build", async () => {
+    await sql`TRUNCATE work_streams CASCADE`;
+    await seedWorkspace(workspaceId, "Review Sam's PR");
+    const ingest = (sessionKey: string) =>
+      app.request("/ingest/attention", {
+        method: "POST",
+        headers: ingestAuth,
+        body: JSON.stringify({ workspaceId, sessionKey, kind: "idle" }),
+      });
+
+    await ingest(`ws-claude:${workspaceId}`);
+    const [stream] = await sql<{ id: string }[]>`
+      INSERT INTO work_streams (title, category) VALUES ('Review', 'review') RETURNING id`;
+    await sql`INSERT INTO work_stream_links (stream_id, kind, ref_key, ref)
+              VALUES (${stream!.id}, 'workspace', ${JSON.stringify(["workspace", workspaceId])},
+                      ${sql.json({ kind: "workspace", workspaceId })})`;
+    await ingest(`ws:${workspaceId}/t2/p1`);
+
+    const list = await app.request("/api/attention?status=pending", { headers: bearer });
+    const rows = (await list.json()) as { sessionKey: string; category: string }[];
+    expect(Object.fromEntries(rows.map((r) => [r.sessionKey, r.category]))).toEqual({
+      [`ws-claude:${workspaceId}`]: "build",
+      [`ws:${workspaceId}/t2/p1`]: "review",
+    });
+  });
+
   it("rejects the ingest endpoint without the attention token", async () => {
     const noAuth = await app.request("/ingest/attention", {
       method: "POST",

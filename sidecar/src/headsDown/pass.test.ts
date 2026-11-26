@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
@@ -7,13 +7,17 @@ import postgres from "postgres";
 import { getMessages, listSessions } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
+import { HashEmbedder } from "../memory/embedder.ts";
+import { PgVectorMemoryStore } from "../memory/index.ts";
+import { listPendingWakes, scheduleTask } from "../scheduledTasks/service.ts";
 import { createStream, getStream } from "../workStreams/service.ts";
-import { saveHeadsDownConfig } from "./config.ts";
+import { DEFAULT_HEADS_DOWN_CONFIG, saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
-import { reloadRoutines } from "./routines.ts";
+import { reloadRoutines, routineCatalog } from "./routines.ts";
 import {
   addMessage,
+  answerQuestion,
   listPasses,
   passCallSummaries,
   pauseRun,
@@ -121,6 +125,7 @@ beforeEach(async () => {
   process.env.YARVIS_SETTINGS_PATH = join(settingsDir, "settings.json");
   // Any time counts as working hours, so the sleep doesn't depend on when the test runs.
   await saveHeadsDownConfig({
+    ...DEFAULT_HEADS_DOWN_CONFIG,
     minSleepMinutes: 5,
     maxSleepMinutes: 120,
     idleSleepMinutes: 60,
@@ -131,6 +136,8 @@ beforeEach(async () => {
     model: null,
     guidance: null,
     maxRoutinesPerPass: 0,
+    shipMonitorWindowMinutes: 60,
+    shipCheckEveryMinutes: 15,
   });
 });
 
@@ -361,6 +368,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the user's guidance, and shows the merge it announces", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -371,6 +379,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: "Merging docs PRs in acme/docs is fine any time.",
       maxRoutinesPerPass: 0,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     const run = await startRun(db, null);
     const model = streamingModel(
@@ -527,6 +537,7 @@ describe("a heads-down pass", () => {
 
   it("hands the pass the routines that are due, and records the ones it reports done", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -537,6 +548,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: null,
       maxRoutinesPerPass: 2,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     await reloadRoutines();
     const run = await startRun(db, null);
@@ -591,6 +604,7 @@ describe("a heads-down pass", () => {
       const run = await startRun(db, null);
       const passWith = async (maxRoutinesPerPass: number) => {
         await saveHeadsDownConfig({
+          ...DEFAULT_HEADS_DOWN_CONFIG,
           minSleepMinutes: 5,
           maxSleepMinutes: 120,
           idleSleepMinutes: 60,
@@ -601,6 +615,8 @@ describe("a heads-down pass", () => {
           model: null,
           guidance: null,
           maxRoutinesPerPass,
+          shipMonitorWindowMinutes: 60,
+          shipCheckEveryMinutes: 15,
         });
         const model = streamingModel([finish("stop")]);
         await runPass(config, db, run, { model });
@@ -624,8 +640,152 @@ describe("a heads-down pass", () => {
     }
   });
 
+  it("mounts the tools a due routine names, still asks before one that needs approval, and hands it its config", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    // Named to sort before the shipped routines, which are also due and never done.
+    writeFileSync(
+      join(routinesDir, "a-issue-filer.md"),
+      "---\nname: a-issue-filer\ndescription: x\nevery: 1h\ntools: [create_repo_issue, nope]\nconfig:\n  repo: me/app\n---\n\nFile an issue in the repo in my settings.\n",
+    );
+    // A built-in outside the families a pass carries, so only the routine puts it in reach.
+    await sql`
+      INSERT INTO agent_tools (id, source, name, description, policy, content_hash)
+      VALUES ('builtin:create_repo_issue', 'builtin', 'create_repo_issue', '', 'search', '')
+      ON CONFLICT (id) DO UPDATE SET policy = 'search'
+    `;
+    try {
+      await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
+        minSleepMinutes: 5,
+        maxSleepMinutes: 120,
+        idleSleepMinutes: 60,
+        workingHours: null,
+        userAwayAfterMinutes: 120,
+        passTimeoutMinutes: 20,
+        provider: null,
+        model: null,
+        guidance: null,
+        maxRoutinesPerPass: 1,
+        shipMonitorWindowMinutes: 60,
+        shipCheckEveryMinutes: 15,
+      });
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const model = streamingModel(
+        [
+          toolCall("c1", "create_repo_issue", {
+            repoId: "11111111-1111-4111-8111-111111111111",
+            title: "Planted",
+            body: "x",
+            callReason: "the routine asks for it",
+          }),
+          finish("tool-calls"),
+        ],
+        [finish("stop")],
+      );
+      await runPass(config, db, run, { model });
+
+      const tools = (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      expect(tools).toContain("create_repo_issue");
+      expect(prompt).toContain("- create_repo_issue: call as create_repo_issue");
+      expect(prompt).toContain("- nope: not available (no tool by that name is installed)");
+      expect(prompt).toContain('\\"repo\\": \\"me/app\\"');
+      // Mounted by the routine, but a call still waits for the user.
+      const questions = await sql`SELECT kind, action, status FROM heads_down_questions`;
+      expect([...questions]).toEqual([
+        expect.objectContaining({ kind: "approval", action: "create_repo_issue", status: "open" }),
+      ]);
+
+      // Not finished, so the next pass isn't given it, and doesn't get its tool either.
+      const next = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: next });
+      expect(JSON.stringify(next.doStreamCalls[0]?.prompt)).not.toContain("### a-issue-filer");
+      expect((next.doStreamCalls[0]?.tools ?? []).map((t) => t.name)).not.toContain(
+        "create_repo_issue",
+      );
+    } finally {
+      await sql`DELETE FROM agent_tools WHERE id = 'builtin:create_repo_issue'`;
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
+  it("expires old watches, hands the pass the due ones, and closes the one it reports met", async () => {
+    const run = await startRun(db, null);
+    const expired = await createStream(db, {
+      title: "old deploy",
+      watch: { condition: "deploy done", everyMinutes: 60, expiresAt: new Date(Date.now() - 1) },
+    });
+    const due = await createStream(db, {
+      title: "Alex's PRs",
+      category: "review",
+      watch: { condition: "both merged", everyMinutes: 60, expiresAt: new Date(Date.now() + 1e8) },
+    });
+    const model = streamingModel(
+      [
+        toolCall("w1", "report_watch", { id: due.id, met: true, finding: "both merged" }),
+        toolCall("w2", "report_watch", { id: expired.id, met: true, finding: "done" }),
+        toolCall("f1", "finish_pass", { sleepMinutes: 30, reason: "nothing left" }),
+        finish("tool-calls"),
+      ],
+      [finish("stop")],
+    );
+
+    await runPass(config, db, run, { model });
+
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain(`- [${due.id}]`);
+    expect(prompt).not.toContain(`- [${expired.id}]`);
+    expect((await getStream(db, expired.id))?.status).toBe("dropped");
+    expect((await getStream(db, due.id))?.status).toBe("done");
+    const items = await sql`SELECT title, category FROM attention_items ORDER BY title`;
+    expect([...items]).toEqual([
+      { title: "A watch expired", category: "general" },
+      { title: "A watch went off", category: "review" },
+    ]);
+  });
+
+  it("leaves Slack to the slack-watcher routine when the user turned it on", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "slack-watcher.md"),
+      "---\nname: slack-watcher\ndescription: x\nevery: 1h\nconfig:\n  handle: '@sam'\n---\n\nWatch Slack.\n",
+    );
+    try {
+      const run = await startRun(db, null);
+      await reloadRoutines();
+      // Routines per pass is 0, so the routine can't run and the Messages step keeps Slack.
+      const off = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: off });
+      expect(JSON.stringify(off.doStreamCalls[0]?.prompt)).not.toContain(
+        "The slack-watcher routine is on",
+      );
+
+      await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
+        maxRoutinesPerPass: 1,
+      });
+      const on = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: on });
+      expect(JSON.stringify(on.doStreamCalls[0]?.prompt)).toContain(
+        "The slack-watcher routine is on",
+      );
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
   it("gives a routine a pass didn't finish to a later pass only after an hour", async () => {
     await saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
       minSleepMinutes: 5,
       maxSleepMinutes: 120,
       idleSleepMinutes: 60,
@@ -636,6 +796,8 @@ describe("a heads-down pass", () => {
       model: null,
       guidance: null,
       maxRoutinesPerPass: 2,
+      shipMonitorWindowMinutes: 60,
+      shipCheckEveryMinutes: 15,
     });
     await reloadRoutines();
     const run = await startRun(db, null);
@@ -666,5 +828,149 @@ describe("a heads-down pass", () => {
     const later = streamingModel([finish("stop")]);
     await runPass(config, db, run, { model: later });
     expect(offered(later)).toBe(true);
+  });
+});
+
+describe("an always-on pass", () => {
+  const alwaysOn = (on: boolean) =>
+    saveHeadsDownConfig({
+      ...DEFAULT_HEADS_DOWN_CONFIG,
+      workingHours: null,
+      maxRoutinesPerPass: 0,
+      alwaysOn: on,
+    });
+  const toolNames = (model: MockLanguageModelV3) =>
+    (model.doStreamCalls[0]?.tools ?? []).map((t) => t.name);
+  const done = () =>
+    streamingModel([
+      toolCall("f", "finish_pass", { sleepMinutes: 10, reason: "done" }),
+      finish("tool-calls"),
+    ]);
+
+  it("can schedule wake-ups and propose routines, which a pass without always-on can't", async () => {
+    await alwaysOn(false);
+    const off = done();
+    await runPass(config, db, await startRun(db, null), { model: off });
+    expect(toolNames(off)).not.toContain("create_routine");
+    expect(JSON.stringify(off.doStreamCalls[0]?.prompt)).not.toContain("Coming back later");
+
+    await alwaysOn(true);
+    const on = done();
+    await runPass(config, db, (await startRun(db, null))!, { model: on });
+    expect(toolNames(on)).toEqual(expect.arrayContaining(["create_routine", "schedule_task"]));
+    expect(JSON.stringify(on.doStreamCalls[0]?.prompt)).toContain("Coming back later");
+  });
+
+  it("is given the wake-ups that came due, and leaves the rest pending", async () => {
+    await alwaysOn(true);
+    const run = await startRun(db, null);
+    const wake = async (title: string) => {
+      const session = await sql`INSERT INTO chat_sessions (title) VALUES ('x') RETURNING id`;
+      const result = await scheduleTask(db, {
+        sessionId: session[0]!.id,
+        title,
+        prompt: `look at ${title}`,
+        delayMinutes: 30,
+        origin: "heads-down",
+        provider: null,
+        model: null,
+        attempt: 1,
+        parentId: null,
+        wakesPass: true,
+      });
+      if ("error" in result) throw new Error(result.error);
+      return result.scheduledTask;
+    };
+    const due = await wake("PR 42");
+    await wake("PR 43");
+    await sql`UPDATE chat_scheduled_tasks SET due_at = now() - interval '1 minute' WHERE id = ${due.id}`;
+
+    const model = done();
+    await runPass(config, db, run, { model });
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+    expect(prompt).toContain("woken for these reminders");
+    expect(prompt).toContain("look at PR 42");
+    expect(prompt).toContain("Wake-ups already scheduled");
+    expect((await listPendingWakes(db)).map((w) => w.title)).toEqual(["PR 43"]);
+  });
+
+  it("leaves due wake-ups for a later pass when the run was paused before it started", async () => {
+    await alwaysOn(true);
+    const run = await startRun(db, null);
+    const session = await sql`INSERT INTO chat_sessions (title) VALUES ('x') RETURNING id`;
+    await scheduleTask(db, {
+      sessionId: session[0]!.id,
+      title: "PR 42",
+      prompt: "look at PR 42",
+      delayMinutes: 30,
+      origin: "heads-down",
+      provider: null,
+      model: null,
+      attempt: 1,
+      parentId: null,
+      wakesPass: true,
+    });
+    await sql`UPDATE chat_scheduled_tasks SET due_at = now() - interval '1 minute'`;
+    await pauseRun(db);
+
+    await runPass(config, db, run, { model: done() });
+    expect(await listPendingWakes(db)).toHaveLength(1);
+  });
+
+  it("writes a routine it proposes only after the user approves those exact arguments", async () => {
+    await alwaysOn(true);
+    const routinesDir = join(mkdtempSync(join(tmpdir(), "proposed-routines-")), "routines");
+    const originalDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    await reloadRoutines();
+    try {
+      const run = await startRun(db, null);
+      // The longest body a pass may propose, with the quotes and newlines JSON escapes.
+      const body = `Check "#releases" for today's build.\n${"x".repeat(2500)}`.slice(0, 2500);
+      const proposal = {
+        name: "release-check",
+        description: "Checks the release channel each morning",
+        every: "1d",
+        nightShift: "skip",
+        body,
+        callReason: "the user asks for this every morning",
+      };
+      const propose = () =>
+        streamingModel(
+          [
+            toolCall("c1", "create_routine", proposal),
+            toolCall("f", "finish_pass", { sleepMinutes: 10, reason: "done" }),
+            finish("tool-calls"),
+          ],
+          [finish("stop")],
+        );
+      const file = join(routinesDir, "release-check.md");
+
+      await runPass(config, db, run, { model: propose() });
+      const [approval] =
+        await sql`SELECT id, kind, action, status FROM heads_down_questions WHERE action = 'create_routine'`;
+      expect(approval).toMatchObject({ kind: "approval", status: "open" });
+      expect(existsSync(file)).toBe(false);
+
+      const memory = new PgVectorMemoryStore(db, new HashEmbedder());
+      await answerQuestion(db, memory, approval!.id, { choice: "approve" });
+
+      const second = propose();
+      await runPass(config, db, run, { model: second });
+      expect(JSON.stringify(second.doStreamCalls[0]?.prompt)).toContain("Calls the user approved");
+      expect(existsSync(file)).toBe(true);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      expect(
+        (await routineCatalog()).routines.find((r) => r.name === "release-check"),
+      ).toMatchObject({
+        source: "user",
+        nightShift: "skip",
+        prompt: expect.stringContaining("#releases"),
+      });
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
   });
 });

@@ -7,10 +7,11 @@ This folder is the source. The sidecar embeds every file listed in
 `sidecar/src/agentRuns/plugins.ts` into its binary and writes a fresh copy to a
 private temp directory for each run, removed when the run ends.
 
-The verification report has one run per section (summary, change map, claims,
-risk, malicious intent, tests, complexity, performance, comments,
-observability, quality, approach, and the flow diagram), so each can be re-run
-on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
+The verification report has one run per section (summary, change map,
+claims, risk, malicious intent, bugs, tests, complexity, performance,
+comments, observability, quality, improvements, approach, the flow diagram,
+and the repo's own and the user's playbook verification), so each can be
+re-run on its own, and `sidecar/src/reviewWorkspaces/checklist.ts` puts the report
 together from each section's newest answer. A run starts from
 `sidecar/src/reviewWorkspaces/verification.ts`, which writes the PR's context,
 an `index.md` of every changed file and one numbered patch per file
@@ -22,6 +23,10 @@ group for risk and the checks. The sidecar checks each answer, asks a failed
 one again once, and puts the answers together in code
 (`combineSectionAnswers`). Once the run answers it adds which changed files
 no agent read (`reviewWorkspaces/coverage.ts`, from the run's Read calls).
+For the repo verification check it also writes the repo's `AGENTS.md`,
+`CLAUDE.md` and `.claude/` skills, agents and commands, read from the default
+branch (`reviewWorkspaces/repoInstructions.ts`), under `repo/`; for the
+playbook check, the user's `verify` playbook as `playbook.md`.
 For the malicious-intent check it also writes `tripwires.md`, what
 `reviewWorkspaces/tripwires.ts`'s fixed rules found in the diff, and adds that
 list to the check's answer itself, so the agent can't drop one.
@@ -44,6 +49,15 @@ include for agent files, so this is how each agent gets the same guardrail
 from one source. Every agent here runs as a run's main thread, so its
 `tools:` line lists `StructuredOutput`, the tool a run started with
 `--json-schema` answers through.
+
+The same agents also run on OpenCode and Pi, for a verification run on such
+a harness. Neither can load this plugin, so `pluginAgentPrompt` in
+`plugins.ts` takes each agent's body without its frontmatter, and
+`agentRuns/opencode.ts` or `agentRuns/pi.ts` gives it to the CLI as the
+agent's prompt, with the answer's JSON schema added and the tools fixed at
+read, grep and glob (Pi's find and ls standing in for glob). An
+agent's body therefore can't rely on anything only its frontmatter or Claude
+Code provides.
 
 To add an agent, put its file here in Claude Code's plugin layout
 (`agents/<name>.md`) and add it to the plugin's file list in `plugins.ts`. A

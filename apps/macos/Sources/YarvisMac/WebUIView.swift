@@ -9,6 +9,8 @@ struct WebUIView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // Tells the page this app rings alarms natively, so it doesn't chime too.
+        config.applicationNameForUserAgent = "YarvisMac"
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
         view.load(URLRequest(url: url))

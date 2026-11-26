@@ -503,7 +503,9 @@ export default function PrFileDiffs({
   focus?: DiffFocus | null;
 }) {
   const insights = usePrInsights(prRef);
-  const { data, error, loading } = usePrFiles(prRef);
+  const fileSet = usePrFiles(prRef);
+  const { error, loading } = fileSet;
+  const data = fileSet.data?.files;
   const detail = usePrDetail(prRef);
   const threads = detail.data?.reviewThreads ?? [];
   const [foldAll, setFoldAll] = useState<FoldAll | null>(null);
@@ -528,6 +530,7 @@ export default function PrFileDiffs({
       <div className="flex items-center gap-2 text-xs text-zinc-500">
         <span>
           {data.length} {data.length === 1 ? "file" : "files"}
+          {fileSet.data?.incomplete && " (GitHub lists at most 3,000 files; the rest aren't shown)"}
         </span>
         <div className="ml-auto flex overflow-hidden rounded border border-zinc-700">
           <button
@@ -578,7 +581,7 @@ export default function PrFileDiffs({
           onToggleViewed={onToggleViewed}
           foldAll={foldAll}
           split={split}
-          headSha={detail.data?.headSha ?? ""}
+          headSha={fileSet.data?.headSha ?? detail.data?.headSha ?? ""}
           focus={focus?.path === f.filename ? focus : null}
           insights={insights}
         />

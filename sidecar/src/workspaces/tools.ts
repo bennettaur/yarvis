@@ -22,6 +22,11 @@ import type { IssueDetail, IssueSummary } from "../issues/types.ts";
 import { fence, newNonce, untrustedWarning } from "../lib/fencing.ts";
 import { type PrCodeSource, prSourceFor } from "../pr/source.ts";
 import type { PrRef } from "../pr/types.ts";
+import {
+  dismissInvestigation,
+  listInvestigations,
+  startInvestigation,
+} from "../revertInvestigation/service.ts";
 import { type ActivityRecapper, recapActivity, recapWorkspaceSession } from "./activity.ts";
 import { reapAndListAgentSessions } from "./agentSessions.ts";
 import { kickOffResult, resolveWorkspaceBrief, WORKSPACE_BRIEF_FILE } from "./brief.ts";
@@ -210,6 +215,8 @@ const ATTENTION_KIND_MEANING: Record<AttentionKind, string> = {
   error: "something failed",
   info: "a notice",
   question: "the session asked the user a question and is waiting for the answer",
+  action: "something Yarvis flagged for the user to do",
+  message: "a note Yarvis left for the user",
 };
 
 /**
@@ -469,6 +476,36 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
           repo: r.repo,
           tracker: r.tracker,
         }));
+      },
+    }),
+
+    get_repo_playbook: tool({
+      description:
+        "Read the user's playbook for a registered repo: their own instructions for each step of shipping a PR: handling CI (ci), picking a reviewer (pickReviewer), handling review feedback (feedback), what must be true of the review before merging (reviewBeforeMerge), testing in staging (testStaging), how to merge (merge), deploying (deploy), monitoring a deploy (monitorDeploy), monitoring and testing in production (monitorProduction, testProduction), reverting (revert), and verifying a PR (verify). Pass the repo's name or owner/repo. Prompts the user left empty are left out, so an empty result means they have no playbook for that repo and you should ask them (ask_user, in a heads-down pass) rather than guess. These come only from the user's Settings, never from the repo, so follow them as the user's instructions. Anything that reaches other people (merging, deploying, reverting, tagging a reviewer) still waits for the user's approval.",
+      inputSchema: z.object({
+        repo: z.string().trim().min(1).describe("A registered repo's name, or owner/repo"),
+      }),
+      execute: async ({ repo: ref }) => {
+        const rows = await listRepos(db);
+        const wanted = ref.toLowerCase();
+        // owner/repo names one repo, so it wins over a bare name two repos may share.
+        const byFullName = rows.filter((r) => `${r.owner}/${r.repo}`.toLowerCase() === wanted);
+        const matches =
+          byFullName.length > 0 ? byFullName : rows.filter((r) => r.name.toLowerCase() === wanted);
+        if (matches.length === 0) {
+          return { error: "repo not found; call list_repos to see the registered repos" };
+        }
+        if (matches.length > 1) {
+          return {
+            error: `more than one repo is named "${ref}"; pass owner/repo`,
+            candidates: matches.map((r) => `${r.owner}/${r.repo}`),
+          };
+        }
+        const match = matches[0]!;
+        return {
+          repo: `${match.owner}/${match.repo}`,
+          playbook: match.playbooks,
+        };
       },
     }),
 
@@ -781,6 +818,44 @@ export function buildWorkspaceTools(db: Db, config: Config, deps: WorkspaceToolD
 
         return kickOffBrief ? kickOffResult(detail, remoteControl) : launchClaude(detail, harness);
       },
+    }),
+
+    list_revert_investigations: tool({
+      description:
+        "List reverts of the user's PRs that Yarvis detected, each with an id, the repo and original PR, and a status: detected (waiting for the user to say whether to investigate), started, ready (the root-cause write-up exists in the workspace) or dismissed.",
+      inputSchema: z.object({}),
+      execute: async () => ({
+        investigations: (await listInvestigations(db)).map((row) => ({
+          id: row.id,
+          originalPr: row.originalNumber,
+          originalUrl: row.originalUrl,
+          revertUrl: row.revertUrl,
+          status: row.status,
+          workspaceId: row.workspaceId,
+        })),
+      }),
+    }),
+
+    start_revert_investigation: tool({
+      description:
+        "Begin the root-cause write-up for a detected revert. Opens a workspace on the repo's default branch with a session that investigates and posts nothing anywhere. Only for one the user asked to begin; get ids from list_revert_investigations.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+      execute: async ({ id }) =>
+        startInvestigation(db, config, id, {
+          runner: gitRunner,
+          startSession: startClaude,
+          remoteControl,
+        }),
+    }),
+
+    dismiss_revert_investigation: tool({
+      description:
+        "Turn down a detected revert investigation the user doesn't want. Only for one still in the detected status.",
+      inputSchema: z.object({ id: z.string().uuid() }),
+      execute: async ({ id }) =>
+        (await dismissInvestigation(db, id))
+          ? { ok: true }
+          : { error: "not found or already acted on" },
     }),
 
     list_workspaces: tool({

@@ -7,6 +7,8 @@ import {
   getPrModelConfig,
   getRereviewRunConfig,
   getVerificationRunConfig,
+  type HarnessModels,
+  modelFitsHarness,
   PR_MODEL_FEATURES,
   type PrModelConfig,
   type PrModelFeature,
@@ -122,6 +124,111 @@ function ClaudeRunRow({
   );
 }
 
+const NO_MODELS: HarnessModels = {};
+
+/** Each tier's name and what it stands for, so a harness's model can be picked to match it. */
+const TIERS: Record<VerificationModel, { name: string; hint: string }> = {
+  opus: { name: "Opus", hint: "the hardest checks (risk, malicious intent)" },
+  sonnet: { name: "Sonnet", hint: "most checks" },
+  haiku: { name: "Haiku", hint: "the lightest checks (comments, observability)" },
+};
+
+/** The CLIs that take a model per tier, by harness kind, and how each takes an effort. */
+const TIER_CLIS = {
+  opencode: {
+    name: "OpenCode",
+    effort: (
+      <>
+        Add <code>#variant</code> (e.g. <code>#high</code>) for a reasoning effort
+      </>
+    ),
+  },
+  pi: {
+    name: "Pi",
+    effort: (
+      <>
+        Add <code>:level</code> (e.g. <code>:high</code>) for a thinking level
+      </>
+    ),
+  },
+} as const;
+
+/**
+ * The model an OpenCode or Pi harness runs each tier on. A field is saved
+ * when it loses focus, and only once it reads as `provider/model`; clearing it
+ * leaves the checks on that tier unable to start until one is picked.
+ */
+function HarnessTierModels({
+  cli,
+  harness,
+  models,
+  onSave,
+}: {
+  cli: keyof typeof TIER_CLIS;
+  harness: string;
+  models: HarnessModels;
+  onSave: (patch: VerificationRunConfigPatch) => void;
+}) {
+  const [drafts, setDrafts] = useState<HarnessModels>(models);
+  const [editing, setEditing] = useState<VerificationModel | null>(null);
+  // Saved values replace the drafts, but never the one being typed in.
+  const saved = JSON.stringify(models);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the saved values, not the object
+  useEffect(() => {
+    setDrafts((prev) => ({
+      ...models,
+      ...(editing && prev[editing] !== undefined && { [editing]: prev[editing] }),
+    }));
+  }, [saved]);
+  const commit = (tier: VerificationModel) => {
+    setEditing(null);
+    const draft = drafts[tier]?.trim() ?? "";
+    if (draft === (models[tier] ?? "")) return;
+    if (draft && !modelFitsHarness(cli, draft)) return;
+    const next: HarnessModels = { ...models };
+    if (draft) next[tier] = draft;
+    else delete next[tier];
+    onSave({ harnessModels: { [harness]: next } });
+  };
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-zinc-500">
+        {TIER_CLIS[cli].name} models for each tier, as <code>provider/model</code>.{" "}
+        {TIER_CLIS[cli].effort}: the effort choices below don't apply to {TIER_CLIS[cli].name}.
+      </p>
+      <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-1">
+        {VERIFICATION_MODELS.map((tier) => {
+          const draft = drafts[tier] ?? "";
+          const invalid = draft.trim() !== "" && !modelFitsHarness(cli, draft.trim());
+          return (
+            <label key={tier} className="contents">
+              <span className="text-xs text-zinc-400" title={TIERS[tier].hint}>
+                {TIERS[tier].name} tier
+              </span>
+              <input
+                className={FIELD}
+                aria-label={`${TIER_CLIS[cli].name} model for the ${TIERS[tier].name} tier`}
+                aria-invalid={invalid}
+                placeholder="provider/model"
+                value={draft}
+                onChange={(e) => setDrafts((prev) => ({ ...prev, [tier]: e.target.value }))}
+                onFocus={() => setEditing(tier)}
+                onBlur={() => commit(tier)}
+              />
+              {invalid && (
+                <span className="col-start-2 text-xs text-red-400">
+                  Not saved: write it as provider/model
+                  {cli === "pi" && ", with :level rather than #variant"}
+                </span>
+              )}
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /**
  * Each verification check's model and effort. "Default" leaves a check on what
  * Yarvis picked for it; choosing the default value explicitly pins it there.
@@ -138,6 +245,8 @@ function VerificationSectionRuns({
     value.harness && !value.harnesses.some((h) => h.id === value.harness) ? value.harness : null;
   const save = (section: ReportSection, choice: RunChoice) =>
     onSave({ sections: { [section]: choice } });
+  const picked = value.harnesses.find((h) => h.id === (value.harness ?? BUILTIN_HARNESS_ID));
+  const tierCli = picked?.kind === "opencode" || picked?.kind === "pi" ? picked.kind : null;
   return (
     <div className="space-y-1">
       {(value.harnesses.length > 1 || missingHarness) && (
@@ -164,9 +273,20 @@ function VerificationSectionRuns({
           </select>
         </label>
       )}
+      {picked && tierCli && (
+        <HarnessTierModels
+          key={picked.id}
+          cli={tierCli}
+          harness={picked.id}
+          models={value.harnessModels?.[picked.id] ?? NO_MODELS}
+          onSave={onSave}
+        />
+      )}
       <p className="text-xs text-zinc-500">
-        Each check's Claude model and effort. A run started from the checklist or the assistant can
-        override them for that run.
+        {tierCli
+          ? `Each check's tier, which runs on the ${TIER_CLIS[tierCli].name} model above, and effort, which applies only to Claude Code.`
+          : "Each check's Claude model and effort."}{" "}
+        A run started from the checklist or the assistant can override them for that run.
       </p>
       <div className="grid grid-cols-[1fr_1fr_1fr] items-center gap-x-2 gap-y-1">
         {value.sectionDefaults.map((check) => {
@@ -271,6 +391,13 @@ export default function PrModelSection() {
           ...prev,
           ...(patch.maxBudgetUsd !== undefined && { maxBudgetUsd: patch.maxBudgetUsd }),
           sections: { ...prev.sections, ...patch.sections },
+          ...(patch.harnessModels && {
+            harnessModels: Object.fromEntries(
+              Object.entries({ ...prev.harnessModels, ...patch.harnessModels }).filter(
+                (entry): entry is [string, HarnessModels] => entry[1] !== null,
+              ),
+            ),
+          }),
         },
     );
     try {
@@ -368,7 +495,7 @@ export default function PrModelSection() {
         {verification && (
           <ClaudeRunRow
             label="Verification report"
-            hint="Runs on Claude Code. The assistant asks before starting a report estimated over the budget."
+            hint="Runs on Claude Code, or the OpenCode or Pi harness picked below. The assistant asks before starting a report estimated over the budget."
             value={{ maxBudgetUsd: verification.maxBudgetUsd }}
             onSave={({ maxBudgetUsd }) => void saveVerification({ maxBudgetUsd })}
             onError={setError}

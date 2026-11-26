@@ -3,6 +3,7 @@ import { refKey } from "../../../lib/pr/ref";
 import type { PrRef } from "../../../lib/pr/types";
 import { listViewed, markManyViewed, setViewed } from "../../../lib/pr/viewed";
 import {
+  invalidate,
   PROVIDER_FRESHNESS,
   primeCache,
   type Resource,
@@ -24,6 +25,13 @@ import {
   reviewWorkspacePrefix,
   useReviewChangedFiles,
 } from "../../../lib/reviewWorkspaces/cache";
+import { listReviewDrafts, type ReviewDrafts } from "../../../lib/reviewWorkspaces/drafts";
+import {
+  type FeedbackInput,
+  type ReportFeedback,
+  saveVerificationFeedback,
+  verificationFeedback,
+} from "../../../lib/reviewWorkspaces/feedback";
 import {
   getMutationTesting,
   type MutationTestingState,
@@ -123,6 +131,28 @@ export function useVerificationChecklist(
   );
 }
 
+/**
+ * The PR's draft comments. The key carries the head and the report's newest
+ * results, so a push or a finished check reads them again: the sidecar brings
+ * them in line with the report on every read.
+ */
+export function draftsKey(
+  prId: string,
+  headSha: string | null,
+  checklist: VerificationChecklist | null,
+): string {
+  const results = checklist?.items.map((i) => i.result?.id ?? "").join(",") ?? "";
+  return `${reviewWorkspacePrefix(prId)}drafts:${headSha ?? ""}:${results}`;
+}
+
+export function useReviewDrafts(
+  workspaceId: string,
+  prId: string,
+  key: string,
+): Resource<ReviewDrafts> {
+  return useCachedResource(key, () => listReviewDrafts(workspaceId, prId), SIDECAR_FRESHNESS);
+}
+
 /** What CI, scanners and bots said about the PR. A provider call, so held longer. */
 export const evidenceKey = (prId: string) => `${reviewWorkspacePrefix(prId)}evidence`;
 
@@ -135,6 +165,33 @@ export function useVerificationEvidence(
     () => verificationEvidence(workspaceId, prId),
     PROVIDER_FRESHNESS,
   );
+}
+
+/** The reviewer's feedback on the PR's report items. */
+export const feedbackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}verification-feedback`;
+
+export function useVerificationFeedback(workspaceId: string, prId: string) {
+  const key = feedbackKey(prId);
+  const resource = useCachedResource(
+    key,
+    () => verificationFeedback(workspaceId, prId),
+    SIDECAR_FRESHNESS,
+  );
+  const save = useCallback(
+    async (input: FeedbackInput) => {
+      const saved = await saveVerificationFeedback(workspaceId, prId, input);
+      // With no list loaded yet there is nothing to add the row to: a list of
+      // just this row would hide every other verdict, so read the whole list.
+      if (resource.data === null) invalidate(key);
+      else {
+        primeCache<ReportFeedback[]>(key, (current) =>
+          current === null ? [saved] : [saved, ...current.filter((f) => f.id !== saved.id)],
+        );
+      }
+    },
+    [workspaceId, prId, key, resource.data],
+  );
+  return { feedback: resource.data ?? [], save };
 }
 
 export const upstackKey = (prId: string) => `${reviewWorkspacePrefix(prId)}upstack`;

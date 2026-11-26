@@ -44,6 +44,7 @@
     "sources": {
       "myPrs": true,
       "starredPrs": true,
+      "reviews": true,
       "issues": true,
       "tasks": true,
       "workspaces": true

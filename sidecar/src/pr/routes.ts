@@ -14,8 +14,8 @@ import { FixChecksInFlight, fixFailingChecksForPr } from "./fixChecks.ts";
 import {
   claimGuide,
   guideSessionKey,
+  resolveGuideAttention,
   resolvePrRunModel,
-  syncGuideAttention,
   writeGuide,
 } from "./guideRun.ts";
 import { deleteGuide, getGuide, isStale, setGuideProgress } from "./guides.ts";
@@ -97,6 +97,9 @@ const progressSchema = z.object({ ref: prRef, step: z.number().int().min(0) });
 /** Insight ids are uuid columns; a non-uuid would surface as a Postgres 500. */
 const insightId = z.string().uuid();
 
+/** How much of a report item a follow-up question carries. */
+const MAX_ABOUT_CHARS = 4000;
+
 const askSchema = z
   .object({
     ref: prRef,
@@ -106,6 +109,15 @@ const askSchema = z
     /** The selected lines as the reviewer sees them, quoted into the question. */
     selection: z.string().max(60_000).default(""),
     question: z.string().min(1).max(2000),
+    /**
+     * A verification report's item the question follows up on; model-written,
+     * so it is fenced. Clipped rather than refused, since its length is the model's.
+     */
+    about: z
+      .string()
+      .max(20_000)
+      .transform((t) => (t.length > MAX_ABOUT_CHARS ? `${t.slice(0, MAX_ABOUT_CHARS)}…` : t))
+      .optional(),
     provider: z.string().min(1).optional(),
     model: z.string().min(1).optional(),
   })
@@ -258,7 +270,8 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
 
     const guide = await setGuideProgress(db(), ref, step);
     if (!guide) return c.json({ error: "no guide for this pull request" }, 404);
-    await syncGuideAttention(db(), ref, guide);
+    // Reading the guide resolves its "ready" item: the review is now work in progress.
+    await resolveGuideAttention(db(), ref);
     return c.json({ currentStep: guide.currentStep });
   });
 
@@ -267,7 +280,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
   router.post("/insight", async (c) => {
     const parsed = askSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { ref, path, startLine, endLine, selection, question } = parsed.data;
+    const { ref, path, startLine, endLine, selection, question, about } = parsed.data;
 
     const source = sourceFor(ref);
     if ("error" in source) return c.json({ error: source.error }, 400);
@@ -290,6 +303,7 @@ export function createPrRoutes(config: Config, options: PrRouteOptions = {}): Ho
         endLine,
         selection,
         question,
+        about,
         signal: c.req.raw.signal,
       });
       const insight = await saveInsight(dbh, {

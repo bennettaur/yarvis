@@ -239,6 +239,9 @@ Each integration is independent. Set up the ones you need, in any order.
 | Reading your browser | Load the `extension/` folder in Chrome, then run `bun run browser:install <extension-id>`. | [Browser](features/browser.md) |
 | Telegram | Create a bot with @BotFather and save its token. | [Telegram](features/telegram.md) |
 | Transcript digest | Turn on the transcript digest under **Settings → Assistant** so the assistant learns what happened in your Claude Code sessions. | [The assistant](features/assistant.md) |
+| Your phone, or another computer | Set up the server's account, then reach the server over Tailscale or a Caddy reverse proxy. | [Running the server](server.md) |
+| An always-on server | Run `yarvis-server` on its own under launchd, so it keeps running with the app closed. | [Running the server](server.md#run-the-server-on-its-own) |
+| Signing commits with 1Password | Turn on 1Password's SSH agent. The app's server passes it to workspace terminals. | [Running the server](server.md#sign-with-1passwords-agent) |
 
 Once you have a provider and GitHub set up, read
 [The assistant](features/assistant.md). It explains the weekly workflow the
@@ -327,7 +330,9 @@ Then type `/yarvis-setup`. It:
 2. installs Postgres and pgvector, starts it, and creates the database,
 3. runs `bun install` and starts the app,
 4. walks you through the Settings screen, one step at a time,
-5. can also set up the local speech server.
+5. can also run the server on its own, reach it from your phone over
+   Tailscale or a Caddy reverse proxy, set up commit signing with 1Password,
+   and set up the local speech server.
 
 The skill is written to never ask for your API keys. You paste those into the
 app's Settings screen yourself, so they go straight to the Keychain. If you

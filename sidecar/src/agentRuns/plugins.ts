@@ -5,6 +5,9 @@ import reviewManifest from "../../claude-plugins/yarvis-review/.claude-plugin/pl
 import approachReviewer from "../../claude-plugins/yarvis-review/agents/approach-reviewer.md" with {
   type: "text",
 };
+import bugHunter from "../../claude-plugins/yarvis-review/agents/bug-hunter.md" with {
+  type: "text",
+};
 import changeMapper from "../../claude-plugins/yarvis-review/agents/change-mapper.md" with {
   type: "text",
 };
@@ -23,6 +26,9 @@ import complexityReviewer from "../../claude-plugins/yarvis-review/agents/comple
 import flowDiagram from "../../claude-plugins/yarvis-review/agents/flow-diagram.md" with {
   type: "text",
 };
+import improvementReviewer from "../../claude-plugins/yarvis-review/agents/improvement-reviewer.md" with {
+  type: "text",
+};
 import intentReviewer from "../../claude-plugins/yarvis-review/agents/intent-reviewer.md" with {
   type: "text",
 };
@@ -32,7 +38,13 @@ import observabilityReviewer from "../../claude-plugins/yarvis-review/agents/obs
 import performanceReviewer from "../../claude-plugins/yarvis-review/agents/performance-reviewer.md" with {
   type: "text",
 };
+import playbookVerifier from "../../claude-plugins/yarvis-review/agents/playbook-verifier.md" with {
+  type: "text",
+};
 import qualityReviewer from "../../claude-plugins/yarvis-review/agents/quality-reviewer.md" with {
+  type: "text",
+};
+import repoVerifier from "../../claude-plugins/yarvis-review/agents/repo-verifier.md" with {
   type: "text",
 };
 import rereviewer from "../../claude-plugins/yarvis-review/agents/rereviewer.md" with {
@@ -102,14 +114,18 @@ const PLUGINS = {
     "agents/change-mapper.md": withInputsAndTrust(changeMapper),
     "agents/claims-verifier.md": withInputsAndTrust(claimsVerifier),
     "agents/intent-reviewer.md": withInputsAndTrust(intentReviewer),
+    "agents/bug-hunter.md": withInputsAndTrust(bugHunter),
     "agents/test-reviewer.md": withInputsAndTrust(testReviewer),
     "agents/complexity-reviewer.md": withInputsAndTrust(complexityReviewer),
     "agents/performance-reviewer.md": withInputsAndTrust(performanceReviewer),
     "agents/comment-reviewer.md": withInputsAndTrust(commentReviewer),
     "agents/observability-reviewer.md": withInputsAndTrust(observabilityReviewer),
     "agents/quality-reviewer.md": withInputsAndTrust(qualityReviewer),
+    "agents/improvement-reviewer.md": withInputsAndTrust(improvementReviewer),
     "agents/approach-reviewer.md": withInputsAndTrust(approachReviewer),
     "agents/flow-diagram.md": withInputsAndTrust(flowDiagram),
+    "agents/repo-verifier.md": withInputsAndTrust(repoVerifier),
+    "agents/playbook-verifier.md": withInputsAndTrust(playbookVerifier),
     "agents/rereviewer.md": withInputsAndTrust(
       rereviewer,
       rereviewInputsAndTrust,
@@ -119,6 +135,21 @@ const PLUGINS = {
 } satisfies Record<string, Record<string, string>>;
 
 export type PluginName = keyof typeof PLUGINS;
+
+/**
+ * A plugin agent's prompt, without its frontmatter, for a harness that can't
+ * load a Claude Code plugin. `agent` is named as `--agent` takes it, e.g.
+ * `yarvis-review:risk-reviewer`.
+ */
+export function pluginAgentPrompt(agent: string): string {
+  const [plugin, name] = agent.split(":");
+  const files: Record<string, string> | undefined =
+    plugin && plugin in PLUGINS ? PLUGINS[plugin as PluginName] : undefined;
+  const source = name ? files?.[`agents/${name}.md`] : undefined;
+  if (!source) throw new Error(`no such plugin agent: ${agent}`);
+  const body = /^---\n[\s\S]*?\n---\n/.exec(source);
+  return (body ? source.slice(body[0].length) : source).trim();
+}
 
 export interface PluginCopy {
   /** The directory to hand to `--plugin-dir`. */

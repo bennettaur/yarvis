@@ -69,8 +69,9 @@ export default function SpecialistSection() {
         <code className="text-zinc-400">{catalog?.userDir ?? "~/.yarvis/agents"}</code> — YAML
         frontmatter for <code>tools</code>, <code>model</code> (or <code>complexity</code>) and{" "}
         <code>maxSteps</code>, and the body as the prompt. A file named after one that ships
-        replaces it. A file with <code>kind: decision</code> is a decision specialist instead: it
-        has no tools and picks one of a set of options on the decision model.
+        replaces it. A file with <code>extends: &lt;name&gt;</code> adds its <code>tools</code> and
+        body to a shipped one instead. A file with <code>kind: decision</code> is a decision
+        specialist instead: it has no tools and picks one of a set of options on the decision model.
         {catalog?.userDir && (
           <button
             type="button"
@@ -98,7 +99,11 @@ export default function SpecialistSection() {
             <div className="flex flex-wrap items-baseline gap-2">
               <span className="font-mono text-sm text-zinc-200">{specialist.name}</span>
               <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-500">
-                {specialist.source === "user" ? "yours" : "built-in"}
+                {specialist.extends
+                  ? `extends built-in ${specialist.extends}`
+                  : specialist.source === "user"
+                    ? "yours"
+                    : "built-in"}
               </span>
               {specialist.kind === "decision" ? (
                 <>
@@ -154,6 +159,12 @@ export default function SpecialistSection() {
                 {specialist.tools.length > 0 && (
                   <p className="font-mono text-[11px] text-zinc-500">
                     {specialist.tools.join(", ")}
+                  </p>
+                )}
+                {specialist.addedTools.length > 0 && (
+                  <p className="text-[11px] text-zinc-500">
+                    Your file adds:{" "}
+                    <span className="font-mono">{specialist.addedTools.join(", ")}</span>
                   </p>
                 )}
                 <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded-md border border-zinc-800 bg-zinc-950 p-2 text-xs text-zinc-400">

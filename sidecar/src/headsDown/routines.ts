@@ -1,15 +1,29 @@
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stringify as stringifyYaml } from "yaml";
 import {
   asBoolean,
+  asList,
   asRequiredString,
   assertKnownKeys,
   FrontmatterError,
   parseDocument,
   readMarkdownDir,
 } from "../agents/frontmatter.ts";
+import type { RegistryTool } from "../agentTools/store.ts";
+import { hasInvisibleChars } from "../web/extract.ts";
+import emailDrafts from "./routines/email-drafts.md" with { type: "text" };
+import generationReflection from "./routines/generation-reflection.md" with { type: "text" };
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
 import meetingNotes from "./routines/meeting-notes.md" with { type: "text" };
+import meetingTimes from "./routines/meeting-times.md" with { type: "text" };
+import messagePeople from "./routines/message-people.md" with { type: "text" };
+import offerHelp from "./routines/offer-help.md" with { type: "text" };
+import reviewPrep from "./routines/review-prep.md" with { type: "text" };
+import reviewReflection from "./routines/review-reflection.md" with { type: "text" };
+import slackWatcher from "./routines/slack-watcher.md" with { type: "text" };
 
 /**
  * Routines: recurring jobs a heads-down pass takes on beside the work streams,
@@ -39,8 +53,32 @@ export interface Routine {
   /** Only offered within the user's working hours. */
   workingHoursOnly: boolean;
   enabled: boolean;
+  /**
+   * Tools the routine wants ready, as written in the file: a bare tool name or
+   * a registry id. They are mounted for the pass; calling one still goes through
+   * the pass's approval rules.
+   */
+  tools: string[];
+  /** The file's `config:` map, handed to the pass as data beside the body. */
+  config: RoutineConfig;
+  /** What it does during night shift. */
+  nightShift: NightShiftMode;
   source: RoutineSource;
 }
+
+/** A routine's settings: each value is text or a list of text. */
+export type RoutineConfig = Record<string, string | string[]>;
+
+/**
+ * `run` keeps the routine's cadence at night, `slow` stretches it by
+ * `NIGHT_SLOW_FACTOR`, and `skip` holds it until night shift ends.
+ */
+export type NightShiftMode = (typeof NIGHT_SHIFT_MODES)[number];
+
+export const NIGHT_SHIFT_MODES = ["run", "slow", "skip"] as const;
+
+/** How much longer a `nightShift: slow` routine waits between runs at night. */
+export const NIGHT_SLOW_FACTOR = 4;
 
 export interface RoutineProblem {
   path: string;
@@ -54,9 +92,20 @@ export interface RoutineCatalog {
   userDir: string;
 }
 
+/** The routine that takes over reading Slack from a pass's Messages step when it is on. */
+export const SLACK_WATCHER = "slack-watcher";
+
 const BUILTIN_FILES: { path: string; content: string }[] = [
+  { path: "routines/generation-reflection.md", content: generationReflection },
   { path: "routines/meeting-alarms.md", content: meetingAlarms },
   { path: "routines/meeting-notes.md", content: meetingNotes },
+  { path: "routines/meeting-times.md", content: meetingTimes },
+  { path: "routines/email-drafts.md", content: emailDrafts },
+  { path: "routines/message-people.md", content: messagePeople },
+  { path: "routines/offer-help.md", content: offerHelp },
+  { path: "routines/slack-watcher.md", content: slackWatcher },
+  { path: "routines/review-prep.md", content: reviewPrep },
+  { path: "routines/review-reflection.md", content: reviewReflection },
 ];
 
 /** `~/.yarvis/routines`, overridable so tests and a second instance can point elsewhere. */
@@ -65,9 +114,25 @@ export function routinesDir(): string {
 }
 
 /** A name is a filename and what `finish_pass` reports back, so it stays to the shape of both. */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled"] as const;
+
+/** Keys that hand the pass more than the body: tools to mount and settings to read. */
+const PASS_INPUT_KEYS = ["tools", "config"] as const;
+
+/** A routine is a few steps of a pass, not a toolbox. */
+const MAX_TOOLS = 20;
+
+/** A tool is a bare name or a registry id such as `mcp:<server id>:<tool>`. */
+const TOOL_PATTERN = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+const CONFIG_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+const MAX_CONFIG_KEYS = 20;
+
+/** The config goes into the pass prompt beside the body, so it is held to a similar size. */
+const MAX_CONFIG_CHARS = 2000;
 
 /**
  * The shortest cadence a file may ask for. Passes can be as little as 5 minutes
@@ -96,7 +161,7 @@ export function parseEvery(value: string): number | null {
 
 export function parseRoutine(path: string, content: string, source: RoutineSource): Routine {
   const { data, body } = parseDocument(path, content);
-  assertKnownKeys(path, data, KNOWN_KEYS);
+  assertKnownKeys(path, data, [...KNOWN_KEYS, ...PASS_INPUT_KEYS, "nightShift"]);
 
   const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
@@ -139,8 +204,95 @@ export function parseRoutine(path: string, content: string, source: RoutineSourc
     everyMinutes,
     workingHoursOnly: asBoolean(path, data, "workingHours") ?? false,
     enabled: asBoolean(path, data, "enabled") ?? true,
+    tools: parseTools(path, data),
+    config: parseConfig(path, data.config),
+    nightShift: parseNightShift(path, data),
     source,
   };
+}
+
+function parseTools(path: string, data: Record<string, unknown>): string[] {
+  const tools = [...new Set(asList(path, data, "tools") ?? [])];
+  if (tools.length > MAX_TOOLS) {
+    throw new FrontmatterError(path, `'tools' can name at most ${MAX_TOOLS} tools`, 1);
+  }
+  const bad = tools.filter((tool) => !TOOL_PATTERN.test(tool));
+  if (bad.length) {
+    throw new FrontmatterError(
+      path,
+      `'tools' must be tool names or ids, with no spaces: ${bad.join(", ")}`,
+      1,
+    );
+  }
+  return tools;
+}
+
+/** Text, numbers and true/false all become text: `channel: 123` is a name, not arithmetic. */
+function scalarToText(value: unknown): string | null {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+function parseConfigValue(path: string, key: string, raw: unknown): string | string[] {
+  if (Array.isArray(raw)) {
+    return raw.map((item, i) => {
+      const text = scalarToText(item);
+      if (text === null) {
+        throw new FrontmatterError(path, `'config.${key}' item ${i + 1} must be text`, 1);
+      }
+      return text;
+    });
+  }
+  const text = scalarToText(raw);
+  if (text === null) {
+    throw new FrontmatterError(path, `'config.${key}' must be text or a list of text`, 1);
+  }
+  return text;
+}
+
+/**
+ * `config:` is a flat map of settings the body refers to, such as the Slack
+ * channels to watch. A nested map is refused: the pass reads these as values,
+ * and a structure deep enough to need nesting belongs in the body.
+ */
+function parseConfig(path: string, value: unknown): RoutineConfig {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new FrontmatterError(path, "'config' must be a map of names to values", 1);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > MAX_CONFIG_KEYS) {
+    throw new FrontmatterError(path, `'config' can have at most ${MAX_CONFIG_KEYS} keys`, 1);
+  }
+  const config: RoutineConfig = {};
+  for (const [key, raw] of entries) {
+    if (!CONFIG_KEY_PATTERN.test(key)) {
+      throw new FrontmatterError(
+        path,
+        `'config' key '${key}' must start with a letter and use letters, digits, '_' or '-'`,
+        1,
+      );
+    }
+    config[key] = parseConfigValue(path, key, raw);
+  }
+  if (JSON.stringify(config).length > MAX_CONFIG_CHARS) {
+    throw new FrontmatterError(
+      path,
+      `'config' cannot be longer than ${MAX_CONFIG_CHARS} characters`,
+      1,
+    );
+  }
+  return config;
+}
+
+function parseNightShift(path: string, data: Record<string, unknown>): NightShiftMode {
+  const value = data.nightShift;
+  if (value === undefined) return "run";
+  if (!NIGHT_SHIFT_MODES.includes(value as NightShiftMode)) {
+    throw new FrontmatterError(path, "'nightShift' must be run, slow or skip", 1);
+  }
+  return value as NightShiftMode;
 }
 
 /** Loads every routine. A user file replaces a shipped one of the same name outright. */
@@ -188,6 +340,71 @@ export function reloadRoutines(): Promise<RoutineCatalog> {
   return cached;
 }
 
+export interface NewRoutine {
+  name: string;
+  description: string;
+  every: string;
+  workingHours?: boolean;
+  nightShift?: NightShiftMode;
+  body: string;
+}
+
+/**
+ * Writes a routine the user approved to `~/.yarvis/routines/<name>.md` and
+ * reloads the catalogue, so the next pass can be given it. Refuses a name
+ * already in use, shipped or the user's, rather than replacing it: the user
+ * approved a new routine, not a change to one they have.
+ */
+export async function writeRoutineFile(
+  input: NewRoutine,
+): Promise<{ path: string } | { error: string }> {
+  const frontmatter: Record<string, unknown> = {
+    name: input.name,
+    description: input.description,
+    every: input.every,
+  };
+  if (input.workingHours) frontmatter.workingHours = true;
+  if (input.nightShift && input.nightShift !== "run") frontmatter.nightShift = input.nightShift;
+  const content = `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
+  const dir = routinesDir();
+  const path = join(dir, `${input.name}.md`);
+  // A routine is read by every pass unfenced; invisible text would reach them unseen.
+  if (hasInvisibleChars(`${input.description}\n${input.body}`)) {
+    return { error: "the description or body contains invisible characters" };
+  }
+  try {
+    parseRoutine(path, content, "user");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+  if ((await routineCatalog()).routines.some((r) => r.name === input.name)) {
+    return { error: `a routine named '${input.name}' already exists` };
+  }
+  await mkdir(dir, { recursive: true });
+  // The loader refuses a symlinked folder, so writing through one would only hide the file.
+  if ((await lstat(dir)).isSymbolicLink()) return { error: `${dir} is a symlink` };
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    );
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      return { error: `${path} already exists` };
+    }
+    throw e;
+  }
+  try {
+    await handle.writeFile(content);
+  } finally {
+    await handle.close();
+  }
+  await reloadRoutines();
+  return { path };
+}
+
 /**
  * How long a routine a pass was given but didn't finish waits before it is
  * given again, at most. Without it a routine that keeps failing would be given
@@ -203,6 +420,8 @@ export interface DueInput {
   lastOffered: ReadonlyMap<string, Date>;
   now: Date;
   withinWorkingHours: boolean;
+  /** Whether it is night shift now; each routine's `nightShift` decides what that means for it. */
+  duringNightShift?: boolean;
   /** The most routines one pass takes on. */
   limit: number;
 }
@@ -219,9 +438,13 @@ export interface DueInput {
  */
 export function dueRoutines(input: DueInput): Routine[] {
   const minutesSince = (at: Date) => (input.now.getTime() - at.getTime()) / 60_000;
+  const cadence = (routine: Routine): number =>
+    input.duringNightShift && routine.nightShift === "slow"
+      ? routine.everyMinutes * NIGHT_SLOW_FACTOR
+      : routine.everyMinutes;
   const cadencesSinceDone = (routine: Routine): number => {
     const last = input.lastDone.get(routine.name);
-    return last ? minutesSince(last) / routine.everyMinutes : Number.POSITIVE_INFINITY;
+    return last ? minutesSince(last) / cadence(routine) : Number.POSITIVE_INFINITY;
   };
   const waitingToRetry = (routine: Routine): boolean => {
     const offered = input.lastOffered.get(routine.name);
@@ -231,10 +454,72 @@ export function dueRoutines(input: DueInput): Routine[] {
   };
   return input.routines
     .filter((r) => r.enabled && (input.withinWorkingHours || !r.workingHoursOnly))
+    .filter((r) => !(input.duringNightShift && r.nightShift === "skip"))
     .filter((r) => !waitingToRetry(r))
     .map((routine) => ({ routine, overdue: cadencesSinceDone(routine) }))
     .filter(({ overdue }) => overdue >= 1)
     .sort((a, b) => b.overdue - a.overdue || a.routine.name.localeCompare(b.routine.name))
     .slice(0, input.limit)
     .map(({ routine }) => routine);
+}
+
+/** A registry row, as much of it as matching a routine's tools needs. */
+export type ToolRow = Pick<RegistryTool, "id" | "name" | "policy">;
+
+/** One entry of a routine's `tools:`, and the registry tools it matched. */
+export interface RoutineToolMatch {
+  tool: string;
+  matchedIds: string[];
+  /** Why nothing matched, or null when something did. */
+  problem: string | null;
+}
+
+export interface RoutineTools {
+  /** Registry ids to mount for the pass, across every routine given to it. */
+  ids: string[];
+  byRoutine: Map<string, RoutineToolMatch[]>;
+}
+
+function toolProblem(
+  found: readonly ToolRow[],
+  usable: readonly ToolRow[],
+  refused: ReadonlySet<string>,
+): string | null {
+  if (!found.length) return "no tool by that name is installed";
+  if (!usable.length) return "turned off in the Tool manager";
+  if (usable.length > 1) {
+    return `${usable.length} tools have that name; name one by its id: ${usable.map((row) => row.id).join(", ")}`;
+  }
+  if (usable[0] && refused.has(usable[0].id)) return "not available in heads-down mode";
+  return null;
+}
+
+/**
+ * Matches each routine's `tools:` against the tool registry. A registry id
+ * matches itself; a bare name matches the one tool of that name. A name two
+ * tools share (two MCP servers, or a server shadowing a built-in) mounts
+ * neither, since an unattended pass would have to guess which one the file
+ * meant. A disabled tool isn't mounted, the same rule `mount_tools` follows,
+ * so a routine gets no tool a pass couldn't mount on its own. `refused` holds
+ * the registry ids a pass may never call, reported rather than mounted.
+ */
+export function resolveRoutineTools(
+  routines: readonly Routine[],
+  registry: readonly ToolRow[],
+  refused: ReadonlySet<string> = new Set(),
+): RoutineTools {
+  const ids = new Set<string>();
+  const byRoutine: RoutineTools["byRoutine"] = new Map();
+  for (const routine of routines) {
+    const matches = routine.tools.map((tool): RoutineToolMatch => {
+      const found = registry.filter((row) => row.id === tool || row.name === tool);
+      const usable = found.filter((row) => row.policy !== "disabled");
+      const problem = toolProblem(found, usable, refused);
+      const matchedIds = problem ? [] : usable.map((row) => row.id);
+      for (const id of matchedIds) ids.add(id);
+      return { tool, matchedIds, problem };
+    });
+    if (matches.length) byRoutine.set(routine.name, matches);
+  }
+  return { ids: [...ids], byRoutine };
 }

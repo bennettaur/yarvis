@@ -1,5 +1,70 @@
 import { sidecarFetch } from "./api";
 import type { PrRef } from "./pr/types";
+import type { ReportSection } from "./reviewWorkspaces/verification";
+
+// Mirrors the sidecar's MAX_PLAYBOOK_CHARS, PLAYBOOK_KEYS and RepoPlaybooks.
+export const PLAYBOOK_MAX_CHARS = 4000;
+
+/** The prompts a repo can carry for shipping a PR, in the order Settings shows them. */
+export const PLAYBOOK_FIELDS = [
+  {
+    key: "ci",
+    label: "CI",
+    hint: "How to handle failing or flaky checks.",
+  },
+  {
+    key: "pickReviewer",
+    label: "Pick a reviewer",
+    hint: "Who should review a PR here, and how to choose.",
+  },
+  {
+    key: "feedback",
+    label: "Review feedback",
+    hint: "How to handle review comments and change requests.",
+  },
+  {
+    key: "reviewBeforeMerge",
+    label: "Review before merge",
+    hint: "What must be true of the review before merging: approvals, checks, sign-offs.",
+  },
+  {
+    key: "testStaging",
+    label: "Test in staging",
+    hint: "How to check a change once it is on staging.",
+  },
+  {
+    key: "merge",
+    label: "Merge",
+    hint: "How to merge, e.g. squash or a merge queue. The merge rules still apply.",
+  },
+  { key: "deploy", label: "Deploy", hint: "The manual steps to deploy, if it isn't automatic." },
+  {
+    key: "monitorDeploy",
+    label: "Monitor the deploy",
+    hint: "What to watch while a deploy rolls out.",
+  },
+  {
+    key: "monitorProduction",
+    label: "Monitor production",
+    hint: "What to watch in production after a deploy.",
+  },
+  {
+    key: "testProduction",
+    label: "Test in production",
+    hint: "How to check a change is working in production.",
+  },
+  { key: "revert", label: "Revert", hint: "How to back a change out when it goes wrong." },
+  {
+    key: "verify",
+    label: "Verify a PR",
+    hint: "What to check on a PR here. Runs as the Playbook verification check.",
+  },
+] as const;
+
+export type PlaybookKey = (typeof PLAYBOOK_FIELDS)[number]["key"];
+
+/** Only prompts with text are present. */
+export type RepoPlaybooks = Partial<Record<PlaybookKey, string>>;
 
 /** A repo yarvis manages a primary clone + worktrees for. */
 export interface Repo {
@@ -15,6 +80,9 @@ export interface Repo {
   pullIssues: boolean;
   /** Where the repo's tickets are filed; mirrors the sidecar's `RepoTracker`. */
   tracker: RepoTracker | null;
+  playbooks: RepoPlaybooks;
+  /** The verification sections its PRs run when none are picked; null for Yarvis's defaults. */
+  verificationChecks: ReportSection[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -31,6 +99,8 @@ export interface CreateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: RepoPlaybooks;
+  verificationChecks?: ReportSection[] | null;
 }
 
 export interface UpdateRepoInput {
@@ -40,6 +110,8 @@ export interface UpdateRepoInput {
   runScript?: string | null;
   pullIssues?: boolean;
   tracker?: RepoTracker | null;
+  playbooks?: RepoPlaybooks;
+  verificationChecks?: ReportSection[] | null;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { GithubStar, IssueLink, IssueStar, Task } from "../db/schema.ts";
+import type { GithubStar, IssueLink, IssueStar, PrGuideRow, Task } from "../db/schema.ts";
 import type { IssueSummary } from "../issues/types.ts";
 import type { PrSummary } from "../pr/types.ts";
 import type { WorkspaceSummary } from "../workspaces/service.ts";
@@ -8,6 +8,7 @@ import { buildWipItems, type WipInputs } from "./service.ts";
 const emptyInputs: WipInputs = {
   starredPrs: [],
   myPrs: [],
+  reviewsInProgress: [],
   inProgressIssues: [],
   labeledIssues: [],
   starredIssues: [],
@@ -143,6 +144,22 @@ describe("buildWipItems", () => {
       "task",
       "workspace",
     ]);
+  });
+
+  it("lists guided reviews in progress after my PRs, opening the PR", () => {
+    const guide = {
+      refKey: "gh:o/r/3",
+      title: "Add ordering",
+      currentStep: 1,
+      steps: [{}, {}, {}],
+    } as unknown as PrGuideRow;
+    const items = buildWipItems({ ...emptyInputs, myPrs: [pr(2)], reviewsInProgress: [guide] });
+    expect(items.map((i) => i.source)).toEqual(["pr", "review"]);
+    expect(items[1]).toMatchObject({
+      title: "Add ordering",
+      subtitle: "Step 2 of 3",
+      navTarget: { type: "pr", owner: "o", repo: "r", number: 3 },
+    });
   });
 
   it("does not list a PR that is both mine and starred twice", () => {
