@@ -1,8 +1,14 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { ALWAYS_CONFIRM_BUILTIN_TOOLS } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
 import { NOT_RUNNING, parseStopTime, STOP_TIME_PASSED } from "./control.ts";
+import { PASS_REFUSED_TOOLS } from "./policy.ts";
+import { reloadRoutines } from "./routines.ts";
 import { getActiveRun } from "./service.ts";
 import { buildHeadsDownTools } from "./tools.ts";
 
@@ -72,5 +78,74 @@ describe("the chat's heads-down tools", () => {
     expect(await tools.pause_heads_down.execute!({}, opts)).toMatchObject({ paused: false });
     await tools.start_heads_down.execute!({}, opts);
     expect(await tools.resume_heads_down.execute!({}, opts)).toMatchObject({ resumed: false });
+  });
+});
+
+describe("the chat's routine tools", () => {
+  let dir: string;
+  const made: string[] = [];
+  const original = process.env.YARVIS_ROUTINES_DIR;
+
+  beforeEach(async () => {
+    const parent = mkdtempSync(join(tmpdir(), "chat-routines-"));
+    made.push(parent);
+    dir = join(parent, "routines");
+    process.env.YARVIS_ROUTINES_DIR = dir;
+    await reloadRoutines();
+  });
+  afterAll(async () => {
+    process.env.YARVIS_ROUTINES_DIR = original;
+    await reloadRoutines();
+    for (const parent of made) rmSync(parent, { recursive: true, force: true });
+  });
+
+  it("asks the user before writing or turning one on, and a pass never gets either", () => {
+    for (const name of ["save_heads_down_routine", "set_heads_down_routine_enabled"]) {
+      expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has(name)).toBe(true);
+      expect(PASS_REFUSED_TOOLS.has(name)).toBe(true);
+    }
+    expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("list_heads_down_routines")).toBe(false);
+  });
+
+  it("writes a one-off, lists it with its body, and turns a shipped one on", async () => {
+    const saved = await tools.save_heads_down_routine.execute!(
+      {
+        name: "check-release",
+        description: "Checks the release channel",
+        once: true,
+        tools: ["slack_read_channel"],
+        config: { channel: "#releases" },
+        body: "Read the release channel and tell me what shipped today.",
+      },
+      opts,
+    );
+    expect(saved).toMatchObject({ ok: true, path: join(dir, "check-release.md") });
+
+    const listed = (await tools.list_heads_down_routines.execute!({}, opts)) as {
+      routines: { name: string; once: boolean; body: string; config: unknown }[];
+    };
+    expect(listed.routines.find((r) => r.name === "check-release")).toMatchObject({
+      once: true,
+      every: null,
+      config: { channel: "#releases" },
+      body: "Read the release channel and tell me what shipped today.",
+    });
+
+    expect(
+      await tools.set_heads_down_routine_enabled.execute!(
+        { name: "review-prep", enabled: true },
+        opts,
+      ),
+    ).toEqual({ ok: true, path: join(dir, "review-prep.md"), enabled: true });
+  });
+
+  it("refuses a routine with neither a cadence nor once, and invisible text", () => {
+    const schema = tools.save_heads_down_routine.inputSchema as unknown as {
+      safeParse: (v: unknown) => { success: boolean };
+    };
+    const routine = { name: "x", description: "x", body: "Do it." };
+    expect(schema.safeParse(routine).success).toBe(false);
+    expect(schema.safeParse({ ...routine, every: "1d" }).success).toBe(true);
+    expect(schema.safeParse({ ...routine, once: true, body: "Do​ it." }).success).toBe(false);
   });
 });

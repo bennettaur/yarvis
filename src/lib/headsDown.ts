@@ -46,6 +46,8 @@ export interface HeadsDownState {
   passesToday: number;
   /** The daily pass limit; null for none. */
   maxPassesPerDay: number | null;
+  /** The model passes run on: the one saved in settings, or the default chat model. Null when none is usable. */
+  model: { provider: string; model: string; source: "saved" | "default" } | null;
 }
 
 export interface HeadsDownQuestion {
@@ -396,14 +398,28 @@ export interface Routine {
   /** What it does during night shift. */
   nightShift: "run" | "slow" | "skip";
   enabled: boolean;
+  /** Done on one pass, then its file is removed. */
+  once: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";
+  /** The user's file. Null for a shipped routine. */
+  path: string | null;
   /** Tools the file names, mounted for the pass that runs it. */
   tools: string[];
-  /** The names of the file's `config:` settings. */
-  configKeys: string[];
+  /** The file's `config:` settings. */
+  config: Record<string, string | string[]>;
+  /** What a pass is told to do. */
+  body: string;
   /** ISO time of the last pass that reported it done. Null if none has. */
   lastDoneAt: string | null;
+  /** The next pass would be given it, if it started now. */
+  nextPass: boolean;
+  /** Due, but more are due than a pass takes, so it waits for a later one. */
+  queued: boolean;
+  /** ISO time it next comes due (now or earlier when due). Null when off, or a one-off already done. */
+  dueAt: string | null;
+  /** Why it can't be given to a pass right now. */
+  heldBy: "off" | "working-hours" | "night-shift" | "retry" | null;
 }
 
 export interface RoutinesResponse {
@@ -412,12 +428,40 @@ export interface RoutinesResponse {
   problems: { path: string; message: string }[];
   /** Where the user's own routine files go. */
   userDir: string;
+  /** The most routines one pass takes on. 0 turns them all off. */
+  maxRoutinesPerPass: number;
+}
+
+/** A routine written from the page. `every` is required unless `once` is set. */
+export interface NewRoutine {
+  name: string;
+  description: string;
+  every?: string;
+  once?: boolean;
+  workingHours?: boolean;
+  nightShift?: "run" | "slow" | "skip";
+  tools?: string[];
+  config?: Record<string, string | string[]>;
+  body: string;
+  /** Rewrite the user's routine of this name, or replace a shipped one. */
+  replace?: boolean;
 }
 
 export const listRoutines = () => request<RoutinesResponse>("/api/heads-down/routines");
 
 export const reloadRoutines = () =>
   request<RoutinesResponse>("/api/heads-down/routines/reload", "POST");
+
+export const createRoutine = (routine: NewRoutine) =>
+  request<RoutinesResponse>("/api/heads-down/routines", "POST", routine);
+
+export const setRoutineEnabled = (name: string, enabled: boolean) =>
+  request<RoutinesResponse>(`/api/heads-down/routines/${encodeURIComponent(name)}/enabled`, "PUT", {
+    enabled,
+  });
+
+export const deleteRoutine = (name: string) =>
+  request<RoutinesResponse>(`/api/heads-down/routines/${encodeURIComponent(name)}`, "DELETE");
 
 /** An MCP tool heads-down mode may call without asking. */
 export interface AllowedTool {

@@ -1087,6 +1087,16 @@ report there and leaves the fixes to the author.
   the pass fenced, as values the body refers to. While `slack-watcher` is on
   and able to run (`SLACK_WATCHER` in `pass.ts`), the pass is told to leave
   Slack to it rather than read it in the Messages step too.
+  A file with `once: true` is a one-off: due until a pass that started after
+  the file was written reports it done (the file's mtime, so a reused name
+  isn't held back by old history), then deleted (`removeFinishedOnceRoutines`).
+  The page and the chat agent write routines through the same helpers
+  (`writeRoutineFile`, `setRoutineEnabled`, `deleteRoutineFile`). The chat's
+  `save_heads_down_routine` and `set_heads_down_routine_enabled` are in
+  `ALWAYS_CONFIRM_BUILTIN_TOOLS`, since the body the model writes reaches every
+  later pass unfenced, and in `PASS_REFUSED_TOOLS`, since a pass has its own
+  `create_routine`. `routineSchedules` reuses `dueRoutines`' rules to tell the
+  page where each routine stands.
   With always-on, a pass can propose one with `create_routine`, which is in
   `PASS_APPROVAL_TOOLS` and so only runs once the user approved its exact
   arguments. It refuses invisible characters, since what the user approves has

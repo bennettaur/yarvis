@@ -32,7 +32,13 @@ import {
   buildRetryPrompt,
   PASS_INSTRUCTIONS,
 } from "./prompt.ts";
-import { dueRoutines, resolveRoutineTools, routineCatalog, SLACK_WATCHER } from "./routines.ts";
+import {
+  dueRoutines,
+  removeFinishedOnceRoutines,
+  resolveRoutineTools,
+  routineCatalog,
+  SLACK_WATCHER,
+} from "./routines.ts";
 import {
   answeredSince,
   earlierMessages,
@@ -536,6 +542,9 @@ export async function runPass(
     error,
     routinesDone: outcome.routinesDone,
   });
+  await removeFinishedOnceRoutines(outcome.routinesDone, pass.startedAt).catch((e) =>
+    console.error("[heads-down] removing finished one-off routines failed:", e),
+  );
   publish({
     type: "pass-finished",
     passId: pass.id,

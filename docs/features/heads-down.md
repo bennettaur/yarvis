@@ -21,7 +21,7 @@ wake-ups, since no pass would read them.
 
 ## Keep it always on
 
-Tick **Always on** under **Pace and working hours** and heads-down mode keeps
+Tick **Always on** on the **Settings** tab and heads-down mode keeps
 running without a planning chat. If no run is going, it starts one with no
 focus within a minute, and again whenever Yarvis restarts. Each pass works
 the streams you have, the routines that are due and your messages, and looks
@@ -118,7 +118,7 @@ which reaches you through the attention bell (see
 
 ## Night shift
 
-Set night-shift hours under **Pace and working hours**, say 23:00 to 07:00.
+Set night-shift hours on the **Settings** tab, say 23:00 to 07:00.
 They apply every day. During them passes sleep at least **Shortest sleep at
 night** (2 hours by default, and never more than the longest sleep), and
 each routine does what its `nightShift`
@@ -177,8 +177,8 @@ days, a [scheduled task](assistant.md#scheduled-tasks) fits better.
 
 A routine is a job heads-down mode repeats on a schedule, beside the work
 streams. Each one says how often it runs. A pass is only given the routines
-that are due, and at most a few of them (**Routines per pass** under **Pace
-and working hours**, 2 by default), so they don't crowd out your work. When
+that are due, and at most a few of them (**Routines per pass** on the
+**Settings** tab, 2 by default), so they don't crowd out your work. When
 more are due than that, the most overdue go first and the rest wait for the
 next pass. A routine a pass couldn't finish stays due, and a later pass tries
 again after an hour, or sooner if the routine runs more often than that. When
@@ -276,10 +276,12 @@ slack-watcher, meeting-times, email-drafts, message-people and offer-help skip
 
 ### Turn on a shipped routine
 
-A file whose `name` matches a shipped routine replaces it whole, so copy the
-shipped file into `~/.yarvis/routines`, change what you need, and leave out
-`enabled: false`. The shipped files are in the Yarvis repository under
-`sidecar/src/headsDown/routines/`. Press **Reload files** after.
+On the **Routines** tab, open the routine to read what it does and what it
+needs, then press **Turn on**. That copies the shipped file into
+`~/.yarvis/routines` with it on, since a file whose `name` matches a shipped
+routine replaces it whole. Edit that copy to change anything else, such as its
+`config`, then press **Reload files**. **Turn off** works the same way. You can
+also ask the assistant to turn one on.
 
 ### Slack watcher
 
@@ -330,10 +332,40 @@ instruction to the pass, not a check in code: if you allowed the posting tool
 for heads-down mode, nothing compares the post with what you were shown.
 Leave the posting tool on asking if you want to see each post first.
 
-The **Routines** list on the Heads down page shows each one, how often it
-runs, when a pass last did it, and which ones are your own files. For a
-routine with `tools` or `config`, it lists the tools and the names of the
-settings.
+### The Routines tab
+
+The **Routines** tab on the Heads down page says which routines the next pass
+would run, and lists the rest under **On** and **Off**. Each one shows how
+often it runs, whether it is your own file, and where it stands:
+
+- **Runs on the next pass**: it is due and fits within **Routines per pass**.
+- **Due, waiting for a free slot**: it is due, but more are due than a pass
+  takes. The most overdue go first.
+- **Due in…**: when its cadence next comes round.
+- **Waits for working hours** or **Skipped during night shift**: its
+  `workingHours` or `nightShift` holds it back right now.
+- **Didn't finish last time; tries again…**: a pass was given it and didn't
+  report it done.
+- **Off: ships turned off** or **Off in your file**.
+
+Open one to read its instructions, tools and settings, when a pass last did
+it, and the path of your file. **Delete file** removes your own file; if it
+replaced a shipped routine, the shipped one comes back. The tab also says when
+heads-down mode is off, since no routine runs then, and when **Routines per
+pass** is 0.
+
+**Add routine** writes a new file for you: a name, a one-line description, how
+often it repeats or **Once**, working hours, night shift, the tools it uses,
+and what a pass should do. For `config`, edit the file afterwards or ask the
+assistant.
+
+### Ask the assistant to write one
+
+In a chat, ask the assistant for a routine ("every morning, check #releases
+and tell me what shipped") or a one-off for heads-down to pick up. It reads
+your routines first, writes the instructions itself, and asks you to approve
+the exact routine before it saves the file. Turning a routine on or off from a
+chat asks first too.
 
 ### Write your own
 
@@ -372,6 +404,9 @@ and leave a three-line summary in your notes for me to paste.
 - `nightShift`: what it does during [night shift](#night-shift). `run` (the
   default) keeps its schedule, `slow` waits four times as long between runs,
   and `skip` waits until night shift ends.
+- `once`: `true` for a one-off. It needs no `every`. The next pass with a free
+  slot does it, and once a pass reports it done, its file is deleted. A
+  one-off a pass couldn't finish is tried again after an hour.
 
 ```markdown
 ---
@@ -734,8 +769,16 @@ The Yarvis logo at the top of the page shows what it is doing: a spinning ring
 while a pass runs, dimmed while it sleeps until the next one, and grey when
 heads-down mode is off.
 
+The page has four tabs. **Overview** has the work streams, the latest passes,
+**Tell it something** and the review stream. **Routines** is described
+[above](#the-routines-tab). **History** has every pass. **Settings** has
+everything under [Pace and working hours](#pace-and-working-hours). Questions
+that need you show above the tabs, whichever one is open. The header names
+the model passes run on, and says whether you picked it in Settings or it is
+your default chat model.
+
 **What it has been doing** shows the pass that is running, live, and the ones
-before it. The live pass shows each tool call as it happens, and its latest
+before it. The Overview shows the last three; the rest are on **History**. The live pass shows each tool call as it happens, and its latest
 thought folded to one line. Each finished pass shows its notes, how many tool
 calls it made, which ones failed with the start of their error, and which got
 no result back because the pass ended first. Open a pass
@@ -758,7 +801,7 @@ instead of starting over.
 
 ## Pace and working hours
 
-Under **Pace and working hours** on the page:
+On the page's **Settings** tab:
 
 - The model passes run on. **Default chat model** follows whatever your chats
   use. A change applies from the next pass. If the model you picked leaves the
@@ -799,7 +842,7 @@ use is kept in the database with the tool's other consent, not in that file.
 - It only acts through the tools Yarvis has. Reading Slack through the Chrome
   extension works, but the extension can't post, so asking for a review on
   Slack needs a Slack MCP server that you allow for heads-down mode.
-- Passes run on the model you picked under **Pace and working hours**, or your
+- Passes run on the model you picked on the **Settings** tab, or your
   default chat model, and cost what a chat turn of that size costs. A cheaper
   model, the sleep settings and the daily pass limit are how you control
   that.

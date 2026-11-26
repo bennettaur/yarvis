@@ -197,7 +197,9 @@ export function asInteger(
 }
 
 /** One file from a user's definition directory, or the reason it couldn't be read. */
-type DefinitionFile = { path: string; content: string } | { path: string; error: string };
+type DefinitionFile =
+  | { path: string; content: string; modifiedAt: Date }
+  | { path: string; error: string };
 
 /** Far past any real definition, so a stray large file is reported rather than read into memory. */
 const MAX_DEFINITION_BYTES = 256 * 1024;
@@ -253,7 +255,11 @@ export async function readMarkdownDir(dir: string): Promise<DefinitionFile[]> {
           files.push({ path, error: `${path}: larger than ${MAX_DEFINITION_BYTES / 1024} KB` });
           continue;
         }
-        files.push({ path, content: buffer.toString("utf8", 0, bytesRead) });
+        files.push({
+          path,
+          content: buffer.toString("utf8", 0, bytesRead),
+          modifiedAt: stat.mtime,
+        });
       } finally {
         await handle.close();
       }

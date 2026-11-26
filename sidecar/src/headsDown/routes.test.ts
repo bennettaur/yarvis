@@ -256,6 +256,17 @@ describe("/api/heads-down", () => {
     expect(
       (await put({ ...valid, workingHours: { ...valid.workingHours, start: "9am" } })).status,
     ).toBe(400);
+
+    // The page names the model passes run on, and whether it was saved or is the default.
+    expect((await put({ ...valid, provider: "anthropic", model: "claude-test" })).status).toBe(200);
+    expect((await get("")).model).toEqual({
+      provider: "anthropic",
+      model: "claude-test",
+      source: "saved",
+    });
+    await put(valid);
+    const fallback = (await get("")).model;
+    expect(fallback === null || fallback.source === "default").toBe(true);
   });
 
   it("saves the standing guidance, and treats a blank one as none", async () => {
@@ -401,10 +412,13 @@ describe("/api/heads-down", () => {
       const earlier = await startRun(db, null);
       await stopRun(db);
       const current = await startRun(db, null);
+      // Relative to now: history only reaches back as far as the longest cadence.
+      const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60_000);
+      const doneLast = hoursAgo(1);
       await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
-                VALUES (${current.id}, '2026-10-27T09:00:00Z', '["meeting-alarms"]'),
-                       (${earlier.id}, '2026-10-27T12:00:00Z', '["meeting-alarms"]'),
-                       (${current.id}, '2026-10-27T13:00:00Z', '[]')`;
+                VALUES (${current.id}, ${hoursAgo(4).toISOString()}, '["meeting-alarms"]'),
+                       (${earlier.id}, ${doneLast.toISOString()}, '["meeting-alarms"]'),
+                       (${current.id}, ${hoursAgo(0.5).toISOString()}, '[]')`;
 
       const body = await get("/routines");
       expect(body.problems).toEqual([]);
@@ -416,13 +430,26 @@ describe("/api/heads-down", () => {
         workingHoursOnly: false,
         nightShift: "run",
         enabled: true,
+        once: false,
         source: "builtin",
+        path: null,
         tools: [],
-        configKeys: [],
-        lastDoneAt: "2026-10-27T12:00:00.000Z",
+        config: {},
+        body: expect.stringContaining("alarm"),
+        lastDoneAt: doneLast.toISOString(),
+        nextPass: false,
+        queued: false,
+        dueAt: new Date(doneLast.getTime() + 180 * 60_000).toISOString(),
+        heldBy: null,
       });
       expect(body.routines).toContainEqual(
-        expect.objectContaining({ name: "meeting-notes", enabled: false, lastDoneAt: null }),
+        expect.objectContaining({
+          name: "meeting-notes",
+          enabled: false,
+          lastDoneAt: null,
+          heldBy: "off",
+          dueAt: null,
+        }),
       );
 
       writeFileSync(
@@ -444,13 +471,73 @@ describe("/api/heads-down", () => {
           source: "user",
           everyMinutes: 24 * 60,
           tools: ["post_message"],
-          configKeys: ["channel"],
+          config: { channel: "eng" },
+          path: join(routinesDir, "standup.md"),
         }),
       );
       expect(reloaded.problems.map((p) => p.path)).toEqual([join(routinesDir, "broken.md")]);
     } finally {
       process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
       // Later tests in this process read the shared cache.
+      await post("/routines/reload");
+      rmSync(routinesDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a routine, turns routines on and off, and deletes the user's own", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    const send = (method: string, path: string, body?: unknown) =>
+      app.request(`/api/heads-down${path}`, {
+        method,
+        headers: jsonAuth,
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const named = (body: { routines: { name: string }[] }, name: string) =>
+      body.routines.find((r: { name: string }) => r.name === name);
+    try {
+      await post("/routines/reload");
+      const created = await post("/routines", {
+        name: "check-release",
+        description: "Checks the release channel",
+        once: true,
+        body: "Look at the release channel and tell me what shipped.",
+      });
+      expect(created.status).toBe(201);
+      expect(named(await created.json(), "check-release")).toMatchObject({
+        once: true,
+        source: "user",
+        nextPass: true,
+        path: join(routinesDir, "check-release.md"),
+      });
+      // Neither a cadence nor a one-off: refused before anything is written.
+      const noCadence = await post("/routines", { name: "x", description: "x", body: "x" });
+      expect(noCadence.status).toBe(400);
+      // A name in use needs replace.
+      const taken = await post("/routines", {
+        name: "check-release",
+        description: "again",
+        every: "1d",
+        body: "x",
+      });
+      expect(taken.status).toBe(400);
+
+      const on = await send("PUT", "/routines/review-prep/enabled", { enabled: true });
+      expect(on.status).toBe(200);
+      expect(named(await on.json(), "review-prep")).toMatchObject({
+        enabled: true,
+        source: "user",
+      });
+
+      const deleted = await send("DELETE", "/routines/review-prep");
+      expect(named(await deleted.json(), "review-prep")).toMatchObject({
+        enabled: false,
+        source: "builtin",
+      });
+      expect((await send("DELETE", "/routines/meeting-alarms")).status).toBe(400);
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
       await post("/routines/reload");
       rmSync(routinesDir, { recursive: true, force: true });
     }
