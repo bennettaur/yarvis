@@ -103,6 +103,10 @@ until when. Press **Stop** there to go back to asking. Locking the vault or
 restarting the server stops it too. A rebase signs each commit again, so this
 saves you a prompt per commit.
 
+When the server keeps its other secrets outside the vault and the vault holds
+only the signing key, **Settings → Devices → Approvals** shows a passphrase
+field while the vault is locked. Unlock it there to start signing.
+
 ## In a browser versus the desktop app
 
 Everything works in a browser except what belongs to the machine in front of

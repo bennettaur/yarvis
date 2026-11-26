@@ -544,6 +544,9 @@ async fn only_when_enabled(
 #[serde(rename_all = "camelCase")]
 struct Status {
     enabled: bool,
+    /// The vault's state. A server whose secrets live elsewhere shows no
+    /// unlock screen, so this is where a client learns signing needs one.
+    vault: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     public_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -561,8 +564,10 @@ struct Status {
 async fn status(State(state): State<AppState>, _: Authed<Read>) -> ApiResult<Json<Status>> {
     let running = state.ssh_agent.is_running();
     let grant = state.ssh_agent.grant_ends();
+    let vault = state.vault.state().map_err(ApiError::internal)?.as_str();
     Ok(Json(Status {
         enabled: true,
+        vault,
         public_key: state.ssh_agent.public_key(),
         socket_path: socket_path(&state)
             .filter(|_| running)

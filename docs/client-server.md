@@ -257,7 +257,7 @@ origins = ["http://localhost:7878"]
 # backend = "keychain"          # "vault" | "keychain" | "onepassword"
 
 [ssh_agent]
-enabled = false                 # the server's own ssh-agent; needs "vault"
+enabled = false                 # the server's own ssh-agent; its key is in the vault
 # upstream_socket = "..."       # the agent workspace shells use when it's off
 
 [sidecar]
@@ -280,8 +280,13 @@ names a backend, it wins, and Settings can only change which 1Password item a
 `configuredSecretBackend` (`null` when `secretBackend` decides), so Settings
 shows the store really in use and offers no switch the server would refuse.
 
-The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
-since the vault is where the signing key lives.
+`ssh_agent.enabled = true` turns the vault on whatever `secrets.backend`
+says, since the vault is where the signing key lives (`Config::uses_vault`).
+With another backend the vault holds only the key: its routes answer, but
+`/api/auth/status` reports `vault: "absent"`, so no client holds the app
+behind the unlock screen, and locking it stops the agent and nothing else.
+`GET /api/vault/ssh-agent` reports the vault's state, which is where a client
+learns signing needs an unlock.
 
 **Home server (the Intel Mac mini).** `backend = "vault"`, `ssh_agent.enabled =
 true`. The server starts locked. The vault passphrase or the recovery key
@@ -470,8 +475,9 @@ hashes never appear in a response, except the one time a token is created.
 Auth (no token needed):
 
 - `GET  /api/auth/status` → `{ setupRequired, vault: "absent"|"uninitialized"|"locked"|"unlocked" }`.
-  `absent` means the backend isn't `vault`; `uninitialized` means it is, but
-  `yarvis-server vault init` hasn't run.
+  `absent` means the backend isn't `vault`, even when a vault holds the
+  signing key, so no client holds the app behind the unlock screen;
+  `uninitialized` means it is, but `yarvis-server vault init` hasn't run.
 - `POST /api/auth/setup/start` `{ code, passphrase, deviceName }` →
   `{ enrollmentId, secret, otpauthUri, qrSvg }`. `code` is the setup code,
   `secret` is base32, and `qrSvg` is an SVG document. A short passphrase is
@@ -738,7 +744,8 @@ agent. That socket exists only while the vault is unlocked, so a shell signs
 while it's open and fails to sign while it's locked, including a shell started
 while it was locked.
 
-Vault (only when `secrets.backend = "vault"`; every route is 404 otherwise):
+Vault (only when `secrets.backend = "vault"` or `ssh_agent.enabled = true`;
+every route is 404 otherwise):
 
 The vault has its own passphrase, separate from the sign-in passphrase, and
 the two should differ. Sign-in proves who is asking a running server; the
@@ -770,8 +777,9 @@ and a leak of the sign-in passphrase or the database doesn't open the vault.
   working. It needs the same proof as a passphrase change: otherwise a stolen
   fresh device could rotate the key, then use the new key to replace the
   passphrase.
-- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, publicKey?, socketPath?,
-  grantExpiresAt?, grantRemainingMs? }`, with the key and socket only while the
+- `GET  /api/vault/ssh-agent` (`read`) → `{ enabled: true, vault, publicKey?,
+  socketPath?, grantExpiresAt?, grantRemainingMs? }`, where `vault` is
+  `"uninitialized"|"locked"|"unlocked"`, with the key and socket only while the
   agent runs and the grant fields only while signing is allowed without
   asking; 404 when `ssh_agent.enabled = false`. A client counts down from
   `grantRemainingMs`, since its clock may not match the server's.

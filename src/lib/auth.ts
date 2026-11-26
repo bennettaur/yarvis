@@ -290,6 +290,8 @@ export async function answerApproval(
 /** The server's own commit-signing agent, as `GET /api/vault/ssh-agent` reports it. */
 export interface SshAgentStatus {
   enabled: boolean;
+  /** The vault holding the signing key. The agent runs only while it is unlocked. */
+  vault: "uninitialized" | "locked" | "unlocked";
   publicKey?: string;
   socketPath?: string;
   /** While commits are signed without asking, when that ends by the server's clock. */
