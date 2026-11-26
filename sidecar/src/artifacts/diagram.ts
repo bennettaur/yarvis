@@ -40,11 +40,12 @@ const verticalAlign = z.enum(["top", "middle", "bottom"]);
 const arrowhead = z.enum(["arrow", "bar", "dot", "circle", "triangle", "diamond"]).nullable();
 /** 3 rounds a shape's corners, 2 curves a line through its points; null keeps them sharp. */
 const roundness = z.object({ type: z.number().int().min(1).max(3) }).nullable();
-/** Relative to x and y. The first point is usually [0, 0]. */
-const points = z
-  .array(z.tuple([coordinate, coordinate]))
-  .min(2)
-  .max(100);
+/**
+ * Relative to x and y. The first point is usually [0, 0]. Each point is a
+ * two-item array, not a `z.tuple`: the AI SDK writes a tuple as draft-07
+ * `items: [...]`, which Bedrock rejects and LiteLLM's Gemini mapping crashes on.
+ */
+const points = z.array(z.array(coordinate).length(2)).min(2).max(100);
 const binding = z.object({ id: elementId });
 
 const label = z.object({

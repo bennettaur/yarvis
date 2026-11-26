@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -83,5 +83,16 @@ describe("customProviders/service", () => {
     expect(await deleteCustomProvider(row.id)).toBe(true);
     expect(await deleteCustomProvider(row.id)).toBe(false);
     expect(await getCustomProvider(row.id)).toBeNull();
+  });
+
+  it("reads a hand-edited model object as its id and drops what it can't read", async () => {
+    const row = { ...input, id: "p", createdAt: "x", updatedAt: "x" };
+    const models = ["gpt-4o", { id: "gemini-4-argon", capabilities: ["chat"] }, { name: "x" }, 7];
+    await writeFile(
+      process.env.YARVIS_SETTINGS_PATH!,
+      JSON.stringify({ customProviders: { p: { ...row, models } } }),
+    );
+    expect((await getCustomProvider("p"))?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
+    expect((await listCustomProviders())[0]?.models).toEqual(["gpt-4o", "gemini-4-argon"]);
   });
 });

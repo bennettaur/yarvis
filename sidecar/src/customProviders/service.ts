@@ -50,16 +50,32 @@ const SETTINGS_KEY = "customProviders";
 
 type CustomProvidersSection = Record<string, CustomProviderRow>;
 
+/**
+ * The file can be edited by hand, and a model written as `{ id, capabilities }`
+ * (the catalogue's shape) instead of a bare id broke every caller that joins or
+ * renders the list. Such an entry reads as its id; anything else is dropped.
+ */
+function withModelIds(row: CustomProviderRow): CustomProviderRow {
+  const stored: unknown = row.models;
+  const models = (Array.isArray(stored) ? stored : []).flatMap((m: unknown) => {
+    if (typeof m === "string") return [m];
+    const id = m && typeof m === "object" ? (m as { id?: unknown }).id : undefined;
+    return typeof id === "string" ? [id] : [];
+  });
+  return { ...row, models };
+}
+
 export async function listCustomProviders(): Promise<CustomProviderRow[]> {
   const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
-  return Object.values(section ?? {}).sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  );
+  return Object.values(section ?? {})
+    .map(withModelIds)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
 export async function getCustomProvider(id: string): Promise<CustomProviderRow | null> {
   const section = await readSection<CustomProvidersSection>(SETTINGS_KEY);
-  return section?.[id] ?? null;
+  const row = section?.[id];
+  return row ? withModelIds(row) : null;
 }
 
 export async function createCustomProvider(input: CustomProviderInput): Promise<CustomProviderRow> {
