@@ -161,6 +161,75 @@ enum InputEnd {
     TooLarge,
 }
 
+/// True when `data` is only replies a terminal sends on its own: answers to
+/// cursor-position, device-attribute, mode, window and colour queries, string
+/// reports (DCS, OSC, APC), and focus-out. Anything else, a lone `ESC`
+/// included, counts as the user's input. A key whose encoding matches a reply
+/// (F3 with a modifier is `CSI 1;2R`, like a cursor report) is read as a reply,
+/// which costs only that keypress not taking over the size.
+fn is_terminal_reply(data: &[u8]) -> bool {
+    const ESC: u8 = 0x1b;
+    if data.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != ESC || i + 1 >= data.len() {
+            return false;
+        }
+        match data[i + 1] {
+            b'[' => {
+                let params_start = i + 2;
+                let mut j = params_start;
+                while j < data.len() && (0x30..=0x3f).contains(&data[j]) {
+                    j += 1;
+                }
+                let params = &data[params_start..j];
+                let intermediates_start = j;
+                while j < data.len() && (0x20..=0x2f).contains(&data[j]) {
+                    j += 1;
+                }
+                let intermediates = &data[intermediates_start..j];
+                let Some(&last) = data.get(j) else {
+                    return false;
+                };
+                let reply = match last {
+                    // Cursor position, device attributes, device status, window reports.
+                    b'R' | b'c' | b'n' | b't' => intermediates.is_empty(),
+                    // DECRQM's mode report.
+                    b'y' => intermediates == b"$",
+                    // The kitty keyboard protocol's flags report; `CSI … u` without
+                    // the `?` is a key.
+                    b'u' => params.first() == Some(&b'?'),
+                    // Focus out. Focus in is left as input: it means the user
+                    // came to this terminal, as `{"type":"focus"}` does.
+                    b'O' => params.is_empty() && intermediates.is_empty(),
+                    _ => false,
+                };
+                if !reply {
+                    return false;
+                }
+                i = j + 1;
+            }
+            // OSC (colour replies) ends at BEL or ST; DCS and APC end at ST.
+            kind @ (b']' | b'P' | b'_') => {
+                let mut j = i + 2;
+                let end = loop {
+                    match data.get(j) {
+                        None => return false,
+                        Some(0x07) if kind == b']' => break j + 1,
+                        Some(&ESC) if data.get(j + 1) == Some(&b'\\') => break j + 2,
+                        _ => j += 1,
+                    }
+                };
+                i = end;
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 fn output_frame(offset: u64, bytes: &[u8]) -> Message {
     let mut v = Vec::with_capacity(8 + bytes.len());
     v.extend_from_slice(&offset.to_be_bytes());
@@ -262,8 +331,14 @@ async fn read_client_input(
         if data.len() > MAX_WRITE_BYTES {
             return InputEnd::TooLarge;
         }
+        // Every attached terminal answers the program's queries, not just the
+        // one the user is at. If those answers took over the size, two clients
+        // with different viewports would resize the PTY back and forth each
+        // time the program asks, and a program that asks again after a resize
+        // would flicker for as long as both stay attached.
+        let typist = (!is_terminal_reply(&data)).then_some(client);
         // An error means the shell is gone; the output side delivers `exit`.
-        let _ = session.write(Some(client), data).await;
+        let _ = session.write(typist, data).await;
     }
 }
 
@@ -379,6 +454,44 @@ mod tests {
             json!({"cwd": 5}),
         ] {
             assert!(hello(bad.clone()).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tells_terminal_replies_from_typing() {
+        for reply in [
+            &b"\x1b[12;40R"[..],
+            b"\x1b[?1;2c",
+            b"\x1b[>0;276;0c",
+            b"\x1b[0n",
+            b"\x1b[?2026;2$y",
+            b"\x1b[8;30;100t",
+            b"\x1b[?1u",
+            b"\x1b[O",
+            b"\x1b]11;rgb:0000/0000/0000\x07",
+            b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+            b"\x1bP>|xterm.js(5.5.0)\x1b\\",
+            // Several replies in one write, as xterm.js sends after a burst of queries.
+            b"\x1b[?1;2c\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1b[3;1R",
+        ] {
+            assert!(is_terminal_reply(reply), "{reply:?}");
+        }
+        for typed in [
+            &b""[..],
+            b"a",
+            b"\r",
+            b"\x1b",
+            b"\x1b[A",
+            b"\x1b[13;2u",
+            b"\x1b[I",
+            b"\x1b[<0;10;5M",
+            b"\x1b[200~pasted\x1b[201~",
+            // A reply with a keystroke after it is still typing.
+            b"\x1b[?1;2cx",
+            b"\x1b]11;rgb:0000/0000/0000",
+            b"\x1b[12;40",
+        ] {
+            assert!(!is_terminal_reply(typed), "{typed:?}");
         }
     }
 
