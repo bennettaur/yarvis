@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArtifactPaneContext, useArtifactPane } from "../lib/artifactPane";
 import { type ChatSession, listSessions, type ProviderId } from "../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT, SESSION_HINT } from "../lib/chatControlHints";
+import { modelTakesEffort, useChatEffort } from "../lib/effort";
 import { type DisplayError, formatError } from "../lib/errors";
 import { useOmniChatOverlayOpen } from "../lib/omniChatOverlay";
 import { useChatThread } from "../lib/useChatThread";
@@ -17,6 +18,7 @@ import { PromptInputSelect } from "./ai-elements/prompt-input";
 import ArtifactPane from "./artifacts/ArtifactPane";
 import ChatComposer from "./ChatComposer";
 import ChatMessages from "./ChatMessages";
+import EffortSelect from "./EffortSelect";
 import ErrorNotice from "./ErrorNotice";
 import McpConnectionBar from "./McpConnectionBar";
 import QueuedMessages from "./QueuedMessages";
@@ -81,6 +83,7 @@ export default function ChatPanel({
   const [sessionsError, setSessionsError] = useState<DisplayError | null>(null);
   const [input, setInput] = useState("");
   const [reasoning, setReasoning] = useReasoningPreference();
+  const [effort, setEffort] = useChatEffort();
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const artifactPane = useArtifactPane();
   const [splitRatio, setSplitRatio] = usePersistedRatio("yarvis.chat.artifactSplit", 0.55);
@@ -120,6 +123,7 @@ export default function ChatPanel({
   } = useChatThread({
     onSessionCreated: addSession,
     reasoning,
+    effort,
     visible: active,
   });
 
@@ -333,6 +337,13 @@ export default function ChatPanel({
                 </option>
               ))}
             </PromptInputSelect>
+            {modelTakesEffort(providers, provider, model) && (
+              <EffortSelect
+                value={effort}
+                onChange={setEffort}
+                className="h-7 max-w-48 truncate rounded-md border-0 bg-transparent px-2 text-xs text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+              />
+            )}
           </>
         }
       />

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArtifactPaneContext, useArtifactPane } from "../../lib/artifactPane";
 import type { ProviderId } from "../../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
+import { modelTakesEffort, useChatEffort } from "../../lib/effort";
 import { OMNI_CHAT_SESSION_KEY } from "../../lib/omniChat";
 import { collectContext, formatContext } from "../../lib/omniChatContext";
 import { useChatThread } from "../../lib/useChatThread";
@@ -10,6 +11,7 @@ import { useVoice } from "../../lib/useVoice";
 import ArtifactPane from "../artifacts/ArtifactPane";
 import ChatComposer from "../ChatComposer";
 import ChatMessages from "../ChatMessages";
+import EffortSelect from "../EffortSelect";
 import ErrorNotice from "../ErrorNotice";
 import McpConnectionBar from "../McpConnectionBar";
 import QueuedMessages from "../QueuedMessages";
@@ -35,6 +37,7 @@ export default function OmniChat({
   onAttention: (reason: string) => void;
 }) {
   const [reasoning, setReasoning] = useReasoningPreference();
+  const [effort, setEffort] = useChatEffort();
   const {
     providers,
     provider,
@@ -63,6 +66,7 @@ export default function OmniChat({
     newChat,
   } = useChatThread({
     reasoning,
+    effort,
     sessionStorageKey: OMNI_CHAT_SESSION_KEY,
     // collectContext/formatContext are module-level and stable, so this is too.
     getContext: useCallback(() => formatContext(collectContext()), []),
@@ -189,6 +193,13 @@ export default function OmniChat({
               </option>
             ))}
           </select>
+          {modelTakesEffort(providers, provider, model) && (
+            <EffortSelect
+              value={effort}
+              onChange={setEffort}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-1.5 py-1 text-xs"
+            />
+          )}
         </div>
       </div>
 

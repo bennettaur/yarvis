@@ -20,7 +20,8 @@ A PR's header here has **Open in review workspace** to move it there.
 2. Guided reviews and line questions are agent runs, so they also need an LLM
    provider key. See [Getting started](../getting-started.md#5-first-configuration).
    Both use the default chat model unless you pick one for each under
-   **Settings → PR review → Review models**. The same section sets the
+   **Settings → PR review → Review models**. A model tagged `reasoning` also
+   gets an effort level there. The same section sets the
    Claude Code, OpenCode or Pi harness the verification report runs with
    (and, for an OpenCode or Pi one, its model for each tier), the
    Claude model and effort for each of its checks, and

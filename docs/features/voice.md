@@ -182,9 +182,11 @@ surface shares one setup. Saved voices are under `voiceProfiles` in the same
 file, and the server's port under `speechServer`.
 
 Which models appear in each picker comes from the model catalog. Each model is
-tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`). Edit the
-tags under **Settings → LLM Providers → Models**. The first edit copies the
-built-in list into your settings, and **Reset to built-in list** undoes it.
+tagged with what it can do (`chat`, `stt`, `tts`, `vision`, `embed`, `decision`,
+`reasoning`). Edit the tags under **Settings → LLM Providers → Models**, or for a
+custom provider, in its own model list in the provider form. In **Models**, the
+first edit copies the provider's list into your settings, and **Reset to
+built-in list** (**Reset to provider's list** for a custom provider) undoes it.
 Model names are free text, in the form `namespace/name` with an optional
 `:tag`.
 

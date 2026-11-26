@@ -9,6 +9,7 @@ import { LayoutDashboardIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listProviders, type ProviderId, type ProviderInfo } from "../../lib/chat";
 import { MODEL_HINT, PROVIDER_HINT } from "../../lib/chatControlHints";
+import { modelTakesEffort, useChatEffort } from "../../lib/effort";
 import {
   deleteLayout,
   getLayout,
@@ -28,6 +29,7 @@ import {
 import { Loader } from "../ai-elements/loader";
 import { Message, MessageContent, MessageLabel } from "../ai-elements/message";
 import ChatComposer from "../ChatComposer";
+import EffortSelect from "../EffortSelect";
 import SplitPane, { usePersistedRatio } from "../SplitPane";
 import ThinkingIndicator from "../ThinkingIndicator";
 
@@ -93,6 +95,7 @@ export default function OmniView() {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [provider, setProvider] = useState<ProviderId | "">("");
   const [model, setModel] = useState("");
+  const [effort, setEffort] = useChatEffort();
   const [spec, setSpec] = useState<Spec | null>(loadSpec);
   const [messages, setMessages] = useState<Display[]>(loadMessages);
   const [streaming, setStreaming] = useState("");
@@ -235,6 +238,7 @@ export default function OmniView() {
           messages: outMessages,
           provider,
           model,
+          effort,
         })) {
           if (evt.type === "delta" && evt.text) {
             parser.push(evt.text);
@@ -262,7 +266,7 @@ export default function OmniView() {
         setBusy(false);
       }
     },
-    [provider, model, busy, messages, spec, system],
+    [provider, model, effort, busy, messages, spec, system],
   );
 
   const reset = useCallback(() => {
@@ -429,6 +433,13 @@ export default function OmniView() {
             </option>
           ))}
         </select>
+        {modelTakesEffort(providers, provider, model) && (
+          <EffortSelect
+            value={effort}
+            onChange={setEffort}
+            className="rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs"
+          />
+        )}
       </div>
 
       {/* Saved layouts */}

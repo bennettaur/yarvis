@@ -86,6 +86,20 @@ describe("parsing one definition", () => {
     );
   });
 
+  it("reads an effort level beside a model", () => {
+    const parsed = parse(
+      "---\nname: a\ndescription: d\nmodel: anthropic/claude-opus-4-7\neffort: high\n---\np",
+    );
+    expect(parsed.effort).toBe("high");
+    expect(parse("---\nname: a\ndescription: d\n---\np").effort).toBeNull();
+  });
+
+  it("rejects an unknown effort level", () => {
+    expect(() => parse("---\nname: a\ndescription: d\neffort: max\n---\np")).toThrow(
+      "'effort' must be one of: minimal, low, medium, high, xhigh",
+    );
+  });
+
   it("rejects setting both 'complexity' and 'model'", () => {
     expect(() =>
       parse(

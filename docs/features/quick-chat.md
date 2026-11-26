@@ -7,7 +7,7 @@ There are two ways to type to [the assistant](assistant.md):
   what you're looking at.
 
 Both use the same agent, the same tools and the same memory. They also share
-the provider and model you last picked.
+the provider, model and effort you last picked.
 
 ## Omni Chat
 
@@ -88,6 +88,9 @@ The toolbar under the message box holds the rest:
 - **Thinking** shows the model's reasoning, for providers that return it.
 - The **provider** and **model** pickers. A provider with no key saved shows
   "(no key)" and can't be picked.
+- An **effort** picker, for a model tagged `reasoning`. It sets how hard the
+  model thinks before answering. Omni Chat shares the same choice. See
+  [Effort level](../configuration.md#effort-level).
 
 The Chat tab stays loaded when you switch to another page, so a long answer keeps
 streaming while you do something else. The thread follows a reply as it
@@ -180,5 +183,5 @@ Both chat surfaces have a microphone button. See [Voice](voice.md).
 Two related buttons live on **Memory → Memories**:
 
 - **Recap: Today / This week** writes a short summary of the tasks you
-  completed and the notes you took, using the chat's current model.
+  completed and the notes you took, using the chat's current model and effort.
 - **Quick note** saves a `note` memory. Notes feed the recaps.

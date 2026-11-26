@@ -82,16 +82,26 @@ describe("availableProviders", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai",
-      models: ["gpt-4o", "claude-via-proxy"],
+      models: [
+        { id: "gpt-4o", capabilities: ["chat", "vision"] },
+        { id: "claude-via-proxy", capabilities: ["chat", "reasoning"] },
+        { id: "whisper", capabilities: ["stt"] },
+      ],
       headerNames: ["X-Tenant"],
     });
     const providers = await availableProviders(configWithSecrets());
     const custom = providers.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`);
     expect(custom?.label).toBe("litellm");
     expect(custom?.models).toEqual([
-      { id: "gpt-4o", capabilities: ["chat"] },
-      { id: "claude-via-proxy", capabilities: ["chat"] },
+      { id: "gpt-4o", capabilities: ["chat", "vision"] },
+      { id: "claude-via-proxy", capabilities: ["chat", "reasoning"] },
+      { id: "whisper", capabilities: ["stt"] },
     ]);
+    // The tags are what keep a speech model out of a chat picker.
+    const chat = await availableProviders(configWithSecrets(), "chat");
+    expect(
+      chat.find((p) => p.id === `${CUSTOM_PROVIDER_PREFIX}${row.id}`)?.models.map((m) => m.id),
+    ).toEqual(["gpt-4o", "claude-via-proxy"]);
     expect(custom?.custom).toBe(true);
     expect(custom?.available).toBe(true);
   });
@@ -102,7 +112,7 @@ describe("availableProviders", () => {
       name: "system one",
       baseUrl: "http://localhost:11434",
       apiKind: "systemone",
-      models: ["nimble"],
+      models: [{ id: "nimble", capabilities: ["chat"] }],
       headerNames: [],
     });
     const providers = await availableProviders(configWithSecrets());
@@ -293,7 +303,7 @@ describe("resolveModel for custom providers", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: ["X-Tenant"],
     });
     const config = configWithSecrets({
@@ -308,7 +318,7 @@ describe("resolveModel for custom providers", () => {
       name: "litellm-chat",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai-chat",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: [],
     });
     const model = await resolveModel(
@@ -324,7 +334,7 @@ describe("resolveModel for custom providers", () => {
       name: "litellm-anthropic",
       baseUrl: "https://litellm.example.com/anthropic",
       apiKind: "anthropic",
-      models: ["claude-sonnet-4-6"],
+      models: [{ id: "claude-sonnet-4-6", capabilities: ["chat"] }],
       headerNames: [],
     });
     const model = await resolveModel(
@@ -340,7 +350,7 @@ describe("resolveModel for custom providers", () => {
       name: "ollama",
       baseUrl: "http://localhost:11434/",
       apiKind: "ollama",
-      models: ["llama3.2"],
+      models: [{ id: "llama3.2", capabilities: ["chat"] }],
       headerNames: [],
     });
     const model = await resolveModel(
@@ -365,7 +375,7 @@ describe("resolveModelWithOllama", () => {
       name: "ollama",
       baseUrl: "http://localhost:11434/",
       apiKind: "ollama",
-      models: ["llama3.2"],
+      models: [{ id: "llama3.2", capabilities: ["chat"] }],
       headerNames: ["X-Team"],
     });
     const config = configWithSecrets({
@@ -393,7 +403,7 @@ describe("resolveModelWithOllama", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: [],
     });
     const custom = await resolveModelWithOllama(

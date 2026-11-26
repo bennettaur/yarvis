@@ -76,7 +76,7 @@ describe("chat routes", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.com/v1",
       apiKind: "openai",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: [],
     });
     const res = await app.request("/api/chat/providers", { headers: auth });
@@ -121,7 +121,7 @@ describe("chat routes", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.invalid/v1",
       apiKind: "openai",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: [],
     });
     const session = await app.request("/api/chat/sessions", {
@@ -189,7 +189,7 @@ describe("chat routes", () => {
       name: "litellm",
       baseUrl: "https://litellm.example.invalid/v1",
       apiKind: "openai",
-      models: ["gpt-4o"],
+      models: [{ id: "gpt-4o", capabilities: ["chat"] }],
       headerNames: [],
     });
     const session = await app.request("/api/chat/sessions", {

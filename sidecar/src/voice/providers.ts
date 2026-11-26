@@ -3,6 +3,7 @@ import { type CustomProviderRow, listCustomProviders } from "../customProviders/
 import {
   catalogFor,
   listProviderModels,
+  type ModelInfo,
   type ProviderModelRow,
   withCapability,
 } from "../llm/catalog.ts";
@@ -72,8 +73,9 @@ function servesSpeech(row: CustomProviderRow): boolean {
 function speechModels(
   providerId: string,
   rows: ProviderModelRow[],
+  fallback?: ModelInfo[],
 ): { sttModels: string[]; ttsModels: string[] } {
-  const catalog = catalogFor(providerId, rows);
+  const catalog = catalogFor(providerId, rows, fallback);
   return {
     sttModels: withCapability(catalog, "stt").map((m) => m.id),
     ttsModels: withCapability(catalog, "tts").map((m) => m.id),
@@ -92,10 +94,9 @@ function customVoiceProviderInfo(
     // An OpenAI-audio server may serve either endpoint or both; which one it
     // implements is only discoverable by asking it, so both are offered.
     capabilities: ["stt", "tts"],
-    // Its `models` column holds chat models, so nothing is suggested until the
-    // user tags a speech model for it in the catalogue; audio model names are
-    // the server's own either way.
-    ...speechModels(id, rows),
+    // Suggests the models tagged `stt` or `tts`, from saved catalogue entries or
+    // else the provider's own model list.
+    ...speechModels(id, rows, row.models),
     custom: true,
   };
 }

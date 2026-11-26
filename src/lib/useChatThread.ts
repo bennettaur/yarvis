@@ -13,6 +13,7 @@ import {
   type ThreadMessage,
   type ToolActivity,
 } from "./chat";
+import type { ReasoningEffort } from "./effort";
 import { type DisplayError, formatError } from "./errors";
 import { setToolSettings } from "./mcp";
 import { explainStreamDrop, isConnectionDrop } from "./streamDrop";
@@ -54,6 +55,8 @@ export interface UseChatThreadOptions {
    * it is supported, so it is the surface's (and the user's) choice.
    */
   reasoning?: boolean;
+  /** How hard the model should think. The sidecar drops it for a model not tagged `reasoning`. */
+  effort?: ReasoningEffort;
   /**
    * Invoked with each session this thread creates, including the one an empty
    * thread opens on its first send. A caller that renders a session list needs
@@ -81,6 +84,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
     onAttention,
     onSessionCreated,
     reasoning,
+    effort,
     visible = true,
   } = options;
 
@@ -368,6 +372,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
             model,
             context,
             reasoning,
+            effort,
             // Marks a turn the user spoke rather than typed, which is what puts
             // the agent's irreversible tools behind a confirmation.
             source: sendOptions.source,
@@ -488,6 +493,7 @@ export function useChatThread(options: UseChatThreadOptions = {}) {
       onAttention,
       onSessionCreated,
       reasoning,
+      effort,
       adoptPersistedIds,
       reloadMessages,
     ],

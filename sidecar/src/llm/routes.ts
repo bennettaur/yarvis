@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { MAX_COMPACT_AT_TOKENS, MIN_COMPACT_AT_TOKENS } from "../chat/config.ts";
 import type { Config } from "../config.ts";
+import { listCustomProviders } from "../customProviders/service.ts";
 import {
   DEFAULT_MODELS,
   deleteProviderModel,
@@ -10,12 +11,13 @@ import {
   resetProviderModels,
   saveProviderModel,
 } from "./catalog.ts";
+import { CUSTOM_PROVIDER_PREFIX } from "./providers.ts";
 
 /**
  * The model catalogue, mounted under /api/model-catalog.
  *
- * Reads answer with both halves — the configured rows and the bundled defaults
- * they stand in for — because the settings UI has to show what a provider
+ * Reads answer with both halves — the configured rows and the defaults they
+ * replace (the bundled list, or a custom provider's own model list) — because the settings UI has to show what a provider
  * currently offers *and* what it would fall back to if its rows were cleared.
  */
 
@@ -54,13 +56,18 @@ const saveSchema = z.object({
 export function createModelCatalogRoutes(_config: Config): Hono {
   const router = new Hono();
 
-  router.get("/", async (c) =>
-    c.json({
+  router.get("/", async (c) => {
+    const [models, customRows] = await Promise.all([listProviderModels(), listCustomProviders()]);
+    // A custom provider has no bundled list; its own saved models serve as its defaults.
+    const customDefaults = Object.fromEntries(
+      customRows.map((row) => [`${CUSTOM_PROVIDER_PREFIX}${row.id}`, row.models]),
+    );
+    return c.json({
       capabilities: MODEL_CAPABILITIES,
-      defaults: DEFAULT_MODELS,
-      models: await listProviderModels(),
-    }),
-  );
+      defaults: { ...DEFAULT_MODELS, ...customDefaults },
+      models,
+    });
+  });
 
   router.put("/", async (c) => {
     const parsed = saveSchema.safeParse(await c.req.json().catch(() => null));

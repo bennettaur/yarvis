@@ -368,14 +368,14 @@ has written your providers and MCP servers into it.
 
 | Key | Holds | Set from |
 | --- | --- | --- |
-| `customProviders` | Your OpenAI-, Anthropic-, Ollama- or System One-compatible endpoints, keyed by id | Settings → LLM Providers |
+| `customProviders` | Your OpenAI-, Anthropic-, Ollama- or System One-compatible endpoints, keyed by id. Each has a `models` list of `{ id, capabilities }`; a bare id string, as older builds wrote, reads as a `chat` model (a System One provider's models are always `decision`). | Settings → LLM Providers |
 | `providerModels` | Your edited model list per provider. Replaces the built-in list for that provider once saved. | Settings → LLM Providers → Models |
 | `mcpServers` | MCP servers Yarvis connects to, keyed by id | Settings → Tools & MCP |
 | `chatConfig` | `maxSteps` (100, up to 500), `maxOutputTokens` (none, up to 200000), `compactAtTokens` (200000, from 10000 to 2000000). A model's own compaction threshold in its catalog entry wins over `compactAtTokens`. | Settings → Assistant → Turn budget |
-| `complexityModels` | The provider and model behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
-| `decisionModel` | `model`, the provider and model tagged `decision` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
+| `complexityModels` | The provider, model and optional `effort` behind the `low`, `medium` and `max` tiers specialists can ask for | Settings → Assistant |
+| `decisionModel` | `model`, the provider, model (tagged `decision`) and optional `effort` that answers quick judgements, `autoApproveTools`, which lets it approve MCP tool calls before you are asked, and `autoApproveHeadsDown`, which lets it approve a heads-down call to an MCP tool you've approved in similar situations before (see [Heads-down mode](features/heads-down.md)), `routeComplexity`, which lets it pick the complexity tier for a specialist that names no model, and `pickSpecialists`, which lets it pick the specialist for a delegation that names none (see [Decision specialists](features/assistant.md#decision-specialists)) | Settings → Tools & MCP |
 | `githubPrConfig` | `reviewQuery` for the Needs review tab, `reviewingLookbackDays` for Reviewing | Settings → PR review |
-| `prModels` | The provider and model behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
+| `prModels` | The provider, model and optional `effort` behind guided reviews (`guide`) and line questions (`ask`). Unset uses the default chat model. | Settings → PR review |
 | `prVerification` | `sections`, the user's overrides of each verification check's Claude Code `model` (`sonnet`, `opus` or `haiku`) and `effort` (`low`, `medium`, `high`, `xhigh` or `max`), by section name; a check with no override runs on its default (Opus at high effort for `risk` and `malice`, Haiku at low effort for `comments` and `observability`, Sonnet at medium effort for the rest). A `model` saved before checks had their own is ignored. `harness`, the id of the Claude Code, OpenCode or Pi [agent harness](features/workspaces.md#agent-harnesses) the checks run with; left out, the built-in agent. `harnessModels`, by harness id, the model an OpenCode or Pi harness runs each tier on (`provider/model`, optionally OpenCode's `#variant` or Pi's `:level`): `opus`, `sonnet` and `haiku`. Also `maxBudgetUsd`, the budget one report is checked against (2 by default, at least 0.25, no upper limit). It only warns: when the assistant is asked for a report estimated over it, it asks before starting. The review workspace runs the checks you pick without asking, and a run that goes over it still finishes | Settings → PR review |
 | `prRereview` | The "What's changed" re-review summary: its Claude Code `model` (`sonnet` by default), `maxBudgetUsd` (1 by default, at least 0.25, no upper limit; it only warns, like the verification report's), and `autoStart` (off by default), which starts it when the **Since last review** tab opens on changes it hasn't summarised. The `pr-updates` job runs it with the same model and budget whatever `autoStart` says, and asks first instead of starting a run estimated over the budget | Settings → PR review |
 | `reviewPrep` | `maxConcurrentVerifications` (2, from 1 to 5): how many PRs [review prep](features/review-workspaces.md#review-prep) verifies at once; the rest wait their turn. `maxReady` (5, from 1 to 50): how many PRs review prep keeps ready or being prepared at once; further PRs wait in a backlog, and a stack is prepared whole even past this. `sizeTiers`: when a PR counts as small (`smallMaxLines` 20 and `smallMaxFiles` 2, both at or under) or big (`bigMinLines` 500 or `bigMinFiles` 10, either at or over), which decides the checks review prep runs | Edit the file by hand |
@@ -405,6 +405,65 @@ hand, include every field, as the example file does.
 > from Postgres back into the file. Back up the file before changing those
 > fields.
 
+
+## Custom LLM providers
+
+**Settings → LLM Providers → Add provider** points Yarvis at a gateway such as
+LiteLLM, Ollama or a company proxy. Pick the API it speaks:
+
+- **OpenAI Responses** for a gateway with `/responses`. LiteLLM supports it.
+  Yarvis sends `store: false`, so a multi-step tool turn carries the model's
+  reasoning in each request instead of asking the gateway to look it up.
+- **OpenAI /chat/completions** for a gateway without the Responses API.
+- **Anthropic Messages** for an Anthropic-shaped gateway.
+- **Ollama** for an Ollama server. Give the server root, such as
+  `http://localhost:11434`.
+
+Each model you add gets capability tags, the same ones the model catalog uses
+(`chat`, `stt`, `tts`, `vision`, `embed`, `decision`, `reasoning`). A new model
+starts as `chat`. The tags decide which pickers offer it, so tag a speech model
+`stt` or `tts` and not `chat`. Tag `reasoning` on a model that takes an effort
+level. That puts an effort picker beside it wherever it is chosen. Only tag
+models whose gateway accepts the parameter, since a gateway that rejects it
+fails the call.
+
+Each saved provider has two tests, run with its saved URL and credentials:
+
+- **Test connection** asks the gateway for its model list. It reports a
+  failure with the gateway's own error, and names any model you added that the
+  gateway doesn't list, which is usually a typo in the id.
+- **Test** beside each chat or decision model sends it one short prompt
+  through the same code a chat turn uses, with a low effort for a model tagged
+  `reasoning`. A model that is reachable but answers in a shape Yarvis
+  can't read fails here, with the details.
+
+### Effort level
+
+A model tagged `reasoning` gets an effort picker beside its model picker: on
+the Chat tab, Omni Chat and the Omni view (all three share one choice, which
+the memory recap also uses), for each complexity tier, for the decision model,
+and for each PR review model. A specialist sets one with `effort:` in its file.
+The levels are minimal, low, medium, high and extra high. **Default effort**
+leaves it to the provider. Yarvis translates the level into each provider's own
+setting, and drops it for a model that isn't tagged `reasoning`. On a Claude
+model, any effort also turns thinking on, so its reasoning can appear even with
+**Thinking** unticked.
+
+The built-in Claude Opus and Sonnet models and the Gemini chat models come
+tagged `reasoning`. If you edited a provider's list under **Settings → LLM
+Providers → Models**, that saved list is used as it is: tag the model
+`reasoning` there, or press **Reset to built-in list** (**Reset to provider's
+list** for a custom provider) to pick up the tags. A custom provider's
+**Models** list also wins over the tags in its provider form until it is reset.
+
+Tag an OpenAI reasoning model (o-series, GPT-5) `reasoning` even if you never
+set an effort, when its id behind your gateway isn't OpenAI's own (say
+`azure-gpt-5`). Yarvis then asks for the model's reasoning back, which a
+multi-step tool turn needs since Yarvis sends `store: false`.
+
+Heads-down passes and the Telegram bot don't take an effort level, so they use
+the provider's default. A decision model on an **Ollama** provider ignores the
+effort too, since Ollama's own API has no such setting.
 
 ## Embeddings
 

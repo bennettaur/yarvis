@@ -2,7 +2,7 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
-import type { JSONValue, LanguageModel } from "ai";
+import type { JSONValue, LanguageModel, wrapLanguageModel } from "ai";
 import type { Config } from "../config.ts";
 import { type CustomProviderRow, listCustomProviders } from "../customProviders/service.ts";
 import { validateOutboundUrl } from "../lib/urlSafety.ts";
@@ -14,6 +14,8 @@ import {
   type ProviderModelRow,
   withCapability,
 } from "./catalog.ts";
+import { type ReasoningEffort, withEffort } from "./effort.ts";
+import { responsesCompatFetch, withoutServerSideStorage } from "./responsesCompat.ts";
 
 /**
  * Provider identifiers.
@@ -24,6 +26,15 @@ import {
  * never collide with the built-in ids.
  */
 export type ProviderId = string;
+
+/** A model object a provider SDK built, as opposed to a gateway id string; only these can be wrapped. */
+export type LanguageModelObject = Parameters<typeof wrapLanguageModel>[0]["model"];
+
+/** A resolved model, and whether the OpenAI SDK built it, which changes how effort is sent. */
+interface BuiltModel {
+  model: LanguageModelObject;
+  viaOpenAI: boolean;
+}
 
 export const CUSTOM_PROVIDER_PREFIX = "custom:";
 
@@ -76,20 +87,18 @@ function builtInProviders(config: Config, rows: ProviderModelRow[]): ProviderInf
 }
 
 /**
- * A custom provider's own `models` column is its default catalogue. Those ids
- * were entered as chat models — that is the only thing the provider form asks
- * for — so they are tagged as such, and a `provider_models` row is how a
- * speech model on the same proxy gets named. A System One model can only
- * answer decision questions, so it is tagged `decision` instead.
+ * A custom provider's own tagged model list is its default catalogue, which
+ * saved catalogue entries take over as they do a built-in's. A System One model
+ * can only answer decision questions, so whatever it was saved with, it is
+ * tagged `decision`.
  */
 function customProviderInfo(row: CustomProviderRow, rows: ProviderModelRow[]): ProviderInfo {
   const id = `${CUSTOM_PROVIDER_PREFIX}${row.id}`;
-  const capability = row.apiKind === "systemone" ? "decision" : "chat";
-  const models = catalogFor(
-    id,
-    rows,
-    row.models.map((m) => ({ id: m, capabilities: [capability] })),
-  );
+  const own =
+    row.apiKind === "systemone"
+      ? row.models.map((m) => ({ id: m.id, capabilities: ["decision" as const] }))
+      : row.models;
+  const models = catalogFor(id, rows, own);
   return {
     id,
     label: row.name,
@@ -180,7 +189,7 @@ export function pickDefaultModel(
  * An endpoint on an Ollama server. The provider's base URL is the server root,
  * since chat and decision calls reach different paths on it.
  */
-export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat"): string {
+export function ollamaUrl(baseUrl: string, path: "/v1" | "/api/chat" | "/api/tags"): string {
   return `${baseUrl.replace(/\/+$/, "")}${path}`;
 }
 
@@ -248,7 +257,18 @@ export async function findCustomProvider(
   return (await listCustomProviders()).find((r) => r.id === id) ?? null;
 }
 
-function resolveCustom(row: CustomProviderRow, config: Config, modelId: string): LanguageModel {
+/**
+ * `reasoning` is whether the catalogue tags the model `reasoning`. A Responses
+ * model sends `store: false`, which replays its reasoning inline, and the SDK
+ * only asks for that reasoning back for model ids it recognizes. A proxy alias
+ * isn't one, so the tag asks for it instead.
+ */
+function resolveCustom(
+  row: CustomProviderRow,
+  config: Config,
+  modelId: string,
+  { reasoning }: { reasoning: boolean },
+): BuiltModel {
   // Defense-in-depth: the create/update routes already validate, but DB rows
   // can have been seeded by an earlier version, so re-check at resolve time.
   // Local providers (e.g. a local Ollama server) legitimately live on loopback.
@@ -261,18 +281,28 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
   };
   switch (row.apiKind) {
     case "openai":
-      // Default call goes through the OpenAI Responses API.
-      return createOpenAI(options)(modelId);
+      // Default call goes through the OpenAI Responses API. Proxies such as
+      // LiteLLM leave out fields the SDK requires and can't resolve stored
+      // item references, so replies are patched and storage is turned off.
+      return {
+        model: withoutServerSideStorage(
+          createOpenAI({ ...options, fetch: responsesCompatFetch() })(modelId),
+          { includeReasoning: reasoning },
+        ),
+        viaOpenAI: true,
+      };
     case "openai-chat":
-      // Use the legacy /chat/completions endpoint for gateways (e.g. older
-      // litellm versions) that don't speak the Responses API.
-      return createOpenAI(options).chat(modelId);
+      // The /chat/completions endpoint, for gateways without the Responses API.
+      return { model: createOpenAI(options).chat(modelId), viaOpenAI: true };
     case "anthropic":
-      return createAnthropic(options)(modelId);
+      return { model: createAnthropic(options)(modelId), viaOpenAI: false };
     case "ollama":
       // The base URL names the Ollama server itself, which decision calls reach
       // at `/api/chat`; a chat turn goes through its OpenAI-compatible `/v1`.
-      return createOpenAI({ ...options, baseURL: ollamaUrl(row.baseUrl, "/v1") }).chat(modelId);
+      return {
+        model: createOpenAI({ ...options, baseURL: ollamaUrl(row.baseUrl, "/v1") }).chat(modelId),
+        viaOpenAI: true,
+      };
     case "systemone":
       throw new Error("a System One model answers decision questions only, not chat");
     default:
@@ -280,13 +310,22 @@ function resolveCustom(row: CustomProviderRow, config: Config, modelId: string):
   }
 }
 
-/** Resolves a concrete language model for the given provider/model. */
+/**
+ * Resolves a concrete language model for the given provider/model.
+ *
+ * `effort` is baked into the returned model, so every call made with it asks
+ * for that level without the caller threading it through. It applies only
+ * when the catalogue tags the model `reasoning`. A saved selection can outlive
+ * a catalogue edit, and sending effort to a model that doesn't take it can fail
+ * the call, so an untagged model gets none.
+ */
 export async function resolveModel(
   config: Config,
   providerId: ProviderId,
   modelId: string,
+  { effort }: { effort?: ReasoningEffort } = {},
 ): Promise<LanguageModel> {
-  return (await resolveModelWithOllama(config, providerId, modelId)).model;
+  return (await resolveModelWithOllama(config, providerId, modelId, { effort })).model;
 }
 
 /**
@@ -297,43 +336,54 @@ export async function resolveModelWithOllama(
   config: Config,
   providerId: ProviderId,
   modelId: string,
+  { effort }: { effort?: ReasoningEffort } = {},
 ): Promise<{ model: LanguageModel; ollama: OllamaChatTarget | null }> {
-  if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX)) {
-    const id = providerId.slice(CUSTOM_PROVIDER_PREFIX.length);
-    const rows = await listCustomProviders();
-    const row = rows.find((r) => r.id === id);
-    if (!row) throw new Error(`unknown custom provider: ${id}`);
-    return {
-      model: resolveCustom(row, config, modelId),
-      ollama: ollamaChatTargetFor(config, row, modelId),
-    };
+  const custom = await findCustomProvider(providerId);
+  if (providerId.startsWith(CUSTOM_PROVIDER_PREFIX) && !custom) {
+    throw new Error(`unknown custom provider: ${providerId.slice(CUSTOM_PROVIDER_PREFIX.length)}`);
   }
-  return { model: resolveBuiltIn(config, providerId, modelId), ollama: null };
+  // Only read the catalogue when the answer changes what gets built.
+  const reasoning =
+    (effort !== undefined || custom?.apiKind === "openai") &&
+    catalogFor(providerId, await listProviderModels(), custom?.models)
+      .find((m) => m.id === modelId)
+      ?.capabilities.includes("reasoning") === true;
+  const { model, viaOpenAI } = custom
+    ? resolveCustom(custom, config, modelId, { reasoning })
+    : resolveBuiltIn(config, providerId, modelId);
+  return {
+    model: effort && reasoning ? withEffort(model, effort, { viaOpenAI }) : model,
+    ollama: custom ? ollamaChatTargetFor(config, custom, modelId) : null,
+  };
 }
 
-function resolveBuiltIn(config: Config, providerId: ProviderId, modelId: string): LanguageModel {
+function resolveBuiltIn(config: Config, providerId: ProviderId, modelId: string): BuiltModel {
   switch (providerId) {
     case "anthropic": {
       const apiKey = config.secrets.anthropicApiKey;
       if (!apiKey) throw new Error("Anthropic API key not configured");
-      return createAnthropic({ apiKey })(modelId);
+      return { model: createAnthropic({ apiKey })(modelId), viaOpenAI: false };
     }
     case "gemini": {
       const apiKey = config.secrets.geminiApiKey;
       if (!apiKey) throw new Error("Gemini API key not configured");
-      return createGoogleGenerativeAI({ apiKey })(modelId);
+      return { model: createGoogleGenerativeAI({ apiKey })(modelId), viaOpenAI: false };
     }
     case "cerebras": {
       const apiKey = config.secrets.cerebrasApiKey;
       if (!apiKey) throw new Error("Cerebras API key not configured");
       // Cerebras serves /chat/completions but not the Responses API, so this
       // reuses the OpenAI client rather than adding a Cerebras SDK package.
-      return createOpenAI({ apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelId);
+      return {
+        model: createOpenAI({ apiKey, baseURL: CEREBRAS_BASE_URL }).chat(modelId),
+        viaOpenAI: true,
+      };
     }
     case "bedrock": {
-      return createAmazonBedrock({
-        region: process.env.AWS_REGION ?? "us-east-1",
-      })(modelId);
+      return {
+        model: createAmazonBedrock({ region: process.env.AWS_REGION ?? "us-east-1" })(modelId),
+        viaOpenAI: false,
+      };
     }
     default:
       throw new Error(`unknown provider: ${providerId}`);

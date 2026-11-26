@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "../app.ts";
 import type { Config } from "../config.ts";
+import { createCustomProvider } from "../customProviders/service.ts";
 
 const config: Config = {
   port: 0,
@@ -86,5 +87,21 @@ describe("model catalogue compaction threshold", () => {
 
     const cleared = (await (await put({ compactAtTokens: null })).json()) as Saved;
     expect(cleared.compactAtTokens).toBeUndefined();
+  });
+});
+
+describe("model catalogue defaults", () => {
+  it("lists a custom provider's own tagged models as its defaults", async () => {
+    const models = [{ id: "bedrock-claude-opus-5-5", capabilities: ["chat", "reasoning"] }];
+    const row = await createCustomProvider({
+      name: "litellm",
+      baseUrl: "https://litellm.example.com/v1",
+      apiKind: "openai",
+      models: [{ id: "bedrock-claude-opus-5-5", capabilities: ["chat", "reasoning"] }],
+      headerNames: [],
+    });
+    const list = await app.request("/api/model-catalog", { headers });
+    const body = (await list.json()) as { defaults: Record<string, unknown> };
+    expect(body.defaults[`custom:${row.id}`]).toEqual(models);
   });
 });
