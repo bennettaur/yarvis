@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -12,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getHeadsDownConfig, saveHeadsDownConfig } from "./config.ts";
 import {
   deleteRoutineFile,
   dueRoutines,
@@ -25,6 +27,7 @@ import {
   routineCatalog,
   routineSchedules,
   setRoutineEnabled,
+  withSwitches,
   writeRoutineFile,
 } from "./routines.ts";
 
@@ -39,6 +42,7 @@ function routine(name: string, everyMinutes: number, extra: Partial<Routine> = {
     everyMinutes,
     workingHoursOnly: false,
     enabled: true,
+    enabledByDefault: true,
     tools: [],
     config: {},
     nightShift: "run",
@@ -598,35 +602,71 @@ describe("routineSchedules", () => {
 describe("changing routine files", () => {
   let dir: string;
   const original = process.env.YARVIS_ROUTINES_DIR;
+  const originalSettings = process.env.YARVIS_SETTINGS_PATH;
 
   beforeEach(async () => {
-    dir = join(mkdtempSync(join(tmpdir(), "routines-change-")), "routines");
+    const parent = mkdtempSync(join(tmpdir(), "routines-change-"));
+    dir = join(parent, "routines");
     process.env.YARVIS_ROUTINES_DIR = dir;
+    // The routine switches are settings, so each test starts with none.
+    process.env.YARVIS_SETTINGS_PATH = join(parent, "settings.json");
     await reloadRoutines();
   });
   afterEach(async () => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(join(dir, ".."), { recursive: true, force: true });
     process.env.YARVIS_ROUTINES_DIR = original;
+    process.env.YARVIS_SETTINGS_PATH = originalSettings;
     await reloadRoutines();
   });
 
   const find = async (name: string) =>
     (await routineCatalog()).routines.find((r) => r.name === name);
 
-  it("turns a shipped routine on with a copy of it in the user's folder, and off again", async () => {
+  it("turns routines on and off in the settings, without touching or copying a file", async () => {
     const shipped = await find("review-prep");
-    expect(shipped).toMatchObject({ enabled: false, source: "builtin" });
+    expect(shipped).toMatchObject({ enabled: false, enabledByDefault: false, source: "builtin" });
 
-    expect(await setRoutineEnabled("review-prep", true)).toEqual({
-      path: join(dir, "review-prep.md"),
+    expect(await setRoutineEnabled("review-prep", true)).toEqual({ enabled: true });
+    expect(existsSync(dir) && readdirSync(dir).length).toBeFalsy();
+    const switches = (await getHeadsDownConfig()).routines;
+    expect(switches).toEqual({ "review-prep": true });
+    const catalog = (await routineCatalog()).routines;
+    expect(withSwitches(catalog, switches).find((r) => r.name === "review-prep")).toMatchObject({
+      enabled: true,
+      enabledByDefault: false,
+      source: "builtin",
     });
-    const on = await find("review-prep");
-    expect(on).toMatchObject({ enabled: true, source: "user", prompt: shipped?.prompt });
-    expect(readFileSync(join(dir, "review-prep.md"), "utf8")).not.toContain("enabled");
 
-    await setRoutineEnabled("review-prep", false);
-    expect(await find("review-prep")).toMatchObject({ enabled: false, source: "user" });
+    await setRoutineEnabled("meeting-alarms", false);
+    expect((await getHeadsDownConfig()).routines).toEqual({
+      "review-prep": true,
+      "meeting-alarms": false,
+    });
     expect(await setRoutineEnabled("nope", true)).toEqual({ error: "no routine named 'nope'" });
+  });
+
+  it("ignores a switch for a routine that no longer loads, and keeps it for when it comes back", async () => {
+    await writeRoutineFile({ name: "temp", description: "T", every: "1d", body: "Do it." });
+    await setRoutineEnabled("temp", false);
+    await deleteRoutineFile("temp");
+    const switches = (await getHeadsDownConfig()).routines;
+    const routines = withSwitches((await routineCatalog()).routines, switches);
+    expect(routines.some((r) => r.name === "temp")).toBe(false);
+    expect(switches).toEqual({ temp: false });
+
+    await writeRoutineFile({ name: "temp", description: "T", every: "1d", body: "Do it." });
+    const back = withSwitches((await routineCatalog()).routines, switches);
+    expect(back.find((r) => r.name === "temp")).toMatchObject({ enabled: false });
+  });
+
+  it("keeps the routine switches when the settings form is saved", async () => {
+    await setRoutineEnabled("review-prep", true);
+    const { routines: _, ...form } = await getHeadsDownConfig();
+    await saveHeadsDownConfig({ ...form, maxRoutinesPerPass: 3 });
+    expect(await getHeadsDownConfig()).toMatchObject({
+      maxRoutinesPerPass: 3,
+      routines: { "review-prep": true },
+    });
   });
 
   it("writes tools, config and a one-off, and replaces only when asked", async () => {
@@ -652,8 +692,11 @@ describe("changing routine files", () => {
   });
 
   it("deletes only the user's own file, bringing back the shipped one it replaced", async () => {
-    await setRoutineEnabled("meeting-alarms", false);
-    expect(await find("meeting-alarms")).toMatchObject({ source: "user", enabled: false });
+    await writeRoutineFile(
+      { name: "meeting-alarms", description: "Mine", every: "1h", body: "Mine." },
+      { replace: true },
+    );
+    expect(await find("meeting-alarms")).toMatchObject({ source: "user", prompt: "Mine." });
     expect(await deleteRoutineFile("meeting-alarms")).toEqual({ deleted: true });
     expect(await find("meeting-alarms")).toMatchObject({ source: "builtin", enabled: true });
     expect(await deleteRoutineFile("meeting-alarms")).toEqual({
@@ -696,46 +739,7 @@ describe("routine file edge cases", () => {
   const find = async (name: string) =>
     (await routineCatalog()).routines.find((r) => r.name === name);
 
-  it("turns the user's own routine off and on changing only its enabled line", async () => {
-    const text = [
-      "---",
-      "# my standup notes",
-      "name: standup",
-      'description: "Drafts my standup"',
-      "every: 1d",
-      "workingHours: true",
-      "nightShift: slow",
-      "tools: [list_events]",
-      "config:",
-      '  channels: ["#eng"]',
-      "---",
-      "",
-      "First paragraph.",
-      "",
-      "Second paragraph.",
-      "",
-    ].join("\n");
-    writeFileSync(join(dir, "standup.md"), text);
-    await reloadRoutines();
-
-    await setRoutineEnabled("standup", false);
-    expect(readFileSync(join(dir, "standup.md"), "utf8")).toBe(
-      text.replace("---\n\nFirst", "enabled: false\n---\n\nFirst"),
-    );
-    expect(await find("standup")).toMatchObject({ enabled: false, nightShift: "slow" });
-
-    await setRoutineEnabled("standup", true);
-    expect(readFileSync(join(dir, "standup.md"), "utf8")).toBe(text);
-    expect(await find("standup")).toMatchObject({
-      enabled: true,
-      workingHoursOnly: true,
-      tools: ["list_events"],
-      config: { channels: ["#eng"] },
-      prompt: "First paragraph.\n\nSecond paragraph.",
-    });
-  });
-
-  it("replaces a shipped routine with the user's file, keeping one that is off, off", async () => {
+  it("replaces a shipped routine with the user's file, keeping one that ships off, off", async () => {
     const shippedBody = (await find("meeting-notes"))?.prompt;
     const written = await writeRoutineFile(
       { name: "meeting-notes", description: "Mine", every: "1h", body: "Mine." },

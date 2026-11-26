@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -432,6 +432,8 @@ describe("/api/heads-down", () => {
         workingHoursOnly: false,
         nightShift: "run",
         enabled: true,
+        enabledByDefault: true,
+        switchedTo: null,
         once: false,
         source: "builtin",
         path: null,
@@ -489,7 +491,10 @@ describe("/api/heads-down", () => {
   it("adds a routine, turns routines on and off, and deletes the user's own", async () => {
     const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-routines-"));
     const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    const originalSettings = process.env.YARVIS_SETTINGS_PATH;
     process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    // The switches are settings; a file of its own keeps them out of later tests.
+    process.env.YARVIS_SETTINGS_PATH = join(mkdtempSync(join(tmpdir(), "hd-settings-")), "s.json");
     const send = (method: string, path: string, body?: unknown) =>
       app.request(`/api/heads-down${path}`, {
         method,
@@ -525,18 +530,23 @@ describe("/api/heads-down", () => {
       });
       expect(taken.status).toBe(400);
 
+      // A switch in the settings: the shipped routine stays shipped, and no file is written.
       const on = await send("PUT", "/routines/review-prep/enabled", { enabled: true });
       expect(on.status).toBe(200);
       expect(named(await on.json(), "review-prep")).toMatchObject({
         enabled: true,
-        source: "user",
-      });
-
-      const deleted = await send("DELETE", "/routines/review-prep");
-      expect(named(await deleted.json(), "review-prep")).toMatchObject({
-        enabled: false,
+        enabledByDefault: false,
+        switchedTo: true,
         source: "builtin",
       });
+      expect(readdirSync(routinesDir)).toEqual(["check-release.md"]);
+      expect((await get("/config")).routines).toEqual({ "review-prep": true });
+
+      // Deleting the user's file leaves its switch alone.
+      await send("PUT", "/routines/check-release/enabled", { enabled: false });
+      const deleted = await send("DELETE", "/routines/check-release");
+      expect(named(await deleted.json(), "check-release")).toBeUndefined();
+      expect((await send("DELETE", "/routines/review-prep")).status).toBe(400);
       expect((await send("DELETE", "/routines/meeting-alarms")).status).toBe(400);
       expect((await send("DELETE", "/routines/nope")).status).toBe(400);
       const unknown = await send("PUT", "/routines/nope/enabled", { enabled: true });
@@ -546,6 +556,7 @@ describe("/api/heads-down", () => {
         400,
       );
     } finally {
+      process.env.YARVIS_SETTINGS_PATH = originalSettings;
       process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
       await post("/routines/reload");
       rmSync(routinesDir, { recursive: true, force: true });

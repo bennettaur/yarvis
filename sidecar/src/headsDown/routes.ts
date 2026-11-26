@@ -43,6 +43,7 @@ import {
   routineCatalog,
   routineSchedules,
   setRoutineEnabled,
+  withSwitches,
   writeRoutineFile,
 } from "./routines.ts";
 import {
@@ -316,8 +317,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
       getHeadsDownConfig().catch(() => DEFAULT_HEADS_DOWN_CONFIG),
     ]);
     const now = new Date();
+    const switched = withSwitches(routines, hd.routines);
     const schedules = routineSchedules({
-      routines,
+      routines: switched,
       ...history,
       now,
       withinWorkingHours: isWithinWorkingHours(now, hd.workingHours),
@@ -325,7 +327,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
       limit: hd.maxRoutinesPerPass,
     });
     return {
-      routines: routines.map((r) => {
+      routines: switched.map((r) => {
         const schedule = schedules.get(r.name);
         return {
           name: r.name,
@@ -334,6 +336,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
           workingHoursOnly: r.workingHoursOnly,
           nightShift: r.nightShift,
           enabled: r.enabled,
+          enabledByDefault: r.enabledByDefault,
+          // The user's own switch, or null when the file's default decides.
+          switchedTo: hd.routines[r.name] ?? null,
           once: r.once,
           source: r.source,
           path: r.source === "user" ? r.path : null,

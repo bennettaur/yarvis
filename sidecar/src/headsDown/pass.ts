@@ -38,6 +38,7 @@ import {
   resolveRoutineTools,
   routineCatalog,
   SLACK_WATCHER,
+  withSwitches,
 } from "./routines.ts";
 import {
   answeredSince,
@@ -246,8 +247,9 @@ export async function runPass(
   const withinWorkingHours = isWithinWorkingHours(now, headsDownConfig.workingHours);
   const duringNightShift = isNightShift(now, headsDownConfig.nightShift);
   const { alwaysOn } = headsDownConfig;
+  const allRoutines = withSwitches(catalog.routines, headsDownConfig.routines);
   const routines = dueRoutines({
-    routines: catalog.routines,
+    routines: allRoutines,
     ...history,
     now,
     withinWorkingHours,
@@ -280,7 +282,7 @@ export async function runPass(
     });
   // Only while the routine can actually run and knows whose messages to look
   // for; otherwise the Messages step keeps reading Slack.
-  const slackWatcher = catalog.routines.find((r) => r.name === SLACK_WATCHER);
+  const slackWatcher = allRoutines.find((r) => r.name === SLACK_WATCHER);
   const slackWatcherOn =
     headsDownConfig.maxRoutinesPerPass > 0 &&
     slackWatcher !== undefined &&

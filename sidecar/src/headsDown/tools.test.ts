@@ -154,7 +154,7 @@ describe("the chat's routine tools", () => {
         { name: "review-prep", enabled: true },
         opts,
       ),
-    ).toEqual({ ok: true, path: join(dir, "review-prep.md"), enabled: true });
+    ).toEqual({ ok: true, enabled: true });
   });
 
   it("refuses a routine with neither a cadence nor once, and invisible text", () => {
