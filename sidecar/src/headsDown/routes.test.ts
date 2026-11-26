@@ -401,10 +401,13 @@ describe("/api/heads-down", () => {
       const earlier = await startRun(db, null);
       await stopRun(db);
       const current = await startRun(db, null);
+      // Dated from now: only a pass in the last 30 days counts as done.
+      const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+      const latestDone = hoursAgo(2);
       await sql`INSERT INTO heads_down_passes (run_id, started_at, routines_done)
-                VALUES (${current.id}, '2026-10-27T09:00:00Z', '["meeting-alarms"]'),
-                       (${earlier.id}, '2026-10-27T12:00:00Z', '["meeting-alarms"]'),
-                       (${current.id}, '2026-10-27T13:00:00Z', '[]')`;
+                VALUES (${current.id}, ${hoursAgo(5)}, '["meeting-alarms"]'),
+                       (${earlier.id}, ${latestDone}, '["meeting-alarms"]'),
+                       (${current.id}, ${hoursAgo(1)}, '[]')`;
 
       const body = await get("/routines");
       expect(body.problems).toEqual([]);
@@ -419,7 +422,7 @@ describe("/api/heads-down", () => {
         source: "builtin",
         tools: [],
         configKeys: [],
-        lastDoneAt: "2026-10-27T12:00:00.000Z",
+        lastDoneAt: latestDone,
       });
       expect(body.routines).toContainEqual(
         expect.objectContaining({ name: "meeting-notes", enabled: false, lastDoneAt: null }),
