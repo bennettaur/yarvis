@@ -151,7 +151,7 @@ describe("buildPassPrompt", () => {
       once: false,
       source: "user" as const,
       path: "/routines/x.md",
-      addedAt: null,
+      writtenAt: null,
     });
     const lastDone = new Date("2026-10-19T08:00:00Z");
     const prompt = buildPassPrompt({
@@ -185,7 +185,7 @@ describe("buildPassPrompt", () => {
           once: false,
           source: "user",
           path: "/routines/slack-watch.md",
-          addedAt: null,
+          writtenAt: null,
         },
       ],
       routineTools: new Map([

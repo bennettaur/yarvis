@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
@@ -26,7 +26,7 @@ import reviewReflection from "./routines/review-reflection.md" with { type: "tex
 import slackWatcher from "./routines/slack-watcher.md" with { type: "text" };
 
 /**
- * Routines: recurring jobs a heads-down pass takes on beside the work streams,
+ * Routines: recurring or one-off jobs a heads-down pass takes on beside the work streams,
  * such as setting alarms for the day's meetings.
  *
  * A routine is a markdown file, like a specialist: frontmatter for how often it
@@ -63,20 +63,17 @@ export interface Routine {
   config: RoutineConfig;
   /** What it does during night shift. */
   nightShift: NightShiftMode;
-  /**
-   * Runs on one pass and is then removed, for ad hoc work the user wants done
-   * when a pass has room. Its file is deleted once a pass reports it done.
-   */
+  /** Ad hoc work the user wants done when a pass has room. Offered until a pass reports it done, then its file is deleted. */
   once: boolean;
   source: RoutineSource;
   /** Where it was read from: a shipped path, or the user's file. */
   path: string;
   /**
-   * When the user's file was last written. A `once` routine is due until a pass
-   * that started after this reports it done, so a name reused for a new one-off
-   * isn't held back by the old one's history. Null for a shipped routine.
+   * The user's file's mtime. A `once` routine is due until a pass that started
+   * after this reports it done, so a name reused for a new one-off isn't held
+   * back by the old one's history. Null for a shipped routine.
    */
-  addedAt: Date | null;
+  writtenAt: Date | null;
 }
 
 /** A routine's settings: each value is text or a list of text. */
@@ -132,10 +129,14 @@ export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const KNOWN_KEYS = ["name", "description", "every", "workingHours", "enabled", "once"] as const;
 
 /**
- * A one-off has no cadence of its own. This only sets how long one a pass
- * couldn't finish waits before it is given again (see `RETRY_AFTER_MINUTES`).
+ * How long a routine a pass was given but didn't finish waits before it is
+ * given again, at most. Without it a routine that keeps failing would be given
+ * to every pass and take a slot from the routines that work.
  */
-const ONCE_EVERY_MINUTES = 60;
+const RETRY_AFTER_MINUTES = 60;
+
+/** A one-off has no cadence of its own; this only sets how long an unfinished one waits to be retried. */
+const ONCE_EVERY_MINUTES = RETRY_AFTER_MINUTES;
 
 /** Keys that hand the pass more than the body: tools to mount and settings to read. */
 const PASS_INPUT_KEYS = ["tools", "config"] as const;
@@ -182,11 +183,15 @@ export function parseRoutine(
   path: string,
   content: string,
   source: RoutineSource,
-  addedAt: Date | null = null,
+  writtenAt: Date | null = null,
 ): Routine {
   const { data, body } = parseDocument(path, content);
   assertKnownKeys(path, data, [...KNOWN_KEYS, ...PASS_INPUT_KEYS, "nightShift"]);
   const once = asBoolean(path, data, "once") ?? false;
+  // A one-off is finished by deleting its file, which a shipped routine doesn't have.
+  if (once && source === "builtin") {
+    throw new FrontmatterError(path, "a shipped routine can't be a one-off", 1);
+  }
 
   const name = asRequiredString(path, data, "name");
   if (!NAME_PATTERN.test(name)) {
@@ -238,7 +243,7 @@ export function parseRoutine(
     once,
     source,
     path,
-    addedAt,
+    writtenAt,
   };
 }
 
@@ -331,9 +336,9 @@ export async function loadRoutines(): Promise<RoutineCatalog> {
   const problems: RoutineProblem[] = [];
   const byName = new Map<string, Routine>();
 
-  const add = (path: string, content: string, source: RoutineSource, addedAt?: Date) => {
+  const add = (path: string, content: string, source: RoutineSource, writtenAt: Date | null) => {
     try {
-      const routine = parseRoutine(path, content, source, addedAt ?? null);
+      const routine = parseRoutine(path, content, source, writtenAt);
       // Two of the user's own files can't both win, so the second is reported, not loaded.
       if (source === "user" && byName.get(routine.name)?.source === "user") {
         throw new Error(`${path}: another file already defines '${routine.name}'`);
@@ -344,7 +349,7 @@ export async function loadRoutines(): Promise<RoutineCatalog> {
     }
   };
 
-  for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin");
+  for (const file of BUILTIN_FILES) add(file.path, file.content, "builtin", null);
   const dir = routinesDir();
   for (const file of await readMarkdownDir(dir)) {
     if ("error" in file) problems.push({ path: file.path, message: file.error });
@@ -381,9 +386,11 @@ export interface NewRoutine {
   tools?: string[];
   config?: RoutineConfig;
   once?: boolean;
-  enabled?: boolean;
   body: string;
 }
+
+/** A routine's `every`, as the files and the tools that write them accept it. */
+export const EVERY_PATTERN = /^\d+[mhd]$/;
 
 /** The file a `NewRoutine` is written as. Keys left at their default are left out. */
 function routineFileContent(input: NewRoutine): string {
@@ -395,13 +402,15 @@ function routineFileContent(input: NewRoutine): string {
   if (input.once) frontmatter.once = true;
   if (input.workingHours) frontmatter.workingHours = true;
   if (input.nightShift && input.nightShift !== "run") frontmatter.nightShift = input.nightShift;
-  if (input.enabled === false) frontmatter.enabled = false;
   if (input.tools?.length) frontmatter.tools = input.tools;
   if (input.config && Object.keys(input.config).length) frontmatter.config = input.config;
   return `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
 }
 
-/** The user's routines folder, created if missing. Refused when it is a symlink, which the loader would refuse too. */
+/**
+ * The user's routines folder, created if missing. A symlinked folder is
+ * refused: the loader skips one, so a file written through it would never load.
+ */
 async function ensureRoutinesDir(): Promise<{ dir: string } | { error: string }> {
   const dir = routinesDir();
   await mkdir(dir, { recursive: true });
@@ -461,34 +470,90 @@ export async function writeRoutineFile(
   { replace = false }: { replace?: boolean } = {},
 ): Promise<{ path: string } | { error: string }> {
   // A routine is read by every pass unfenced; invisible text would reach them unseen.
-  const configText = JSON.stringify(input.config ?? {});
-  if (hasInvisibleChars(`${input.description}\n${input.body}\n${configText}`)) {
+  const configValues = Object.values(input.config ?? {}).flat();
+  if ([input.description, input.body, ...configValues].some(hasInvisibleChars)) {
     return { error: "the description, body or config contains invisible characters" };
   }
   const folder = await ensureRoutinesDir();
   if ("error" in folder) return folder;
   const existing = (await routineCatalog()).routines.find((r) => r.name === input.name);
   if (existing && !replace) return { error: `a routine named '${input.name}' already exists` };
-  const path = existing?.source === "user" ? existing.path : join(folder.dir, `${input.name}.md`);
-  const content = routineFileContent(input);
+  const rewritesUserFile = existing?.source === "user";
+  const path = rewritesUserFile ? existing.path : join(folder.dir, `${input.name}.md`);
+  // Replacing keeps a routine that is off, off: turning it on is its own approval.
+  const content =
+    existing && !existing.enabled
+      ? withEnabledLine(routineFileContent(input), false)
+      : routineFileContent(input);
   try {
-    parseRoutine(path, content, "user");
+    const parsed = parseRoutine(path, content, "user");
+    // What was approved has to be what passes read. A value whose text the file
+    // format could misread, such as a `---` line in a config value ending the
+    // frontmatter early, would otherwise move into the unfenced body.
+    const config = Object.fromEntries(
+      Object.entries(input.config ?? {}).map(([k, v]) => [
+        k,
+        Array.isArray(v) ? v.map((item) => item.trim()) : v.trim(),
+      ]),
+    );
+    if (
+      parsed.prompt !== input.body.trim() ||
+      parsed.description !== input.description.trim() ||
+      JSON.stringify(parsed.config) !== JSON.stringify(config)
+    ) {
+      return {
+        error: "the routine wouldn't read back as written; keep each config value on one line",
+      };
+    }
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
-  const failed =
-    existing?.source === "user"
-      ? await replaceFile(path, content)
-      : await createFile(path, content);
+  const failed = rewritesUserFile
+    ? await replaceFile(path, content)
+    : await createFile(path, content);
   if (failed) return failed;
   await reloadRoutines();
   return { path };
 }
 
+/** Far past any real routine, the same cap the loader reads with. */
+const MAX_ROUTINE_FILE_BYTES = 256 * 1024;
+
+/** Reads the user's file without following a link swapped in since it loaded. */
+async function readUserFile(path: string): Promise<string> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > MAX_ROUTINE_FILE_BYTES) {
+      throw new Error(`${path}: not a routine file this can rewrite`);
+    }
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
- * Turns a routine on or off. The user's own file has its `enabled` key
- * rewritten and the rest kept. A shipped routine is copied into the user's
- * folder with the key set, since a user file replaces the shipped one whole.
+ * The file text with its `enabled` line set: dropped to turn it on (on is the
+ * default), `enabled: false` to turn it off. Only that line changes, so the
+ * user's comments, quoting and layout survive.
+ */
+export function withEnabledLine(content: string, enabled: boolean): string {
+  const lines = content
+    .replace(/^\uFEFF/, "")
+    .replaceAll("\r\n", "\n")
+    .split("\n");
+  const closing = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
+  if (lines[0]?.trim() !== "---" || closing === -1) return content;
+  const frontmatter = lines.slice(1, closing).filter((line) => !/^enabled\s*:/.test(line));
+  if (!enabled) frontmatter.push("enabled: false");
+  return ["---", ...frontmatter, ...lines.slice(closing)].join("\n");
+}
+
+/**
+ * Turns a routine on or off. The user's own file has its `enabled` line
+ * rewritten and nothing else. A shipped routine is copied into the user's
+ * folder with the line set, since a user file replaces the shipped one whole.
  */
 export async function setRoutineEnabled(
   name: string,
@@ -496,25 +561,24 @@ export async function setRoutineEnabled(
 ): Promise<{ path: string } | { error: string }> {
   const routine = (await routineCatalog()).routines.find((r) => r.name === name);
   if (!routine) return { error: `no routine named '${name}'` };
-  const source =
-    routine.source === "builtin"
-      ? BUILTIN_FILES.find((file) => file.path === routine.path)?.content
-      : await readFile(routine.path, "utf8");
+  const isUserFile = routine.source === "user";
+  const source = isUserFile
+    ? await readUserFile(routine.path)
+    : BUILTIN_FILES.find((file) => file.path === routine.path)?.content;
   if (source === undefined) return { error: `no shipped file for '${name}'` };
-  const { data, body } = parseDocument(routine.path, source);
-  // On is the default, so turning one on drops the key rather than writing `enabled: true`.
-  const { enabled: _, ...rest } = data;
-  const frontmatter = enabled ? rest : { ...rest, enabled: false };
-  const content = `---\n${stringifyYaml(frontmatter)}---\n\n${body}\n`;
+  const content = withEnabledLine(source, enabled);
+  try {
+    parseRoutine(routine.path, content, "user");
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
   const folder = await ensureRoutinesDir();
   if ("error" in folder) return folder;
-  const failed =
-    routine.source === "user"
-      ? await replaceFile(routine.path, content)
-      : await createFile(join(folder.dir, `${name}.md`), content);
+  const path = isUserFile ? routine.path : join(folder.dir, `${name}.md`);
+  const failed = isUserFile ? await replaceFile(path, content) : await createFile(path, content);
   if (failed) return failed;
   await reloadRoutines();
-  return { path: routine.source === "user" ? routine.path : join(folder.dir, `${name}.md`) };
+  return { path };
 }
 
 /**
@@ -527,7 +591,10 @@ export async function deleteRoutineFile(
   const routine = (await routineCatalog()).routines.find((r) => r.name === name);
   if (!routine) return { error: `no routine named '${name}'` };
   if (routine.source !== "user") return { error: "a shipped routine can only be turned off" };
-  await unlink(routine.path);
+  // Already gone, say removed by hand since the last reload: that is what was asked for.
+  await unlink(routine.path).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== "ENOENT") throw e;
+  });
   await reloadRoutines();
   return { deleted: true };
 }
@@ -548,12 +615,14 @@ export async function removeFinishedOnceRoutines(
       r.once &&
       r.source === "user" &&
       done.includes(r.name) &&
-      r.addedAt !== null &&
-      r.addedAt <= passStartedAt,
+      r.writtenAt !== null &&
+      r.writtenAt <= passStartedAt,
   );
   const removed: string[] = [];
   for (const routine of finished) {
     try {
+      // The catalogue may predate an edit made by hand during the pass, so the file itself decides.
+      if ((await lstat(routine.path)).mtime > passStartedAt) continue;
       await unlink(routine.path);
       removed.push(routine.name);
     } catch (e) {
@@ -563,13 +632,6 @@ export async function removeFinishedOnceRoutines(
   if (removed.length) await reloadRoutines();
   return removed;
 }
-
-/**
- * How long a routine a pass was given but didn't finish waits before it is
- * given again, at most. Without it a routine that keeps failing would be given
- * to every pass and take a slot from the routines that work.
- */
-const RETRY_AFTER_MINUTES = 60;
 
 export interface DueInput {
   routines: Routine[];
@@ -599,7 +661,7 @@ export interface DueInput {
 export function dueRoutines(input: DueInput): Routine[] {
   const timing = routineTiming(input);
   return input.routines
-    .filter((r) => heldBy(r, input, timing) === null)
+    .filter((r) => holdReason(r, input, timing) === null)
     .map((routine) => ({ routine, overdue: timing.cadencesSinceDone(routine) }))
     .filter(({ overdue }) => overdue >= 1)
     .sort((a, b) => b.overdue - a.overdue || a.routine.name.localeCompare(b.routine.name))
@@ -617,7 +679,7 @@ function routineTiming(input: DueInput) {
   /** Done by a pass that started after a one-off's file was written: finished, whatever the clock says. */
   const onceFinished = (routine: Routine): boolean => {
     const last = input.lastDone.get(routine.name);
-    return Boolean(last && routine.addedAt && last >= routine.addedAt);
+    return Boolean(last && routine.writtenAt && last >= routine.writtenAt);
   };
   const cadencesSinceDone = (routine: Routine): number => {
     if (routine.once) return onceFinished(routine) ? 0 : Number.POSITIVE_INFINITY;
@@ -635,10 +697,13 @@ function routineTiming(input: DueInput) {
   return { cadence, onceFinished, cadencesSinceDone, retryAt };
 }
 
-/** Why an enabled routine can't be given to a pass right now, whether or not it is due. */
+/**
+ * Why a routine can't be given to a pass right now, whether or not it is due:
+ * turned off, or held by working hours, night shift or a retry wait.
+ */
 export type RoutineHold = "off" | "working-hours" | "night-shift" | "retry";
 
-function heldBy(
+function holdReason(
   routine: Routine,
   input: DueInput,
   timing: ReturnType<typeof routineTiming>,
@@ -673,7 +738,7 @@ export function routineSchedules(input: DueInput): Map<string, RoutineSchedule> 
   const nextPass = new Set(dueRoutines(input).map((r) => r.name));
   const schedules = new Map<string, RoutineSchedule>();
   for (const routine of input.routines) {
-    const hold = heldBy(routine, input, timing);
+    const hold = holdReason(routine, input, timing);
     const due = timing.cadencesSinceDone(routine) >= 1;
     const last = input.lastDone.get(routine.name);
     let dueAt: Date | null;

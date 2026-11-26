@@ -364,8 +364,11 @@ assistant.
 In a chat, ask the assistant for a routine ("every morning, check #releases
 and tell me what shipped") or a one-off for heads-down to pick up. It reads
 your routines first, writes the instructions itself, and asks you to approve
-the exact routine before it saves the file. Turning a routine on or off from a
-chat asks first too.
+the exact routine before it saves the file. The approval shows the routine's
+instructions in full: read them, since every pass follows them as your own
+words. It can also change a routine you have; a routine that is off stays off
+when it does. Turning a routine on or off from a chat asks first too. A
+specialist can never write or turn on a routine, even with a grant.
 
 ### Write your own
 
@@ -389,7 +392,7 @@ and leave a three-line summary in your notes for me to paste.
 - `description`: one line, shown on the page. Required.
 - The body: what to do, up to 4000 characters. Required.
 - `every`: how long between runs, such as `30m`, `3h` or `1d`. At least 15
-  minutes and at most 30 days. Required.
+  minutes and at most 30 days. Required unless `once` is `true`.
 - `workingHours`: `true` to run it only within your working hours. Off by
   default.
 - `enabled`: `false` to turn it off.
@@ -441,10 +444,10 @@ key you leave out takes its default above, not the shipped routine's value.
 A file whose `name` matches a shipped routine replaces it whole, so it needs
 every required field too. To turn meeting-alarms off, write a file with
 `name: meeting-alarms`, a description, an `every`, a one-line body and
-`enabled: false`. To turn review-prep on, copy the shipped file
-(`sidecar/src/headsDown/routines/review-prep.md` in the Yarvis repo) to
-`~/.yarvis/routines/review-prep.md` and change `enabled: false` to `true`. To
-have the scout also watch repos, people or teams, add them under `config`, as
+`enabled: false`, or press **Turn off** on the Routines tab, which writes it
+for you. To turn review-prep on, press **Turn on**, which copies the shipped
+file to `~/.yarvis/routines/review-prep.md` with it on. To have the scout also
+watch repos, people or teams, add them under `config` in that copy, as
 in this example:
 
 ```markdown
@@ -480,8 +483,9 @@ When two of your own files use the same name, the first by
 filename loads and the other is listed as a problem. Setting **Routines per
 pass** to 0 turns them all off.
 Passes keep using the files as they were until you press **Reload files** (or
-restart Yarvis), so press it after adding or changing one. A file that can't be
-read shows on the page with the reason.
+restart Yarvis), so press it after adding or changing one by hand. Changes made
+from the Routines tab or by the assistant apply right away. A file that can't
+be read shows on the page with the reason.
 
 A routine follows the same rules as the rest of a pass: it asks before
 anything that waits for your approval, and what it reads in meetings, tickets
@@ -778,8 +782,9 @@ the model passes run on, and says whether you picked it in Settings or it is
 your default chat model.
 
 **What it has been doing** shows the pass that is running, live, and the ones
-before it. The Overview shows the last three; the rest are on **History**. The live pass shows each tool call as it happens, and its latest
-thought folded to one line. Each finished pass shows its notes, how many tool
+before it. The Overview shows the last three; the rest are on **History**.
+The live pass shows each tool call as it happens, and its latest thought
+folded to one line. Each finished pass shows its notes, how many tool
 calls it made, which ones failed with the start of their error, and which got
 no result back because the pass ended first. Open a pass
 to see each tool call it made and what came back. A pass you stopped shows as

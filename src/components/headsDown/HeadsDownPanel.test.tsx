@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../../lib/resourceCache";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import type { LivePass } from "./useLivePass";
 
@@ -218,6 +218,11 @@ const ROUTINES = {
 /** What the routines list and its reload answer; null makes that call fail, "hang" never answers. */
 let routinesAnswer: unknown = ROUTINES;
 let reloadAnswer: unknown = ROUTINES;
+const DEFAULT_MODEL = { provider: "anthropic", model: "claude-haiku-5-5", source: "default" };
+/** The model the page state names; null for none available. */
+let stateModel: unknown = DEFAULT_MODEL;
+let passesAnswer: unknown[] = [PASS, FAILED_PASS];
+
 /** What adding, turning on or off, or deleting a routine answers; null makes it fail. */
 let routineWriteAnswer: unknown = ROUTINES;
 
@@ -298,14 +303,14 @@ stubSidecarApi({
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
-        model: { provider: "anthropic", model: "claude-haiku-5-5", source: "default" },
+        model: stateModel,
         ...passCounts,
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM, WATCH]);
     if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
-    if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
+    if (path === "/api/heads-down/passes") return json(passesAnswer);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(savedConfig);
     if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
@@ -341,6 +346,7 @@ const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel, ShipStages } = await import("./StreamList");
+const { routineStatus } = await import("./RoutineList");
 const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -363,6 +369,8 @@ afterEach(() => {
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
   routineWriteAnswer = ROUTINES;
+  stateModel = DEFAULT_MODEL;
+  passesAnswer = [PASS, FAILED_PASS];
   reviewStream = { maxReady: 5, slots: [], backlog: [] };
 });
 
@@ -372,6 +380,14 @@ const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitForText(host: HTMLElement, text: string, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (!host.textContent?.includes(text) && Date.now() < deadline) await settle(20);
+}
+
+/** Waits for the page to have sent a request, since the click only starts it. */
+async function waitForWrite(method: string, path: string) {
+  await waitFor(
+    () => writes.some((w) => w.method === method && w.path === path),
+    `${method} ${path}`,
+  );
 }
 
 /** Opens a tab of the page by its label; a tab may show a count after it. */
@@ -386,7 +402,6 @@ async function openTab(host: HTMLElement, label: string) {
   }
   if (!tab) throw new Error(`no tab "${label}"`);
   tab.click();
-  await settle(20);
 }
 
 function buttonNamed(host: HTMLElement, label: string): HTMLButtonElement {
@@ -448,8 +463,8 @@ describe("HeadsDownPanel", () => {
 
   it("leaves the review stream out until review prep has a PR", async () => {
     const host = await mount();
-    await waitForText(host, "Work streams");
-    await settle(50);
+    // The routine count on its tab comes from the same load as everything else.
+    await waitForText(host, "Routines3");
     expect(host.textContent).not.toContain("Review stream");
   });
 
@@ -459,6 +474,35 @@ describe("HeadsDownPanel", () => {
     expect(host.textContent).toContain(
       "Model: claude-haiku-5-5 (anthropic, the default chat model)",
     );
+  });
+
+  it("says when the model is saved in Settings, and when none is available", async () => {
+    stateModel = { provider: "anthropic", model: "claude-opus-5-5", source: "saved" };
+    const saved = await mount();
+    await waitForText(saved, "Model:");
+    expect(saved.textContent).toContain("Model: claude-opus-5-5 (anthropic, set in Settings)");
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    stateModel = null;
+    const none = await mount();
+    await waitForText(none, "Model:");
+    expect(none.textContent).toContain("Model: none available. Add a provider key in Settings.");
+  });
+
+  it("shows the latest three passes on the overview, and the rest on History", async () => {
+    passesAnswer = [1, 2, 3, 4, 5].map((n) => ({
+      ...PASS,
+      id: `p${n}`,
+      notes: `Pass number ${n}.`,
+    }));
+    const host = await mount();
+    await waitForText(host, "Show 2 earlier passes");
+    expect(host.textContent).toContain("Pass number 3.");
+    expect(host.textContent).not.toContain("Pass number 4.");
+    buttonNamed(host, "Show 2 earlier passes").click();
+    await waitForText(host, "Pass number 5.");
+    const selected = host.querySelector('[role="tab"][aria-selected="true"]');
+    expect(selected?.textContent).toStartWith("History");
   });
 
   it("puts the routines, history and settings on their own tabs", async () => {
@@ -528,27 +572,30 @@ describe("HeadsDownPanel", () => {
       ) as HTMLElement;
 
     buttonNamed(row("meeting-notes"), "Turn on").click();
-    await settle(20);
+    await waitForWrite("PUT", "/api/heads-down/routines/meeting-notes/enabled");
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/routines/meeting-notes/enabled",
       body: { enabled: true },
     });
+    // One change at a time: the buttons wait for the one in flight.
+    await waitFor(() => !buttonNamed(row("standup"), "Turn off").disabled, "buttons free");
     buttonNamed(row("standup"), "Turn off").click();
-    await settle(20);
+    await waitForWrite("PUT", "/api/heads-down/routines/standup/enabled");
     expect(writes).toContainEqual({
       method: "PUT",
       path: "/api/heads-down/routines/standup/enabled",
       body: { enabled: false },
     });
 
+    await waitFor(() => !buttonNamed(row("standup"), "Turn off").disabled, "buttons free");
     row("standup").querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
     await waitForText(host, "Delete file");
     buttonNamed(row("standup"), "Delete file").click();
     await waitForText(host, "Yes, delete");
     expect(writes.some((w) => w.method === "DELETE")).toBe(false);
     buttonNamed(row("standup"), "Yes, delete").click();
-    await settle(20);
+    await waitForWrite("DELETE", "/api/heads-down/routines/standup");
     expect(writes).toContainEqual({
       method: "DELETE",
       path: "/api/heads-down/routines/standup",
@@ -561,7 +608,7 @@ describe("HeadsDownPanel", () => {
     await openTab(host, "Routines");
     await waitForText(host, "meeting-alarms");
     buttonNamed(host, "Add routine").click();
-    await settle(20);
+    await waitFor(() => host.querySelector('[aria-label="Routine name"]') !== null, "the form");
 
     const field = <T extends HTMLElement>(label: string) => {
       const el = host.querySelector<T>(`[aria-label="${label}"]`);
@@ -580,7 +627,7 @@ describe("HeadsDownPanel", () => {
     type("Routine instructions", "Tell me what shipped.");
     const once = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')][1];
     once?.click();
-    await settle(20);
+    await waitFor(() => once?.checked === true, "once picked");
 
     routineWriteAnswer = null;
     buttonNamed(host, "Save routine").click();
@@ -599,8 +646,7 @@ describe("HeadsDownPanel", () => {
 
     routineWriteAnswer = ROUTINES;
     buttonNamed(host, "Save routine").click();
-    await settle(50);
-    expect(host.querySelector('[aria-label="Routine name"]')).toBeNull();
+    await waitFor(() => host.querySelector('[aria-label="Routine name"]') === null, "form closed");
   });
 
   it("reloads the routine files, and says when that fails", async () => {
@@ -1216,3 +1262,26 @@ describe("ShipStages", () => {
 });
 
 afterAll(resetSidecarApi);
+
+describe("routineStatus", () => {
+  const base = {
+    ...ROUTINE_BASE,
+    name: "x",
+    description: "x",
+    everyMinutes: 60,
+    body: "x",
+  } as never;
+  const status = (over: Record<string, unknown>) =>
+    routineStatus({ ...(base as object), ...over } as never).label;
+
+  it("says why a routine waits, or that it's done", () => {
+    expect(status({ heldBy: "working-hours" })).toBe("Waits for working hours");
+    expect(status({ heldBy: "night-shift" })).toBe("Skipped during night shift");
+    expect(
+      status({ heldBy: "retry", dueAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
+    ).toBe("Didn't finish last time; tries again in 30 minutes");
+    expect(status({ enabled: false, source: "user" })).toBe("Off in your file");
+    expect(status({ enabled: false, source: "builtin" })).toBe("Off: ships turned off");
+    expect(status({ once: true, dueAt: null })).toBe("Done");
+  });
+});

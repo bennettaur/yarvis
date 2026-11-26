@@ -1094,8 +1094,13 @@ report there and leaves the fixes to the author.
   (`writeRoutineFile`, `setRoutineEnabled`, `deleteRoutineFile`). The chat's
   `save_heads_down_routine` and `set_heads_down_routine_enabled` are in
   `ALWAYS_CONFIRM_BUILTIN_TOOLS`, since the body the model writes reaches every
-  later pass unfenced, and in `PASS_REFUSED_TOOLS`, since a pass has its own
-  `create_routine`. `routineSchedules` reuses `dueRoutines`' rules to tell the
+  later pass unfenced, in `PASS_REFUSED_TOOLS`, since a pass has its own
+  `create_routine`, and in `NEVER_DELEGATABLE`, so no specialist grant reaches
+  them. `ToolApprovalBar` lays the routine out as text rather than JSON, since
+  that approval is the only check on what the body says. `writeRoutineFile`
+  parses what it is about to write and refuses it unless the body, description
+  and config read back exactly as given: a `---` line inside a config value
+  would otherwise end the frontmatter and move the rest into the unfenced body. `routineSchedules` reuses `dueRoutines`' rules to tell the
   page where each routine stands.
   With always-on, a pass can propose one with `create_routine`, which is in
   `PASS_APPROVAL_TOOLS` and so only runs once the user approved its exact

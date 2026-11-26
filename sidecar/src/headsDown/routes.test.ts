@@ -9,6 +9,7 @@ import { addMessage as addChatMessage, createSession } from "../chat/service.ts"
 import type { Config } from "../config.ts";
 import * as schema from "../db/schema.ts";
 import { CUT_SHORT_RESULT } from "../db/schema.ts";
+import { defaultProviderModel } from "../llm/providers.ts";
 import { createStream } from "../workStreams/service.ts";
 import { askUser } from "./attention.ts";
 import { startPass, startRun, stopRun } from "./service.ts";
@@ -265,8 +266,9 @@ describe("/api/heads-down", () => {
       source: "saved",
     });
     await put(valid);
-    const fallback = (await get("")).model;
-    expect(fallback === null || fallback.source === "default").toBe(true);
+    // With none saved, the same default chat model a pass would fall back to.
+    const expected = await defaultProviderModel(config);
+    expect((await get("")).model).toEqual(expected && { ...expected, source: "default" });
   });
 
   it("saves the standing guidance, and treats a blank one as none", async () => {
@@ -494,8 +496,8 @@ describe("/api/heads-down", () => {
         headers: jsonAuth,
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-    const named = (body: { routines: { name: string }[] }, name: string) =>
-      body.routines.find((r: { name: string }) => r.name === name);
+    const named = (body: unknown, name: string) =>
+      (body as { routines: { name: string }[] }).routines.find((r) => r.name === name);
     try {
       await post("/routines/reload");
       const created = await post("/routines", {
@@ -536,6 +538,13 @@ describe("/api/heads-down", () => {
         source: "builtin",
       });
       expect((await send("DELETE", "/routines/meeting-alarms")).status).toBe(400);
+      expect((await send("DELETE", "/routines/nope")).status).toBe(400);
+      const unknown = await send("PUT", "/routines/nope/enabled", { enabled: true });
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({ error: "no routine named 'nope'" });
+      expect((await send("PUT", "/routines/review-prep/enabled", { enabled: "yes" })).status).toBe(
+        400,
+      );
     } finally {
       process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
       await post("/routines/reload");

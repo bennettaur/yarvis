@@ -1,9 +1,9 @@
 import { useState } from "react";
-import type { NewRoutine, Routine, RoutinesResponse } from "../../lib/headsDown";
+import type { NewRoutine, NightShiftMode, Routine, RoutinesResponse } from "../../lib/headsDown";
 import { formatRelativeTime } from "../../lib/time";
 
-/** `everyMinutes` back in the `30m`/`3h`/`1d` form the file was written in. */
-function cadence(minutes: number): string {
+/** `everyMinutes` as "every 2h", in the largest whole unit (d, h or m). */
+function formatEvery(minutes: number): string {
   if (minutes % (24 * 60) === 0) return `every ${minutes / (24 * 60)}d`;
   if (minutes % 60 === 0) return `every ${minutes / 60}h`;
   return `every ${minutes}m`;
@@ -11,7 +11,7 @@ function cadence(minutes: number): string {
 
 /** How often it runs, and when it is allowed to. */
 function describeCadence(r: Routine): string {
-  const parts = [r.once ? "once" : cadence(r.everyMinutes)];
+  const parts = [r.once ? "once" : formatEvery(r.everyMinutes)];
   if (r.workingHoursOnly) parts.push("working hours");
   if (r.nightShift !== "run") parts.push(`${r.nightShift} at night`);
   return parts.join(", ");
@@ -52,14 +52,23 @@ function configValue(value: string | string[]): string {
 }
 
 /** Asks once more before deleting, since the file goes with it. */
-function DeleteButton({ routine, onDelete }: { routine: Routine; onDelete: () => void }) {
+function DeleteButton({
+  routine,
+  busy,
+  onDelete,
+}: {
+  routine: Routine;
+  busy: boolean;
+  onDelete: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   if (!confirming) {
     return (
       <button
         type="button"
+        disabled={busy}
         onClick={() => setConfirming(true)}
-        className="text-xs text-zinc-400 hover:text-red-300"
+        className="text-xs text-zinc-400 hover:text-red-300 disabled:opacity-50"
       >
         Delete file
       </button>
@@ -70,11 +79,12 @@ function DeleteButton({ routine, onDelete }: { routine: Routine; onDelete: () =>
       Delete {routine.path}? If it replaced a shipped routine, the shipped one comes back.
       <button
         type="button"
+        disabled={busy}
         onClick={() => {
           setConfirming(false);
           onDelete();
         }}
-        className="rounded bg-red-600/80 px-2 py-0.5 font-medium text-white hover:bg-red-500"
+        className="rounded bg-red-600/80 px-2 py-0.5 font-medium text-white hover:bg-red-500 disabled:opacity-50"
       >
         Yes, delete
       </button>
@@ -164,7 +174,7 @@ function RoutineRow({
           {r.path ? (
             <div className="flex flex-wrap items-center gap-3">
               <span className="break-all font-mono text-zinc-500">{r.path}</span>
-              <DeleteButton routine={r} onDelete={onDelete} />
+              <DeleteButton routine={r} busy={busy} onDelete={onDelete} />
             </div>
           ) : (
             <p className="text-zinc-500">
@@ -184,7 +194,7 @@ const EMPTY_FORM = {
   once: false,
   every: "1d",
   workingHours: false,
-  nightShift: "run" as "run" | "slow" | "skip",
+  nightShift: "run" as NightShiftMode,
   tools: "",
   body: "",
 };
@@ -228,7 +238,7 @@ function AddRoutineForm({
     }
   };
 
-  const input = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm";
+  const inputClass = "rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-sm";
   return (
     <form
       className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-900/60 p-4"
@@ -245,7 +255,7 @@ function AddRoutineForm({
             onChange={(e) => set("name", e.target.value.toLowerCase())}
             placeholder="check-release"
             aria-label="Routine name"
-            className={`${input} block w-full font-mono`}
+            className={`${inputClass} block w-full font-mono`}
           />
         </label>
         <label className="space-y-1 text-xs text-zinc-400">
@@ -255,7 +265,7 @@ function AddRoutineForm({
             onChange={(e) => set("description", e.target.value)}
             placeholder="One line, shown in this list"
             aria-label="Routine description"
-            className={`${input} block w-full`}
+            className={`${inputClass} block w-full`}
           />
         </label>
       </div>
@@ -274,7 +284,7 @@ function AddRoutineForm({
             disabled={form.once}
             aria-label="Repeats every"
             title="Such as 30m, 3h or 1d. 15m to 30d."
-            className={`${input} w-20 disabled:opacity-50`}
+            className={`${inputClass} w-20 disabled:opacity-50`}
           />
         </label>
         <label className="flex items-center gap-2">
@@ -300,7 +310,7 @@ function AddRoutineForm({
             value={form.nightShift}
             onChange={(e) => set("nightShift", e.target.value as typeof form.nightShift)}
             aria-label="Night shift"
-            className={input}
+            className={inputClass}
           >
             <option value="run">runs as usual</option>
             <option value="slow">runs less often</option>
@@ -315,7 +325,7 @@ function AddRoutineForm({
           onChange={(e) => set("tools", e.target.value)}
           placeholder="slack_read_channel, list_events"
           aria-label="Routine tools"
-          className={`${input} block w-full font-mono`}
+          className={`${inputClass} block w-full font-mono`}
         />
       </label>
       <label className="block space-y-1 text-xs text-zinc-400">
@@ -326,7 +336,7 @@ function AddRoutineForm({
           rows={6}
           placeholder="Read the #releases channel since yesterday and leave me a note in the bell listing what shipped. If nothing shipped, count it as done."
           aria-label="Routine instructions"
-          className={`${input} block w-full`}
+          className={`${inputClass} block w-full`}
         />
       </label>
       <p className="text-xs text-zinc-500">
@@ -351,6 +361,50 @@ function AddRoutineForm({
         {error && <span className="text-xs text-red-400">{error}</span>}
       </div>
     </form>
+  );
+}
+
+/** A heading and its routines, each with a toggle to the other state. */
+function RoutineSection({
+  title,
+  note,
+  empty,
+  routines,
+  busy,
+  act,
+  onToggle,
+  onDelete,
+}: {
+  title: string;
+  note?: string;
+  /** Shown when there are none. */
+  empty?: string;
+  routines: Routine[];
+  busy: boolean;
+  act: (action: () => Promise<void>) => Promise<void>;
+  onToggle: (name: string, enabled: boolean) => Promise<void>;
+  onDelete: (name: string) => Promise<void>;
+}) {
+  return (
+    <section className="space-y-2">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h3>
+      {note && <p className="text-xs text-zinc-500">{note}</p>}
+      {routines.length === 0 ? (
+        empty && <p className="text-xs text-zinc-500">{empty}</p>
+      ) : (
+        <ul className="space-y-2">
+          {routines.map((r) => (
+            <RoutineRow
+              key={r.name}
+              routine={r}
+              busy={busy}
+              onToggle={() => void act(() => onToggle(r.name, !r.enabled))}
+              onDelete={() => void act(() => onDelete(r.name))}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -468,48 +522,25 @@ export default function RoutineList({
         />
       )}
 
-      <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-          On ({on.length})
-        </h3>
-        {on.length === 0 ? (
-          <p className="text-xs text-zinc-500">No routines are on.</p>
-        ) : (
-          <ul className="space-y-2">
-            {on.map((r) => (
-              <RoutineRow
-                key={r.name}
-                routine={r}
-                busy={busy}
-                onToggle={() => void act(() => onToggle(r.name, false))}
-                onDelete={() => void act(() => onDelete(r.name))}
-              />
-            ))}
-          </ul>
-        )}
-      </section>
-
+      <RoutineSection
+        title={`On (${on.length})`}
+        routines={on}
+        empty="No routines are on."
+        busy={busy}
+        act={act}
+        onToggle={onToggle}
+        onDelete={onDelete}
+      />
       {off.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-            Off ({off.length})
-          </h3>
-          <p className="text-xs text-zinc-500">
-            Most shipped routines start off because they need setup or reach other people. Open one
-            to read what it does and what it needs before you turn it on.
-          </p>
-          <ul className="space-y-2">
-            {off.map((r) => (
-              <RoutineRow
-                key={r.name}
-                routine={r}
-                busy={busy}
-                onToggle={() => void act(() => onToggle(r.name, true))}
-                onDelete={() => void act(() => onDelete(r.name))}
-              />
-            ))}
-          </ul>
-        </section>
+        <RoutineSection
+          title={`Off (${off.length})`}
+          note="Most shipped routines start off because they need setup or reach other people. Open one to read what it does and what it needs before you turn it on."
+          routines={off}
+          busy={busy}
+          act={act}
+          onToggle={onToggle}
+          onDelete={onDelete}
+        />
       )}
 
       {data.problems.length > 0 && (

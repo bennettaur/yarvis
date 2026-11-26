@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import { selectTools } from "../agents/run.ts";
 import { ALWAYS_CONFIRM_BUILTIN_TOOLS } from "../chat/destructiveTools.ts";
 import * as schema from "../db/schema.ts";
 import { NOT_RUNNING, parseStopTime, STOP_TIME_PASSED } from "./control.ts";
@@ -99,11 +100,22 @@ describe("the chat's routine tools", () => {
     for (const parent of made) rmSync(parent, { recursive: true, force: true });
   });
 
-  it("asks the user before writing or turning one on, and a pass never gets either", () => {
+  it("asks the user before writing or turning one on, and a pass or specialist never gets either", () => {
     for (const name of ["save_heads_down_routine", "set_heads_down_routine_enabled"]) {
       expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has(name)).toBe(true);
       expect(PASS_REFUSED_TOOLS.has(name)).toBe(true);
     }
+    // Even a specialist file granting them as unattended doesn't get them.
+    const specialistTools = selectTools(
+      tools as never,
+      [
+        "builtin:save_heads_down_routine",
+        "builtin:set_heads_down_routine_enabled",
+        "builtin:list_heads_down_routines",
+      ],
+      { grantedIds: ["builtin:save_heads_down_routine", "builtin:set_heads_down_routine_enabled"] },
+    );
+    expect(Object.keys(specialistTools)).toEqual(["list_heads_down_routines"]);
     expect(ALWAYS_CONFIRM_BUILTIN_TOOLS.has("list_heads_down_routines")).toBe(false);
   });
 
@@ -121,15 +133,21 @@ describe("the chat's routine tools", () => {
     );
     expect(saved).toMatchObject({ ok: true, path: join(dir, "check-release.md") });
 
-    const listed = (await tools.list_heads_down_routines.execute!({}, opts)) as {
-      routines: { name: string; once: boolean; body: string; config: unknown }[];
-    };
-    expect(listed.routines.find((r) => r.name === "check-release")).toMatchObject({
+    type Listed = { routines: { name: string; body?: string }[] };
+    const all = (await tools.list_heads_down_routines.execute!({}, opts)) as Listed;
+    // Bodies only for the routine asked about, so a routine chat doesn't carry every one.
+    expect(all.routines.every((r) => r.body === undefined)).toBe(true);
+    const one = (await tools.list_heads_down_routines.execute!(
+      { name: "check-release" },
+      opts,
+    )) as Listed;
+    expect(one.routines.find((r) => r.name === "check-release")).toMatchObject({
       once: true,
       every: null,
       config: { channel: "#releases" },
       body: "Read the release channel and tell me what shipped today.",
     });
+    expect(one.routines.filter((r) => r.body !== undefined)).toHaveLength(1);
 
     expect(
       await tools.set_heads_down_routine_enabled.execute!(

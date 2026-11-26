@@ -179,11 +179,18 @@ export interface PassResult {
   sleepReason: string;
 }
 
+/** Which model passes run on: the one saved for heads-down mode, or else the default chat model. */
+export async function passModelChoice(
+  config: Config,
+  hd: HeadsDownConfig,
+): Promise<{ provider: string; model: string; source: "saved" | "default" } | null> {
+  if (hd.provider && hd.model) return { provider: hd.provider, model: hd.model, source: "saved" };
+  const fallback = await defaultProviderModel(config);
+  return fallback && { ...fallback, source: "default" };
+}
+
 async function passModel(config: Config, hd: HeadsDownConfig) {
-  const chosen =
-    hd.provider && hd.model
-      ? { provider: hd.provider, model: hd.model }
-      : await defaultProviderModel(config);
+  const chosen = await passModelChoice(config, hd);
   if (!chosen) throw new Error("no LLM provider is configured");
   return {
     model: await resolveModel(config, chosen.provider, chosen.model),

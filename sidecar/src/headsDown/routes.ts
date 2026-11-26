@@ -4,7 +4,6 @@ import { z } from "zod";
 import { getMessages } from "../chat/service.ts";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { defaultProviderModel } from "../llm/providers.ts";
 import { chooseEmbedder } from "../memory/embedder.ts";
 import { PgVectorMemoryStore } from "../memory/index.ts";
 import { settleQuestionAttention } from "./attention.ts";
@@ -33,8 +32,10 @@ import {
   stopHeadsDown,
 } from "./control.ts";
 import { type HeadsDownStreamEvent, publish, subscribe } from "./hub.ts";
+import { passModelChoice } from "./pass.ts";
 import {
   deleteRoutineFile,
+  EVERY_PATTERN,
   NAME_PATTERN,
   NIGHT_SHIFT_MODES,
   type RoutineCatalog,
@@ -181,18 +182,12 @@ const routineInputSchema = z
   .object({
     name: z.string().regex(NAME_PATTERN),
     description: z.string().trim().min(1).max(200),
-    every: z
-      .string()
-      .regex(/^\d+[mhd]$/)
-      .optional(),
+    every: z.string().regex(EVERY_PATTERN).optional(),
     once: z.boolean().optional(),
     workingHours: z.boolean().optional(),
     nightShift: z.enum(NIGHT_SHIFT_MODES).optional(),
     tools: z.array(z.string().min(1).max(200)).max(20).optional(),
-    config: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(),
     body: z.string().trim().min(1).max(4000),
-    /** Rewrite the user's file of this name, or replace a shipped routine with one of theirs. */
-    replace: z.boolean().optional(),
   })
   .refine((r) => r.once || r.every, "give how often it runs, or make it a one-off");
 
@@ -224,13 +219,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
     // A pass due after the stop time never runs: the run stops first.
     const nextPassAt =
       nextPass && !(run?.stopAt && run.stopAt <= nextPass) ? nextPass.toISOString() : null;
-    // What passes run on, resolved the way a pass resolves it, so the page names the model used.
-    const fallback =
-      hd.provider && hd.model ? null : await defaultProviderModel(config).catch(() => null);
-    const model =
-      hd.provider && hd.model
-        ? { provider: hd.provider, model: hd.model, source: "saved" as const }
-        : fallback && { ...fallback, source: "default" as const };
+    const model = await passModelChoice(config, hd).catch(() => null);
     return c.json({
       run,
       lastPass: last,
@@ -369,8 +358,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
   router.post("/routines", async (c) => {
     const parsed = routineInputSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: parsed.error.flatten() }, 400);
-    const { replace, ...routine } = parsed.data;
-    const written = await writeRoutineFile(routine, { replace });
+    const written = await writeRoutineFile(parsed.data);
     if ("error" in written) return c.json(written, 400);
     changed();
     return c.json(await routinesResponse(routineCatalog), 201);

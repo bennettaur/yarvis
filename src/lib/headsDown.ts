@@ -389,16 +389,19 @@ export const saveHeadsDownConfig = (
   config: Omit<HeadsDownConfig, "alwaysOn"> & { alwaysOn?: boolean },
 ) => request<HeadsDownConfig>("/api/heads-down/config", "PUT", config);
 
-/** A recurring job a pass takes on beside the work streams, read from a markdown file. */
+/** What a routine does during night shift: keep its cadence, run less often, or wait for it to end. */
+export type NightShiftMode = "run" | "slow" | "skip";
+
+/** A recurring or one-off job a pass takes on beside the work streams, read from a markdown file. */
 export interface Routine {
   name: string;
   description: string;
   everyMinutes: number;
   workingHoursOnly: boolean;
   /** What it does during night shift. */
-  nightShift: "run" | "slow" | "skip";
+  nightShift: NightShiftMode;
   enabled: boolean;
-  /** Done on one pass, then its file is removed. */
+  /** A one-off: offered until a pass reports it done, then its file is removed. */
   once: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */
   source: "builtin" | "user";
@@ -439,12 +442,9 @@ export interface NewRoutine {
   every?: string;
   once?: boolean;
   workingHours?: boolean;
-  nightShift?: "run" | "slow" | "skip";
+  nightShift?: NightShiftMode;
   tools?: string[];
-  config?: Record<string, string | string[]>;
   body: string;
-  /** Rewrite the user's routine of this name, or replace a shipped one. */
-  replace?: boolean;
 }
 
 export const listRoutines = () => request<RoutinesResponse>("/api/heads-down/routines");

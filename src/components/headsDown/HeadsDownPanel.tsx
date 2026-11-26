@@ -431,6 +431,8 @@ function TabBar({
           key={tab.id}
           type="button"
           role="tab"
+          id={`heads-down-tab-${tab.id}`}
+          aria-controls={`heads-down-panel-${tab.id}`}
           aria-selected={active === tab.id}
           onClick={() => onSelect(tab.id)}
           className={`-mb-px border-b-2 px-3 py-2 text-sm ${
@@ -533,8 +535,10 @@ export default function HeadsDownPanel() {
     [refreshAllowedTools],
   );
 
-  const saveRoutines = (data: RoutinesResponse) => primeCache(HEADS_DOWN_CACHE_KEYS.routines, data);
+  const primeRoutines = (data: RoutinesResponse) =>
+    primeCache(HEADS_DOWN_CACHE_KEYS.routines, data);
   const routinesOn = routines.data?.routines.filter((r) => r.enabled).length;
+  const finishedPasses = passes.data?.filter((p) => p.finishedAt !== null).length;
 
   return (
     <div className="mx-auto w-[90%] space-y-4">
@@ -557,94 +561,117 @@ export default function HeadsDownPanel() {
       <TabBar
         active={tab}
         onSelect={setTab}
-        counts={{ routines: routinesOn, history: passes.data?.length }}
+        counts={{ routines: routinesOn, history: finishedPasses }}
       />
 
       {tab === "overview" && (
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
-          <div className="min-w-0 space-y-6">
-            {(autoApprovals.data ?? NO_QUESTIONS).length > 0 && (
-              <Section title="Approved on its own">
-                <AutoApprovals approvals={autoApprovals.data ?? NO_QUESTIONS} />
-              </Section>
-            )}
-
-            <Section title="Work streams">
-              <StreamList
-                streams={streams.data ?? NO_STREAMS}
-                loading={streams.loading}
-                onChanged={refreshAll}
-              />
-            </Section>
-
-            <Section title="What it has been doing">
-              <PassList
-                passes={passes.data ?? NO_PASSES}
-                live={live}
-                loading={passes.loading}
-                limit={RECENT_PASSES}
-                onShowAll={() => setTab("history")}
-              />
-            </Section>
-          </div>
-
-          <aside className="space-y-6">
-            <Section title="Tell it something">
-              <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
-            </Section>
-
-            {reviewStream.data &&
-              reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
-                <Section title="Review stream">
-                  <ReviewStream data={reviewStream.data} />
+        <div
+          role="tabpanel"
+          id="heads-down-panel-overview"
+          aria-labelledby="heads-down-tab-overview"
+        >
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+            <div className="min-w-0 space-y-6">
+              {(autoApprovals.data ?? NO_QUESTIONS).length > 0 && (
+                <Section title="Approved on its own">
+                  <AutoApprovals approvals={autoApprovals.data ?? NO_QUESTIONS} />
                 </Section>
               )}
-          </aside>
+
+              <Section title="Work streams">
+                <StreamList
+                  streams={streams.data ?? NO_STREAMS}
+                  loading={streams.loading}
+                  onChanged={refreshAll}
+                />
+              </Section>
+
+              <Section title="What it has been doing">
+                <PassList
+                  passes={passes.data ?? NO_PASSES}
+                  live={live}
+                  loading={passes.loading}
+                  limit={RECENT_PASSES}
+                  onShowAll={() => setTab("history")}
+                />
+              </Section>
+            </div>
+
+            <aside className="space-y-6">
+              <Section title="Tell it something">
+                <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
+              </Section>
+
+              {reviewStream.data &&
+                reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
+                  <Section title="Review stream">
+                    <ReviewStream data={reviewStream.data} />
+                  </Section>
+                )}
+            </aside>
+          </div>
         </div>
       )}
 
       {tab === "routines" && (
-        <Section title="Routines">
-          <RoutineList
-            data={routines.data}
-            loadError={routines.error}
-            running={state.data?.run != null}
-            onReload={async () => saveRoutines(await reloadRoutines())}
-            onCreate={async (routine) => saveRoutines(await createRoutine(routine))}
-            onToggle={async (name, enabled) => saveRoutines(await setRoutineEnabled(name, enabled))}
-            onDelete={async (name) => saveRoutines(await deleteRoutine(name))}
-          />
-        </Section>
+        <div
+          role="tabpanel"
+          id="heads-down-panel-routines"
+          aria-labelledby="heads-down-tab-routines"
+        >
+          <Section title="Routines">
+            <RoutineList
+              data={routines.data}
+              loadError={routines.error}
+              // Until the state loads, assume a run rather than flash the "it's off" warning.
+              running={state.data ? state.data.run !== null : true}
+              onReload={async () => primeRoutines(await reloadRoutines())}
+              onCreate={async (routine) => primeRoutines(await createRoutine(routine))}
+              onToggle={async (name, enabled) =>
+                primeRoutines(await setRoutineEnabled(name, enabled))
+              }
+              onDelete={async (name) => primeRoutines(await deleteRoutine(name))}
+            />
+          </Section>
+        </div>
       )}
 
       {tab === "history" && (
-        <Section title="What it has been doing">
-          <PassList passes={passes.data ?? NO_PASSES} live={live} loading={passes.loading} />
-        </Section>
+        <div role="tabpanel" id="heads-down-panel-history" aria-labelledby="heads-down-tab-history">
+          <Section title="What it has been doing">
+            <PassList passes={passes.data ?? NO_PASSES} live={live} loading={passes.loading} />
+          </Section>
+        </div>
       )}
 
       {tab === "settings" && (
-        <Section title="Pace, working hours and model">
-          <div className="max-w-3xl">
-            {config.data ? (
-              <HeadsDownSettings
-                config={config.data}
-                allowedTools={allowedTools.data ?? NO_TOOLS}
-                onSaved={() => {
-                  void refreshConfig();
-                  void refreshAllowedTools();
-                  // The header names the model, and the routine list depends on the per-pass limit.
-                  void refreshState();
-                  void refreshRoutines();
-                }}
-              />
-            ) : (
-              <p className="text-xs text-zinc-500">
-                {config.error ? `Couldn't load the settings: ${config.error}` : "Loading…"}
-              </p>
-            )}
-          </div>
-        </Section>
+        <div
+          role="tabpanel"
+          id="heads-down-panel-settings"
+          aria-labelledby="heads-down-tab-settings"
+        >
+          <Section title="Pace, working hours and model">
+            <div className="max-w-3xl">
+              {config.data ? (
+                <HeadsDownSettings
+                  config={config.data}
+                  allowedTools={allowedTools.data ?? NO_TOOLS}
+                  onSaved={() => {
+                    void refreshConfig();
+                    void refreshAllowedTools();
+                    // The header names the model, and the routine list depends on the per-pass limit.
+                    void refreshState();
+                    void refreshRoutines();
+                  }}
+                />
+              ) : (
+                <p className="text-xs text-zinc-500">
+                  {config.error ? `Couldn't load the settings: ${config.error}` : "Loading…"}
+                </p>
+              )}
+            </div>
+          </Section>
+        </div>
       )}
     </div>
   );
