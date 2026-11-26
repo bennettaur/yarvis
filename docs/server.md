@@ -201,8 +201,8 @@ sets `SSH_AUTH_SOCK` in every terminal it starts. It picks the socket like
 this:
 
 1. With `[ssh_agent] enabled = true`, the server's own agent. It keeps the
-   signing key in the vault and asks for an approval on every signature. It
-   needs `[secrets] backend = "vault"`.
+   signing key in the vault and asks for an approval on every signature. The
+   rest of your secrets can stay in the Keychain or 1Password.
 2. Otherwise, `[ssh_agent] upstream_socket`, when it is set.
 3. Otherwise, the `SSH_AUTH_SOCK` the server itself started with.
 
@@ -288,6 +288,14 @@ approve each signature from any device, your phone included.
 Every signature then waits for an approval, which any device with the
 `approve` scope can give. The Android app shows these under **Attention**.
 An unanswered approval times out after 60 seconds and the commit fails.
+
+**Keep the other secrets where they are.** On a laptop you log in to, you can
+leave `[secrets] backend` on `"keychain"` (or `"onepassword"`, or unset) and
+still turn the agent on. The vault then holds only the signing key: run
+`vault init` as above, but skip `secrets migrate`. The app starts without an
+unlock screen, since the sidecar's secrets don't need the vault. Signing waits
+until you unlock the vault from the **Approvals** section under
+**Settings → Devices**, and locking it stops only signing.
 
 The server's agent only signs commits and tags. It refuses SSH logins, so
 `git push` over SSH can't use it. Push over HTTPS instead:

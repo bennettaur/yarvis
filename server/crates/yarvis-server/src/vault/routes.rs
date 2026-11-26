@@ -25,7 +25,6 @@ use crate::AppState;
 use crate::auth::account::check_passphrase_shape;
 use crate::auth::fresh::Fresh;
 use crate::auth::{Admin, Authed, Read};
-use crate::config::SecretBackendKind;
 use crate::error::{ApiError, ApiResult};
 use crate::ssh_agent;
 
@@ -47,7 +46,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
 }
 
 async fn only_with_vault(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    if state.config.secrets.backend != Some(SecretBackendKind::Vault) {
+    if !state.config.uses_vault() {
         return ApiError::not_found().into_response();
     }
     next.run(request).await

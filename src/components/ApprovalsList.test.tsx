@@ -16,6 +16,7 @@ let statusFails = false;
 /** Set to hold the next Stop until the test resolves it. */
 let stopHeld: Promise<void> | undefined;
 let serverClockOffsetMs = 0;
+let signingVault: "locked" | "unlocked" = "unlocked";
 
 const server = stubServerRoutes({
   "GET /api/approvals": () => Response.json(approvals),
@@ -39,11 +40,16 @@ const server = stubServerRoutes({
       left > 0
         ? {
             enabled: true,
+            vault: signingVault,
             grantExpiresAt: (grantExpiresAt ?? 0) + serverClockOffsetMs,
             grantRemainingMs: left,
           }
-        : { enabled: true },
+        : { enabled: true, vault: signingVault },
     );
+  },
+  "POST /api/vault/unlock": () => {
+    signingVault = "unlocked";
+    return Response.json({ state: "unlocked" });
   },
   "DELETE /api/vault/ssh-agent/grant": async () => {
     await stopHeld;
@@ -70,6 +76,7 @@ afterEach(() => {
   statusFails = false;
   stopHeld = undefined;
   serverClockOffsetMs = 0;
+  signingVault = "unlocked";
 });
 
 const signing: Approval = {
@@ -98,6 +105,39 @@ const typeMinutes = async (host: HTMLElement, text: string) => {
 };
 
 describe("ApprovalsList", () => {
+  it("unlocks a vault that holds only the signing key", async () => {
+    approvals = [];
+    signingVault = "locked";
+    const mounted = await mountForInteraction(createElement(ApprovalsList));
+    unmount = mounted.unmount;
+    await waitFor(
+      () => mounted.host.textContent?.includes("Commit signing is locked") ?? false,
+      "the unlock form",
+    );
+    const field = mounted.host.querySelector<HTMLInputElement>('input[type="password"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      field,
+      "the vault's passphrase",
+    );
+    field?.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => buttonNamed(mounted.host, "Unlock")?.disabled === false, "Unlock");
+    buttonNamed(mounted.host, "Unlock")?.click();
+
+    await waitFor(
+      () => !(mounted.host.textContent?.includes("Commit signing is locked") ?? true),
+      "the form to go once unlocked",
+    );
+    expect(server.calls.find((c) => c.route === "POST /api/vault/unlock")?.body).toEqual({
+      passphrase: "the vault's passphrase",
+    });
+  });
+
+  it("leaves the signing unlock out of the shell's copy", async () => {
+    approvals = [];
+    signingVault = "locked";
+    expect(await renderToHtml(createElement(ApprovalsList, { hideWhenEmpty: true }))).toBe("");
+  });
+
   it("renders nothing in the shell while nothing waits", async () => {
     approvals = [];
     expect(await renderToHtml(createElement(ApprovalsList, { hideWhenEmpty: true }))).toBe("");

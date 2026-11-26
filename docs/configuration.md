@@ -203,6 +203,21 @@ enabled = true   # the server signs git commits with a key in the vault
 - With `ssh_agent.enabled = true`, the server runs an ssh-agent while the
   vault is unlocked, and asks for an approval on every commit it signs.
 
+**Sign from the vault, keep the secrets in the Keychain.** The agent needs a
+vault for its key, but not for your other secrets:
+
+```toml
+[secrets]
+backend = "keychain"   # or "onepassword", or leave [secrets] out
+
+[ssh_agent]
+enabled = true
+```
+
+Run `yarvis-server vault init` to make the vault and the key. The app opens
+without an unlock screen. Unlock the vault from **Settings → Devices →
+Approvals** to start signing; locking it stops only signing.
+
 **Keep signing in 1Password.** Leave the vault off and keep the
 key where it is:
 

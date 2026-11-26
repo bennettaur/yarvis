@@ -257,7 +257,7 @@ origins = ["http://localhost:7878"]
 # backend = "keychain"          # "vault" | "keychain" | "onepassword"
 
 [ssh_agent]
-enabled = false                 # the server's own ssh-agent; needs "vault"
+enabled = false                 # the server's own ssh-agent; its key is in the vault
 # upstream_socket = "..."       # the agent workspace shells use when it's off
 
 [sidecar]
@@ -280,8 +280,13 @@ names a backend, it wins, and Settings can only change which 1Password item a
 `configuredSecretBackend` (`null` when `secretBackend` decides), so Settings
 shows the store really in use and offers no switch the server would refuse.
 
-The server refuses `ssh_agent.enabled = true` with any backend but `vault`,
-since the vault is where the signing key lives.
+`ssh_agent.enabled = true` turns the vault on whatever `secrets.backend`
+says, since the vault is where the signing key lives (`Config::uses_vault`).
+With another backend the vault holds only the key: its routes answer, but
+`/api/auth/status` reports `vault: "absent"`, so no client holds the app
+behind the unlock screen, and locking it stops the agent and nothing else.
+`GET /api/vault/ssh-agent` reports the vault's state, which is where a client
+learns signing needs an unlock.
 
 **Home server (the Intel Mac mini).** `backend = "vault"`, `ssh_agent.enabled =
 true`. The server starts locked. The vault passphrase or the recovery key

@@ -71,7 +71,7 @@ impl VaultHarness {
 }
 
 #[tokio::test]
-async fn every_vault_route_is_404_without_the_vault_backend() {
+async fn every_vault_route_is_404_without_the_vault_backend_or_the_agent() {
     let harness = Harness::new().await;
     let token = harness.setup().await;
     for (method, path) in [
@@ -224,7 +224,7 @@ async fn with_the_agent_on_it_runs_only_while_unlocked() {
         .call("GET", "/api/vault/ssh-agent", Some(&token), None)
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!({ "enabled": true }));
+    assert_eq!(body, json!({ "enabled": true, "vault": "locked" }));
     assert!(!socket.exists());
 
     v.unlock_with_recovery(&token).await;
@@ -250,7 +250,7 @@ async fn with_the_agent_on_it_runs_only_while_unlocked() {
         .harness
         .call("GET", "/api/vault/ssh-agent", Some(&token), None)
         .await;
-    assert_eq!(body, json!({ "enabled": true }));
+    assert_eq!(body, json!({ "enabled": true, "vault": "locked" }));
 }
 
 #[tokio::test]
@@ -293,6 +293,53 @@ async fn socket_dir_gets_the_agent_socket() {
         .call("POST", "/api/vault/lock", Some(&token), None)
         .await;
     assert!(!socket.exists(), "the socket outlived the lock");
+}
+
+/// Secrets in the Keychain, signing key in the vault: the vault unlocks for
+/// signing alone, and the app isn't held behind it.
+#[tokio::test]
+async fn the_agent_uses_the_vault_while_the_secrets_stay_in_the_keychain() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = Config::default();
+    config.server.data_dir = dir.path().to_path_buf();
+    config.secrets.backend = Some(SecretBackendKind::Keychain);
+    config.ssh_agent.enabled = true;
+    config.validate().unwrap();
+    let created = Vault::init(dir.path(), true, VAULT_PASSPHRASE).unwrap();
+    let v = VaultHarness {
+        harness: Harness::with_config(config).await,
+        dir,
+        recovery_key: created.recovery_key.expose().to_string(),
+    };
+    let token = v.harness.setup().await;
+
+    let (_, auth) = v.harness.call("GET", "/api/auth/status", None, None).await;
+    assert_eq!(auth["vault"], "absent");
+    assert_eq!(v.state(&token).await, "locked");
+    let (_, agent) = v
+        .harness
+        .call("GET", "/api/vault/ssh-agent", Some(&token), None)
+        .await;
+    assert_eq!(agent["vault"], "locked");
+    assert!(!v.harness.state.ssh_agent.is_running());
+
+    let (status, body) = v.unlock_with_recovery(&token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(v.harness.state.ssh_agent.is_running());
+    let (_, agent) = v
+        .harness
+        .call("GET", "/api/vault/ssh-agent", Some(&token), None)
+        .await;
+    assert_eq!(agent["vault"], "unlocked");
+    assert_eq!(
+        agent["publicKey"],
+        created.signing_public_key.unwrap().as_str()
+    );
+
+    v.harness
+        .call("POST", "/api/vault/lock", Some(&token), None)
+        .await;
+    assert!(!v.harness.state.ssh_agent.is_running());
 }
 
 #[tokio::test]
@@ -345,7 +392,7 @@ async fn an_agent_that_cannot_start_leaves_the_vault_unlocked() {
         .harness
         .call("GET", "/api/vault/ssh-agent", Some(&token), None)
         .await;
-    assert_eq!(body, json!({ "enabled": true }));
+    assert_eq!(body, json!({ "enabled": true, "vault": "unlocked" }));
 }
 
 #[tokio::test]

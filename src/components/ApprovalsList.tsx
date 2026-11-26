@@ -10,6 +10,7 @@ import {
 } from "../lib/auth";
 import { invalidate, SIDECAR_FRESHNESS, useCachedResource } from "../lib/resourceCache";
 import { onServerEvent } from "../lib/serverEvents";
+import { VaultUnlockForm } from "./shell/VaultGate";
 
 const APPROVALS_KEY = "server:approvals";
 const SIGNING_KEY = "server:ssh-agent";
@@ -31,6 +32,7 @@ const SIGNING_EVENTS = [
   "ssh_agent.grant_started",
   "ssh_agent.grant_ended",
   "vault.locked",
+  "vault.unlocked",
 ];
 
 const formatClockTime = (ms: number) =>
@@ -112,6 +114,9 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
   };
 
   if (hideWhenEmpty && pending.length === 0 && !grantActive) return null;
+  // With the secrets kept outside the vault, nothing else asks for the vault
+  // passphrase, so signing is unlocked here.
+  const signingVault = hideWhenEmpty ? undefined : signing.data?.vault;
 
   return (
     <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
@@ -124,6 +129,20 @@ export default function ApprovalsList({ hideWhenEmpty = false }: { hideWhenEmpty
       {(error ?? approvals.error ?? signing.error) && (
         <p className="mb-3 text-sm text-red-400" role="alert">
           {error ?? approvals.error ?? signing.error}
+        </p>
+      )}
+      {signingVault === "locked" && (
+        <div className="mb-3 rounded-md border border-zinc-800 px-3 py-3">
+          <VaultUnlockForm
+            prompt="Commit signing is locked. Unlock the vault with its own passphrase, not your sign-in one, to sign commits."
+            onUnlocked={() => invalidate(SIGNING_KEY)}
+          />
+        </div>
+      )}
+      {signingVault === "uninitialized" && (
+        <p className="mb-3 text-sm text-zinc-400">
+          Commit signing needs a vault for its key. Run{" "}
+          <code className="text-zinc-200">yarvis-server vault init</code> on the server.
         </p>
       )}
       {grantActive && (

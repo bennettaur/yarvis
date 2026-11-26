@@ -310,9 +310,10 @@ async fn vault_init(
     store: Store,
     passphrase_stdin: bool,
 ) -> zeroize::Zeroizing<String> {
-    if config.secrets.backend != Some(SecretBackendKind::Vault) {
+    if !config.uses_vault() {
         eprintln!(
-            "note: secrets.backend isn't \"vault\", so the server won't use this vault until it is"
+            "note: neither secrets.backend = \"vault\" nor ssh_agent.enabled is set, so the \
+             server won't use this vault until one is"
         );
     }
     let data_dir = &config.server.data_dir;
