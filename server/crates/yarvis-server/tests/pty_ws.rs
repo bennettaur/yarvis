@@ -443,11 +443,14 @@ async fn a_terminal_answering_a_query_does_not_take_the_size() {
     .await;
     let b_id = b.wait_for_text("attached").await["clientId"].clone();
 
-    // `cat -v` prints what reaches the PTY, so seeing B's reply in A's output
-    // means B's write, and any size change it made, has already gone out.
-    let (command, output) = marker("cat-ready");
-    a.input(&format!("{command}cat -v\n")).await;
-    a.wait_for_output(&output).await;
+    // A reply only shows in A's output once the PTY has it, and any size
+    // change it made goes out before the write. `cat` keeps the shell's line
+    // editor from eating the escape sequences, so the tty echoes them; the
+    // marker prints from inside the process that becomes `cat`, after the
+    // shell has handed the tty over.
+    a.input("sh -c \"printf '%s-%s\\n' cat-ready done; exec cat -v\"\n")
+        .await;
+    a.wait_for_output("cat-ready-done").await;
 
     // B's terminal answers a background-colour query and a device-attributes
     // query, as every attached terminal does. A keeps the size.

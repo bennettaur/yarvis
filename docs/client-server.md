@@ -701,8 +701,9 @@ server's user. `admin` reaches a shell indirectly too: `set_agent` and
   over by typing or sending `focus`, and the PTY is then resized to that
   client's last viewport. Replies a terminal sends on its own (answers to
   cursor, device-attribute, mode and colour queries, and focus-out) reach the
-  PTY but don't take over the size, since every attached terminal sends them. A non-owner's viewport is recorded but not applied.
-  When the owner disconnects, the size stays until the next client types or
+  PTY but don't take over the size, since every attached terminal sends them.
+  A non-owner's viewport is recorded but not applied. When the owner
+  disconnects, the size stays until the next client types or
   focuses. A client whose socket stops draining is resynced rather than
   slowing the others down, and one whose send blocks for 10 seconds is
   dropped. Revoking the device closes its terminals with `4401`.

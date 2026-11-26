@@ -169,6 +169,7 @@ enum InputEnd {
 /// which costs only that keypress not taking over the size.
 fn is_terminal_reply(data: &[u8]) -> bool {
     const ESC: u8 = 0x1b;
+    const BEL: u8 = 0x07;
     if data.is_empty() {
         return false;
     }
@@ -201,6 +202,8 @@ fn is_terminal_reply(data: &[u8]) -> bool {
                     // The kitty keyboard protocol's flags report; `CSI … u` without
                     // the `?` is a key.
                     b'u' => params.first() == Some(&b'?'),
+                    // XTSMGRAPHICS's report; a modified F4 is `CSI 1;2S`, no `?`.
+                    b'S' => params.first() == Some(&b'?') && intermediates.is_empty(),
                     // Focus out. Focus in is left as input: it means the user
                     // came to this terminal, as `{"type":"focus"}` does.
                     b'O' => params.is_empty() && intermediates.is_empty(),
@@ -212,12 +215,12 @@ fn is_terminal_reply(data: &[u8]) -> bool {
                 i = j + 1;
             }
             // OSC (colour replies) ends at BEL or ST; DCS and APC end at ST.
-            kind @ (b']' | b'P' | b'_') => {
+            introducer @ (b']' | b'P' | b'_') => {
                 let mut j = i + 2;
                 let end = loop {
                     match data.get(j) {
                         None => return false,
-                        Some(0x07) if kind == b']' => break j + 1,
+                        Some(&BEL) if introducer == b']' => break j + 1,
                         Some(&ESC) if data.get(j + 1) == Some(&b'\\') => break j + 2,
                         _ => j += 1,
                     }
@@ -336,6 +339,7 @@ async fn read_client_input(
         // with different viewports would resize the PTY back and forth each
         // time the program asks, and a program that asks again after a resize
         // would flicker for as long as both stay attached.
+        // `None` writes the bytes without moving the size.
         let typist = (!is_terminal_reply(&data)).then_some(client);
         // An error means the shell is gone; the output side delivers `exit`.
         let _ = session.write(typist, data).await;
@@ -471,6 +475,10 @@ mod tests {
             b"\x1b]11;rgb:0000/0000/0000\x07",
             b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
             b"\x1bP>|xterm.js(5.5.0)\x1b\\",
+            b"\x1b_Gi=1;OK\x1b\\",
+            b"\x1b[?2;0;1000;1000S",
+            // Shift+F3 shares the cursor report's shape; see the doc comment.
+            b"\x1b[1;2R",
             // Several replies in one write, as xterm.js sends after a burst of queries.
             b"\x1b[?1;2c\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1b[3;1R",
         ] {
@@ -482,6 +490,12 @@ mod tests {
             b"\r",
             b"\x1b",
             b"\x1b[A",
+            b"\x1bOA",
+            b"\x1bx",
+            b"\x1b[5y",
+            b"\x1b[1;2O",
+            b"\x1b[1;2S",
+            b"\x1bP>|x\x07",
             b"\x1b[13;2u",
             b"\x1b[I",
             b"\x1b[<0;10;5M",
