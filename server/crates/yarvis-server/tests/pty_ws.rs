@@ -429,6 +429,52 @@ async fn focus_and_resize_move_the_size_to_that_client() {
 }
 
 #[tokio::test]
+async fn a_terminal_answering_a_query_does_not_take_the_size() {
+    let server = serve(PtyOptions::default()).await;
+    let (_, token) = device(&server.state, &[Scope::Terminal]).await;
+    let id = "tab:terminal/t1/p1";
+    let mut a = Client::connect(&server, id, hello(&token, &server)).await;
+    a.wait_for_text("attached").await;
+    let mut b = Client::connect(
+        &server,
+        id,
+        json!({"type": "auth", "token": token, "cols": 60, "rows": 20}),
+    )
+    .await;
+    let b_id = b.wait_for_text("attached").await["clientId"].clone();
+
+    // A reply only shows in A's output once the PTY has it, and any size
+    // change it made goes out before the write. `cat` keeps the shell's line
+    // editor from eating the escape sequences, so the tty echoes them; the
+    // marker prints from inside the process that becomes `cat`, after the
+    // shell has handed the tty over.
+    a.input("sh -c \"printf '%s-%s\\n' cat-ready done; exec cat -v\"\n")
+        .await;
+    a.wait_for_output("cat-ready-done").await;
+
+    // B's terminal answers a background-colour query and a device-attributes
+    // query, as every attached terminal does. A keeps the size.
+    b.input("\x1b]11;rgb:1234/1234/1234\x1b\\\x1b[?1;2c").await;
+    a.wait_for_output("rgb:1234/1234/1234").await;
+    assert!(
+        !a.texts
+            .iter()
+            .any(|t| t["type"] == "size" && t["owner"] == b_id),
+        "a reply took over the size"
+    );
+
+    // B typing still takes it.
+    b.input("x").await;
+    loop {
+        let size = a.wait_for_text("size").await;
+        if size["owner"] == b_id {
+            assert_eq!(size["cols"], 60);
+            break;
+        }
+    }
+}
+
+#[tokio::test]
 async fn revoking_the_device_closes_its_terminal() {
     let server = serve(PtyOptions::default()).await;
     let (phone, token) = device(&server.state, &[Scope::Terminal]).await;
