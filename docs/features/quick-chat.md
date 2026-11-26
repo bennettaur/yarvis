@@ -93,7 +93,7 @@ the thread jumps back to the newest message.
   things happened: the sidecar restarted during the turn (saving API keys in
   Settings restarts it), it isn't answering at all, or the connection dropped
   while it kept running. The detail shows how long the turn ran and the last
-  thing it received. `sidecar.log`, whose path Settings → Diagnostics shows,
+  thing it received. `sidecar.log`, in `logs/` under the server's data folder,
   keeps what the sidecar logged across a crash or restart.
 
 There is no file attachment yet. Paste text, or ingest a document under

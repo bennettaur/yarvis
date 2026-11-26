@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,6 @@ import postgres from "postgres";
 import { fireAlarm, releaseAlarm } from "../core/controlClient.ts";
 import * as schema from "../db/schema.ts";
 import { subscribe } from "./hub.ts";
-import { importLegacyAlarms } from "./legacyImport.ts";
 import { createAlarmScheduler, FIRE_RETRY_MS, MAX_WAIT_MS } from "./scheduler.ts";
 import {
   acknowledgeAlarm,
@@ -209,77 +208,6 @@ describe("alarm scheduler", () => {
 
     await s.tick();
     expect(attempts).toBe(2);
-  });
-});
-
-describe("importLegacyAlarms", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "yarvis-alarms-import-"));
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("copies the old alarms in order and renames the file", async () => {
-    const path = join(dir, "alarms.json");
-    const legacy = [
-      {
-        id: "a1",
-        label: "Standup",
-        fireAtMs: inMinutes(30).getTime(),
-        sound: true,
-        meetLink: "https://meet/x",
-        status: "scheduled",
-      },
-      { id: "a2", label: "Old", fireAtMs: inMinutes(-60).getTime(), status: "acknowledged" },
-      { id: "a3", label: 42, fireAtMs: 0, status: "scheduled" },
-      { id: "a4", label: "Bad sound", fireAtMs: 0, sound: "yes", status: "scheduled" },
-      {
-        id: "a5",
-        label: "Bad link",
-        fireAtMs: 0,
-        meetLink: "javascript:alert(1)",
-        status: "fired",
-      },
-    ];
-    writeFileSync(path, JSON.stringify(legacy));
-
-    expect(await importLegacyAlarms(db, path)).toBe(2);
-
-    const rows = await listAlarms(db);
-    expect(rows.map((a) => [a.label, a.status, a.meetLink])).toEqual([
-      ["Standup", "scheduled", "https://meet/x"],
-      ["Old", "acknowledged", null],
-    ]);
-    expect(JSON.parse(readFileSync(`${path}.imported`, "utf8"))).toEqual(legacy);
-    // A second start finds nothing left to copy.
-    expect(await importLegacyAlarms(db, path)).toBe(0);
-    expect(await listAlarms(db)).toHaveLength(2);
-  });
-
-  it("does nothing when there is no file", async () => {
-    expect(await importLegacyAlarms(db, join(dir, "missing.json"))).toBe(0);
-  });
-
-  it("leaves a file that doesn't parse where it is", async () => {
-    const path = join(dir, "alarms.json");
-    writeFileSync(path, "{not json");
-    expect(await importLegacyAlarms(db, path)).toBe(0);
-    expect(readFileSync(path, "utf8")).toBe("{not json");
-  });
-
-  it("copies nothing when the file can't be renamed, so the next start can't copy twice", async () => {
-    const path = join(dir, "alarms.json");
-    writeFileSync(path, JSON.stringify([{ label: "A", fireAtMs: 1, status: "acknowledged" }]));
-    // A non-empty folder where the renamed file would go makes the rename fail.
-    mkdirSync(join(`${path}.imported`, "taken"), { recursive: true });
-
-    await expect(importLegacyAlarms(db, path)).rejects.toThrow();
-
-    expect(await listAlarms(db)).toEqual([]);
   });
 });
 

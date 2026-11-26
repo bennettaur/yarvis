@@ -1,0 +1,244 @@
+import { useCallback, useState } from "react";
+import {
+  type Device,
+  getMyDevice,
+  listDevices,
+  MINTABLE_SCOPES,
+  mintDeviceToken,
+  revokeDevice,
+  SCOPE_LABELS,
+  type Scope,
+  type SignedIn,
+} from "../lib/auth";
+import { writeClipboard } from "../lib/clipboard";
+import { invalidate, SIDECAR_FRESHNESS, useCachedResource } from "../lib/resourceCache";
+import { inTauri, signOut, signOutThisDevice } from "../lib/server";
+
+const DEVICES_KEY = "server:devices";
+const ME_KEY = "server:devices:me";
+
+const BUTTON =
+  "rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50";
+
+function formatLastSeen(ms: Device["lastSeenAt"]): string {
+  return ms ? new Date(ms).toLocaleString() : "never";
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * The clients signed in to this server, and tokens minted for the ones that
+ * can't sign in itself (a Tauri app pointed at a remote server, a script).
+ * Revoking a device signs it out at once and closes its open connections.
+ */
+export default function DevicesSection() {
+  const me = useCachedResource(ME_KEY, getMyDevice, SIDECAR_FRESHNESS);
+  const isAdmin = me.data?.scopes.includes("admin") ?? false;
+  const devices = useCachedResource(isAdmin ? DEVICES_KEY : null, listDevices, SIDECAR_FRESHNESS);
+
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [scopes, setScopes] = useState<Scope[]>(["read", "chat"]);
+  const [minting, setMinting] = useState(false);
+  const [minted, setMinted] = useState<SignedIn | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  const reload = useCallback(() => {
+    invalidate(DEVICES_KEY);
+  }, []);
+
+  const revoke = useCallback(
+    async (device: Device) => {
+      setError(null);
+      setBusyId(device.deviceId);
+      try {
+        await revokeDevice(device.deviceId);
+        if (device.deviceId === me.data?.deviceId) {
+          signOut();
+          return;
+        }
+        reload();
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [me.data?.deviceId, reload],
+  );
+
+  const mint = useCallback(async () => {
+    setError(null);
+    setMinted(null);
+    setCopied(false);
+    if (!name.trim()) {
+      setError("Give the token a name, so you can tell it apart later.");
+      return;
+    }
+    if (scopes.length === 0) {
+      setError("Pick at least one scope.");
+      return;
+    }
+    setMinting(true);
+    try {
+      setMinted(await mintDeviceToken(name.trim(), scopes));
+      setName("");
+      reload();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setMinting(false);
+    }
+  }, [name, scopes, reload]);
+
+  const toggleScope = (scope: Scope) =>
+    setScopes((current) =>
+      current.includes(scope) ? current.filter((s) => s !== scope) : [...current, scope],
+    );
+
+  const copy = async () => {
+    if (!minted) return;
+    try {
+      await writeClipboard(minted.token);
+      setCopied(true);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  const activeDevices = (devices.data ?? []).filter((d) => !d.revokedAt);
+
+  return (
+    <section className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
+      <h2 className="mb-1 text-sm font-medium uppercase tracking-wide text-zinc-500">Devices</h2>
+      <p className="mb-4 text-xs text-zinc-500">
+        Every browser, app or script signed in to this Yarvis server. Each one has its own token and
+        scopes, and revoking one signs it out at once.
+      </p>
+
+      {(error ?? me.error ?? devices.error) && (
+        <p className="mb-3 text-sm text-red-400" role="alert">
+          {error ?? me.error ?? devices.error}
+        </p>
+      )}
+
+      {me.data && (
+        <div className="mb-3 flex items-center gap-3 text-sm text-zinc-300">
+          <p className="min-w-0 flex-1">
+            This device: <span className="font-medium">{me.data.name}</span>{" "}
+            <span className="text-xs text-zinc-500">({me.data.scopes.join(", ")})</span>
+          </p>
+          {/* The desktop app's token is its pairing, kept in the Keychain. */}
+          {!inTauri() && (
+            <button
+              type="button"
+              className={BUTTON}
+              disabled={signingOut}
+              onClick={() => {
+                setSigningOut(true);
+                void signOutThisDevice();
+              }}
+            >
+              {signingOut ? "Signing out…" : "Sign out"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {!isAdmin && me.data && (
+        <p className="text-xs text-zinc-500">Managing devices needs the admin scope.</p>
+      )}
+
+      {isAdmin && (
+        <>
+          <ul className="mb-5 divide-y divide-zinc-800 rounded-md border border-zinc-800">
+            {activeDevices.map((device) => (
+              <li key={device.deviceId} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-zinc-200">
+                    {device.name}
+                    {device.deviceId === me.data?.deviceId && (
+                      <span className="ml-2 text-xs text-sky-400">this device</span>
+                    )}
+                  </span>
+                  <span className="block text-xs text-zinc-500">
+                    {device.kind === "token" ? "Token" : "Signed in"} · {device.scopes.join(", ")} ·
+                    last seen {formatLastSeen(device.lastSeenAt)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  className={BUTTON}
+                  disabled={busyId === device.deviceId}
+                  onClick={() => void revoke(device)}
+                >
+                  {busyId === device.deviceId ? "Revoking…" : "Revoke"}
+                </button>
+              </li>
+            ))}
+            {activeDevices.length === 0 && !devices.loading && (
+              <li className="px-3 py-2 text-xs text-zinc-500">No devices.</li>
+            )}
+          </ul>
+
+          <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Pair a device with a token
+          </h3>
+          <p className="mb-3 text-xs text-zinc-500">
+            For a client that can't sign in itself. Paste the token into it, and give it only the
+            scopes it needs. Admin and terminal stay with signed-in devices.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs text-zinc-400">
+              <span className="mb-1 block uppercase tracking-wide">Name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Work laptop"
+                className="w-48 rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100"
+              />
+            </label>
+            <fieldset className="flex gap-3 text-xs text-zinc-300">
+              <legend className="sr-only">Scopes</legend>
+              {MINTABLE_SCOPES.map((scope) => (
+                <label key={scope} className="flex items-center gap-1" title={SCOPE_LABELS[scope]}>
+                  <input
+                    type="checkbox"
+                    checked={scopes.includes(scope)}
+                    onChange={() => toggleScope(scope)}
+                  />
+                  {scope}
+                  <span className="text-zinc-500">({SCOPE_LABELS[scope]})</span>
+                </label>
+              ))}
+            </fieldset>
+            <button type="button" className={BUTTON} disabled={minting} onClick={() => void mint()}>
+              {minting ? "Creating…" : "Create token"}
+            </button>
+          </div>
+
+          {minted && (
+            <div className="mt-4 rounded-md border border-amber-700/60 bg-amber-950/30 p-3">
+              <p className="mb-2 text-xs text-amber-300">
+                Copy this token now. It won't be shown again.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 break-all rounded bg-zinc-950 px-2 py-1 text-xs text-zinc-100">
+                  {minted.token}
+                </code>
+                <button type="button" className={BUTTON} onClick={() => void copy()}>
+                  {copied ? "Copied" : "Copy"}
+                </button>
+                <button type="button" className={BUTTON} onClick={() => setMinted(null)}>
+                  Done
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}

@@ -114,8 +114,8 @@ interface ClaudeRunBaseOptions<T> {
   plugins?: PluginName[];
   /**
    * A plugin agent the run's main thread runs as (`--agent`, e.g.
-   * `yarvis-review:rereviewer`): its prompt and tool list instead of a
-   * coordinator delegating to it, for a job one agent does whole.
+   * `yarvis-review:rereviewer`): its prompt and tool list instead of Claude
+   * Code's default agent, for a job one agent does whole.
    */
   agent?: string;
   /** Tools the run may use; anything else is denied, since nobody can answer a prompt. */
@@ -187,7 +187,66 @@ export interface ClaudeRunDeps {
   env?: Record<string, string>;
   /** The app instance recorded on the row; defaults to this process's. */
   instance?: string;
+  /** What a fan-out run's processes wait on; defaults to {@link fanOutSlots}. */
+  slots?: ProcessSlots;
 }
+
+/**
+ * Hands out a fixed number of slots, first come first served: a fan-out run's
+ * processes take one each, so the processes of every run together stay under
+ * the limit.
+ */
+export class ProcessSlots {
+  private free: number;
+  private readonly waiting: (() => void)[] = [];
+
+  constructor(size: number) {
+    this.free = size;
+  }
+
+  /** A release for a slot once one is free, or null if `signal` aborts first. */
+  acquire(signal: AbortSignal): Promise<(() => void) | null> {
+    if (signal.aborted) return Promise.resolve(null);
+    if (this.free > 0) {
+      this.free--;
+      return Promise.resolve(this.releaser());
+    }
+    return new Promise((resolve) => {
+      const grant = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(this.releaser());
+      };
+      const onAbort = () => {
+        const at = this.waiting.indexOf(grant);
+        if (at >= 0) this.waiting.splice(at, 1);
+        resolve(null);
+      };
+      this.waiting.push(grant);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /** Passes the slot straight to the next waiter, so a newcomer can't take it first. */
+  private releaser(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.free++;
+    };
+  }
+}
+
+/**
+ * Most Claude Code processes fan-out runs may have going at once, across every
+ * run. Each is a few hundred MB, and a big PR's report would otherwise start
+ * one per reading group for each of eight sections at once. Twelve lets every
+ * default section of a PR with one reading group start straight away.
+ */
+const MAX_FAN_OUT_PROCESSES = 12;
+export const fanOutSlots = new ProcessSlots(MAX_FAN_OUT_PROCESSES);
 
 /** The process's runs in flight. */
 export const agentRunRegistry = new RunRegistry<AgentRunEvent>({
@@ -350,8 +409,8 @@ export function jsonSchemaArg(schema: z.ZodType): string {
 }
 
 /** The argv after the program; the prompt goes on stdin. Exported for tests. */
-export function buildClaudeArgs<T, R>(
-  options: ClaudeRunOptions<T, R>,
+export function buildClaudeArgs(
+  options: ClaudeRunBaseOptions<unknown>,
   pluginDirs: string[],
 ): string[] {
   const guardrail = options.guardrail === "task" ? TASK_RUN_GUARDRAIL : RUN_GUARDRAIL;
@@ -416,6 +475,308 @@ export async function startClaudeRun<T, R = T>(
   deps: ClaudeRunDeps = {},
 ): Promise<ClaudeRunHandle<R>> {
   const registry = deps.registry ?? agentRunRegistry;
+  const { cwd, program } = await checkRunOptions(options, deps);
+  const { id, args, removePlugins } = await registerRun(db, options, deps, (dirs) => [
+    buildClaudeArgs(options, dirs),
+  ]);
+
+  const signal = registry.start(id);
+  const emit = (event: AgentRunEvent) => registry.emit(id, event);
+  const parser = new StreamJsonParser(cwd);
+  console.log(
+    `[agent-runs] starting ${options.kind} run ${id} (prompt ${options.prompt.length} chars)`,
+  );
+
+  const execute = (): Promise<RunEnding> => {
+    emit({ type: "status", message: "Starting Claude Code" });
+    return runClaudeProcess({
+      program,
+      args: args[0] ?? [],
+      stdin: options.prompt,
+      cwd,
+      env: deps.env,
+      signal,
+      timeoutMs: options.timeoutMs,
+      onSpawn: (pid) => void recordPid(db, id, pid),
+      onEvent: emit,
+      parser,
+    });
+  };
+
+  const done = execute()
+    .then((ending) =>
+      settle(options, ending, parser.estimatedCostUsd, {
+        reads: parser.fileReads,
+        subagents: parser.subagents,
+      }),
+    )
+    .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
+    .then((outcome) => {
+      for (const event of parser.closeOpenDelegations()) emit(event);
+      return finishRun(db, registry, id, outcome);
+    })
+    .finally(removePlugins);
+  return { id, done };
+}
+
+/** One process of a {@link startClaudeFanOutRun}: the plugin agent it runs as, and its task. */
+export interface RunPart {
+  /** What sets it apart from the run's other parts, shown on its lane (e.g. "group 2"). */
+  description: string;
+  /** The plugin agent the process's main thread runs as, e.g. `yarvis-review:risk-reviewer`. */
+  agent: string;
+  prompt: string;
+  /**
+   * The part's answer when it fails twice, in the input shape
+   * {@link FanOutRunOptions.partSchema} takes. Used only while another part
+   * answered: without one, or when every part failed, the run fails.
+   */
+  fallback?: unknown;
+}
+
+export type FanOutRunOptions<T, R = T> = Omit<
+  ClaudeRunBaseOptions<T>,
+  "prompt" | "agent" | "outputSchema"
+> &
+  FinishStep<T, R> & {
+    /**
+     * One process each, run at once as far as {@link fanOutSlots} allows.
+     * `timeoutMs` bounds the whole run, waits for a slot included, and stops
+     * every part when it passes. `maxTurns` and `maxBudgetUsd` apply to each
+     * process, a retry included.
+     */
+    parts: RunPart[];
+    /**
+     * Every part's answer: sent as `--json-schema`, and a part whose answer
+     * doesn't parse is started again once. What reaches `combine` is the
+     * answer as given, not the parsed one, so a schema that scores or cuts
+     * does so once, on the combined answer.
+     */
+    partSchema: z.ZodType;
+    /**
+     * Puts the parts' answers, in `parts` order, together into the run's.
+     * `fellBack[i]` is true where part i failed twice and gave its fallback.
+     */
+    combine: (answers: unknown[], fellBack: boolean[]) => unknown;
+    /** The combined answer's shape; the run fails unless it parses. */
+    outputSchema: z.ZodType<T>;
+  };
+
+/**
+ * How a part of a fan-out run ended. `stopped` is a cancel or the run's
+ * deadline, which ends every part, so nothing is retried.
+ */
+type PartResult =
+  | { kind: "answered"; answer: unknown }
+  | { kind: "failed"; error: string }
+  | { kind: "stopped" };
+
+/** Tries per part: the first, and one more after a failure. */
+const PART_ATTEMPTS = 2;
+
+/**
+ * Starts a run made of several processes, one per part, and returns as soon as
+ * it is registered. It is one run to everything that follows it: one row, one
+ * event stream in which each part is a subagent lane, and one answer, which
+ * `combine` builds in code from the parts' answers rather than a coordinating
+ * model copying them. A part that fails is started once more, and one that
+ * fails again answers its `fallback`, unless every part failed, which fails
+ * the run. Throws for the same reasons as {@link startClaudeRun}.
+ */
+export async function startClaudeFanOutRun<T, R = T>(
+  db: Db,
+  options: FanOutRunOptions<T, R>,
+  deps: ClaudeRunDeps = {},
+): Promise<ClaudeRunHandle<R>> {
+  if (options.parts.length === 0) throw new Error("a fan-out run needs at least one part");
+  const registry = deps.registry ?? agentRunRegistry;
+  const { cwd, program } = await checkRunOptions(options, deps);
+  const { id, args, removePlugins } = await registerRun(db, options, deps, (dirs) =>
+    options.parts.map((part) =>
+      buildClaudeArgs(
+        { ...options, prompt: part.prompt, agent: part.agent, outputSchema: options.partSchema },
+        dirs,
+      ),
+    ),
+  );
+
+  const cancelled = registry.start(id);
+  const deadline = new AbortController();
+  const startedAt = Date.now();
+  const timer = setTimeout(() => deadline.abort(), options.timeoutMs);
+  // Either ends every part: the user's cancel, or the run running out of time.
+  const signal = AbortSignal.any([cancelled, deadline.signal]);
+  const emit = (event: AgentRunEvent) => registry.emit(id, event);
+  const slots = deps.slots ?? fanOutSlots;
+  const reads: FileRead[] = [];
+  const subagents = new Map<string, string>();
+  const costs: number[] = [];
+  const count = options.parts.length;
+  console.log(
+    `[agent-runs] starting ${options.kind} run ${id} (${count} ${count === 1 ? "part" : "parts"})`,
+  );
+
+  const attempt = async (part: RunPart, index: number, lane: string): Promise<PartResult> => {
+    const release = await slots.acquire(signal);
+    if (!release) return { kind: "stopped" };
+    const parser = new StreamJsonParser(cwd);
+    let recorded: Promise<number | null> = Promise.resolve(null);
+    const ending = await runClaudeProcess({
+      program,
+      args: args[index] ?? [],
+      stdin: part.prompt,
+      cwd,
+      env: deps.env,
+      signal,
+      // At least a millisecond, since a timeout of 0 would mean none.
+      timeoutMs: Math.max(1, startedAt + options.timeoutMs - Date.now()),
+      onSpawn: (pid) => {
+        recorded = recordProcess(db, id, pid);
+      },
+      onEvent: (event) => emit(inLane(event, lane)),
+      parser,
+    }).finally(release);
+    // A process that has exited leaves the crash sweep's list, so the sweep
+    // can't later kill whatever is given its pid.
+    void recorded.then((pid) => (pid === null ? undefined : forgetProcess(db, id, pid)));
+    for (const event of parser.closeOpenDelegations()) emit(inLane(event, lane));
+    for (const read of parser.fileReads) {
+      reads.push(read.subagentId === null ? { ...read, subagentId: lane } : read);
+    }
+    for (const [delegation, name] of parser.subagents) subagents.set(delegation, name);
+    const read = readPartEnding(options, ending, parser.estimatedCostUsd);
+    if (read.costUsd !== null) costs.push(read.costUsd);
+    return read.result;
+  };
+
+  const runPart = async (part: RunPart, index: number): Promise<PartResult> => {
+    const lane = `part-${index + 1}`;
+    const shown = { id: lane, name: part.agent, description: part.description };
+    subagents.set(lane, part.agent);
+    emit({ type: "subagent", phase: "start", ...shown });
+    let result: PartResult = { kind: "failed", error: "" };
+    try {
+      for (let tries = 1; tries <= PART_ATTEMPTS; tries++) {
+        if (tries > 1 && result.kind === "failed") {
+          emit({ type: "status", message: `Retrying ${part.description}: ${result.error}` });
+        }
+        result = await attempt(part, index, lane);
+        if (result.kind !== "failed") break;
+      }
+    } catch (e) {
+      // Kept to this part, so the run still waits for the others' processes.
+      result = { kind: "failed", error: e instanceof Error ? e.message : String(e) };
+    }
+    emit({ type: "subagent", phase: "stop", ...shown, failed: result.kind !== "answered" });
+    return result;
+  };
+
+  const finish = (parts: PartResult[]): AgentRunOutcome<R> => {
+    const base: OutcomeBase<R> = {
+      output: null,
+      text: null,
+      costUsd: costs.length > 0 ? costs.reduce((a, b) => a + b, 0) : null,
+      durationMs: Date.now() - startedAt,
+      sessionId: null,
+    };
+    if (cancelled.aborted) return { ...base, status: "cancelled", error: null };
+    if (deadline.signal.aborted || parts.some((p) => p.kind === "stopped")) {
+      return failure(`timed out after ${Math.round(options.timeoutMs / 1000)}s`, base);
+    }
+    const failed = parts.flatMap((p, i) => (p.kind === "failed" ? [{ i, error: p.error }] : []));
+    const first = failed[0];
+    if (first && failed.length === parts.length) {
+      return failure(`every part of the run failed; the first: ${first.error}`, base);
+    }
+    const unanswerable = failed.find(({ i }) => options.parts[i]?.fallback === undefined);
+    if (unanswerable) {
+      const part = options.parts[unanswerable.i]?.description ?? "a part";
+      return failure(`${part} failed: ${unanswerable.error}`, base);
+    }
+    const answers = parts.map((p, i) =>
+      p.kind === "answered" ? p.answer : options.parts[i]?.fallback,
+    );
+    try {
+      const combined = options.combine(
+        answers,
+        parts.map((p) => p.kind !== "answered"),
+      );
+      return answerOutcome(options, combined, base, { reads, subagents });
+    } catch (e) {
+      return failure(
+        `could not put the parts' answers together: ${e instanceof Error ? e.message : String(e)}`,
+        base,
+      );
+    }
+  };
+
+  const done = Promise.all(options.parts.map(runPart))
+    .then(finish)
+    .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
+    .then((outcome) => finishRun(db, registry, id, outcome))
+    .finally(() => {
+      clearTimeout(timer);
+      removePlugins();
+    });
+  return { id, done };
+}
+
+/** A part's own text and tool events, put on its lane; its subagents' keep theirs. */
+function inLane(event: AgentRunEvent, lane: string): AgentRunEvent {
+  if ((event.type === "text" || event.type === "tool") && event.subagentId === null) {
+    return { ...event, subagentId: lane };
+  }
+  return event;
+}
+
+/** A part's process's ending, read as an answer to its schema, and what it spent. */
+function readPartEnding<T, R>(
+  options: FanOutRunOptions<T, R>,
+  ending: RunEnding,
+  estimatedCostUsd: number,
+): { result: PartResult; costUsd: number | null } {
+  const ended = endingOutcome<R>(options.timeoutMs, ending, estimatedCostUsd);
+  if (!("result" in ended)) {
+    // The process's own timeout is the run's deadline, so it stops the run too.
+    const stopped =
+      ended.status === "cancelled" || (ending.kind === "exited" && ending.exit.timedOut);
+    return {
+      result: stopped ? { kind: "stopped" } : { kind: "failed", error: ended.error ?? "" },
+      costUsd: ended.costUsd,
+    };
+  }
+  const { result, base } = ended;
+  if (result.structuredOutput === null) {
+    return {
+      result: { kind: "failed", error: "it finished without a structured answer" },
+      costUsd: base.costUsd,
+    };
+  }
+  const answer = redactDeep(result.structuredOutput);
+  const parsed = options.partSchema.safeParse(answer);
+  return {
+    result: parsed.success
+      ? { kind: "answered", answer }
+      : {
+          kind: "failed",
+          error: `its answer did not match the expected shape: ${z.prettifyError(parsed.error)}`,
+        },
+    costUsd: base.costUsd,
+  };
+}
+
+/** What setting a run up reads: everything but a process's own task. */
+type RunSetup = Omit<ClaudeRunBaseOptions<unknown>, "prompt" | "agent" | "outputSchema">;
+
+/**
+ * The checks every run gets before anything is written: a refused permission
+ * mode, an unbounded `acceptEdits`, a budget that isn't positive, a working
+ * directory that isn't there. Answers the checked directory and the program.
+ */
+async function checkRunOptions(
+  options: RunSetup,
+  deps: ClaudeRunDeps,
+): Promise<{ cwd: string; program: string }> {
   if (options.permissionMode && REFUSED_PERMISSION_MODES.has(options.permissionMode)) {
     throw new Error(`permission mode "${options.permissionMode}" is not allowed for agent runs`);
   }
@@ -437,20 +798,27 @@ export async function startClaudeRun<T, R = T>(
   }
   const cwd = validateWorkingDir(options.cwd);
   for (const dir of options.addDirs ?? []) validateWorkingDir(dir);
-  const program = deps.program ?? (await claudeProgram());
+  return { cwd, program: deps.program ?? (await claudeProgram()) };
+}
 
+/**
+ * Writes the run's plugins and its `running` row. `buildArgs` gets the plugin
+ * directories and answers each process's argv. The plugins are removed again
+ * if anything here fails; otherwise the caller removes them when the run ends.
+ */
+async function registerRun(
+  db: Db,
+  options: RunSetup,
+  deps: ClaudeRunDeps,
+  buildArgs: (pluginDirs: string[]) => string[][],
+): Promise<{ id: string; args: string[][]; removePlugins: () => void }> {
   const plugins: PluginCopy[] = [];
   const removePlugins = () => {
     for (const plugin of plugins) plugin.remove();
   };
-  let id: string;
-  let args: string[];
   try {
     for (const name of options.plugins ?? []) plugins.push(writePluginCopy(name));
-    args = buildClaudeArgs(
-      options,
-      plugins.map((plugin) => plugin.dir),
-    );
+    const args = buildArgs(plugins.map((plugin) => plugin.dir));
     const [row] = await db
       .insert(agentRuns)
       .values({
@@ -465,61 +833,50 @@ export async function startClaudeRun<T, R = T>(
       })
       .returning({ id: agentRuns.id });
     if (!row) throw new Error("could not record the agent run");
-    id = row.id;
+    return { id: row.id, args, removePlugins };
   } catch (e) {
     removePlugins();
     throw e;
   }
+}
 
-  const signal = registry.start(id);
-  const emit = (event: AgentRunEvent) => registry.emit(id, event);
-  const parser = new StreamJsonParser(cwd);
-  console.log(
-    `[agent-runs] starting ${options.kind} run ${id} (prompt ${options.prompt.length} chars)`,
-  );
-
-  const execute = async (): Promise<RunEnding> => {
-    emit({ type: "status", message: "Starting Claude Code" });
-    let result: ClaudeStreamResult | undefined;
-    try {
-      const exit = await launchStreaming({
-        program,
-        args,
-        stdin: options.prompt,
-        cwd,
-        env: deps.env,
-        signal,
-        timeoutMs: options.timeoutMs,
-        onSpawn: (pid) => void recordPid(db, id, pid),
-        onLine: (line) => {
-          const parsed = parser.parseLine(line);
-          for (const event of parsed.events) emit(event);
-          if (parsed.result) result = parsed.result;
-        },
-      });
-      return { kind: "exited", exit, result };
-    } catch (e) {
-      return {
-        kind: "not-started",
-        message: `could not start Claude Code: ${e instanceof Error ? e.message : String(e)}`,
-      };
-    }
-  };
-
-  const done = execute()
-    .then((ending) =>
-      settle(options, ending, parser.estimatedCostUsd, {
-        reads: parser.fileReads,
-        subagents: parser.subagents,
-      }),
-    )
-    .catch((e) => failure<R>(e instanceof Error ? e.message : String(e), {}))
-    .then((outcome) => {
-      for (const event of parser.closeOpenDelegations()) emit(event);
-      return finishRun(db, registry, id, outcome);
-    })
-    .finally(removePlugins);
-  return { id, done };
+/** One Claude Code process, streamed through `parser` into `onEvent`. */
+async function runClaudeProcess(launch: {
+  program: string;
+  args: string[];
+  stdin: string;
+  cwd: string;
+  env: Record<string, string> | undefined;
+  signal: AbortSignal;
+  timeoutMs: number;
+  onSpawn: (pid: number) => void;
+  onEvent: (event: AgentRunEvent) => void;
+  parser: StreamJsonParser;
+}): Promise<RunEnding> {
+  let result: ClaudeStreamResult | undefined;
+  try {
+    const exit = await launchStreaming({
+      program: launch.program,
+      args: launch.args,
+      stdin: launch.stdin,
+      cwd: launch.cwd,
+      env: launch.env,
+      signal: launch.signal,
+      timeoutMs: launch.timeoutMs,
+      onSpawn: launch.onSpawn,
+      onLine: (line) => {
+        const parsed = launch.parser.parseLine(line);
+        for (const event of parsed.events) launch.onEvent(event);
+        if (parsed.result) result = parsed.result;
+      },
+    });
+    return { kind: "exited", exit, result };
+  } catch (e) {
+    return {
+      kind: "not-started",
+      message: `could not start Claude Code: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
 }
 
 /** Records the run's process so a sweep after a crash can find what it left running. */
@@ -529,6 +886,39 @@ async function recordPid(db: Db, id: string, pid: number): Promise<void> {
     await db.update(agentRuns).set({ pid, pidStartedAt }).where(eq(agentRuns.id, id));
   } catch (e) {
     console.error(`[agent-runs] could not record the process of run ${id}:`, e);
+  }
+}
+
+/**
+ * The same for each process of a fan-out run, appended in one statement so
+ * none is lost. Answers the pid once it is recorded, or null if it wasn't.
+ */
+async function recordProcess(db: Db, id: string, pid: number): Promise<number | null> {
+  try {
+    const startedAt = await processStartTime(pid);
+    const entry = JSON.stringify([{ pid, startedAt }]);
+    await db
+      .update(agentRuns)
+      .set({ processes: sql`${agentRuns.processes} || ${entry}::jsonb` })
+      .where(eq(agentRuns.id, id));
+    return pid;
+  } catch (e) {
+    console.error(`[agent-runs] could not record a process of run ${id}:`, e);
+    return null;
+  }
+}
+
+/** Takes a process that has exited off its run's list. */
+async function forgetProcess(db: Db, id: string, pid: number): Promise<void> {
+  try {
+    await db
+      .update(agentRuns)
+      .set({
+        processes: sql`(select coalesce(jsonb_agg(p), '[]'::jsonb) from jsonb_array_elements(${agentRuns.processes}) as p where (p->>'pid')::int <> ${pid})`,
+      })
+      .where(eq(agentRuns.id, id));
+  } catch (e) {
+    console.error(`[agent-runs] could not forget a process of run ${id}:`, e);
   }
 }
 
@@ -600,18 +990,24 @@ function failure<T>(
   };
 }
 
-/** Turns how the process ended, and what it said last, into the run's outcome. */
-function settle<T, R>(
-  options: ClaudeRunOptions<T, R>,
+/** An outcome's fields other than how it ended. */
+type OutcomeBase<R> = Omit<AgentRunOutcome<R>, "status" | "error">;
+
+/**
+ * How a process ended, short of reading its answer: the result of one that
+ * finished, or the outcome that ends it (cancelled, timed out, crashed, or
+ * reporting an error).
+ */
+function endingOutcome<R>(
+  timeoutMs: number,
   ending: RunEnding,
   estimatedCostUsd: number,
-  activity: RunActivity,
-): AgentRunOutcome<R> {
+): { result: ClaudeStreamResult; base: OutcomeBase<R> } | AgentRunOutcome<R> {
   const estimate = estimatedCostUsd > 0 ? estimatedCostUsd : null;
   if (ending.kind === "not-started") return failure(ending.message, { costUsd: estimate });
   const { exit, result } = ending;
-  const base = {
-    output: null as R | null,
+  const base: OutcomeBase<R> = {
+    output: null,
     text: result?.text ?? null,
     costUsd: result?.costUsd ?? estimate,
     durationMs: result?.durationMs ?? null,
@@ -619,7 +1015,7 @@ function settle<T, R>(
   };
   if (exit.aborted) return { ...base, status: "cancelled", error: null };
   if (exit.timedOut) {
-    return failure(`timed out after ${Math.round(options.timeoutMs / 1000)}s`, base);
+    return failure(`timed out after ${Math.round(timeoutMs / 1000)}s`, base);
   }
   if (!result) {
     if (exit.skippedLines > 0) {
@@ -638,18 +1034,46 @@ function settle<T, R>(
   if (result.isError || result.subtype !== "success") {
     return failure(result.text || result.subtype || "the run reported an error", base);
   }
+  return { result, base };
+}
+
+/** Turns how the process ended, and what it said last, into the run's outcome. */
+function settle<T, R>(
+  options: ClaudeRunOptions<T, R>,
+  ending: RunEnding,
+  estimatedCostUsd: number,
+  activity: RunActivity,
+): AgentRunOutcome<R> {
+  const ended = endingOutcome<R>(options.timeoutMs, ending, estimatedCostUsd);
+  if (!("result" in ended)) return ended;
+  const { result, base } = ended;
   if (!options.outputSchema) return { ...base, status: "succeeded", error: null };
   if (result.structuredOutput === null) {
     return failure("the run finished without a structured answer", base);
   }
-  const parsed = options.outputSchema.safeParse(redactDeep(result.structuredOutput));
+  return answerOutcome(options, redactDeep(result.structuredOutput), base, activity);
+}
+
+/** Validates a finished run's answer and finishes it into what the run keeps. */
+function answerOutcome<T, R>(
+  options: {
+    outputSchema?: z.ZodType<T>;
+    finishOutput?: (output: T, activity: RunActivity) => R;
+  },
+  answer: unknown,
+  base: OutcomeBase<R>,
+  activity: RunActivity,
+): AgentRunOutcome<R> {
+  if (!options.outputSchema) return { ...base, status: "succeeded", error: null };
+  const parsed = options.outputSchema.safeParse(answer);
   if (!parsed.success) {
     return failure(
       `the run's answer did not match the expected shape: ${z.prettifyError(parsed.error)}`,
       base,
     );
   }
-  if (!options.finishOutput) {
+  const { finishOutput } = options;
+  if (!finishOutput) {
     // FinishStep makes the step optional only when R is T.
     return { ...base, status: "succeeded", output: parsed.data as unknown as R, error: null };
   }
@@ -657,7 +1081,7 @@ function settle<T, R>(
     return {
       ...base,
       status: "succeeded",
-      output: options.finishOutput(parsed.data, activity),
+      output: finishOutput(parsed.data, activity),
       error: null,
     };
   } catch (e) {
@@ -674,6 +1098,7 @@ const {
   instance: _instance,
   pid: _pid,
   pidStartedAt: _pidStartedAt,
+  processes: _processes,
   ...summaryColumns
 } = getTableColumns(agentRuns);
 
@@ -746,11 +1171,21 @@ export async function failInterruptedAgentRuns(
         lt(agentRuns.startedAt, startedBefore),
       ),
     )
-    .returning({ id: agentRuns.id, pid: agentRuns.pid, pidStartedAt: agentRuns.pidStartedAt });
+    .returning({
+      id: agentRuns.id,
+      pid: agentRuns.pid,
+      pidStartedAt: agentRuns.pidStartedAt,
+      processes: agentRuns.processes,
+    });
   for (const row of rows) {
-    if (row.pid === null) continue;
-    if (await killLeftovers(row.pid, row.pidStartedAt)) {
-      console.log(`[agent-runs] killed what interrupted run ${row.id} left running`);
+    const leaders = [
+      ...(row.pid === null ? [] : [{ pid: row.pid, startedAt: row.pidStartedAt }]),
+      ...row.processes,
+    ];
+    for (const { pid, startedAt } of leaders) {
+      if (await killLeftovers(pid, startedAt)) {
+        console.log(`[agent-runs] killed what interrupted run ${row.id} left running`);
+      }
     }
   }
   return rows.length;

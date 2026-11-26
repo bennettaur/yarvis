@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "beforeBuildCommand": "bun run build && bun run sidecar:compile"
+    "beforeBuildCommand": "bun run build && bun run sidecar:compile && bun run server:compile"
   },
   "bundle": {
-    "externalBin": ["binaries/yarvis-sidecar"],
+    "externalBin": ["binaries/yarvis-sidecar", "binaries/yarvis-server"],
     "resources": {
-      "../sidecar/drizzle/": "drizzle/"
+      "../sidecar/drizzle/": "drizzle/",
+      "../dist/": "dist/"
     }
   }
 }

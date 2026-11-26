@@ -1,7 +1,9 @@
 ---
 name: complexity-reviewer
 description: Flags parts of a pull request that are more complex than they need to be and names the simpler version. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 

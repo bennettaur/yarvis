@@ -51,9 +51,6 @@ import inputsAndTrust from "../../claude-plugins/yarvis-review/shared/inputs-and
 import rereviewInputsAndTrust from "../../claude-plugins/yarvis-review/shared/rereview-inputs-and-trust.md" with {
   type: "text",
 };
-import verificationReport from "../../claude-plugins/yarvis-review/skills/verification-report/SKILL.md" with {
-  type: "text",
-};
 
 /** Where a review agent's source takes the shared inputs-and-trust section. */
 export const INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:inputs-and-trust -->";
@@ -66,9 +63,8 @@ export const REREVIEW_INPUTS_AND_TRUST_MARKER = "<!-- yarvis-review:rereview-inp
 
 /**
  * A review agent with the shared section spliced in. Claude Code agent files
- * have no include, and the system prompt a run appends never reaches its
- * subagents, so each agent carries the trust rules itself; keeping them in
- * one file is what stops the copies drifting apart. Throws at load when an
+ * have no include, so each agent carries the trust rules itself; keeping them
+ * in one file is what stops the copies drifting apart. Throws at load when an
  * agent lacks the marker, so a missing guardrail can't ship.
  */
 export function withInputsAndTrust(
@@ -119,7 +115,6 @@ const PLUGINS = {
       rereviewInputsAndTrust,
       REREVIEW_INPUTS_AND_TRUST_MARKER,
     ),
-    "skills/verification-report/SKILL.md": verificationReport,
   },
 } satisfies Record<string, Record<string, string>>;
 

@@ -19,14 +19,17 @@ pgvector, creates the database, and runs `bun install`. That covers steps 1 to
 
 ## What you are setting up
 
-Yarvis is a Tauri desktop app made of three processes:
+Yarvis is a Tauri desktop app made of four pieces:
 
-- a **Rust core** (`src-tauri/`) that owns the window, the terminals, and your
-  secrets,
+- a **Tauri app** (`src-tauri/`) that owns the window, the tray and the global
+  hotkeys,
+- a **server** (`server/`) that owns the terminals and your secrets, and serves
+  the UI,
 - a **React frontend** (`src/`) that draws the UI,
 - a **Bun sidecar** (`sidecar/`) that talks to Postgres and the LLM providers.
 
-`bun run tauri dev` starts all three. Data lives in a local PostgreSQL database
+`bun run tauri dev` builds the server and starts the Vite dev server, then the
+app starts the server, which starts the sidecar. Data lives in a local PostgreSQL database
 with the `pgvector` extension. Secrets live in the macOS Keychain. Everything
 else lives in `~/.yarvis/settings.json`. See [Configuration](configuration.md)
 for the details.
@@ -119,8 +122,20 @@ database URL is therefore:
 postgres://localhost:5432/yarvis
 ```
 
-You enter that URL in the app in step 5. The app creates the tables itself the
-first time it connects.
+That is the URL the app uses when you set none, so with these defaults there
+is nothing to enter. The app creates the tables itself the first time it
+connects. For a different URL (one with a password, say), add it to the local
+server's config, `~/Library/Application Support/com.mikebennett.yarvis/server.toml`,
+and restart the app:
+
+```toml
+[database]
+url = "postgres://USER:PASSWORD@localhost:5432/yarvis"
+```
+
+The server needs the database before anyone can sign in, so the URL isn't
+something you set in Settings. `YARVIS_DATABASE_URL` in the environment of
+`bun run tauri dev` works too.
 
 Homebrew's Postgres only listens on your own machine, so the network can't
 reach it. It does trust every local connection, though. Any program running as
@@ -150,8 +165,12 @@ and `cargo clippy` on staged files.
 bun run tauri dev
 ```
 
-The first run compiles the whole Rust core, which takes a few minutes. Later
-runs take seconds. When the build finishes, a Yarvis window opens.
+The first run compiles the Tauri app and the server, which takes a few
+minutes. Later runs take seconds. When the build finishes, a Yarvis window
+opens.
+
+The window loads the UI from Vite, which proxies `/api` to the server, so a
+change to `src/` shows up straight away.
 
 If macOS asks whether Yarvis may use the Keychain, choose **Always Allow**. Dev
 builds aren't code-signed, so you may be asked for your login password
@@ -171,10 +190,10 @@ tour of each page. You can skip it and reopen it, or the tour, at any time from 
 To do the same by hand, open **Settings** (the gear at the bottom of the nav
 rail on the left) and do these three things.
 
-1. **Connect the database.** Go to **Settings → Credentials**. In **Database
-   URL**, enter `postgres://localhost:5432/yarvis` and press **Save**. The
-   sidecar restarts and creates its tables. You see "Preparing your
-   database…" for a moment.
+1. **Check the database.** **Settings → Credentials** shows the Database URL
+   the app uses and where it came from. With the defaults above there is
+   nothing to do. You see "Preparing your database…" for a moment on the first
+   start, while the tables are created.
 2. **Add an LLM provider.** On the same Credentials tab, save one of:
    - **Anthropic API key** (`sk-ant-…`) from the
      [Anthropic Console](https://console.anthropic.com). This is the best-tested
@@ -229,15 +248,23 @@ rest of the app is built around.
 
 | What | Where |
 | --- | --- |
-| Secrets (DB URL, API keys, tokens) | One macOS Keychain item: service `com.mikebennett.yarvis`, account `secrets`. You can move it to 1Password. |
+| Secrets (API keys, tokens) | One macOS Keychain item: service `com.mikebennett.yarvis`, account `secrets`. You can move it to 1Password. |
+| The database URL | `YARVIS_DATABASE_URL`, or `[database] url` in the local server's `server.toml`; `postgres://localhost:5432/yarvis` when neither is set |
 | Other settings | `~/.yarvis/settings.json` |
 | Your own specialist agents | `~/.yarvis/agents/*.md` |
 | Your own heads-down routines | `~/.yarvis/routines/*.md` |
 | Chat, memory, tasks, workspaces, PR notes | The Postgres database |
 | Workspace clones and worktrees | `~/dev/yarvis-workspaces` (set `YARVIS_WORKSPACES_ROOT` to change it) |
-| Sidecar log | `~/Library/Logs/com.mikebennett.yarvis/sidecar.log`, and **Settings → Diagnostics** |
+| Sidecar log | `logs/sidecar.log` in the local server's data folder (`~/Library/Application Support/com.mikebennett.yarvis/server/`), and **Settings → Diagnostics** |
+| Which server the app uses | `~/Library/Application Support/com.mikebennett.yarvis/connection.json`; change it from the tray's **Server connection…** |
+| The local server's config, data and log | `server.toml` and `server/` in that same folder; `~/Library/Logs/com.mikebennett.yarvis/server.log` |
 
 ## Troubleshooting
+
+**The sign-in screen says the server is waiting for its database.** The local
+server can't reach Postgres, or the database doesn't exist yet. It keeps
+trying, and the screen moves on by itself once it gets through. The causes
+are the ones below; the server's log names the one it hit.
 
 **"Couldn't start the local service."** The sidecar failed to start, usually on
 the database. The screen shows the error. Common causes:
@@ -250,7 +277,8 @@ the database. The screen shows the error. Common causes:
   `psql --version` reports 17.
 
 Fix the cause, then press **Retry**. **Continue anyway** opens the app without
-the database, so you can change the URL in Settings.
+the sidecar. To use a different database, set its URL as in step 2 and restart
+the app.
 
 **The provider picker says "(no key)".** That provider has no key saved. Save
 one in Settings → Credentials.
@@ -263,9 +291,9 @@ terminal.
 the `bun` on your `PATH`. Start the app from a terminal where `bun --version`
 works.
 
-**Port 1420 is in use.** Another Yarvis dev build (or Vite) is already running.
-Quit it, or run a second copy with `bun run dev:instance <name>`. See
-[Development](development.md#running-more-than-one-instance).
+**The window stays on "Couldn't connect".** The local server didn't start. Its
+log is `~/Library/Logs/com.mikebennett.yarvis/server.log`. In a dev build,
+check that `server/target/debug/yarvis-server` was built.
 
 **Keychain prompts keep coming back.** Choose **Always Allow** rather than
 **Allow**. Unsigned dev builds can't use Touch ID for the Keychain. The

@@ -12,6 +12,7 @@ export const SETTINGS_TABS = [
   { key: "telegram", label: "Telegram" },
   { key: "wip", label: "Work in progress" },
   { key: "assistant", label: "Assistant" },
+  { key: "devices", label: "Devices" },
   { key: "appearance", label: "Appearance" },
   { key: "diagnostics", label: "Diagnostics" },
 ] as const;

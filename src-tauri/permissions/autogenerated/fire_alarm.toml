@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fire-alarm"
+description = "Enables the fire_alarm command without any pre-configured scope."
+commands.allow = ["fire_alarm"]
+
+[[permission]]
+identifier = "deny-fire-alarm"
+description = "Denies the fire_alarm command without any pre-configured scope."
+commands.deny = ["fire_alarm"]

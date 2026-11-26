@@ -250,7 +250,7 @@ describe("POST /api/voice/speak", () => {
 });
 
 describe("the turn detector routes", () => {
-  it("require the bearer token, since the status carries the detector's token", async () => {
+  it("require the bearer token", async () => {
     expect((await app().request("/api/voice/turn-detector")).status).toBe(401);
     expect((await app().request("/api/voice/turn-detector/start", { method: "POST" })).status).toBe(
       401,
@@ -287,9 +287,11 @@ describe("the turn detector routes", () => {
 
     stdout.emit("data", "YARVIS_TURN_READY 5123\n");
     const status = await routes.request("/turn-detector");
-    expect(await status.json()).toMatchObject({
-      state: "running",
-      url: "ws://127.0.0.1:5123/?token=token",
-    });
+    const body = (await status.json()) as Record<string, unknown>;
+    expect(body.state).toBe("running");
+    // The address carries the detector's token, so only the server's route has it.
+    expect(body).not.toHaveProperty("url");
+    const upstream = await routes.request("/turn-detector/upstream");
+    expect(await upstream.json()).toEqual({ url: "ws://127.0.0.1:5123/?token=token" });
   });
 });

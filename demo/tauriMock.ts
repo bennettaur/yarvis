@@ -1,10 +1,13 @@
 /**
  * Stands in for the Rust core so the real frontend runs in a plain browser.
  *
- * Every `invoke` the UI makes is answered here, and `listen` is backed by
- * Tauri's own event mock so a demo can fire native events (an alarm going
- * off, the Quick Chat hotkey) with `window.__yarvisDemoControls.emit`. Data
- * still comes from a real sidecar; only the native layer is faked.
+ * Every core command the UI sends is answered here, whether it arrives as an
+ * `invoke` (the desktop app's machine-local commands) or as a request to the
+ * server's `/api/core` (see `serverMock.ts`). `listen` is backed by Tauri's own
+ * event mock so a demo can fire native events (the Quick Chat hotkey) with
+ * `window.__yarvisDemoControls.emit`, and server events (an alarm going off)
+ * with `emitServerEvent`. Data still comes from a real sidecar; only the
+ * native layer and the server are faked.
  *
  * The sidecar's port and token arrive on `window.__YARVIS_DEMO_CONFIG__`,
  * which the Playwright fixture sets before any page script runs.
@@ -16,12 +19,14 @@ import type { ClipboardHistoryItem } from "../src/lib/clipboard";
 import type { Settings } from "../src/lib/settings";
 import { type DemoConfig, UNMOCKED_COMMAND_WARNING } from "./demoConfig";
 import { FakeTerminals } from "./fakeShell";
+import { installServerMock } from "./serverMock";
 
 declare global {
   interface Window {
     __YARVIS_DEMO_CONFIG__?: DemoConfig;
     __yarvisDemoControls?: {
       emit: typeof emit;
+      emitServerEvent: (kind: string, data: unknown) => void;
     };
   }
 }
@@ -74,6 +79,7 @@ let settings: Settings = {
   telegramOtpWindowMinutes: null,
   defaultTelegramOtpWindowMinutes: 120,
   secretBackend: null,
+  configuredSecretBackend: null,
   onePasswordVault: null,
   onePasswordItem: null,
   colorTheme: null,
@@ -90,8 +96,15 @@ const clipboardHistory: ClipboardHistoryItem[] = [];
 
 type CommandArgs = Record<string, unknown>;
 
-// The core's PTYs, played by scripted shells.
-const terminals = new FakeTerminals((id, chunk) => void emit(`pty-output:${id}`, chunk));
+const server = installServerMock({
+  handleCommand: (cmd, args) => handleCommand(cmd, args),
+  terminals: () => terminals,
+  sidecarPort: config.sidecarPort,
+  sidecarToken: config.sidecarToken,
+});
+
+// The server's PTYs, played by scripted shells.
+const terminals = new FakeTerminals((id, chunk) => server.emitPtyOutput(id, chunk));
 
 function updateSettings(patch: Partial<Settings>): Settings {
   settings = { ...settings, ...patch };
@@ -100,14 +113,14 @@ function updateSettings(patch: Partial<Settings>): Settings {
 
 function handleCommand(cmd: string, args: CommandArgs): unknown {
   switch (cmd) {
-    case "get_sidecar_info":
-      return { port: config.sidecarPort, token: config.sidecarToken };
-    case "get_sidecar_log_path":
-      return "~/Library/Logs/Yarvis/sidecar.log";
+    case "get_server_connection":
+      return { token: "demo-device-token" };
     case "restart_sidecar":
     case "focus_main_window":
       return null;
 
+    case "get_database_info":
+      return { url: "postgres://localhost:5432/yarvis", source: "default" };
     case "get_settings":
       return settings;
     case "set_max_pty_sessions":
@@ -197,7 +210,8 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     case "delete_embeddings_secret":
       return null;
 
-    // The sidecar keeps the alarms; the core only stops one ringing.
+    // The sidecar keeps the alarms; the app only rings one and stops it.
+    case "fire_alarm":
     case "release_alarm":
       return null;
 
@@ -229,8 +243,6 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
     // Never busy, so closing a tab doesn't stop the recording on a confirm dialog.
     case "pty_is_busy":
       return false;
-    case "pty_attach":
-      return terminals.attach(args.id as string);
     case "pty_write":
       terminals.write(args.id as string, args.data as string);
       return null;
@@ -262,4 +274,4 @@ function handleCommand(cmd: string, args: CommandArgs): unknown {
 mockIPC((cmd, payload) => handleCommand(cmd, (payload ?? {}) as CommandArgs), {
   shouldMockEvents: true,
 });
-window.__yarvisDemoControls = { emit };
+window.__yarvisDemoControls = { emit, emitServerEvent: server.emitServerEvent };

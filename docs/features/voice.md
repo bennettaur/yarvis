@@ -139,8 +139,10 @@ id, and an optional clip to clone from.
 Type some text, tick the voices to use, and press **Generate**. You get one take
 per voice, each with a player.
 
-- **Save** copies a take to `~/Downloads/Yarvis Voice/`. **Show in Finder**
-  opens that folder.
+- **Save** copies a take to `~/Downloads/Yarvis Voice/` on the server's
+  machine. **Show in Finder** shows the saved file. It works only in the
+  desktop app with the server it started; with a remote server it says it
+  can't, and a browser shows **Saved** instead.
 - Each **Generate** deletes the previous takes. Saved copies in Downloads stay.
 - **Translate to** speaks a translation instead. Pick the chat model that
   translates under **Translation provider** and **Translation model**. The

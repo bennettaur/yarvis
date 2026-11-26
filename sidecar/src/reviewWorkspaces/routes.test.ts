@@ -18,7 +18,7 @@ import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 import postgres from "postgres";
 import type { AgentRunEvent } from "../agentRuns/events.ts";
-import { lockedDownSettings } from "../agentRuns/service.ts";
+import { lockedDownSettings, ProcessSlots } from "../agentRuns/service.ts";
 import { fakeClaude, resultLine } from "../agentRuns/testSupport.ts";
 import type { Config } from "../config.ts";
 import { ControlTimeoutError } from "../core/controlClient.ts";
@@ -28,6 +28,7 @@ import { RunRegistry } from "../lib/runRegistry.ts";
 import type { PrCodeSource } from "../pr/source.ts";
 import type { PrDetail, PrRef } from "../pr/types.ts";
 import type { Coverage } from "./coverage.ts";
+import { printAgentAnswer, writeAgentAnswers } from "./fakeAgents.ts";
 import { type ReviewGit, reviewGit } from "./git.ts";
 import { patchIndex, readingGroups, writePatchFiles } from "./patchFiles.ts";
 import type { ReviewProgressEvent } from "./progress.ts";
@@ -856,19 +857,17 @@ describe("verification report", () => {
 
   /**
    * A `claude` that records its stdin and argv, waits for `release`, reads
-   * src/a.ts's patch from a subagent, then ends the run with the report as its
-   * structured output. Each record is written under a temp name and moved into
-   * place, so a test that sees the file can read all of it.
+   * src/a.ts's patch, then ends with its agent's part of the report as its
+   * structured output. Each record is written under a name of its own process
+   * and moved into place, so a test that sees the file can read all of it,
+   * whichever of a run's processes wrote it last.
    */
   function setUpFake() {
     fakeDir = mkdtempSync(join(tmpdir(), "yarvis-verification-fake-"));
-    writeFileSync(
-      join(fakeDir, "result.jsonl"),
-      `${JSON.stringify(resultLine({ structured_output: report }))}\n`,
-    );
+    writeAgentAnswers(fakeDir, report);
     const read = JSON.stringify({
       type: "assistant",
-      parent_tool_use_id: "toolu_sub",
+      parent_tool_use_id: null,
       message: {
         id: "msg_read",
         content: [
@@ -884,14 +883,15 @@ describe("verification report", () => {
     const program = fakeClaude(
       fakeDir,
       "claude",
-      `cat > "${fakeDir}/stdin.tmp" && mv "${fakeDir}/stdin.tmp" "${fakeDir}/stdin.txt"
-printf '%s\\n' "$@" > "${fakeDir}/args.tmp" && mv "${fakeDir}/args.tmp" "${fakeDir}/args.txt"
-printf '%s' "$YARVIS_TEST_HARNESS_KEY" > "${fakeDir}/env.tmp" && mv "${fakeDir}/env.tmp" "${fakeDir}/env.txt"
+      `input=$(cat)
+printf '%s' "$input" > "${fakeDir}/stdin.$$" && mv "${fakeDir}/stdin.$$" "${fakeDir}/stdin.txt"
+printf '%s\\n' "$@" > "${fakeDir}/args.$$" && mv "${fakeDir}/args.$$" "${fakeDir}/args.txt"
+printf '%s' "$YARVIS_TEST_HARNESS_KEY" > "${fakeDir}/env.$$" && mv "${fakeDir}/env.$$" "${fakeDir}/env.txt"
 ctx=""; prev=""
 for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
-cat "${fakeDir}/result.jsonl"`,
+${printAgentAnswer(fakeDir)}`,
     );
     registry = new RunRegistry<AgentRunEvent>({ historyCap: 500, followerQueueCap: 2_000 });
     verificationApp = new Hono().route(
@@ -930,6 +930,8 @@ cat "${fakeDir}/result.jsonl"`,
             },
             registry,
             instance: "test",
+            // Its own, so a fake a test leaves running can't hold another test's slot.
+            slots: new ProcessSlots(12),
           },
           loadHarnessRunEnv: async (harness) => {
             harnessesAsked.push(harness);
@@ -1041,7 +1043,9 @@ cat "${fakeDir}/result.jsonl"`,
     const res = await verify("POST", wsId, prId, ["tests"]);
     expect(res.status).toBe(202);
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
-    expect(readFileSync(join(fakeDir, "stdin.txt"), "utf8")).toContain("SECTIONS=tests\n");
+    await until(async () => existsSync(join(fakeDir, "args.txt")), "the fake's argv");
+    const args = readFileSync(join(fakeDir, "args.txt"), "utf8").split("\n");
+    expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:test-reviewer");
     release();
     await until(async () => !!item(await checklist(wsId, prId), "tests")?.result, "the result");
     const list = await checklist(wsId, prId);
@@ -1113,13 +1117,14 @@ cat "${fakeDir}/result.jsonl"`,
     expect(args).not.toContain("--max-budget-usd");
     expect(
       args.slice(args.indexOf("--allowedTools") + 1, args.indexOf("--disallowedTools")),
-    ).toEqual(["Read", "Grep", "Glob", "Agent", "Skill"]);
+    ).toEqual(["Read", "Grep", "Glob"]);
+    // The summary runs once, as its agent, over the whole PR.
+    expect(args[args.indexOf("--agent") + 1]).toBe("yarvis-review:change-summary");
     await until(async () => existsSync(join(fakeDir, "stdin.txt")), "the fake's stdin");
     const prompt = readFileSync(join(fakeDir, "stdin.txt"), "utf8");
     expect(prompt).toContain(`REVIEW_CONTEXT=${contextDir}`);
-    expect(prompt).toContain("SECTIONS=summary\n");
-    expect(prompt).toMatch(/READING_GROUPS=[2-9]/);
-    // The orchestrator's prompt carries no PR text; the agents read it from pr.md.
+    expect(prompt).not.toContain("GROUP=");
+    // The prompt carries no PR text; the agent reads it from pr.md.
     expect(prompt).not.toContain("Changes a and renames old.");
 
     const running = await checklist(wsId, prId);
@@ -1580,7 +1585,7 @@ describe("re-review summary", () => {
 printf '%s\\n' "$@" > "${fakeDir}/args.tmp" && mv "${fakeDir}/args.tmp" "${fakeDir}/args.txt"
 ctx=""; prev=""
 for a in "$@"; do [ "$prev" = "--add-dir" ] && ctx="$a"; prev="$a"; done
-while [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
+while [ -d "${fakeDir}" ] && [ ! -f "${fakeDir}/release" ]; do sleep 0.02; done
 printf '%s\\n' '${read}' | sed "s#CONTEXT#$ctx#"
 cat "${fakeDir}/result.jsonl"`,
     );

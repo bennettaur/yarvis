@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = ["crates/yarvis-server"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89"
+
+[profile.release]
+strip = true
+
+# Argon2 is slow on purpose, and unoptimized it's slow enough to drag every
+# sign-in and vault test out by seconds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

@@ -94,7 +94,8 @@ describe("TurnDetector", () => {
 
     const status = turns.status();
     expect(status.state).toBe("running");
-    expect(status.url).toBe("ws://127.0.0.1:5123/?token=tok%20en");
+    expect(turns.upstreamUrl()).toBe("ws://127.0.0.1:5123/?token=tok%20en");
+    expect(status).not.toHaveProperty("url");
     expect(status.log).toEqual(["Installed 22 packages"]);
   });
 
@@ -113,7 +114,7 @@ describe("TurnDetector", () => {
     const failed = turns.status();
     expect(failed.state).toBe("failed");
     expect(failed.error).toMatch(/exited \(code 1\)/);
-    expect(failed.url).toBeNull();
+    expect(turns.upstreamUrl()).toBeNull();
 
     turns.start();
     expect(spawned).toHaveLength(2);

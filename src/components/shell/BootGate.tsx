@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getHealth } from "../../lib/api";
 import { restartSidecar } from "../../lib/keychain";
 
@@ -10,8 +10,7 @@ const STATUS_MESSAGE: Record<"connecting" | "migrating", string> = {
 };
 
 // How long to wait before offering an escape hatch, so a stuck or very slow
-// boot never traps the user (e.g. a bad database URL they need to fix in
-// Settings).
+// boot never traps the user (a sidecar migration that keeps failing, say).
 const SLOW_AFTER_MS = 6000;
 
 function BootSpinner() {
@@ -26,11 +25,19 @@ function BootSpinner() {
  * startup; this surfaces that as "Preparing your database…" and lets the user
  * retry or continue if it stalls or fails.
  */
-export default function BootGate({ children }: { children: React.ReactNode }) {
+export default function BootGate({
+  children,
+  slowAfterMs = SLOW_AFTER_MS,
+}: {
+  children: React.ReactNode;
+  slowAfterMs?: number;
+}) {
   const [phase, setPhase] = useState<Phase>("connecting");
   const [detail, setDetail] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
   const [_attempt, setAttempt] = useState(0);
+  // The poll must stop here, or its next failed check puts the boot screen back over the app.
+  const continuedAnyway = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,7 +45,7 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
     const poll = async () => {
       try {
         const h = await getHealth();
-        if (cancelled) return;
+        if (cancelled || continuedAnyway.current) return;
         if (h.ready === false) {
           if (h.phase === "error") {
             setDetail(h.error ?? "Database migration failed.");
@@ -52,7 +59,7 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
         }
       } catch {
         // Sidecar not reachable yet (still spawning); keep waiting.
-        if (cancelled) return;
+        if (cancelled || continuedAnyway.current) return;
         setPhase("connecting");
       }
       timer = setTimeout(poll, 500);
@@ -66,9 +73,9 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (phase === "ready" || phase === "error") return;
-    const t = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    const t = setTimeout(() => setSlow(true), slowAfterMs);
     return () => clearTimeout(t);
-  }, [phase]);
+  }, [phase, slowAfterMs]);
 
   const retry = useCallback(async () => {
     setDetail(null);
@@ -82,7 +89,10 @@ export default function BootGate({ children }: { children: React.ReactNode }) {
     setAttempt((a) => a + 1);
   }, []);
 
-  const proceed = useCallback(() => setPhase("ready"), []);
+  const proceed = useCallback(() => {
+    continuedAnyway.current = true;
+    setPhase("ready");
+  }, []);
 
   if (phase === "ready") return <>{children}</>;
 

@@ -7,3 +7,9 @@
 # root still stays away from the real ~/.yarvis.
 [test]
 preload = ["./src/test/setup.ts", "./sidecar/src/test/setup.ts"]
+
+# Only install versions published at least 7 days ago (in seconds), so a
+# malicious or broken release can be caught and pulled first. Add a package to
+# minimumReleaseAgeExcludes to take an urgent fix early.
+[install]
+minimumReleaseAge = 604800

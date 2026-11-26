@@ -1,7 +1,9 @@
 ---
 name: risk-reviewer
 description: Classifies each change in a pull request by kind, reach and evidence so Yarvis can score its impact, and says what clients would see if it is wrong and what limits the damage. Used by the verification report.
-tools: Read, Grep, Glob
+# StructuredOutput is how a run started with --json-schema answers; without it
+# in this list a run using this agent as its main thread can't give one.
+tools: Read, Grep, Glob, StructuredOutput
 model: inherit
 ---
 

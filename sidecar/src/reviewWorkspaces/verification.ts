@@ -2,9 +2,11 @@
  * The verification report's runs: each section (the summary and must-read
  * files, the change map, the claims, risk, the test, complexity,
  * performance, comment, observability and quality checks, the
- * simpler-approach rating and the flow diagram) is a headless Claude Code run of its own over a review PR's
- * checkout, through the `yarvis-review` plugin's `verification-report` skill.
- * `checklist.ts` puts the report together from each section's newest result.
+ * simpler-approach rating and the flow diagram) is a run of its own over a review PR's
+ * checkout. A run is one headless Claude Code process per reading group, each
+ * running the section's `yarvis-review` agent, and the server puts their
+ * answers together (`combineSectionAnswers`). `checklist.ts` puts the report
+ * together from each section's newest result.
  *
  * Its whole point is to make a review faster, so the answer's shape is narrow
  * and bounded, and the bounds hold on the server: what the model writes past a
@@ -18,7 +20,12 @@ import { join } from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ratesFor } from "../agentRuns/pricing.ts";
-import { type ClaudeRunDeps, spotlight, startClaudeRun } from "../agentRuns/service.ts";
+import {
+  type ClaudeRunDeps,
+  type RunPart,
+  spotlight,
+  startClaudeFanOutRun,
+} from "../agentRuns/service.ts";
 import type { Config } from "../config.ts";
 import { type HarnessRunEnv, harnessRunEnv } from "../core/controlClient.ts";
 import type { Db } from "../db/client.ts";
@@ -247,8 +254,8 @@ const mustReadSchema = z.object({
   path: z.string().transform((p) => clip(p, 1000)),
   reason: boundedText(160),
   lines: lineRangeSchema,
-  // Optional and nullable: most must-reads have nothing to flag, and the
-  // coordinator copies the agent's answer as is, `null` included. Capped by
+  // Optional and nullable: most must-reads have nothing to flag, and an
+  // agent writes `null` for none as often as it leaves the key out. Capped by
   // `dropCoveredFlags`, after duplicates go, so a duplicate never costs a flag.
   // Not `boundedList`: under `nullish` its description would sit in an `anyOf`
   // branch rather than on the field.
@@ -276,19 +283,24 @@ const flowSchema = z
       : { ...flow, mermaid: flow.mermaid.trim() },
   );
 
+const APPROACH_RATINGS = ["no-simpler", "simpler", "much-simpler"] as const;
+const approachFields = {
+  reason: boundedText(500),
+  alternative: boundedText(700),
+  path: optionalPath,
+  line: optionalLine,
+};
+
+/** What the approach agent may answer: never `unrated`, which only a failed agent's report has. */
+const approachAnswerSchema = z.object({ rating: z.enum(APPROACH_RATINGS), ...approachFields });
+
 /**
  * Whether the PR as a whole has a materially simpler way to its goal. The
- * complexity check judges code line by line; this judges the design.
- * `unrated` is the coordinator's answer when the agent failed.
+ * complexity check judges code line by line; this judges the design. Stored
+ * reports can be `unrated`, from when a failed agent's answer stood in.
  */
 const approachSchema = z
-  .object({
-    rating: z.enum(["no-simpler", "simpler", "much-simpler", "unrated"]),
-    reason: boundedText(500),
-    alternative: boundedText(700),
-    path: optionalPath,
-    line: optionalLine,
-  })
+  .object({ rating: z.enum([...APPROACH_RATINGS, "unrated"]), ...approachFields })
   // Without a simpler way there is nothing to point at.
   .transform((approach) =>
     approach.rating === "simpler" || approach.rating === "much-simpler"
@@ -709,13 +721,8 @@ function withRepoPath<T extends { path?: string }>(item: T, checkoutDir?: string
   return item.path ? { ...item, path: repoPath(item.path, checkoutDir) } : item;
 }
 
-/**
- * The report's schema for one PR. Built per run because its bounds come from
- * the PR: the summary's word cap from the diff size, the must-read list from
- * the changed files, and its sections from what the reviewer picked. What it
- * takes out goes into `audit`.
- */
-export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
+/** Each section's part of the report's schema. What a part takes out goes into `audit`. */
+function answerSchemas(limits: ReportLimits, audit: ReportAudit) {
   const sectionSchemas = {
     changeMap: changeMapSchema(limits),
     claims: claimsSchema(audit),
@@ -751,9 +758,169 @@ export function verificationReportSchema(limits: ReportLimits, audit: ReportAudi
       return known.slice(0, limits.mustReadMax);
     }),
   };
-  // Only the asked-for sections are in the shape, all required: Claude Code is
-  // shown only what to write, and a section the model adds anyway is stripped
-  // unread, so a malformed extra can't fail the run.
+  return { sectionSchemas, summarySchemas };
+}
+
+/**
+ * The answer one process of a section's run gives: its agent's JSON object,
+ * which is the section's field (both `summary` and `mustRead` for the
+ * summary).
+ */
+export function sectionAnswerSchema(section: ReportSection, limits: ReportLimits): z.ZodType {
+  // The audit is for the combined answer, so what a part's check drops isn't kept.
+  const { sectionSchemas, summarySchemas } = answerSchemas(limits, emptyAudit());
+  if (section === "summary") return z.object(summarySchemas);
+  if (section === "approach") return approachAnswerSchema;
+  return sectionSchemas[section];
+}
+
+/** The sections that run one process per reading group; the rest run one for the whole PR. */
+const GROUPED_SECTIONS: ReadonlySet<ReportSection> = new Set(["risk", ...CHECK_SECTIONS]);
+
+const CHECK_FAILED = {
+  title: "Check did not complete",
+  detail: "This check failed to produce an answer; review this area by hand.",
+  severity: "low",
+};
+
+/**
+ * What a reading group's process answers when it fails twice while other
+ * groups answered: a finding (for risk, a concern at medium) saying the check
+ * didn't complete, which the merge always keeps. A section run as one process
+ * has no fallback: its run fails instead, and the section keeps its last good
+ * result.
+ */
+const CHECK_FALLBACK = { status: "issues", findings: [CHECK_FAILED] };
+const RISK_FALLBACK = {
+  level: "medium",
+  clientImpact: "",
+  mitigations: [],
+  concerns: [{ title: CHECK_FAILED.title, detail: CHECK_FAILED.detail }],
+  changes: [],
+};
+
+/** An answer as an agent gave it, before the schema cuts or scores anything. */
+type RawCheck = { findings: { severity: keyof typeof SEVERITY_ORDER }[] };
+type RawRisk = {
+  level: RiskLevel;
+  clientImpact: string;
+  mitigations: unknown[];
+  concerns: unknown[];
+  changes?: unknown[] | null;
+};
+
+/**
+ * Puts a section's answers, one per reading group in group order, together
+ * into the report's fields for that section, without rewording anything.
+ * `fellBack[i]` marks a group whose answer is its fallback.
+ *
+ * - A check: every answered group's findings, most severe first (in group
+ *   order within a severity), the {@link MAX_FINDINGS} most severe kept, with
+ *   one "did not complete" finding kept whatever its severity when a group
+ *   fell back, so the gap can't be crowded out.
+ * - Risk: see {@link combineRisk}.
+ *
+ * A section that runs once just has its answer moved into place. Duplicates
+ * across sections and length limits are handled by the report's schema.
+ */
+export function combineSectionAnswers(
+  section: ReportSection,
+  answers: readonly unknown[],
+  fellBack: readonly boolean[] = [],
+): Record<string, unknown> {
+  // Each answer already parsed against `sectionAnswerSchema`, so its shape holds.
+  if (section === "summary") return answers[0] as Record<string, unknown>;
+  if (section === "risk") return { risk: combineRisk(answers as RawRisk[], fellBack) };
+  if (!(CHECK_SECTIONS as readonly string[]).includes(section)) return { [section]: answers[0] };
+  const { answered, gap } = splitFallbacks(answers as RawCheck[], fellBack, (a) => a.findings);
+  const findings = answered
+    .flatMap((a) => a.findings)
+    .map((finding, order) => ({ finding, order }))
+    .sort(
+      (a, b) =>
+        SEVERITY_ORDER[a.finding.severity] - SEVERITY_ORDER[b.finding.severity] ||
+        a.order - b.order,
+    )
+    .slice(0, MAX_FINDINGS - gap.length)
+    .map(({ finding }) => finding);
+  const all = [...findings, ...gap];
+  return { [section]: { status: all.length > 0 ? "issues" : "pass", findings: all } };
+}
+
+/**
+ * The answered groups, and the first fallback's first item (a finding or a
+ * concern) to keep for every group that fell back.
+ */
+function splitFallbacks<A, I>(
+  answers: readonly A[],
+  fellBack: readonly boolean[],
+  items: (answer: A) => readonly I[],
+): { answered: A[]; gap: I[] } {
+  const answered = answers.filter((_, i) => !fellBack[i]);
+  const fallback = answers.find((_, i) => fellBack[i]);
+  return { answered, gap: fallback ? items(fallback).slice(0, 1) : [] };
+}
+
+/**
+ * Risk across groups: the highest level any group gave, a fallen-back group's
+ * medium included; the client impact of the highest answered group; the first
+ * three mitigations; the first {@link MAX_FINDINGS} concerns, the highest
+ * answered group's first, keeping the "did not complete" one when a group fell
+ * back; and every answered group's changes, since the impact score is over the
+ * whole list.
+ */
+function combineRisk(answers: RawRisk[], fellBack: readonly boolean[]): RawRisk {
+  const highest = (list: RawRisk[]) =>
+    list.reduce((best, a) => (LEVEL_RANK[a.level] > LEVEL_RANK[best.level] ? a : best));
+  const { answered, gap } = splitFallbacks(answers, fellBack, (a) => a.concerns);
+  // The fan-out run fails when every group failed, so one answered; this keeps
+  // the merge total anyway.
+  const real = answered.length > 0 ? answered : answers;
+  const top = highest(real);
+  const topFirst = [top, ...real.filter((a) => a !== top)];
+  return {
+    level: highest(answers).level,
+    clientImpact: top.clientImpact,
+    mitigations: real.flatMap((a) => a.mitigations).slice(0, 3),
+    concerns: [...topFirst.flatMap((a) => a.concerns).slice(0, MAX_FINDINGS - gap.length), ...gap],
+    changes: real.flatMap((a) => a.changes ?? []),
+  };
+}
+
+/**
+ * The processes of one section's run. Each gets only the limits and its
+ * group, as its agent's instructions expect: no PR text and no hints about
+ * what to find. Without reading groups (no patch to read whole) a grouped
+ * section runs once with no GROUP line.
+ */
+export function sectionParts(
+  section: ReportSection,
+  material: Pick<VerificationMaterial, "task" | "groups">,
+): RunPart[] {
+  const agent = SECTION_AGENTS[section];
+  if (!GROUPED_SECTIONS.has(section) || material.groups === 0) {
+    return [{ description: "the whole PR", agent, prompt: material.task }];
+  }
+  const fallback = section === "risk" ? RISK_FALLBACK : CHECK_FALLBACK;
+  return Array.from({ length: material.groups }, (_, i) => ({
+    description: `group ${i + 1} of ${material.groups}`,
+    agent,
+    prompt: `${material.task}\nGROUP=${i + 1}`,
+    fallback,
+  }));
+}
+
+/**
+ * The report's schema for one PR. Built per run because its bounds come from
+ * the PR: the summary's word cap from the diff size, the must-read list from
+ * the changed files, and its sections from what the reviewer picked. What it
+ * takes out goes into `audit`.
+ */
+export function verificationReportSchema(limits: ReportLimits, audit: ReportAudit = emptyAudit()) {
+  const { sectionSchemas, summarySchemas } = answerSchemas(limits, audit);
+  // Only the asked-for sections are in the shape, all required, and a section
+  // an answer has anyway is stripped unread, so a malformed extra can't fail
+  // the run.
   const askedSchemas: Record<string, z.ZodType> = Object.fromEntries(
     limits.sections.flatMap((name): [string, z.ZodType][] =>
       name === "summary" ? Object.entries(summarySchemas) : [[name, sectionSchemas[name]]],
@@ -1006,14 +1173,14 @@ export interface VerificationInput {
 }
 
 export interface VerificationMaterial {
-  /** The orchestrator's task: instructions and limits, no PR text. */
-  prompt: string;
+  /** Every process's task, before its GROUP line: the limits, no PR text. */
+  task: string;
   /** `pr.md`. */
   contextFile: string;
   /** `index.md`. */
   indexFile: string;
   limits: ReportLimits;
-  /** How many reading groups the patches were split into: agents per check. */
+  /** How many reading groups the patches were split into: processes per grouped section. */
   groups: number;
   /** `groups/<n>.md`, in group order from 1. */
   groupFiles: string[];
@@ -1138,9 +1305,8 @@ function describedLines(index: PatchIndexEntry[]): number {
  * text the PR's author or its reviewers wrote — title, branch names,
  * description, file paths, check names, comments — goes into the context files
  * inside a nonce fence; what sits outside the fences is this function's own
- * wording and numbers it computed. The prompt itself holds none of it: the
- * orchestrator only needs to know where the context is, and the agents read
- * it there.
+ * wording and numbers it computed. The task itself holds none of it: an
+ * agent only needs to know where the context is, and reads it there.
  */
 export function buildVerificationMaterial(
   input: VerificationInput,
@@ -1191,26 +1357,16 @@ export function buildVerificationMaterial(
     ...(input.tickets ? [ticketsBlock(input.tickets)] : []),
   ].join("\n\n");
 
-  const prompt = [
-    "Write the verification report for the pull request checked out in the working directory.",
-    "Use the yarvis-review:verification-report skill and answer with the report it assembles.",
-    "",
+  const task = [
     `REVIEW_CONTEXT=${contextDir}`,
     `SUMMARY_WORDS=${limits.summaryWords}`,
     `MUST_READ_MAX=${limits.mustReadMax}`,
     `MUST_READ_FLAGS_MAX=${MAX_MUST_READ_FLAGS}`,
-    `READING_GROUPS=${groups.length}`,
     `READ_BUDGET_KB=${Math.round(READER_BUDGET_BYTES / 1024)}`,
-    `SECTIONS=${input.sections.join(",")}`,
-    "",
-    `REVIEW_CONTEXT holds ${withoutStory(input.sections) ? "" : "pr.md (the PR's description, CI checks and comments), "}index.md ` +
-      "(every changed file and its patch, and the reading groups), groups/ (each reading " +
-      "group's patches, one file per group) and patches/ (one numbered patch per changed " +
-      "file, from the merge-base to the head). The agents read them there; you don't need to.",
   ].join("\n");
 
   return {
-    prompt,
+    task,
     contextFile: `${context}\n`,
     indexFile: patchIndex(index, { title: "Changed files", groups }),
     limits,
@@ -1261,10 +1417,28 @@ export function defaultVerificationDeps(config: Config): VerificationDeps {
   };
 }
 
-/** Read-only tools: the agents read the checkout and the context, and nothing else. */
-const ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Agent", "Skill"];
-const DISALLOWED_TOOLS = ["Bash", "Write", "Edit", "NotebookEdit", "WebFetch", "WebSearch"];
-const MAX_TURNS = 40;
+/**
+ * Read-only tools: the agents read the checkout and the context, and nothing
+ * else. Each process is one agent's whole job, so it delegates nothing.
+ */
+const ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
+const DISALLOWED_TOOLS = [
+  "Bash",
+  "Write",
+  "Edit",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+  "Agent",
+  "Task",
+  "Skill",
+];
+/**
+ * A runaway guard on one agent's turns, not a throttle: an agent reads its
+ * group in pages of 800 lines, a few patches a turn, and a run that runs out
+ * of turns has nothing to show for them. The run's timeout bounds it too.
+ */
+const MAX_TURNS = 150;
 
 /** The PR at one commit: what a report was made against. */
 function targetKeyFor(refKey: string, headSha: string): string {
@@ -1596,18 +1770,18 @@ async function startSectionRun(
     });
     const audit = emptyAudit();
     let volumes: ReadVolume[] = [];
-    const handle = await startClaudeRun(
+    const limits = { ...material.limits, checkoutDir: pr.worktreePath };
+    const handle = await startClaudeFanOutRun(
       db,
       {
         kind: VERIFICATION_RUN_KIND,
         targetKey: targetKeyFor(pr.refKey, headSha),
         cwd: pr.worktreePath,
         addDirs: [contextDir],
-        prompt: material.prompt,
-        outputSchema: verificationReportSchema(
-          { ...material.limits, checkoutDir: pr.worktreePath },
-          audit,
-        ),
+        parts: sectionParts(section, material),
+        partSchema: sectionAnswerSchema(section, limits),
+        combine: (answers, fellBack) => combineSectionAnswers(section, answers, fellBack),
+        outputSchema: verificationReportSchema(limits, audit),
         finishOutput: (report, activity): CoveredReport => {
           const counted = safeCoverage("verification", () =>
             coverageOf(index, activity, {
@@ -1703,10 +1877,10 @@ export interface VerificationSize {
   /** {@link checksCostUsd} for the default sections. */
   estimatedCostUsd: number;
   /**
-   * About what one section's run costs on each model: an agent reading every
-   * file plus a coordinator's fixed overhead. BASE_TOKENS was measured on a
-   * run of eight agents, so charging it to every section rounds up rather
-   * than down. Effort isn't counted.
+   * About what one section's run costs on each model: agents reading every
+   * file plus a fixed overhead. BASE_TOKENS was measured on a run of eight
+   * agents under a coordinating model, so charging it to every section
+   * rounds up rather than down. Effort isn't counted.
    */
   checkCostUsd: Record<VerificationModel, number>;
   /** What the summary's run adds to {@link checkCostUsd}: the first page of each bulk file. */

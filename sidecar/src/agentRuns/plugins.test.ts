@@ -39,7 +39,6 @@ describe("writing out a shipped plugin", () => {
         // Spliced into the agents rather than shipped.
         .filter((path) => !path.startsWith("shared/"))
         .sort();
-      expect(sourceFiles).toContain("skills/verification-report/SKILL.md");
       const agents = sourceFiles.filter((path) => path.startsWith("agents/"));
       expect(agents).toHaveLength(14);
       for (const path of sourceFiles) {
@@ -98,6 +97,24 @@ describe("writing out a shipped plugin", () => {
     } finally {
       first.remove();
       second.remove();
+    }
+  });
+
+  it("lets every agent a run starts as its main thread give a structured answer", () => {
+    const copy = writePluginCopy("yarvis-review");
+    try {
+      const mainThreadAgents = [...Object.values(SECTION_AGENTS), "yarvis-review:rereviewer"];
+      for (const agent of mainThreadAgents) {
+        const file = readFileSync(join(copy.dir, "agents", `${agent.split(":")[1]}.md`), "utf8");
+        const tools = file.match(/^tools: (.*)$/m)?.[1]?.split(", ");
+        // A run started with --json-schema answers through this tool.
+        expect({ agent, tools }).toEqual({
+          agent,
+          tools: expect.arrayContaining(["StructuredOutput"]),
+        });
+      }
+    } finally {
+      copy.remove();
     }
   });
 

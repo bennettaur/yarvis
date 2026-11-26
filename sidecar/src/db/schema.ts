@@ -2136,6 +2136,14 @@ export const agentRuns = pgTable(
      * kills the run's leftovers and not whatever has since been given its pid.
      */
     pidStartedAt: text("pid_started_at"),
+    /**
+     * The processes of a run made of several (one per reading group), each
+     * leading its own process group, with start times as for `pid`.
+     */
+    processes: jsonb("processes")
+      .$type<{ pid: number; startedAt: string | null }[]>()
+      .notNull()
+      .default([]),
     /** The run's validated structured output, when it produced one. */
     result: jsonb("result"),
     error: text("error"),
