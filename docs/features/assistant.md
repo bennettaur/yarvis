@@ -517,6 +517,9 @@ you asked.
   acting on its own until you stop it. So do resuming it after a pause and
   changing when it stops, which keep that loop going. See
   [Heads-down mode](heads-down.md) for what it may do without asking.
+- **Saving a heads-down routine**, or turning one on or off, asks every time,
+  since every later pass follows the routine as your own words. Read the body
+  before you approve.
 - **MCP tools** ask unless you set them to auto-approve in the Tool manager.
 - **Reading a web page** asks when the link isn't one you typed in the
   conversation, such as a link the assistant found on a page. A link can carry
@@ -581,7 +584,9 @@ Always available:
   for you, and specialists and scheduled jobs never get these. See
   [MCP](mcp.md#asking-you-questions).
 - **Heads down.** Start heads-down mode once you agree, pause, resume or stop
-  it, set when it stops, and check whether it's running.
+  it, set when it stops, and check whether it's running. List its
+  [routines](heads-down.md#routines), and write one or turn one on or off once
+  you approve.
 
 Loaded on demand:
 

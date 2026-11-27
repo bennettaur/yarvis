@@ -2,6 +2,8 @@ import { useCallback, useState } from "react";
 import {
   type AllowedTool,
   clearHeadsDown,
+  createRoutine,
+  deleteRoutine,
   getHeadsDownConfig,
   getHeadsDownState,
   HEADS_DOWN_CACHE_KEYS,
@@ -25,6 +27,7 @@ import {
   resumeHeadsDown,
   sendHeadsDownMessage,
   setHeadsDownStopAt,
+  setRoutineEnabled,
   setToolAllowed,
   startHeadsDown,
   stopHeadsDown,
@@ -176,6 +179,22 @@ function describeNextPass(state: HeadsDownState, run: HeadsDownRun, working: boo
   return "Starting its first pass";
 }
 
+/** Which model passes run on, and whether that is the saved choice or the default chat model. */
+function ModelLine({ model }: { model: HeadsDownState["model"] }) {
+  return (
+    <p className="mt-1 text-xs text-zinc-500">
+      {model ? (
+        <>
+          Model: <span className="font-mono text-zinc-300">{model.model}</span> ({model.provider},{" "}
+          {model.source === "saved" ? "set in Settings" : "the default chat model"})
+        </>
+      ) : (
+        "Model: none available. Add a provider key in Settings."
+      )}
+    </p>
+  );
+}
+
 /** Start, pause and stop heads-down mode, and see when it runs next and when it stops. */
 function RunHeader({
   state,
@@ -244,6 +263,7 @@ function RunHeader({
                 {describeNextPass(state, run, working)}
               </p>
               <p className="mt-1 text-xs text-zinc-500">{describePassesToday(state)}</p>
+              <ModelLine model={state.model} />
               <StopTime
                 stopAt={run.stopAt}
                 disabled={busy}
@@ -319,6 +339,7 @@ function RunHeader({
             </button>
             <ClearButton disabled={busy} onClear={() => void runAction(clearHeadsDown)} />
           </div>
+          <ModelLine model={state.model} />
         </form>
       )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
@@ -384,6 +405,55 @@ function MessageBox({ messages, onSent }: { messages: HeadsDownMessage[]; onSent
   );
 }
 
+const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "routines", label: "Routines" },
+  { id: "history", label: "History" },
+  { id: "settings", label: "Settings" },
+] as const;
+
+type TabId = (typeof TABS)[number]["id"];
+
+function TabBar({
+  active,
+  onSelect,
+  counts,
+}: {
+  active: TabId;
+  onSelect: (tab: TabId) => void;
+  /** A number shown beside a tab's label, such as how many routines are on. */
+  counts: Partial<Record<TabId, number>>;
+}) {
+  return (
+    <div role="tablist" aria-label="Heads down" className="flex gap-1 border-b border-zinc-800">
+      {TABS.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          id={`heads-down-tab-${tab.id}`}
+          aria-controls={`heads-down-panel-${tab.id}`}
+          aria-selected={active === tab.id}
+          onClick={() => onSelect(tab.id)}
+          className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+            active === tab.id
+              ? "border-indigo-400 text-zinc-100"
+              : "border-transparent text-zinc-400 hover:text-zinc-200"
+          }`}
+        >
+          {tab.label}
+          {counts[tab.id] !== undefined && (
+            <span className="ml-1.5 text-xs text-zinc-500">{counts[tab.id]}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** How many passes the Overview shows before pointing at History. */
+const RECENT_PASSES = 3;
+
 /**
  * The Heads down page: what heads-down mode is working on, what it needs from
  * the user, what it has done, and a place to tell it things. The user can keep
@@ -421,7 +491,7 @@ export default function HeadsDownPanel() {
     REVIEW_STREAM_CACHE_KEY,
     getReviewStream,
   );
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tab, setTab] = useState<TabId>("overview");
 
   const refreshState = state.refresh;
   const refreshQuestions = questions.refresh;
@@ -465,92 +535,144 @@ export default function HeadsDownPanel() {
     [refreshAllowedTools],
   );
 
+  const primeRoutines = (data: RoutinesResponse) =>
+    primeCache(HEADS_DOWN_CACHE_KEYS.routines, data);
+  const routinesOn = routines.data?.routines.filter((r) => r.enabled).length;
+  const finishedPasses = passes.data?.filter((p) => p.finishedAt !== null).length;
+
   return (
-    <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[1fr_20rem]">
-      <div className="min-w-0 space-y-6">
-        <RunHeader state={state.data} working={live !== null} onChanged={refreshAll} />
-        {(combined.error || combined.refreshing) && (
-          <div className="flex items-center gap-3">
-            {combined.error && <p className="text-xs text-red-400">{combined.error}</p>}
-            <RefreshingIndicator active={combined.refreshing} />
+    <div className="mx-auto w-[90%] space-y-4">
+      <RunHeader state={state.data} working={live !== null} onChanged={refreshAll} />
+      {(combined.error || combined.refreshing) && (
+        <div className="flex items-center gap-3">
+          {combined.error && <p className="text-xs text-red-400">{combined.error}</p>}
+          <RefreshingIndicator active={combined.refreshing} />
+        </div>
+      )}
+
+      {openQuestions.length > 0 && (
+        <Section title={`Needs you (${openQuestions.length})`}>
+          {openQuestions.map((q) => (
+            <QuestionCard key={q.id} question={q} onAnswered={refreshAll} onAllowTool={allowTool} />
+          ))}
+        </Section>
+      )}
+
+      <TabBar
+        active={tab}
+        onSelect={setTab}
+        counts={{ routines: routinesOn, history: finishedPasses }}
+      />
+
+      {tab === "overview" && (
+        <div
+          role="tabpanel"
+          id="heads-down-panel-overview"
+          aria-labelledby="heads-down-tab-overview"
+        >
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+            <div className="min-w-0 space-y-6">
+              {(autoApprovals.data ?? NO_QUESTIONS).length > 0 && (
+                <Section title="Approved on its own">
+                  <AutoApprovals approvals={autoApprovals.data ?? NO_QUESTIONS} />
+                </Section>
+              )}
+
+              <Section title="Work streams">
+                <StreamList
+                  streams={streams.data ?? NO_STREAMS}
+                  loading={streams.loading}
+                  onChanged={refreshAll}
+                />
+              </Section>
+
+              <Section title="What it has been doing">
+                <PassList
+                  passes={passes.data ?? NO_PASSES}
+                  live={live}
+                  loading={passes.loading}
+                  limit={RECENT_PASSES}
+                  onShowAll={() => setTab("history")}
+                />
+              </Section>
+            </div>
+
+            <aside className="space-y-6">
+              <Section title="Tell it something">
+                <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
+              </Section>
+
+              {reviewStream.data &&
+                reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
+                  <Section title="Review stream">
+                    <ReviewStream data={reviewStream.data} />
+                  </Section>
+                )}
+            </aside>
           </div>
-        )}
+        </div>
+      )}
 
-        {openQuestions.length > 0 && (
-          <Section title={`Needs you (${openQuestions.length})`}>
-            {openQuestions.map((q) => (
-              <QuestionCard
-                key={q.id}
-                question={q}
-                onAnswered={refreshAll}
-                onAllowTool={allowTool}
-              />
-            ))}
-          </Section>
-        )}
-
-        {(autoApprovals.data ?? NO_QUESTIONS).length > 0 && (
-          <Section title="Approved on its own">
-            <AutoApprovals approvals={autoApprovals.data ?? NO_QUESTIONS} />
-          </Section>
-        )}
-
-        <Section title="Work streams">
-          <StreamList
-            streams={streams.data ?? NO_STREAMS}
-            loading={streams.loading}
-            onChanged={refreshAll}
-          />
-        </Section>
-
-        <Section title="What it has been doing">
-          <PassList passes={passes.data ?? NO_PASSES} live={live} loading={passes.loading} />
-        </Section>
-      </div>
-
-      <aside className="space-y-6">
-        <Section title="Tell it something">
-          <MessageBox messages={messages.data ?? NO_MESSAGES} onSent={refreshAll} />
-        </Section>
-
-        {reviewStream.data &&
-          reviewStream.data.slots.length + reviewStream.data.backlog.length > 0 && (
-            <Section title="Review stream">
-              <ReviewStream data={reviewStream.data} />
-            </Section>
-          )}
-
-        <Section title="Routines">
-          <RoutineList
-            data={routines.data}
-            loadError={routines.error}
-            onReload={async () =>
-              primeCache(HEADS_DOWN_CACHE_KEYS.routines, await reloadRoutines())
-            }
-          />
-        </Section>
-
-        <Section title="Pace and working hours">
-          <button
-            type="button"
-            onClick={() => setSettingsOpen((v) => !v)}
-            aria-expanded={settingsOpen}
-            className="text-sm text-zinc-400 hover:text-zinc-200"
-          >
-            {settingsOpen ? "Hide" : "Show"} settings
-          </button>
-          {settingsOpen && config.data && (
-            <HeadsDownSettings
-              config={config.data}
-              allowedTools={allowedTools.data ?? NO_TOOLS}
-              onSaved={() => {
-                void refreshConfig();
-                void refreshAllowedTools();
-              }}
+      {tab === "routines" && (
+        <div
+          role="tabpanel"
+          id="heads-down-panel-routines"
+          aria-labelledby="heads-down-tab-routines"
+        >
+          <Section title="Routines">
+            <RoutineList
+              data={routines.data}
+              loadError={routines.error}
+              // Until the state loads, assume a run rather than flash the "it's off" warning.
+              running={state.data ? state.data.run !== null : true}
+              onReload={async () => primeRoutines(await reloadRoutines())}
+              onCreate={async (routine) => primeRoutines(await createRoutine(routine))}
+              onToggle={async (name, enabled) =>
+                primeRoutines(await setRoutineEnabled(name, enabled))
+              }
+              onDelete={async (name) => primeRoutines(await deleteRoutine(name))}
             />
-          )}
-        </Section>
-      </aside>
+          </Section>
+        </div>
+      )}
+
+      {tab === "history" && (
+        <div role="tabpanel" id="heads-down-panel-history" aria-labelledby="heads-down-tab-history">
+          <Section title="What it has been doing">
+            <PassList passes={passes.data ?? NO_PASSES} live={live} loading={passes.loading} />
+          </Section>
+        </div>
+      )}
+
+      {tab === "settings" && (
+        <div
+          role="tabpanel"
+          id="heads-down-panel-settings"
+          aria-labelledby="heads-down-tab-settings"
+        >
+          <Section title="Pace, working hours and model">
+            <div className="max-w-3xl">
+              {config.data ? (
+                <HeadsDownSettings
+                  config={config.data}
+                  allowedTools={allowedTools.data ?? NO_TOOLS}
+                  onSaved={() => {
+                    void refreshConfig();
+                    void refreshAllowedTools();
+                    // The header names the model, and the routine list depends on the per-pass limit.
+                    void refreshState();
+                    void refreshRoutines();
+                  }}
+                />
+              ) : (
+                <p className="text-xs text-zinc-500">
+                  {config.error ? `Couldn't load the settings: ${config.error}` : "Loading…"}
+                </p>
+              )}
+            </div>
+          </Section>
+        </div>
+      )}
     </div>
   );
 }

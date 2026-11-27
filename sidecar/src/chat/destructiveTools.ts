@@ -37,6 +37,11 @@ export const ALWAYS_CONFIRM_BUILTIN_TOOLS: ReadonlySet<string> = new Set([
   "start_heads_down",
   "resume_heads_down",
   "set_heads_down_stop_time",
+  // A routine's body reaches every later heads-down pass as the user's own
+  // words, with nobody watching, so the user reads what the model wrote first.
+  // Turning one on starts unattended work the same way.
+  "save_heads_down_routine",
+  "set_heads_down_routine_enabled",
   // Its approval lets the repo's CI merge the PR with nobody else reading it.
   // Only the merge-reviewer specialist's grant may skip asking.
   "post_merge_review",

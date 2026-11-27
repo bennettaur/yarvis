@@ -151,13 +151,21 @@ export default function PassList({
   passes,
   live,
   loading,
+  limit,
+  onShowAll,
 }: {
   passes: HeadsDownPass[];
   live: LivePass | null;
   /** Nothing to show yet, so the empty state would be wrong. */
   loading: boolean;
+  /** Show only the latest this many finished passes. All of them when left out. */
+  limit?: number;
+  /** Where the "show all" link under a limited list goes. */
+  onShowAll?: () => void;
 }) {
-  const finished = passes.filter((p) => p.finishedAt !== null);
+  const allFinished = passes.filter((p) => p.finishedAt !== null);
+  const finished = limit === undefined ? allFinished : allFinished.slice(0, limit);
+  const hidden = allFinished.length - finished.length;
   const workspaceNames = useWorkspaceNames();
   return (
     <div className="space-y-2">
@@ -194,6 +202,15 @@ export default function PassList({
             <PassRow key={pass.id} pass={pass} workspaceNames={workspaceNames} />
           ))}
         </ul>
+      )}
+      {hidden > 0 && onShowAll && (
+        <button
+          type="button"
+          onClick={onShowAll}
+          className="text-sm text-zinc-400 hover:text-zinc-200"
+        >
+          Show {hidden} earlier pass{hidden === 1 ? "" : "es"}
+        </button>
       )}
     </div>
   );

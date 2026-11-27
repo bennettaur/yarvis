@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { clearResourceCache } from "../../lib/resourceCache";
-import { mountForInteraction, renderToHtml, textOf } from "../../test/render";
+import { mountForInteraction, renderToHtml, textOf, waitFor } from "../../test/render";
 import { resetSidecarApi, stubSidecarApi } from "../../test/sidecarApi";
 import type { LivePass } from "./useLivePass";
 
@@ -146,64 +146,85 @@ const CONFIG = {
 /** What the settings form sends: always-on only when the user changed it. */
 const { alwaysOn: _alwaysOn, ...SENT } = CONFIG;
 
+const ROUTINE_BASE = {
+  workingHoursOnly: false,
+  nightShift: "run",
+  enabled: true,
+  once: false,
+  source: "builtin",
+  path: null as string | null,
+  tools: [] as string[],
+  config: {} as Record<string, string | string[]>,
+  lastDoneAt: null as string | null,
+  nextPass: false,
+  queued: false,
+  dueAt: null as string | null,
+  heldBy: null as string | null,
+};
+
 const ROUTINES = {
   routines: [
     {
+      ...ROUTINE_BASE,
       name: "meeting-alarms",
       description: "Sets an alarm for each meeting",
       everyMinutes: 180,
-      workingHoursOnly: false,
-      nightShift: "run",
-      enabled: true,
-      source: "builtin",
-      tools: [],
-      configKeys: [],
-      lastDoneAt: null,
+      body: "Read the calendar and set alarms.",
+      nextPass: true,
+      dueAt: new Date(Date.now() - 60_000).toISOString(),
     },
     {
+      ...ROUTINE_BASE,
       name: "standup",
       description: "Drafts my standup",
       everyMinutes: 24 * 60,
       workingHoursOnly: true,
-      nightShift: "run",
-      enabled: true,
       source: "user",
-      tools: [],
-      configKeys: [],
+      path: "/home/me/.yarvis/routines/standup.md",
+      body: "Draft my standup.",
       lastDoneAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+      dueAt: new Date(Date.now() + 22 * 60 * 60_000).toISOString(),
     },
     {
+      ...ROUTINE_BASE,
       name: "triage",
       description: "Triages my inbox",
       everyMinutes: 45,
-      workingHoursOnly: false,
       nightShift: "skip",
-      enabled: true,
       source: "user",
+      path: "/home/me/.yarvis/routines/triage.md",
       tools: ["slack_read_channel", "post_message"],
-      configKeys: ["channels", "handle"],
-      lastDoneAt: null,
+      config: { channels: ["#eng", "#ops"], handle: "@sam" },
+      body: "Read the channels.",
+      queued: true,
+      dueAt: new Date(Date.now() - 60_000).toISOString(),
     },
     {
+      ...ROUTINE_BASE,
       name: "meeting-notes",
       description: "Reads meeting notes",
       everyMinutes: 240,
       workingHoursOnly: true,
-      nightShift: "run",
       enabled: false,
-      source: "builtin",
-      tools: [],
-      configKeys: [],
-      lastDoneAt: null,
+      body: "Read meeting notes.",
+      heldBy: "off",
     },
   ],
   problems: [{ path: "/home/me/.yarvis/routines/x.md", message: "x.md: 'every' is required" }],
   userDir: "/home/me/.yarvis/routines",
+  maxRoutinesPerPass: 1,
 };
 
 /** What the routines list and its reload answer; null makes that call fail, "hang" never answers. */
 let routinesAnswer: unknown = ROUTINES;
 let reloadAnswer: unknown = ROUTINES;
+const DEFAULT_MODEL = { provider: "anthropic", model: "claude-haiku-5-5", source: "default" };
+/** The model the page state names; null for none available. */
+let stateModel: unknown = DEFAULT_MODEL;
+let passesAnswer: unknown[] = [PASS, FAILED_PASS];
+
+/** What adding, turning on or off, or deleting a routine answers; null makes it fail. */
+let routineWriteAnswer: unknown = ROUTINES;
 
 const PROVIDERS = [
   {
@@ -269,6 +290,9 @@ stubSidecarApi({
         if (reloadAnswer === "hang") return new Promise<Response>(() => {});
         return reloadAnswer ? json(reloadAnswer) : json({ error: "disk on fire" }, 500);
       }
+      if (path === "/api/heads-down/routines" || path.startsWith("/api/heads-down/routines/")) {
+        return routineWriteAnswer ? json(routineWriteAnswer) : json({ error: "name taken" }, 400);
+      }
       if (path === "/api/heads-down/config") return json(body);
       if (path.startsWith("/api/heads-down/allowed-tools/")) return json({ ok: true });
       return json({ ...QUESTION, status: "answered" });
@@ -279,13 +303,14 @@ stubSidecarApi({
         lastPass: PASS,
         nextPassAt: "2026-10-19T11:02:00.000Z",
         openQuestionCount: 2,
+        model: stateModel,
         ...passCounts,
       });
     }
     if (path === "/api/heads-down/questions") return json([QUESTION, APPROVAL]);
     if (path === "/api/work-streams") return json([STREAM, WATCH]);
     if (path === "/api/workspaces") return json([{ id: WORKSPACE_ID, name: "Billing invoices" }]);
-    if (path === "/api/heads-down/passes") return json([PASS, FAILED_PASS]);
+    if (path === "/api/heads-down/passes") return json(passesAnswer);
     if (path === "/api/heads-down/messages") return json([]);
     if (path === "/api/heads-down/config") return json(savedConfig);
     if (path.startsWith("/api/chat/providers")) return json(PROVIDERS);
@@ -321,6 +346,7 @@ const { default: HeadsDownPanel } = await import("./HeadsDownPanel");
 const { nextOccurrence } = await import("../../lib/headsDown");
 const { applyPassEvent, newLivePass } = await import("./useLivePass");
 const { linkLabel, ShipStages } = await import("./StreamList");
+const { routineStatus } = await import("./RoutineList");
 const { onOpenWorkspace } = await import("../../lib/nav");
 
 /** Mounted pages, unmounted after each test even when it fails part-way. */
@@ -342,6 +368,9 @@ afterEach(() => {
   passCounts = { passesToday: 4, maxPassesPerDay: null };
   routinesAnswer = ROUTINES;
   reloadAnswer = ROUTINES;
+  routineWriteAnswer = ROUTINES;
+  stateModel = DEFAULT_MODEL;
+  passesAnswer = [PASS, FAILED_PASS];
   reviewStream = { maxReady: 5, slots: [], backlog: [] };
 });
 
@@ -351,6 +380,28 @@ const settle = (ms = 100) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitForText(host: HTMLElement, text: string, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (!host.textContent?.includes(text) && Date.now() < deadline) await settle(20);
+}
+
+/** Waits for the page to have sent a request, since the click only starts it. */
+async function waitForWrite(method: string, path: string) {
+  await waitFor(
+    () => writes.some((w) => w.method === method && w.path === path),
+    `${method} ${path}`,
+  );
+}
+
+/** Opens a tab of the page by its label; a tab may show a count after it. */
+async function openTab(host: HTMLElement, label: string) {
+  const deadline = Date.now() + 2000;
+  let tab: HTMLElement | undefined;
+  while (!tab && Date.now() < deadline) {
+    tab = [...host.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) =>
+      t.textContent?.startsWith(label),
+    );
+    if (!tab) await settle(20);
+  }
+  if (!tab) throw new Error(`no tab "${label}"`);
+  tab.click();
 }
 
 function buttonNamed(host: HTMLElement, label: string): HTMLButtonElement {
@@ -412,33 +463,190 @@ describe("HeadsDownPanel", () => {
 
   it("leaves the review stream out until review prep has a PR", async () => {
     const host = await mount();
-    await waitForText(host, "meeting-alarms");
+    // The routine count on its tab comes from the same load as everything else.
+    await waitForText(host, "Routines3");
     expect(host.textContent).not.toContain("Review stream");
   });
 
-  it("lists the routines, and a file that failed to load", async () => {
+  it("names the model passes run on, and whether it is the saved one or the default", async () => {
     const host = await mount();
-    await waitForText(host, "meeting-alarms");
-    const routine = (name: string) =>
-      [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))
-        ?.textContent ?? "";
+    await waitForText(host, "Model:");
+    expect(host.textContent).toContain(
+      "Model: claude-haiku-5-5 (anthropic, the default chat model)",
+    );
+  });
 
-    expect(
-      [...host.querySelectorAll("li > div > span:last-child")].map((span) => span.textContent),
-    ).toEqual(["every 3h", "every 1d, working hours", "every 45m, skip at night", "off"]);
-    expect(routine("meeting-alarms")).toContain("Not done in the last 30 days");
-    expect(routine("meeting-alarms")).not.toContain("(yours)");
-    expect(routine("standup")).toContain("standup(yours)every 1d, working hours");
-    expect(routine("standup")).toContain("Last done");
-    expect(routine("triage")).toContain("every 45m");
-    expect(routine("triage")).toContain("Tools: slack_read_channel, post_message");
-    expect(routine("triage")).toContain("Settings: channels, handle");
-    expect(routine("standup")).not.toContain("Tools:");
-    expect(routine("standup")).not.toContain("Settings:");
-    expect(routine("meeting-notes")).toContain("off");
-    expect(routine("meeting-notes")).not.toContain("Not done in the last 30 days");
+  it("says when the model is saved in Settings, and when none is available", async () => {
+    stateModel = { provider: "anthropic", model: "claude-opus-5-5", source: "saved" };
+    const saved = await mount();
+    await waitForText(saved, "Model:");
+    expect(saved.textContent).toContain("Model: claude-opus-5-5 (anthropic, set in Settings)");
+    for (const unmount of mounted.splice(0)) unmount();
+    clearResourceCache();
+    stateModel = null;
+    const none = await mount();
+    await waitForText(none, "Model:");
+    expect(none.textContent).toContain("Model: none available. Add a provider key in Settings.");
+  });
+
+  it("shows the latest three passes on the overview, and the rest on History", async () => {
+    passesAnswer = [1, 2, 3, 4, 5].map((n) => ({
+      ...PASS,
+      id: `p${n}`,
+      notes: `Pass number ${n}.`,
+    }));
+    const host = await mount();
+    await waitForText(host, "Show 2 earlier passes");
+    expect(host.textContent).toContain("Pass number 3.");
+    expect(host.textContent).not.toContain("Pass number 4.");
+    buttonNamed(host, "Show 2 earlier passes").click();
+    await waitForText(host, "Pass number 5.");
+    const selected = host.querySelector('[role="tab"][aria-selected="true"]');
+    expect(selected?.textContent).toStartWith("History");
+  });
+
+  it("puts the routines, history and settings on their own tabs", async () => {
+    const host = await mount();
+    await waitForText(host, "Work streams");
+    expect(host.textContent).not.toContain("meeting-alarms");
+    expect(host.textContent).not.toContain("Always on");
+    // Routines that are on are counted on the tab.
+    const tabs = [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
+    expect(tabs).toEqual(["Overview", "Routines3", "History2", "Settings"]);
+    await openTab(host, "Routines");
+    expect(host.textContent).toContain("meeting-alarms");
+    expect(host.textContent).not.toContain("Work streams");
+  });
+
+  it("lists the routines with where each stands, and a file that failed to load", async () => {
+    const host = await mount();
+    await openTab(host, "Routines");
+    await waitForText(host, "meeting-alarms");
+    const row = (name: string) =>
+      [...host.querySelectorAll("li")].find((li) =>
+        li.querySelector(".font-mono")?.textContent?.startsWith(name),
+      );
+    const text = (name: string) => row(name)?.textContent ?? "";
+
+    expect(host.textContent).toContain("Next pass runs: meeting-alarms.");
+    expect(host.textContent).toContain("Up to 1 per pass");
+    expect(text("meeting-alarms")).toContain("every 3h");
+    expect(text("meeting-alarms")).toContain("Runs on the next pass");
+    expect(text("meeting-alarms")).not.toContain("yours");
+    expect(text("standup")).toContain("yoursevery 1d, working hours");
+    expect(text("standup")).toContain("Due in 22 hours");
+    expect(text("triage")).toContain("every 45m, skip at night");
+    expect(text("triage")).toContain("Due, waiting for a free slot");
+    expect(text("meeting-notes")).toContain("Off: ships turned off");
+    expect(host.textContent).toContain("Off (1)");
+    expect(host.textContent).toContain("On (3)");
     expect(host.textContent).toContain("x.md: 'every' is required");
     expect(host.textContent).toContain("/home/me/.yarvis/routines");
+    // Details stay folded until opened.
+    expect(text("triage")).not.toContain("Read the channels.");
+
+    row("triage")?.querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+    await waitForText(host, "Read the channels.");
+    expect(text("triage")).toContain("Tools: slack_read_channel, post_message");
+    expect(text("triage")).toContain("channels: #eng, #ops");
+    expect(text("triage")).toContain("handle: @sam");
+    expect(text("triage")).toContain("Not done in the last 30 days");
+    expect(text("triage")).toContain("/home/me/.yarvis/routines/triage.md");
+  });
+
+  it("says when heads-down mode is off, since no routine runs then", async () => {
+    currentRun = null as never;
+    const host = await mount();
+    await openTab(host, "Routines");
+    await waitForText(host, "meeting-alarms");
+    expect(host.textContent).toContain("Heads-down mode is off, so no routine runs");
+  });
+
+  it("turns a routine on and off, and deletes the user's own file once confirmed", async () => {
+    const host = await mount();
+    await openTab(host, "Routines");
+    await waitForText(host, "meeting-notes");
+    const row = (name: string) =>
+      [...host.querySelectorAll("li")].find((li) =>
+        li.querySelector(".font-mono")?.textContent?.startsWith(name),
+      ) as HTMLElement;
+
+    buttonNamed(row("meeting-notes"), "Turn on").click();
+    await waitForWrite("PUT", "/api/heads-down/routines/meeting-notes/enabled");
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/routines/meeting-notes/enabled",
+      body: { enabled: true },
+    });
+    // One change at a time: the buttons wait for the one in flight.
+    await waitFor(() => !buttonNamed(row("standup"), "Turn off").disabled, "buttons free");
+    buttonNamed(row("standup"), "Turn off").click();
+    await waitForWrite("PUT", "/api/heads-down/routines/standup/enabled");
+    expect(writes).toContainEqual({
+      method: "PUT",
+      path: "/api/heads-down/routines/standup/enabled",
+      body: { enabled: false },
+    });
+
+    await waitFor(() => !buttonNamed(row("standup"), "Turn off").disabled, "buttons free");
+    row("standup").querySelector<HTMLButtonElement>("button[aria-expanded]")?.click();
+    await waitForText(host, "Delete file");
+    buttonNamed(row("standup"), "Delete file").click();
+    await waitForText(host, "Yes, delete");
+    expect(writes.some((w) => w.method === "DELETE")).toBe(false);
+    buttonNamed(row("standup"), "Yes, delete").click();
+    await waitForWrite("DELETE", "/api/heads-down/routines/standup");
+    expect(writes).toContainEqual({
+      method: "DELETE",
+      path: "/api/heads-down/routines/standup",
+      body: null,
+    });
+  });
+
+  it("adds a one-off routine, and shows why one was refused", async () => {
+    const host = await mount();
+    await openTab(host, "Routines");
+    await waitForText(host, "meeting-alarms");
+    buttonNamed(host, "Add routine").click();
+    await waitFor(() => host.querySelector('[aria-label="Routine name"]') !== null, "the form");
+
+    const field = <T extends HTMLElement>(label: string) => {
+      const el = host.querySelector<T>(`[aria-label="${label}"]`);
+      if (!el) throw new Error(`no field ${label}`);
+      return el;
+    };
+    const type = (label: string, value: string) => {
+      const el = field<HTMLInputElement | HTMLTextAreaElement>(label);
+      const proto = Object.getPrototypeOf(el);
+      Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    type("Routine name", "check-release");
+    type("Routine description", "Checks the release channel");
+    type("Routine tools", "slack_read_channel, ");
+    type("Routine instructions", "Tell me what shipped.");
+    const once = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')][1];
+    once?.click();
+    await waitFor(() => once?.checked === true, "once picked");
+
+    routineWriteAnswer = null;
+    buttonNamed(host, "Save routine").click();
+    await waitForText(host, "name taken");
+    expect(writes).toContainEqual({
+      method: "POST",
+      path: "/api/heads-down/routines",
+      body: {
+        name: "check-release",
+        description: "Checks the release channel",
+        once: true,
+        tools: ["slack_read_channel"],
+        body: "Tell me what shipped.",
+      },
+    });
+
+    routineWriteAnswer = ROUTINES;
+    buttonNamed(host, "Save routine").click();
+    await waitFor(() => host.querySelector('[aria-label="Routine name"]') === null, "form closed");
   });
 
   it("reloads the routine files, and says when that fails", async () => {
@@ -447,6 +655,7 @@ describe("HeadsDownPanel", () => {
       routines: [...ROUTINES.routines, { ...ROUTINES.routines[1], name: "focus-time" }],
     };
     const host = await mount();
+    await openTab(host, "Routines");
     await waitForText(host, "meeting-alarms");
 
     buttonNamed(host, "Reload files").click();
@@ -480,6 +689,7 @@ describe("HeadsDownPanel", () => {
     routinesAnswer = "hang";
     const host = await mount();
     await waitForText(host, "Heads down since");
+    await openTab(host, "Routines");
     const section = [...host.querySelectorAll("section")].find((s) =>
       s.textContent?.startsWith("Routines"),
     );
@@ -490,6 +700,7 @@ describe("HeadsDownPanel", () => {
   it("says when the routines couldn't load, and retries from the reload button", async () => {
     routinesAnswer = null;
     const host = await mount();
+    await openTab(host, "Routines");
     await waitForText(host, "Couldn't load the routines");
     expect(host.textContent).toContain("Couldn't load the routines");
     expect(host.textContent).not.toContain("Loading…");
@@ -722,7 +933,7 @@ describe("HeadsDownPanel live", () => {
 describe("HeadsDownSettings", () => {
   it("lists the MCP tools it may use without asking, and removes one", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
     expect(host.textContent).toContain("read_channel");
 
@@ -737,7 +948,7 @@ describe("HeadsDownSettings", () => {
 
   it("saves the model passes run on", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
@@ -765,7 +976,7 @@ describe("HeadsDownSettings", () => {
 
   it("saves the standing guidance every pass follows", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const field = host.querySelector<HTMLTextAreaElement>('[aria-label="Standing guidance"]');
@@ -788,7 +999,7 @@ describe("HeadsDownSettings", () => {
 
   it("saves how long a pass may run", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const field = [...host.querySelectorAll("label")]
@@ -820,7 +1031,7 @@ describe("HeadsDownSettings", () => {
 
   it("saves 0 routines per pass, and ignores a number past the most allowed", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const field = [...host.querySelectorAll("label")]
@@ -847,7 +1058,7 @@ describe("HeadsDownSettings", () => {
 
   it("saves always-on, a daily pass limit and night-shift hours", async () => {
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
     const checkbox = (label: string) => {
       const input = [...host.querySelectorAll("label")]
@@ -879,7 +1090,7 @@ describe("HeadsDownSettings", () => {
     // Stop turned it off on the server after this form loaded it as on.
     savedConfig = { ...CONFIG, alwaysOn: true };
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
     buttonNamed(host, "Save").click();
     await settle();
@@ -890,7 +1101,7 @@ describe("HeadsDownSettings", () => {
   it("goes back to the default chat model", async () => {
     savedConfig = { ...CONFIG, provider: "anthropic", model: "claude-haiku-5-5" };
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
@@ -916,7 +1127,7 @@ describe("HeadsDownSettings", () => {
   it("keeps showing a saved model that left the catalogue", async () => {
     savedConfig = { ...CONFIG, provider: "openai", model: "gpt-x" };
     const host = await mount();
-    buttonNamed(host, "Show settings").click();
+    await openTab(host, "Settings");
     await settle(50);
 
     const provider = host.querySelector<HTMLSelectElement>('[aria-label="Heads-down provider"]');
@@ -1051,3 +1262,26 @@ describe("ShipStages", () => {
 });
 
 afterAll(resetSidecarApi);
+
+describe("routineStatus", () => {
+  const base = {
+    ...ROUTINE_BASE,
+    name: "x",
+    description: "x",
+    everyMinutes: 60,
+    body: "x",
+  } as never;
+  const status = (over: Record<string, unknown>) =>
+    routineStatus({ ...(base as object), ...over } as never).label;
+
+  it("says why a routine waits, or that it's done", () => {
+    expect(status({ heldBy: "working-hours" })).toBe("Waits for working hours");
+    expect(status({ heldBy: "night-shift" })).toBe("Skipped during night shift");
+    expect(
+      status({ heldBy: "retry", dueAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
+    ).toBe("Didn't finish last time; tries again in 30 minutes");
+    expect(status({ enabled: false, source: "user" })).toBe("Off in your file");
+    expect(status({ enabled: false, source: "builtin" })).toBe("Off: ships turned off");
+    expect(status({ once: true, dueAt: null })).toBe("Done");
+  });
+});

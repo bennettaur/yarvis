@@ -8,7 +8,7 @@ import { STREAM_PAUSED, WATCH_REPORTED_ONLY } from "../workStreams/tools.ts";
 import { recordWatchCheck } from "../workStreams/watches.ts";
 import { announceMerge, askUser, mergeKey } from "./attention.ts";
 import { holdsMerge, type MergeFeedbackLoader } from "./mergeFeedback.ts";
-import { NAME_PATTERN, NIGHT_SHIFT_MODES, writeRoutineFile } from "./routines.ts";
+import { EVERY_PATTERN, NAME_PATTERN, NIGHT_SHIFT_MODES, writeRoutineFile } from "./routines.ts";
 
 /**
  * The tools only a heads-down pass has: asking the user without waiting for
@@ -231,7 +231,7 @@ export function buildPassTools(
  * Text the user approves has to be what the model reads: invisible characters
  * copied from a message would reach every later pass unseen.
  */
-function visibleText(max: number) {
+export function visibleText(max: number) {
   return z
     .string()
     .min(1)
@@ -261,7 +261,7 @@ function createRoutineTool(onChanged: () => void) {
       description: visibleText(200).describe("One line, shown on the Heads down page"),
       every: z
         .string()
-        .regex(/^\d+[mhd]$/)
+        .regex(EVERY_PATTERN)
         .describe("How long between runs, such as 30m, 3h or 1d; at least 15m"),
       workingHours: z.boolean().optional().describe("True to run it only in working hours"),
       nightShift: z
