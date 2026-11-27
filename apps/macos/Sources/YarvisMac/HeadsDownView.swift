@@ -2,7 +2,7 @@ import SwiftUI
 import YarvisClient
 
 /// How many passes the Overview shows before pointing at History.
-private let recentPasses = 3
+private let overviewPassLimit = 3
 
 /// The Heads down page: the run and what needs the user above four tabs.
 /// Overview has what it is working on and a place to tell it things,
@@ -80,7 +80,7 @@ struct HeadsDownView: View {
                 }
                 HeadsDownSection("Work streams") { HeadsDownStreamList(model: model) }
                 HeadsDownSection("What it has been doing") {
-                    HeadsDownPassList(model: model, limit: recentPasses) { model.tab = .history }
+                    HeadsDownPassList(model: model, limit: overviewPassLimit) { model.tab = .history }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

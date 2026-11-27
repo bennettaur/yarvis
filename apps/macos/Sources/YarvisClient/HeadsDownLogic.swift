@@ -374,7 +374,7 @@ public enum HeadsDownRoutineSummary: Sendable, Equatable {
 /// is nil until the state loads, so the warning doesn't flash meanwhile.
 public func routinesOffWarning(running: Bool?) -> String? {
     running == false
-        ? "Heads-down mode is off, so no routine runs until you start it or tick Always on in Settings."
+        ? "Heads-down mode is off, so no routine runs until you start it or tick Always on in the web app's Settings."
         : nil
 }
 

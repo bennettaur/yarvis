@@ -14,7 +14,7 @@ import {
 } from "../agents/frontmatter.ts";
 import type { RegistryTool } from "../agentTools/store.ts";
 import { hasInvisibleChars } from "../web/extract.ts";
-import { setRoutineSwitch } from "./config.ts";
+import { clearRoutineSwitches, routineSwitch, setRoutineSwitch } from "./config.ts";
 import emailDrafts from "./routines/email-drafts.md" with { type: "text" };
 import generationReflection from "./routines/generation-reflection.md" with { type: "text" };
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
@@ -54,7 +54,10 @@ export interface Routine {
   everyMinutes: number;
   /** Only offered within the user's working hours. */
   workingHoursOnly: boolean;
-  /** Whether it runs: the user's switch for it in the heads-down settings, else `enabledByDefault`. */
+  /**
+   * Whether it runs, once `withSwitches` has applied the user's switch from the
+   * heads-down settings. Straight from the loader it equals `enabledByDefault`.
+   */
   enabled: boolean;
   /** The file's `enabled`: on unless it says otherwise. Shipped routines that need setup ship off. */
   enabledByDefault: boolean;
@@ -235,14 +238,15 @@ export function parseRoutine(
     );
   }
 
+  const enabledByDefault = asBoolean(path, data, "enabled") ?? true;
   return {
     name,
     description,
     prompt: body,
     everyMinutes,
     workingHoursOnly: asBoolean(path, data, "workingHours") ?? false,
-    enabled: asBoolean(path, data, "enabled") ?? true,
-    enabledByDefault: asBoolean(path, data, "enabled") ?? true,
+    enabled: enabledByDefault,
+    enabledByDefault,
     tools: parseTools(path, data),
     config: parseConfig(path, data.config),
     nightShift: parseNightShift(path, data),
@@ -399,7 +403,7 @@ export interface NewRoutine {
 export const EVERY_PATTERN = /^\d+[mhd]$/;
 
 /** The file a `NewRoutine` is written as. Keys left at their default are left out. */
-function routineFileContent(input: NewRoutine, { off = false } = {}): string {
+function routineFileContent(input: NewRoutine, { enabledByDefault = true } = {}): string {
   const frontmatter: Record<string, unknown> = {
     name: input.name,
     description: input.description,
@@ -408,7 +412,7 @@ function routineFileContent(input: NewRoutine, { off = false } = {}): string {
   if (input.once) frontmatter.once = true;
   if (input.workingHours) frontmatter.workingHours = true;
   if (input.nightShift && input.nightShift !== "run") frontmatter.nightShift = input.nightShift;
-  if (off) frontmatter.enabled = false;
+  if (!enabledByDefault) frontmatter.enabled = false;
   if (input.tools?.length) frontmatter.tools = input.tools;
   if (input.config && Object.keys(input.config).length) frontmatter.config = input.config;
   return `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
@@ -487,8 +491,10 @@ export async function writeRoutineFile(
   if (existing && !replace) return { error: `a routine named '${input.name}' already exists` };
   const rewritesUserFile = existing?.source === "user";
   const path = rewritesUserFile ? existing.path : join(folder.dir, `${input.name}.md`);
-  // Replacing keeps a routine that ships off, off: turning it on is its own approval.
-  const content = routineFileContent(input, { off: existing?.enabledByDefault === false });
+  // A file that starts the routine off keeps saying so: turning it on is its own approval.
+  const content = routineFileContent(input, {
+    enabledByDefault: existing?.enabledByDefault ?? true,
+  });
   try {
     const parsed = parseRoutine(path, content, "user");
     // What was approved has to be what passes read. A value whose text the file
@@ -516,6 +522,8 @@ export async function writeRoutineFile(
     ? await replaceFile(path, content)
     : await createFile(path, content);
   if (failed) return failed;
+  // A new routine starts with its file's default, not a switch left by an old one of the name.
+  if (!existing) await clearRoutineSwitches([input.name]);
   await reloadRoutines();
   return { path };
 }
@@ -529,7 +537,10 @@ export function withSwitches(
   routines: readonly Routine[],
   switches: Readonly<Record<string, boolean>>,
 ): Routine[] {
-  return routines.map((r) => ({ ...r, enabled: switches[r.name] ?? r.enabledByDefault }));
+  return routines.map((r) => ({
+    ...r,
+    enabled: routineSwitch(switches, r.name) ?? r.enabledByDefault,
+  }));
 }
 
 /** Turns a routine on or off in the heads-down settings. Its file is left alone. */
@@ -592,7 +603,10 @@ export async function removeFinishedOnceRoutines(
       console.error(`[heads-down] couldn't remove finished one-off routine ${routine.path}:`, e);
     }
   }
-  if (removed.length) await reloadRoutines();
+  if (removed.length) {
+    await clearRoutineSwitches(removed);
+    await reloadRoutines();
+  }
   return removed;
 }
 

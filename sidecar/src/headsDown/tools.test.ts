@@ -86,16 +86,20 @@ describe("the chat's routine tools", () => {
   let dir: string;
   const made: string[] = [];
   const original = process.env.YARVIS_ROUTINES_DIR;
+  const originalSettings = process.env.YARVIS_SETTINGS_PATH;
 
   beforeEach(async () => {
     const parent = mkdtempSync(join(tmpdir(), "chat-routines-"));
     made.push(parent);
     dir = join(parent, "routines");
     process.env.YARVIS_ROUTINES_DIR = dir;
+    // The switches are settings, so each test writes its own file.
+    process.env.YARVIS_SETTINGS_PATH = join(parent, "settings.json");
     await reloadRoutines();
   });
   afterAll(async () => {
     process.env.YARVIS_ROUTINES_DIR = original;
+    process.env.YARVIS_SETTINGS_PATH = originalSettings;
     await reloadRoutines();
     for (const parent of made) rmSync(parent, { recursive: true, force: true });
   });
@@ -155,6 +159,15 @@ describe("the chat's routine tools", () => {
         opts,
       ),
     ).toEqual({ ok: true, enabled: true });
+    // The switch shows in the list, and the shipped routine stays shipped.
+    const after = (await tools.list_heads_down_routines.execute!(
+      { name: "review-prep" },
+      opts,
+    )) as { routines: { name: string; enabled: boolean; source: string }[] };
+    expect(after.routines.find((r) => r.name === "review-prep")).toMatchObject({
+      enabled: true,
+      source: "builtin",
+    });
   });
 
   it("refuses a routine with neither a cadence nor once, and invisible text", () => {

@@ -268,8 +268,8 @@ public struct HeadsDownRoutine: Codable, Sendable, Equatable {
     public var nightShift: String
     /// Whether it runs: the user's switch, else `enabledByDefault`.
     public var enabled: Bool
-    /// Its file's `enabled`.
-    public var enabledByDefault: Bool
+    /// Its file's `enabled`. Optional so a server from before the switches still decodes.
+    public var enabledByDefault: Bool?
     /// The user's switch in the heads-down settings; nil when the file's default decides.
     public var switchedTo: Bool?
     /// A one-off: offered until a pass reports it done, then its file is removed.
@@ -292,7 +292,7 @@ public struct HeadsDownRoutine: Codable, Sendable, Equatable {
     public var heldBy: String?
 
     public init(name: String, description: String = "", everyMinutes: Int = 60, workingHoursOnly: Bool = false,
-                nightShift: String = "run", enabled: Bool = true, enabledByDefault: Bool = true,
+                nightShift: String = "run", enabled: Bool = true, enabledByDefault: Bool? = true,
                 switchedTo: Bool? = nil, once: Bool = false, source: String = "builtin", path: String? = nil,
                 tools: [String] = [], config: [String: HeadsDownRoutineSetting] = [:], body: String = "",
                 lastDoneAt: String? = nil, nextPass: Bool = false, queued: Bool = false, dueAt: String? = nil,

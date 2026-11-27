@@ -18,6 +18,7 @@ import {
   MAX_SHIP_CHECK_MINUTES,
   MAX_SHIP_MONITOR_WINDOW_MINUTES,
   MIN_SHIP_CHECK_MINUTES,
+  routineSwitch,
   saveHeadsDownConfig,
   startOfLocalDay,
 } from "./config.ts";
@@ -307,9 +308,10 @@ export function createHeadsDownRoutes(config: Config): Hono {
     return c.json(saved);
   });
 
-  // The files are the source of truth: the page lists what loaded, where each
-  // stands, names the directory, and shows files that failed. Writes go through
-  // the same file helpers a pass's approved proposal uses.
+  // The files say what each routine does and the switches in the settings
+  // whether it runs: the page lists what loaded, where each stands, names the
+  // directory, and shows files that failed. Writes go through the same file
+  // helpers a pass's approved proposal uses.
   const routinesResponse = async (load: () => Promise<RoutineCatalog>) => {
     const [{ routines, problems, userDir }, history, hd] = await Promise.all([
       load(),
@@ -317,9 +319,9 @@ export function createHeadsDownRoutes(config: Config): Hono {
       getHeadsDownConfig().catch(() => DEFAULT_HEADS_DOWN_CONFIG),
     ]);
     const now = new Date();
-    const switched = withSwitches(routines, hd.routines);
+    const routinesWithSwitches = withSwitches(routines, hd.routines);
     const schedules = routineSchedules({
-      routines: switched,
+      routines: routinesWithSwitches,
       ...history,
       now,
       withinWorkingHours: isWithinWorkingHours(now, hd.workingHours),
@@ -327,7 +329,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
       limit: hd.maxRoutinesPerPass,
     });
     return {
-      routines: switched.map((r) => {
+      routines: routinesWithSwitches.map((r) => {
         const schedule = schedules.get(r.name);
         return {
           name: r.name,
@@ -338,7 +340,7 @@ export function createHeadsDownRoutes(config: Config): Hono {
           enabled: r.enabled,
           enabledByDefault: r.enabledByDefault,
           // The user's own switch, or null when the file's default decides.
-          switchedTo: hd.routines[r.name] ?? null,
+          switchedTo: routineSwitch(hd.routines, r.name),
           once: r.once,
           source: r.source,
           path: r.source === "user" ? r.path : null,

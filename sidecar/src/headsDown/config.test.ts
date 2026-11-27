@@ -10,6 +10,7 @@ import {
   isNightShift,
   isWithinWorkingHours,
   saveHeadsDownConfig,
+  setRoutineSwitch,
 } from "./config.ts";
 
 const officeHours = { days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" };
@@ -157,6 +158,25 @@ describe("getHeadsDownConfig", () => {
     process.env.YARVIS_SETTINGS_PATH = path;
     return getHeadsDownConfig();
   };
+
+  it("drops hand-edited routine switches it can't use", async () => {
+    for (const bad of [null, "on", ["a"], 3, true]) {
+      expect((await stored({ routines: bad })).routines).toEqual({});
+    }
+    expect(
+      (await stored({ routines: { a: true, b: "false", c: 1, d: null, e: false } })).routines,
+    ).toEqual({ a: true, e: false });
+    expect((await stored({})).routines).toEqual({});
+  });
+
+  it("sets a switch over a hand-edited map, keeping its usable entries and the other settings", async () => {
+    await stored({ routines: { a: "yes", b: false }, maxRoutinesPerPass: 4 });
+    await setRoutineSwitch("c", true);
+    expect(await getHeadsDownConfig()).toMatchObject({
+      routines: { b: false, c: true },
+      maxRoutinesPerPass: 4,
+    });
+  });
 
   it("leaves always-on, night shift and the pass limit off unless they are set", async () => {
     const config = await stored({});

@@ -221,6 +221,32 @@ export async function saveHeadsDownConfig(
   });
 }
 
+/**
+ * The user's switch for a routine, or null when its file's default decides.
+ * Only the map's own keys count, so a routine named `constructor` doesn't read
+ * one off the object prototype.
+ */
+export function routineSwitch(
+  switches: Readonly<Record<string, boolean>>,
+  name: string,
+): boolean | null {
+  return Object.hasOwn(switches, name) ? (switches[name] ?? null) : null;
+}
+
+/**
+ * Forgets the switches for these routines, for a name that starts over: a new
+ * routine, or a one-off that finished. Otherwise an old "off" would silently
+ * apply to whatever is next saved under the name.
+ */
+export async function clearRoutineSwitches(names: readonly string[]): Promise<void> {
+  if (!names.length) return;
+  await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => {
+    const routines = validRoutineSwitches(stored?.routines);
+    for (const name of names) delete routines[name];
+    return { next: { ...stored, routines }, result: undefined };
+  });
+}
+
 /** Turns one routine on or off by name. */
 export async function setRoutineSwitch(name: string, enabled: boolean): Promise<void> {
   await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => ({

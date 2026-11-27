@@ -627,7 +627,7 @@ describe("changing routine files", () => {
     expect(shipped).toMatchObject({ enabled: false, enabledByDefault: false, source: "builtin" });
 
     expect(await setRoutineEnabled("review-prep", true)).toEqual({ enabled: true });
-    expect(existsSync(dir) && readdirSync(dir).length).toBeFalsy();
+    expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
     const switches = (await getHeadsDownConfig()).routines;
     expect(switches).toEqual({ "review-prep": true });
     const catalog = (await routineCatalog()).routines;
@@ -654,9 +654,30 @@ describe("changing routine files", () => {
     expect(routines.some((r) => r.name === "temp")).toBe(false);
     expect(switches).toEqual({ temp: false });
 
-    await writeRoutineFile({ name: "temp", description: "T", every: "1d", body: "Do it." });
+    // Put back by hand, say restored from a backup: it is the same routine, so its switch applies.
+    writeFileSync(join(dir, "temp.md"), file("name: temp\ndescription: T\nevery: 1d"));
+    await reloadRoutines();
     const back = withSwitches((await routineCatalog()).routines, switches);
     expect(back.find((r) => r.name === "temp")).toMatchObject({ enabled: false });
+
+    // Saved as a new routine instead, it starts over on its own default.
+    rmSync(join(dir, "temp.md"));
+    await reloadRoutines();
+    await writeRoutineFile({ name: "temp", description: "T", every: "1d", body: "Do it." });
+    expect((await getHeadsDownConfig()).routines).toEqual({});
+  });
+
+  it("forgets a finished one-off's switch, so a new one of that name isn't held off", async () => {
+    await writeRoutineFile({ name: "once-x", description: "X", once: true, body: "Do X." });
+    await setRoutineEnabled("once-x", false);
+    await removeFinishedOnceRoutines(["once-x"], new Date(Date.now() + 1000));
+    expect((await getHeadsDownConfig()).routines).toEqual({});
+  });
+
+  it("reads a routine named like an object property by its own switch only", async () => {
+    const proto = routine("constructor", 60, { enabled: false, enabledByDefault: false });
+    expect(withSwitches([proto], {})[0]?.enabled).toBe(false);
+    expect(withSwitches([proto], { constructor: true })[0]?.enabled).toBe(true);
   });
 
   it("keeps the routine switches when the settings form is saved", async () => {

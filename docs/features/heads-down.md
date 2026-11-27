@@ -282,7 +282,8 @@ routine. You can also ask the assistant to turn one on. Either way it is a
 switch kept in the heads-down settings under the routine's name (`routines` in
 the `headsDown` section of `~/.yarvis/settings.json`): no file is copied or
 changed. A switch for a routine that no longer loads is ignored, and applies
-again if the routine comes back. Without a switch, a routine follows its
+again if its file comes back. A new routine saved under that name, or a
+one-off that finished, starts over with no switch. Without a switch, a routine follows its
 file's `enabled`, which is how some shipped routines start off.
 
 To change what a shipped routine does, such as its `config`, save a file with
@@ -454,8 +455,9 @@ A file whose `name` matches a shipped routine replaces it whole, so it needs
 every required field too. To turn review-prep on, press **Turn on**. To have
 the scout also watch repos, people or teams, copy the shipped file
 (`sidecar/src/headsDown/routines/review-prep.md` in the Yarvis repo) to
-`~/.yarvis/routines/review-prep.md` and add them under `config`, as in this
-example:
+`~/.yarvis/routines/review-prep.md` and add them under `config`, as in the
+example below. A copy that keeps the shipped `enabled: false` line still needs
+**Turn on**:
 
 ```markdown
 ---

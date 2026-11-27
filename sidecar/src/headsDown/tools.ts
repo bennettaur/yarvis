@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { Db } from "../db/client.ts";
-import { getHeadsDownConfig } from "./config.ts";
+import { DEFAULT_HEADS_DOWN_CONFIG, getHeadsDownConfig } from "./config.ts";
 import {
   NOT_RUNNING,
   parseStopTime,
@@ -137,7 +137,8 @@ export function buildHeadsDownTools(db: Db) {
       execute: async ({ name }) => {
         const [{ routines, problems }, hd] = await Promise.all([
           routineCatalog(),
-          getHeadsDownConfig(),
+          // A settings file that won't parse leaves every routine on its file's default.
+          getHeadsDownConfig().catch(() => DEFAULT_HEADS_DOWN_CONFIG),
         ]);
         return {
           routines: withSwitches(routines, hd.routines).map((r) => ({

@@ -1110,8 +1110,9 @@ Each app folder's `AGENTS.md` repeats this for agents working only there.
   default (`enabledByDefault`). So turning one on or off never writes a routine
   file, and a switch for a routine that no longer loads is ignored.
   `saveHeadsDownConfig` keeps the stored switches, since the settings form
-  doesn't send them. The page and the chat agent write routines through the
-  same helpers (`writeRoutineFile`, `setRoutineEnabled`, `deleteRoutineFile`). The chat's
+  doesn't send them. The page and the chat agent change routines through
+  the same helpers (`writeRoutineFile`, `setRoutineEnabled`,
+  `deleteRoutineFile`). The chat's
   `save_heads_down_routine` and `set_heads_down_routine_enabled` are in
   `ALWAYS_CONFIRM_BUILTIN_TOOLS`, since the body the model writes reaches every
   later pass unfenced, in `PASS_REFUSED_TOOLS`, since a pass has its own

@@ -131,9 +131,9 @@ struct HeadsDownPassList: View {
     var onShowAll: (() -> Void)?
 
     var body: some View {
-        let all = finishedPasses(model.passes ?? [])
-        let finished = limit.map { Array(all.prefix($0)) } ?? all
-        let hidden = all.count - finished.count
+        let allFinished = finishedPasses(model.passes ?? [])
+        let finished = limit.map { Array(allFinished.prefix($0)) } ?? allFinished
+        let hidden = allFinished.count - finished.count
         VStack(alignment: .leading, spacing: 8) {
             if model.working { HeadsDownLivePassView(model: model) }
             if finished.isEmpty, !model.working {
