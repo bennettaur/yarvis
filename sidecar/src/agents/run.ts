@@ -105,6 +105,10 @@ const NEVER_DELEGATABLE: ReadonlySet<string> = new Set([
   "schedule_task",
   "list_scheduled_tasks",
   "cancel_scheduled_task",
+  // A routine's body reaches every later heads-down pass as the user's own
+  // words, so it is one the user read, never one a delegated run wrote alone.
+  "save_heads_down_routine",
+  "set_heads_down_routine_enabled",
 ]);
 
 /**

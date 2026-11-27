@@ -591,6 +591,52 @@ describe("a heads-down pass", () => {
     expect((await routineHistory(db)).lastDone.size).toBe(0);
   });
 
+  it("runs a one-off on the next pass and deletes its file once the pass reports it done", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    const write = (name: string) =>
+      writeFileSync(
+        join(routinesDir, `${name}.md`),
+        `---\nname: ${name}\ndescription: x\nonce: true\n---\n\nCheck CI.\n`,
+      );
+    write("check-ci");
+    write("check-docs");
+    try {
+      await saveHeadsDownConfig({ ...DEFAULT_HEADS_DOWN_CONFIG, workingHours: null });
+      await reloadRoutines();
+      const run = await startRun(db, null);
+      const model = streamingModel(
+        [
+          toolCall("f1", "finish_pass", {
+            sleepMinutes: 30,
+            reason: "one-off done",
+            routinesDone: ["check-ci"],
+          }),
+          finish("tool-calls"),
+        ],
+        [finish("stop")],
+      );
+
+      await runPass(config, db, run, { model });
+
+      const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+      expect(prompt).toContain("### check-ci (one-off: removed once you report it done)");
+      const [pass] = await listPasses(db);
+      expect(pass?.routinesOffered).toEqual(expect.arrayContaining(["check-ci", "check-docs"]));
+      // Done: its file is gone. Given but not reported done: kept for a later pass.
+      expect(existsSync(join(routinesDir, "check-ci.md"))).toBe(false);
+      expect(existsSync(join(routinesDir, "check-docs.md"))).toBe(true);
+      const names = (await routineCatalog()).routines.map((r) => r.name);
+      expect(names).not.toContain("check-ci");
+      expect(names).toContain("check-docs");
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
   it("gives a pass only as many routines as the setting allows, and none at 0", async () => {
     const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
     const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;

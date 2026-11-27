@@ -84,6 +84,10 @@ export default function ToolApprovalBar({
   // A URL is the part of a fetch worth judging, since its query string can carry
   // data out, so it is shown in full rather than behind the arguments toggle.
   const url = (current.args as { url?: unknown } | null | undefined)?.url;
+  // A heads-down routine's body reaches every later pass as the user's own
+  // words, so it is shown as text to read, not left in a JSON blob. A built-in's
+  // id is its bare name; an MCP tool's always has a server prefix.
+  const routine = current.toolId === "save_heads_down_routine" ? asRoutineArgs(current.args) : null;
 
   return (
     <div className="rounded-xl border border-amber-700/60 bg-amber-950/40 px-3 py-2 text-sm shadow-sm">
@@ -141,6 +145,7 @@ export default function ToolApprovalBar({
       {typeof url === "string" && (
         <div className="mt-1 break-all font-mono text-xs text-amber-200">{url}</div>
       )}
+      {routine && <RoutinePreview routine={routine} />}
       {current.reason && (
         <p className="mt-1 text-xs text-zinc-300">
           <span className="text-zinc-500">The assistant says: </span>
@@ -152,6 +157,53 @@ export default function ToolApprovalBar({
           {JSON.stringify(current.args, null, 2)}
         </pre>
       )}
+    </div>
+  );
+}
+
+interface RoutineArgs {
+  name?: string;
+  description?: string;
+  every?: string;
+  once?: boolean;
+  replace?: boolean;
+  tools?: string[];
+  config?: Record<string, string | string[]>;
+  body?: string;
+}
+
+function asRoutineArgs(args: unknown): RoutineArgs | null {
+  return args && typeof args === "object" ? (args as RoutineArgs) : null;
+}
+
+/** The routine a save would write, laid out to be read before approving. */
+function RoutinePreview({ routine }: { routine: RoutineArgs }) {
+  const config = Object.entries(routine.config ?? {});
+  return (
+    <div className="mt-2 space-y-1 rounded-md bg-zinc-950/70 p-2 text-xs text-zinc-300">
+      <p>
+        <span className="font-mono text-zinc-100">{routine.name}</span>
+        {routine.replace && (
+          <span className="text-amber-300"> replaces the routine of this name</span>
+        )}
+        <span className="text-zinc-500"> · {routine.once ? "once" : `every ${routine.every}`}</span>
+      </p>
+      {routine.description && <p className="text-zinc-400">{routine.description}</p>}
+      {routine.tools && routine.tools.length > 0 && (
+        <p className="text-zinc-500">
+          Tools: <span className="font-mono text-zinc-300">{routine.tools.join(", ")}</span>
+        </p>
+      )}
+      {config.map(([key, value]) => (
+        <p key={key} className="text-zinc-500">
+          <span className="font-mono">{key}</span>:{" "}
+          <span className="text-zinc-300">{Array.isArray(value) ? value.join(", ") : value}</span>
+        </p>
+      ))}
+      <p className="text-zinc-500">Every pass that runs it is told:</p>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-sans text-zinc-200">
+        {routine.body}
+      </pre>
     </div>
   );
 }

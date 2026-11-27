@@ -80,6 +80,9 @@ export const PASS_REFUSED_TOOLS: ReadonlySet<string> = new Set([
   "pause_heads_down",
   "resume_heads_down",
   "set_heads_down_stop_time",
+  // A pass proposes routines with its own create_routine instead.
+  "save_heads_down_routine",
+  "set_heads_down_routine_enabled",
   "remember",
   "correct_memory",
   "confirm_memory",
