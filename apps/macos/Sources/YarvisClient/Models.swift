@@ -63,12 +63,28 @@ public struct APIErrorBody: Decodable, Sendable {
         if let s = try? c.decode(String.self, forKey: .error) {
             error = s
         } else {
-            error = (try? c.decode(JSONValue.self, forKey: .error))?.prettyPrinted ?? "error"
+            let value = try? c.decode(JSONValue.self, forKey: .error)
+            error = value.flatMap(Self.zodLine) ?? value?.prettyPrinted ?? "error"
         }
         detail = try? c.decodeIfPresent(String.self, forKey: .detail)
     }
 
     enum CodingKeys: String, CodingKey { case error, detail }
+
+    /// A zod `flatten()` object (`formErrors`, `fieldErrors`) as one line, the
+    /// way the web client shows it. Nil when it holds no message.
+    static func zodLine(_ value: JSONValue) -> String? {
+        var parts: [String] = []
+        if case .array(let form)? = value["formErrors"] { parts += form.compactMap(\.stringValue) }
+        if case .object(let fields)? = value["fieldErrors"] {
+            for field in fields.keys.sorted() {
+                guard case .array(let messages)? = fields[field] else { continue }
+                let text = messages.compactMap(\.stringValue)
+                if !text.isEmpty { parts.append("\(field): \(text.joined(separator: ", "))") }
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
 }
 
 // MARK: - Events and approvals

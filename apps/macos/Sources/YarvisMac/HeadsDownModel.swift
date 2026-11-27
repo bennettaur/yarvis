@@ -2,6 +2,22 @@ import Foundation
 import Observation
 import YarvisClient
 
+/// The Heads down page's tabs.
+enum HeadsDownTab: String, CaseIterable, Identifiable {
+    case overview, routines, history, settings
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .overview: return "Overview"
+        case .routines: return "Routines"
+        case .history: return "History"
+        case .settings: return "Settings"
+        }
+    }
+}
+
 /// The Heads down page: what heads-down mode is working on, what it needs
 /// from the user, what it has done, and a place to tell it things. Also owns
 /// the question dialog and the merge pop-ups, which show over any page.
@@ -41,7 +57,8 @@ final class HeadsDownModel {
     private(set) var liveBlocks: [MarkdownBlock] = []
     @ObservationIgnored private var live = HeadsDownLive()
     @ObservationIgnored private var markdown = MarkdownStream()
-    var settingsOpen = false
+    /// The page's tab. Kept here so coming back to the page shows the same one.
+    var tab: HeadsDownTab = .overview
 
     init(app: AppModel, client: YarvisClient) {
         self.app = app
@@ -166,16 +183,18 @@ final class HeadsDownModel {
     }
 
     /// A question on the page was answered. Its card may have allowed a tool,
-    /// so open settings read their list again too.
+    /// so the Settings tab, when showing, reads its list again too.
     func questionAnswered() {
         reload()
-        if settingsOpen { Task { await loadSettings() } }
+        if tab == .settings { Task { await loadSettings() } }
     }
 
-    /// Runs a settings change, then reads the settings again.
+    /// Runs a settings change, then reads the settings again, and the page's
+    /// lists: the header names the model and the routines depend on the per-pass limit.
     func performSetting(_ action: @Sendable (YarvisClient) async throws -> Void) async throws {
         try await action(client)
         await loadSettings()
+        reload()
     }
 
     func passMessages(_ id: String) async throws -> [HeadsDownPassMessage] {
@@ -183,7 +202,24 @@ final class HeadsDownModel {
     }
 
     func reloadRoutines() async throws {
-        routines = try await client.reloadHeadsDownRoutines()
+        try await changeRoutines { try await $0.reloadHeadsDownRoutines() }
+    }
+
+    func createRoutine(_ routine: NewHeadsDownRoutine) async throws {
+        try await changeRoutines { try await $0.createHeadsDownRoutine(routine) }
+    }
+
+    func setRoutineEnabled(_ name: String, enabled: Bool) async throws {
+        try await changeRoutines { try await $0.setHeadsDownRoutineEnabled(name: name, enabled: enabled) }
+    }
+
+    func deleteRoutine(_ name: String) async throws {
+        try await changeRoutines { try await $0.deleteHeadsDownRoutine(name: name) }
+    }
+
+    /// Every routine route answers with the whole list, so it replaces the one shown.
+    private func changeRoutines(_ action: @Sendable (YarvisClient) async throws -> HeadsDownRoutines) async throws {
+        routines = try await action(client)
         routinesError = nil
     }
 

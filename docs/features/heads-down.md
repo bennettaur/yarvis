@@ -277,11 +277,18 @@ slack-watcher, meeting-times, email-drafts, message-people and offer-help skip
 ### Turn on a shipped routine
 
 On the **Routines** tab, open the routine to read what it does and what it
-needs, then press **Turn on**. That copies the shipped file into
-`~/.yarvis/routines` with it on, since a file whose `name` matches a shipped
-routine replaces it whole. Edit that copy to change anything else, such as its
-`config`, then press **Reload files**. **Turn off** works the same way. You can
-also ask the assistant to turn one on.
+needs, then press **Turn on**. **Turn off** works the same way, for any
+routine. You can also ask the assistant to turn one on. Either way it is a
+switch kept in the heads-down settings under the routine's name (`routines` in
+the `headsDown` section of `~/.yarvis/settings.json`): no file is copied or
+changed. A switch for a routine that no longer loads is ignored, and applies
+again if its file comes back. A new routine saved under that name, or a
+one-off that finished, starts over with no switch. Without a switch, a routine follows its
+file's `enabled`, which is how some shipped routines start off.
+
+To change what a shipped routine does, such as its `config`, save a file with
+the same `name` in `~/.yarvis/routines`; it replaces the shipped one, and its
+switch still applies.
 
 ### Slack watcher
 
@@ -346,7 +353,9 @@ often it runs, whether it is your own file, and where it stands:
   `workingHours` or `nightShift` holds it back right now.
 - **Didn't finish last time; tries again…**: a pass was given it and didn't
   report it done.
-- **Off: ships turned off** or **Off in your file**.
+- **Turned off**: you switched it off.
+- **Off: ships turned off** or **Off in your file**: its file says
+  `enabled: false` and you haven't switched it on.
 
 Open one to read its instructions, tools and settings, when a pass last did
 it, and the path of your file. **Delete file** removes your own file; if it
@@ -395,7 +404,8 @@ and leave a three-line summary in your notes for me to paste.
   minutes and at most 30 days. Required unless `once` is `true`.
 - `workingHours`: `true` to run it only within your working hours. Off by
   default.
-- `enabled`: `false` to turn it off.
+- `enabled`: `false` to start it off. Your switch on the Routines tab wins
+  over this.
 - `tools`: tools the routine uses, as a list. Each is a tool's name as the
   Tool manager shows it, or its id there, such as `builtin:list_events`. When
   two tools share a name, say on two MCP servers, use the id: the name alone
@@ -442,13 +452,12 @@ Any other key, such as a misspelled `workinghours`, stops the file loading. A
 key you leave out takes its default above, not the shipped routine's value.
 
 A file whose `name` matches a shipped routine replaces it whole, so it needs
-every required field too. To turn meeting-alarms off, write a file with
-`name: meeting-alarms`, a description, an `every`, a one-line body and
-`enabled: false`, or press **Turn off** on the Routines tab, which writes it
-for you. To turn review-prep on, press **Turn on**, which copies the shipped
-file to `~/.yarvis/routines/review-prep.md` with it on. To have the scout also
-watch repos, people or teams, add them under `config` in that copy, as
-in this example:
+every required field too. To turn review-prep on, press **Turn on**. To have
+the scout also watch repos, people or teams, copy the shipped file
+(`sidecar/src/headsDown/routines/review-prep.md` in the Yarvis repo) to
+`~/.yarvis/routines/review-prep.md` and add them under `config`, as in the
+example below. A copy that keeps the shipped `enabled: false` line still needs
+**Turn on**:
 
 ```markdown
 ---

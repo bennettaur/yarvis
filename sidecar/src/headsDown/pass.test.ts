@@ -14,7 +14,7 @@ import { createStream, getStream } from "../workStreams/service.ts";
 import { DEFAULT_HEADS_DOWN_CONFIG, saveHeadsDownConfig } from "./config.ts";
 import { setHeadsDownStopTime } from "./control.ts";
 import { REACHED_STOP_TIME, runPass, STOPPED_BY_USER } from "./pass.ts";
-import { reloadRoutines, routineCatalog } from "./routines.ts";
+import { reloadRoutines, routineCatalog, setRoutineEnabled } from "./routines.ts";
 import {
   addMessage,
   answerQuestion,
@@ -822,6 +822,49 @@ describe("a heads-down pass", () => {
       expect(JSON.stringify(on.doStreamCalls[0]?.prompt)).toContain(
         "The slack-watcher routine is on",
       );
+
+      // The user's switch decides, over the file.
+      await setRoutineEnabled("slack-watcher", false);
+      const switchedOff = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model: switchedOff });
+      expect(JSON.stringify(switchedOff.doStreamCalls[0]?.prompt)).not.toContain(
+        "The slack-watcher routine is on",
+      );
+    } finally {
+      process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
+      rmSync(routinesDir, { recursive: true, force: true });
+      await reloadRoutines();
+    }
+  });
+
+  it("gives a pass the routines the user switched on, and not the ones switched off", async () => {
+    const routinesDir = mkdtempSync(join(tmpdir(), "heads-down-pass-routines-"));
+    const originalRoutinesDir = process.env.YARVIS_ROUTINES_DIR;
+    process.env.YARVIS_ROUTINES_DIR = routinesDir;
+    writeFileSync(
+      join(routinesDir, "a-check.md"),
+      "---\nname: a-check\ndescription: x\nevery: 1h\n---\n\nCheck.\n",
+    );
+    writeFileSync(
+      join(routinesDir, "b-starts-off.md"),
+      "---\nname: b-starts-off\ndescription: x\nevery: 1h\nenabled: false\n---\n\nCheck.\n",
+    );
+    try {
+      await saveHeadsDownConfig({
+        ...DEFAULT_HEADS_DOWN_CONFIG,
+        workingHours: null,
+        maxRoutinesPerPass: 5,
+      });
+      await reloadRoutines();
+      await setRoutineEnabled("a-check", false);
+      await setRoutineEnabled("b-starts-off", true);
+      const run = await startRun(db, null);
+      const model = streamingModel([finish("stop")]);
+      await runPass(config, db, run, { model });
+      const [latest] = await listPasses(db);
+      expect(latest?.routinesOffered).toContain("b-starts-off");
+      expect(latest?.routinesOffered).not.toContain("a-check");
+      expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain("### a-check");
     } finally {
       process.env.YARVIS_ROUTINES_DIR = originalRoutinesDir;
       rmSync(routinesDir, { recursive: true, force: true });

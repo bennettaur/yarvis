@@ -14,6 +14,7 @@ import {
 } from "../agents/frontmatter.ts";
 import type { RegistryTool } from "../agentTools/store.ts";
 import { hasInvisibleChars } from "../web/extract.ts";
+import { clearRoutineSwitches, routineSwitch, setRoutineSwitch } from "./config.ts";
 import emailDrafts from "./routines/email-drafts.md" with { type: "text" };
 import generationReflection from "./routines/generation-reflection.md" with { type: "text" };
 import meetingAlarms from "./routines/meeting-alarms.md" with { type: "text" };
@@ -32,9 +33,10 @@ import slackWatcher from "./routines/slack-watcher.md" with { type: "text" };
  * A routine is a markdown file, like a specialist: frontmatter for how often it
  * runs, the body for what the pass is told to do. The shipped ones are embedded
  * at build time; `~/.yarvis/routines/*.md` loads beside them and wins on a name
- * collision. The user's file replaces the shipped one whole, so turning one off
- * takes a complete routine with `enabled: false`. Files rather than rows so a
- * routine can be shared by copying a file.
+ * collision. Whether each one runs is the user's switch in the heads-down
+ * settings (`withSwitches`), keyed by name, so turning a shipped routine on or
+ * off never means copying its file. Files rather than rows so a routine can be
+ * shared by copying a file.
  *
  * Never read from a workspace or a repo: the body goes into an unattended
  * pass's prompt as the user's own words, so a repo that could contribute one
@@ -52,7 +54,13 @@ export interface Routine {
   everyMinutes: number;
   /** Only offered within the user's working hours. */
   workingHoursOnly: boolean;
+  /**
+   * Whether it runs, once `withSwitches` has applied the user's switch from the
+   * heads-down settings. Straight from the loader it equals `enabledByDefault`.
+   */
   enabled: boolean;
+  /** The file's `enabled`: on unless it says otherwise. Shipped routines that need setup ship off. */
+  enabledByDefault: boolean;
   /**
    * Tools the routine wants ready, as written in the file: a bare tool name or
    * a registry id. They are mounted for the pass; calling one still goes through
@@ -230,13 +238,15 @@ export function parseRoutine(
     );
   }
 
+  const enabledByDefault = asBoolean(path, data, "enabled") ?? true;
   return {
     name,
     description,
     prompt: body,
     everyMinutes,
     workingHoursOnly: asBoolean(path, data, "workingHours") ?? false,
-    enabled: asBoolean(path, data, "enabled") ?? true,
+    enabled: enabledByDefault,
+    enabledByDefault,
     tools: parseTools(path, data),
     config: parseConfig(path, data.config),
     nightShift: parseNightShift(path, data),
@@ -393,7 +403,7 @@ export interface NewRoutine {
 export const EVERY_PATTERN = /^\d+[mhd]$/;
 
 /** The file a `NewRoutine` is written as. Keys left at their default are left out. */
-function routineFileContent(input: NewRoutine): string {
+function routineFileContent(input: NewRoutine, { enabledByDefault = true } = {}): string {
   const frontmatter: Record<string, unknown> = {
     name: input.name,
     description: input.description,
@@ -402,6 +412,7 @@ function routineFileContent(input: NewRoutine): string {
   if (input.once) frontmatter.once = true;
   if (input.workingHours) frontmatter.workingHours = true;
   if (input.nightShift && input.nightShift !== "run") frontmatter.nightShift = input.nightShift;
+  if (!enabledByDefault) frontmatter.enabled = false;
   if (input.tools?.length) frontmatter.tools = input.tools;
   if (input.config && Object.keys(input.config).length) frontmatter.config = input.config;
   return `---\n${stringifyYaml(frontmatter)}---\n\n${input.body.trim()}\n`;
@@ -480,11 +491,10 @@ export async function writeRoutineFile(
   if (existing && !replace) return { error: `a routine named '${input.name}' already exists` };
   const rewritesUserFile = existing?.source === "user";
   const path = rewritesUserFile ? existing.path : join(folder.dir, `${input.name}.md`);
-  // Replacing keeps a routine that is off, off: turning it on is its own approval.
-  const content =
-    existing && !existing.enabled
-      ? withEnabledLine(routineFileContent(input), false)
-      : routineFileContent(input);
+  // A file that starts the routine off keeps saying so: turning it on is its own approval.
+  const content = routineFileContent(input, {
+    enabledByDefault: existing?.enabledByDefault ?? true,
+  });
   try {
     const parsed = parseRoutine(path, content, "user");
     // What was approved has to be what passes read. A value whose text the file
@@ -512,73 +522,37 @@ export async function writeRoutineFile(
     ? await replaceFile(path, content)
     : await createFile(path, content);
   if (failed) return failed;
+  // A new routine starts with its file's default, not a switch left by an old one of the name.
+  if (!existing) await clearRoutineSwitches([input.name]);
   await reloadRoutines();
   return { path };
 }
 
-/** Far past any real routine, the same cap the loader reads with. */
-const MAX_ROUTINE_FILE_BYTES = 256 * 1024;
-
-/** Reads the user's file without following a link swapped in since it loaded. */
-async function readUserFile(path: string): Promise<string> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MAX_ROUTINE_FILE_BYTES) {
-      throw new Error(`${path}: not a routine file this can rewrite`);
-    }
-    return await handle.readFile("utf8");
-  } finally {
-    await handle.close();
-  }
+/**
+ * Each routine with `enabled` set from the user's switches in the heads-down
+ * settings, falling back to its file's default. Switches for routines that
+ * didn't load are ignored.
+ */
+export function withSwitches(
+  routines: readonly Routine[],
+  switches: Readonly<Record<string, boolean>>,
+): Routine[] {
+  return routines.map((r) => ({
+    ...r,
+    enabled: routineSwitch(switches, r.name) ?? r.enabledByDefault,
+  }));
 }
 
-/**
- * The file text with its `enabled` line set: dropped to turn it on (on is the
- * default), `enabled: false` to turn it off. Only that line changes, so the
- * user's comments, quoting and layout survive.
- */
-export function withEnabledLine(content: string, enabled: boolean): string {
-  const lines = content
-    .replace(/^\uFEFF/, "")
-    .replaceAll("\r\n", "\n")
-    .split("\n");
-  const closing = lines.findIndex((line, i) => i > 0 && line.trim() === "---");
-  if (lines[0]?.trim() !== "---" || closing === -1) return content;
-  const frontmatter = lines.slice(1, closing).filter((line) => !/^enabled\s*:/.test(line));
-  if (!enabled) frontmatter.push("enabled: false");
-  return ["---", ...frontmatter, ...lines.slice(closing)].join("\n");
-}
-
-/**
- * Turns a routine on or off. The user's own file has its `enabled` line
- * rewritten and nothing else. A shipped routine is copied into the user's
- * folder with the line set, since a user file replaces the shipped one whole.
- */
+/** Turns a routine on or off in the heads-down settings. Its file is left alone. */
 export async function setRoutineEnabled(
   name: string,
   enabled: boolean,
-): Promise<{ path: string } | { error: string }> {
-  const routine = (await routineCatalog()).routines.find((r) => r.name === name);
-  if (!routine) return { error: `no routine named '${name}'` };
-  const isUserFile = routine.source === "user";
-  const source = isUserFile
-    ? await readUserFile(routine.path)
-    : BUILTIN_FILES.find((file) => file.path === routine.path)?.content;
-  if (source === undefined) return { error: `no shipped file for '${name}'` };
-  const content = withEnabledLine(source, enabled);
-  try {
-    parseRoutine(routine.path, content, "user");
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : String(e) };
+): Promise<{ enabled: boolean } | { error: string }> {
+  if (!(await routineCatalog()).routines.some((r) => r.name === name)) {
+    return { error: `no routine named '${name}'` };
   }
-  const folder = await ensureRoutinesDir();
-  if ("error" in folder) return folder;
-  const path = isUserFile ? routine.path : join(folder.dir, `${name}.md`);
-  const failed = isUserFile ? await replaceFile(path, content) : await createFile(path, content);
-  if (failed) return failed;
-  await reloadRoutines();
-  return { path };
+  await setRoutineSwitch(name, enabled);
+  return { enabled };
 }
 
 /**
@@ -629,7 +603,10 @@ export async function removeFinishedOnceRoutines(
       console.error(`[heads-down] couldn't remove finished one-off routine ${routine.path}:`, e);
     }
   }
-  if (removed.length) await reloadRoutines();
+  if (removed.length) {
+    await clearRoutineSwitches(removed);
+    await reloadRoutines();
+  }
   return removed;
 }
 

@@ -1,63 +1,50 @@
 import SwiftUI
 import YarvisClient
 
-/// The Heads down page: the run, what needs the user, the work streams and
-/// passes on the left; messages, routines and settings on the right.
+/// How many passes the Overview shows before pointing at History.
+private let overviewPassLimit = 3
+
+/// The Heads down page: the run and what needs the user above four tabs.
+/// Overview has what it is working on and a place to tell it things,
+/// Routines the routines passes take on, History every pass, and Settings
+/// the heads-down settings.
 struct HeadsDownView: View {
-    let model: HeadsDownModel
+    @Bindable var model: HeadsDownModel
 
     var body: some View {
         ScrollView {
-            HStack(alignment: .top, spacing: 24) {
-                VStack(alignment: .leading, spacing: 24) {
-                    HeadsDownRunHeader(model: model)
-                    if model.error != nil || model.refreshing {
-                        HStack(spacing: 8) {
-                            if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
-                            if model.refreshing { ProgressView().controlSize(.small) }
-                        }
-                    }
-                    if let questions = model.questions, !questions.isEmpty {
-                        HeadsDownSection("Needs you (\(questions.count))") {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(questions) { q in
-                                    HeadsDownQuestionCard(model: model, question: q) { model.questionAnswered() }
-                                }
-                            }
-                            // Every card goes inert for a moment when one comes or goes, so a
-                            // card that moved under the pointer can't take a click meant for another.
-                            .armedAfterAppearing(id: questions.map(\.id).joined(separator: ","))
-                        }
-                    }
-                    if let approvals = model.autoApprovals, !approvals.isEmpty {
-                        HeadsDownSection("Approved on its own") { HeadsDownAutoApprovals(approvals: approvals) }
-                    }
-                    HeadsDownSection("Work streams") { HeadsDownStreamList(model: model) }
-                    HeadsDownSection("What it has been doing") { HeadsDownPassList(model: model) }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                VStack(alignment: .leading, spacing: 24) {
-                    HeadsDownSection("Tell it something") { HeadsDownMessageBox(model: model) }
-                    HeadsDownSection("Routines") { HeadsDownRoutineList(model: model) }
-                    HeadsDownSection("Pace and working hours") {
-                        Button(model.settingsOpen ? "Hide settings" : "Show settings") { model.settingsOpen.toggle() }
-                            .buttonStyle(.link)
-                        if model.settingsOpen {
-                            Group {
-                                if let config = model.config {
-                                    HeadsDownSettingsView(model: model, config: config)
-                                } else if let error = model.settingsError {
-                                    Text(error).font(.caption).foregroundStyle(.red)
-                                } else {
-                                    Text("Loading…").font(.caption).foregroundStyle(.secondary)
-                                }
-                            }
-                            .task { await model.loadSettings() }
-                        }
+            VStack(alignment: .leading, spacing: 24) {
+                HeadsDownRunHeader(model: model)
+                if model.error != nil || model.refreshing {
+                    HStack(spacing: 8) {
+                        if let error = model.error { Text(error).font(.caption).foregroundStyle(.red) }
+                        if model.refreshing { ProgressView().controlSize(.small) }
                     }
                 }
-                .frame(width: 300, alignment: .leading)
+                if let questions = model.questions, !questions.isEmpty {
+                    HeadsDownSection("Needs you (\(questions.count))") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(questions) { q in
+                                HeadsDownQuestionCard(model: model, question: q) { model.questionAnswered() }
+                            }
+                        }
+                        // Every card goes inert for a moment when one comes or goes, so a
+                        // card that moved under the pointer can't take a click meant for another.
+                        .armedAfterAppearing(id: questions.map(\.id).joined(separator: ","))
+                    }
+                }
+                Picker("Heads down", selection: $model.tab) {
+                    ForEach(HeadsDownTab.allCases) { Text(tabLabel($0)).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                switch model.tab {
+                case .overview: overview
+                case .routines: HeadsDownSection("Routines") { HeadsDownRoutineList(model: model) }
+                case .history: HeadsDownSection("What it has been doing") { HeadsDownPassList(model: model) }
+                case .settings: settings
+                }
             }
             .frame(maxWidth: 1100, alignment: .leading)
             .padding(24)
@@ -72,6 +59,53 @@ struct HeadsDownView: View {
         })
         // The stream runs only while the page is on screen.
         .task { await model.follow() }
+    }
+
+    /// A tab's name, with how many routines are on or how many passes finished.
+    private func tabLabel(_ tab: HeadsDownTab) -> String {
+        let count: Int?
+        switch tab {
+        case .routines: count = model.routines?.routines.filter(\.enabled).count
+        case .history: count = model.passes.map { finishedPasses($0).count }
+        case .overview, .settings: count = nil
+        }
+        return count.map { "\(tab.label) \($0)" } ?? tab.label
+    }
+
+    private var overview: some View {
+        HStack(alignment: .top, spacing: 24) {
+            VStack(alignment: .leading, spacing: 24) {
+                if let approvals = model.autoApprovals, !approvals.isEmpty {
+                    HeadsDownSection("Approved on its own") { HeadsDownAutoApprovals(approvals: approvals) }
+                }
+                HeadsDownSection("Work streams") { HeadsDownStreamList(model: model) }
+                HeadsDownSection("What it has been doing") {
+                    HeadsDownPassList(model: model, limit: overviewPassLimit) { model.tab = .history }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 24) {
+                HeadsDownSection("Tell it something") { HeadsDownMessageBox(model: model) }
+            }
+            .frame(width: 300, alignment: .leading)
+        }
+    }
+
+    private var settings: some View {
+        HeadsDownSection("Pace, working hours and model") {
+            Group {
+                if let config = model.config {
+                    HeadsDownSettingsView(model: model, config: config)
+                } else if let error = model.settingsError {
+                    Text("Couldn't load the settings: \(error)").font(.caption).foregroundStyle(.red)
+                } else {
+                    Text("Loading…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: 720, alignment: .leading)
+            .task { await model.loadSettings() }
+        }
     }
 }
 
@@ -214,6 +248,7 @@ struct HeadsDownRunHeader: View {
                 Text(NextPass(state: state, run: run, working: working).text { $0.formatted(date: .omitted, time: .standard) })
                     .font(.caption)
                     .foregroundStyle(agent == .working ? Color.cyan : Color.secondary)
+                HeadsDownModelLine(model: state.model)
                 HeadsDownStopTime(stopAt: run.stopAt, disabled: busy) { stopAt in
                     act { try await $0.setHeadsDownStopAt(stopAt) }
                 }
@@ -252,6 +287,7 @@ struct HeadsDownRunHeader: View {
                     .disabled(busy)
                 HeadsDownClearButton(disabled: busy) { act { try await $0.clearHeadsDown() } }
             }
+            if let state = model.state { HeadsDownModelLine(model: state.model) }
         }
     }
 
@@ -279,6 +315,15 @@ struct HeadsDownRunHeader: View {
                 self.error = error.localizedDescription
             }
         }
+    }
+}
+
+/// Which model passes run on, and whether that is the saved choice or the default chat model.
+private struct HeadsDownModelLine: View {
+    let model: HeadsDownPassModel?
+
+    var body: some View {
+        Text(headsDownModelLine(model)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
     }
 }
 

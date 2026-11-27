@@ -214,6 +214,20 @@ report there and leaves the fixes to the author.
 5. Ask wherever `/verify-pr` says to ask; nothing here overrides it.
    Otherwise report the PR link, the CI state and the report's verdict.
 
+## Native apps stay in step with the web UI
+
+`apps/macos` builds some pages natively (Chat, Terminal, Workspaces, Heads
+down, Settings for devices and the account, and the attention bell; its
+README has the current list) and opens the rest in a web view. A change to one
+of those pages, or to the API one of them reads, updates the Mac app in the
+same PR, so the two never drift: the same features, the same labels and the
+same rules. If the Mac side can't be done in that PR, say so in the PR's
+description and file an issue for it. `apps/android` is deliberately
+smaller (chat and the attention bell); a change to those two follows the same
+rule there. A sidecar response change that removes or renames a field is a
+change to every client that decodes it, so check `apps/` before making one.
+Each app folder's `AGENTS.md` repeats this for agents working only there.
+
 ## Conventions
 
 - Package manager is **Bun** everywhere, including the sidecar workspace.
@@ -1090,8 +1104,15 @@ report there and leaves the fixes to the author.
   A file with `once: true` is a one-off: due until a pass that started after
   the file was written reports it done (the file's mtime, so a reused name
   isn't held back by old history), then deleted (`removeFinishedOnceRoutines`).
-  The page and the chat agent write routines through the same helpers
-  (`writeRoutineFile`, `setRoutineEnabled`, `deleteRoutineFile`). The chat's
+  Whether a routine runs is the user's switch in `headsDown.routines` in
+  `settings.json`, keyed by name, applied with `withSwitches` wherever routines
+  are read for a pass, the page or a tool; a file's `enabled` is only the
+  default (`enabledByDefault`). So turning one on or off never writes a routine
+  file, and a switch for a routine that no longer loads is ignored.
+  `saveHeadsDownConfig` keeps the stored switches, since the settings form
+  doesn't send them. The page and the chat agent change routines through
+  the same helpers (`writeRoutineFile`, `setRoutineEnabled`,
+  `deleteRoutineFile`). The chat's
   `save_heads_down_routine` and `set_heads_down_routine_enabled` are in
   `ALWAYS_CONFIRM_BUILTIN_TOOLS`, since the body the model writes reaches every
   later pass unfenced, in `PASS_REFUSED_TOOLS`, since a pass has its own

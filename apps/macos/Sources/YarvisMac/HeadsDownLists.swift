@@ -125,15 +125,24 @@ private struct HeadsDownStreamCard: View {
 /// What heads-down mode has been doing: the pass in flight, live, and the ones before it.
 struct HeadsDownPassList: View {
     let model: HeadsDownModel
+    /// How many finished passes to show; nil for all.
+    var limit: Int?
+    /// Where the link to the passes past `limit` goes.
+    var onShowAll: (() -> Void)?
 
     var body: some View {
-        let finished = finishedPasses(model.passes ?? [])
+        let allFinished = finishedPasses(model.passes ?? [])
+        let finished = limit.map { Array(allFinished.prefix($0)) } ?? allFinished
+        let hidden = allFinished.count - finished.count
         VStack(alignment: .leading, spacing: 8) {
             if model.working { HeadsDownLivePassView(model: model) }
             if finished.isEmpty, !model.working {
                 Text(model.passes == nil ? "Loading…" : "No passes yet.").foregroundStyle(.secondary)
             } else {
                 ForEach(finished) { HeadsDownPassRow(model: model, pass: $0) }
+            }
+            if hidden > 0, let onShowAll {
+                Button(earlierPassesLabel(hidden), action: onShowAll).buttonStyle(.link).font(.callout)
             }
         }
     }
@@ -316,72 +325,6 @@ struct HeadsDownAutoApprovals: View {
             }
             .padding(8)
             .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
-        }
-    }
-}
-
-// MARK: - Routines
-
-/// The routines passes take on, read-only: they are markdown files, so the
-/// list names the folder to add one in and shows any file that failed to load.
-struct HeadsDownRoutineList: View {
-    let model: HeadsDownModel
-    @State private var reloading = false
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let data = model.routines {
-                ForEach(data.routines, id: \.name) { r in
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(r.name).font(.caption.monospaced())
-                                + Text(r.source == "user" ? " (yours)" : "").font(.caption).foregroundColor(.secondary)
-                            Spacer()
-                            Text(routineSchedule(r)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(r.description).font(.caption).foregroundStyle(.secondary)
-                        if r.enabled {
-                            Text(r.lastDoneAt.flatMap(parseISODate).map {
-                                "Last done \($0.formatted(.relative(presentation: .named)))"
-                            } ?? "Not done in the last 30 days")
-                            .font(.caption).foregroundStyle(.tertiary)
-                        }
-                    }
-                    .opacity(r.enabled ? 1 : 0.5)
-                }
-                ForEach(data.problems, id: \.path) { p in
-                    Text(p.message).font(.caption).foregroundStyle(.orange)
-                }
-                Text("Add your own as markdown files in \(data.userDir). A file with the same name as one above replaces it.")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                reloadButton
-            } else if let loadError = model.routinesError {
-                Text("Couldn't load the routines: \(loadError)").font(.caption).foregroundStyle(.red)
-                reloadButton
-            } else {
-                Text("Loading…").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var reloadButton: some View {
-        HStack {
-            Button("Reload files") {
-                reloading = true
-                error = nil
-                Task {
-                    defer { reloading = false }
-                    do {
-                        try await model.reloadRoutines()
-                    } catch {
-                        self.error = error.localizedDescription
-                    }
-                }
-            }
-            .buttonStyle(.link)
-            .disabled(reloading)
-            if let error { Text(error).font(.caption).foregroundStyle(.red) }
         }
     }
 }

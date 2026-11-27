@@ -400,7 +400,12 @@ export interface Routine {
   workingHoursOnly: boolean;
   /** What it does during night shift. */
   nightShift: NightShiftMode;
+  /** Whether it runs: the user's switch, else `enabledByDefault`. */
   enabled: boolean;
+  /** Its file's `enabled`. Shipped routines that need setup ship off. */
+  enabledByDefault: boolean;
+  /** The user's switch for it in the heads-down settings; null when the file's default decides. */
+  switchedTo: boolean | null;
   /** A one-off: offered until a pass reports it done, then its file is removed. */
   once: boolean;
   /** `user` for a file in the user's own folder, including one that replaces a shipped routine. */

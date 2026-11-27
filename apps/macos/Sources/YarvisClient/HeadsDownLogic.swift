@@ -234,6 +234,11 @@ public func finishedPasses(_ passes: [HeadsDownPass]) -> [HeadsDownPass] {
     passes.filter { $0.finishedAt != nil }
 }
 
+/// The link under the Overview's recent passes to the rest, on History.
+public func earlierPassesLabel(_ hidden: Int) -> String {
+    "Show \(hidden) earlier pass\(hidden == 1 ? "" : "es")"
+}
+
 // MARK: - Work streams
 
 public func workStreamStatusLabel(_ status: String) -> String {
@@ -307,9 +312,84 @@ public func routineCadence(_ minutes: Int) -> String {
     return "every \(minutes)m"
 }
 
-public func routineSchedule(_ r: HeadsDownRoutine) -> String {
-    guard r.enabled else { return "off" }
-    return routineCadence(r.everyMinutes) + (r.workingHoursOnly ? ", working hours" : "")
+/// How often it runs, and when it is allowed to: "every 3h, working hours, skip at night".
+public func describeCadence(_ r: HeadsDownRoutine) -> String {
+    var parts = [r.once ? "once" : routineCadence(r.everyMinutes)]
+    if r.workingHoursOnly { parts.append("working hours") }
+    if r.nightShift != "run" { parts.append("\(r.nightShift) at night") }
+    return parts.joined(separator: ", ")
+}
+
+/// Where a routine stands, in words, and the chip's colour.
+public struct HeadsDownRoutineStatus: Sendable, Equatable {
+    public enum Tone: Sendable, Equatable { case next, due, waiting, off }
+
+    public var label: String
+    public var tone: Tone
+
+    public init(_ label: String, _ tone: Tone) {
+        self.label = label
+        self.tone = tone
+    }
+}
+
+/// On the next pass, waiting and why, or off and why. `relative` words a
+/// time as "in 2 hours". The checks run in the web page's order.
+public func routineStatus(_ r: HeadsDownRoutine, relative: (Date) -> String) -> HeadsDownRoutineStatus {
+    if !r.enabled {
+        if r.switchedTo == false { return .init("Turned off", .off) }
+        return r.source == "builtin" ? .init("Off: ships turned off", .off) : .init("Off in your file", .off)
+    }
+    let due = r.dueAt.flatMap(parseISODate).map(relative)
+    if r.nextPass { return .init("Runs on the next pass", .next) }
+    if r.queued { return .init("Due, waiting for a free slot", .due) }
+    if r.heldBy == "working-hours" { return .init("Waits for working hours", .waiting) }
+    if r.heldBy == "night-shift" { return .init("Skipped during night shift", .waiting) }
+    if r.heldBy == "retry" { return .init("Didn't finish last time; tries again \(due ?? "")", .due) }
+    if r.dueAt != nil { return .init("Due \(due ?? "")", .waiting) }
+    return .init("Done", .off)
+}
+
+/// The line over the routine list: what the next pass runs, or why none do.
+public enum HeadsDownRoutineSummary: Sendable, Equatable {
+    /// Routines per pass is 0.
+    case noneRun
+    case next(line: String, limit: String)
+
+    public init(_ data: HeadsDownRoutines) {
+        guard data.maxRoutinesPerPass > 0 else {
+            self = .noneRun
+            return
+        }
+        let next = data.routines.filter(\.nextPass).map(\.name)
+        self = .next(
+            line: next.isEmpty ? "Nothing is due for the next pass." : "Next pass runs: \(next.joined(separator: ", ")).",
+            limit: "Up to \(data.maxRoutinesPerPass) per pass, most overdue first.")
+    }
+
+    public static let noneRunWarning = "Routines per pass is 0 in Settings, so none of them run."
+}
+
+/// The warning that no routine runs while heads-down mode is off. `running`
+/// is nil until the state loads, so the warning doesn't flash meanwhile.
+public func routinesOffWarning(running: Bool?) -> String? {
+    running == false
+        ? "Heads-down mode is off, so no routine runs until you start it or tick Always on in the web app's Settings."
+        : nil
+}
+
+/// The add form's comma-separated tool names.
+public func parseRoutineTools(_ text: String) -> [String] {
+    text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+}
+
+// MARK: - The model line
+
+/// Which model passes run on, and whether that is the saved choice or the default chat model.
+public func headsDownModelLine(_ model: HeadsDownPassModel?) -> String {
+    guard let model else { return "Model: none available. Add a provider key in Settings." }
+    let source = model.source == "saved" ? "set in Settings" : "the default chat model"
+    return "Model: \(model.model) (\(model.provider), \(source))"
 }
 
 // MARK: - Questions

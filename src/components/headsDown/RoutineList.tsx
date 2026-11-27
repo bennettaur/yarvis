@@ -29,6 +29,7 @@ const TONE_CLASS: Record<Tone, string> = {
 /** Where a routine stands, in words: on the next pass, waiting and why, or off and why. */
 export function routineStatus(r: Routine): { label: string; tone: Tone } {
   if (!r.enabled) {
+    if (r.switchedTo === false) return { label: "Turned off", tone: "off" };
     return r.source === "builtin"
       ? { label: "Off: ships turned off", tone: "off" }
       : { label: "Off in your file", tone: "off" };
@@ -178,8 +179,8 @@ function RoutineRow({
             </div>
           ) : (
             <p className="text-zinc-500">
-              Shipped with Yarvis. Turning it on copies it into your routines folder, where you can
-              edit it.
+              Shipped with Yarvis. To change what it does, save a routine with the same name in your
+              routines folder; it replaces this one.
             </p>
           )}
         </div>

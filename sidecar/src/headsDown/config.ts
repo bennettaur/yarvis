@@ -72,6 +72,13 @@ export interface HeadsDownConfig {
    * Null for no limit.
    */
   maxPassesPerDay: number | null;
+  /**
+   * Routines the user turned on or off, by routine name. A routine with no
+   * entry uses its file's `enabled` (on unless the file says otherwise). An
+   * entry for a routine that no longer loads is ignored and kept, so a file
+   * that comes back keeps its switch.
+   */
+  routines: Record<string, boolean>;
 }
 
 export interface NightShift {
@@ -103,6 +110,7 @@ export const DEFAULT_HEADS_DOWN_CONFIG: HeadsDownConfig = {
   nightShift: null,
   nightShiftMinSleepMinutes: 120,
   maxPassesPerDay: null,
+  routines: {},
 };
 
 /**
@@ -164,7 +172,18 @@ export async function getHeadsDownConfig(): Promise<HeadsDownConfig> {
     ),
     maxPassesPerDay:
       config.maxPassesPerDay === null ? null : positiveInteger(config.maxPassesPerDay, null),
+    routines: validRoutineSwitches(config.routines),
   };
+}
+
+/** Keeps only name-to-true/false entries, so a hand-edited map can't break loading. */
+function validRoutineSwitches(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).filter(
+      (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
+    ),
+  );
 }
 
 export const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -189,10 +208,53 @@ export async function disableAlwaysOn(): Promise<void> {
   }));
 }
 
-export async function saveHeadsDownConfig(input: HeadsDownConfig): Promise<HeadsDownConfig> {
-  return withSection<HeadsDownConfig, HeadsDownConfig>(SETTINGS_KEY, () => ({
-    next: input,
-    result: input,
+/**
+ * Saves the settings form. The routine switches aren't part of it, so they are
+ * kept as stored rather than reset by a form that never showed them.
+ */
+export async function saveHeadsDownConfig(
+  input: Omit<HeadsDownConfig, "routines">,
+): Promise<HeadsDownConfig> {
+  return withSection<Partial<HeadsDownConfig>, HeadsDownConfig>(SETTINGS_KEY, (stored) => {
+    const next = { ...input, routines: validRoutineSwitches(stored?.routines) };
+    return { next, result: next };
+  });
+}
+
+/**
+ * The user's switch for a routine, or null when its file's default decides.
+ * Only the map's own keys count, so a routine named `constructor` doesn't read
+ * one off the object prototype.
+ */
+export function routineSwitch(
+  switches: Readonly<Record<string, boolean>>,
+  name: string,
+): boolean | null {
+  return Object.hasOwn(switches, name) ? (switches[name] ?? null) : null;
+}
+
+/**
+ * Forgets the switches for these routines, for a name that starts over: a new
+ * routine, or a one-off that finished. Otherwise an old "off" would silently
+ * apply to whatever is next saved under the name.
+ */
+export async function clearRoutineSwitches(names: readonly string[]): Promise<void> {
+  if (!names.length) return;
+  await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => {
+    const routines = validRoutineSwitches(stored?.routines);
+    for (const name of names) delete routines[name];
+    return { next: { ...stored, routines }, result: undefined };
+  });
+}
+
+/** Turns one routine on or off by name. */
+export async function setRoutineSwitch(name: string, enabled: boolean): Promise<void> {
+  await withSection<Partial<HeadsDownConfig>, void>(SETTINGS_KEY, (stored) => ({
+    next: {
+      ...stored,
+      routines: { ...validRoutineSwitches(stored?.routines), [name]: enabled },
+    },
+    result: undefined,
   }));
 }
 

@@ -200,15 +200,26 @@ Native:
   the screens, even if the server couldn't be reached to record it; the
   alarm then stays under Ringing.
 - **Heads down.** Start a run with a focus and an optional stop time,
-  then pause, resume, stop, change the stop time or clear old work.
-  Needs you lists the pass's questions (answer from the options or in
-  your own words) and approvals (approve, deny, or always allow an MCP
-  tool in heads-down mode). Below that: what was approved on its own,
-  the work streams (pause, done, drop), the live pass as it runs and
-  past passes with their transcripts. The right column has messages to
-  the agent, routines and the heads-down settings. A held merge, a merge
-  it made, and a heads-down question from the bell pop up as a sheet
-  over whatever page is open.
+  then pause, resume, stop, change the stop time or clear old work. The
+  header names the model passes run on. Needs you lists the pass's
+  questions (answer from the options or in your own words) and approvals
+  (approve, deny, or always allow an MCP tool in heads-down mode), above
+  four tabs, as on the web:
+  - Overview: what was approved on its own, the work streams (pause,
+    done, drop), the live pass and the latest three passes (Show N
+    earlier passes opens History), and messages to the agent.
+  - Routines: what the next pass runs and why the rest wait, each
+    routine's cadence, status, tools, settings and instructions, Turn
+    on / Turn off, Add routine, Delete file for your own, and Reload
+    files.
+  - History: every pass, with its transcript.
+  - Settings: the heads-down settings.
+
+  A held merge, a merge it made, and a heads-down question from the
+  bell pop up as a sheet over whatever page is open. Not yet here: the
+  web's review stream on Overview, the passes-today line, and the
+  newer settings (always on, night shift, pass limit, ship watching),
+  which the web UI keeps.
 - **Settings.** Connection (this device, Sign Out), approvals, devices
   (revoke, pair a device with a token) and the account (passphrase, a new
   authenticator, backup codes, sign out other devices). While the server's

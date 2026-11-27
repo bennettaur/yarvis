@@ -69,6 +69,24 @@ extension YarvisClient {
         try await post(HeadsDownRoutines.self, Self.headsDownPath("/routines/reload"))
     }
 
+    /// Writes a new routine file to the user's folder. A refusal (a taken
+    /// name, a bad cadence) throws with the server's reason.
+    public func createHeadsDownRoutine(_ routine: NewHeadsDownRoutine) async throws -> HeadsDownRoutines {
+        try await post(HeadsDownRoutines.self, Self.headsDownPath("/routines"), body: routine.requestBody)
+    }
+
+    /// The user's switch for a routine, kept in the heads-down settings; no file is written.
+    public func setHeadsDownRoutineEnabled(name: String, enabled: Bool) async throws -> HeadsDownRoutines {
+        try Self.decode(HeadsDownRoutines.self, await send(
+            "PUT", Self.headsDownPath("/routines/\(encodePathSegment(name))/enabled"),
+            body: .object(["enabled": .bool(enabled)])))
+    }
+
+    /// Deletes the user's own routine file. A shipped routine is refused.
+    public func deleteHeadsDownRoutine(name: String) async throws -> HeadsDownRoutines {
+        try Self.decode(HeadsDownRoutines.self, await send("DELETE", Self.headsDownPath("/routines/\(encodePathSegment(name))")))
+    }
+
     // MARK: Passes and messages
 
     /// Newest first.

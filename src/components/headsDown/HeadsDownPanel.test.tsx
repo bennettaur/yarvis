@@ -150,6 +150,8 @@ const ROUTINE_BASE = {
   workingHoursOnly: false,
   nightShift: "run",
   enabled: true,
+  enabledByDefault: true,
+  switchedTo: null as boolean | null,
   once: false,
   source: "builtin",
   path: null as string | null,
@@ -206,6 +208,7 @@ const ROUTINES = {
       everyMinutes: 240,
       workingHoursOnly: true,
       enabled: false,
+      enabledByDefault: false,
       body: "Read meeting notes.",
       heldBy: "off",
     },
@@ -1281,6 +1284,7 @@ describe("routineStatus", () => {
       status({ heldBy: "retry", dueAt: new Date(Date.now() + 30 * 60_000).toISOString() }),
     ).toBe("Didn't finish last time; tries again in 30 minutes");
     expect(status({ enabled: false, source: "user" })).toBe("Off in your file");
+    expect(status({ enabled: false, source: "builtin", switchedTo: false })).toBe("Turned off");
     expect(status({ enabled: false, source: "builtin" })).toBe("Off: ships turned off");
     expect(status({ once: true, dueAt: null })).toBe("Done");
   });
