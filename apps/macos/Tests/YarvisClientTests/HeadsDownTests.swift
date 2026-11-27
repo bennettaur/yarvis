@@ -78,6 +78,8 @@ private var utc: Calendar {
         let body = HeadsDownConfig(workingHours: nil, provider: nil, model: nil, guidance: nil).body
         #expect(body["workingHours"] == .null)
         #expect(body["provider"] == .null)
+        // The routine switches are the server's to keep; the form never sends them.
+        #expect(body["routines"] == nil)
         #expect(body["guidance"] == .null)
         #expect(body["maxRoutinesPerPass"] == .number(2))
     }
@@ -204,6 +206,92 @@ private var utc: Calendar {
             == [.text("see "), .workspace(id: id, name: "Billing"), .text(" now")])
         #expect(splitWorkspaceMentions("/w/\(id)", names: names) == [.text("/w/\(id)")])
         #expect(splitWorkspaceMentions("plain", names: [:]) == [.text("plain")])
+    }
+}
+
+@Suite struct HeadsDownRoutineTests {
+    private let relative: (Date) -> String = { _ in "in 2 hours" }
+    private let soon = "2026-11-24T12:00:00.000Z"
+
+    private func status(_ r: HeadsDownRoutine) -> HeadsDownRoutineStatus {
+        routineStatus(r, relative: relative)
+    }
+
+    @Test func eachStatusLabelInTheWebOrder() {
+        #expect(status(.init(name: "a", enabled: false, switchedTo: false, source: "user")) == .init("Turned off", .off))
+        #expect(status(.init(name: "a", enabled: false, source: "builtin")) == .init("Off: ships turned off", .off))
+        #expect(status(.init(name: "a", enabled: false, source: "user")) == .init("Off in your file", .off))
+        // Off wins over anything the schedule says.
+        #expect(status(.init(name: "a", enabled: false, switchedTo: nil, nextPass: true)).label == "Off: ships turned off")
+        #expect(status(.init(name: "a", nextPass: true, queued: true)) == .init("Runs on the next pass", .next))
+        #expect(status(.init(name: "a", queued: true, heldBy: "retry")) == .init("Due, waiting for a free slot", .due))
+        #expect(status(.init(name: "a", dueAt: soon, heldBy: "working-hours")) == .init("Waits for working hours", .waiting))
+        #expect(status(.init(name: "a", dueAt: soon, heldBy: "night-shift")) == .init("Skipped during night shift", .waiting))
+        #expect(status(.init(name: "a", dueAt: soon, heldBy: "retry"))
+            == .init("Didn't finish last time; tries again in 2 hours", .due))
+        #expect(status(.init(name: "a", dueAt: soon)) == .init("Due in 2 hours", .waiting))
+        #expect(status(.init(name: "a")) == .init("Done", .off))
+    }
+
+    @Test func cadenceNamesWhenItMayRun() {
+        #expect(describeCadence(.init(name: "a", everyMinutes: 180)) == "every 3h")
+        #expect(describeCadence(.init(name: "a", everyMinutes: 180, workingHoursOnly: true, nightShift: "skip"))
+            == "every 3h, working hours, skip at night")
+        #expect(describeCadence(.init(name: "a", everyMinutes: 60, nightShift: "slow", once: true)) == "once, slow at night")
+    }
+
+    @Test func theSummaryNamesTheNextPassOrWhyNoneRun() {
+        let routines: [HeadsDownRoutine] = [.init(name: "a", nextPass: true), .init(name: "b"), .init(name: "c", nextPass: true)]
+        #expect(HeadsDownRoutineSummary(HeadsDownRoutines(routines: routines, maxRoutinesPerPass: 2))
+            == .next(line: "Next pass runs: a, c.", limit: "Up to 2 per pass, most overdue first."))
+        #expect(HeadsDownRoutineSummary(HeadsDownRoutines(routines: [.init(name: "b")], maxRoutinesPerPass: 3))
+            == .next(line: "Nothing is due for the next pass.", limit: "Up to 3 per pass, most overdue first."))
+        #expect(HeadsDownRoutineSummary(HeadsDownRoutines(routines: routines, maxRoutinesPerPass: 0)) == .noneRun)
+        // Before the state loads there is no warning to flash.
+        #expect(routinesOffWarning(running: nil) == nil)
+        #expect(routinesOffWarning(running: true) == nil)
+        #expect(routinesOffWarning(running: false)?.hasPrefix("Heads-down mode is off") == true)
+    }
+
+    @Test func theModelLine() {
+        #expect(headsDownModelLine(HeadsDownPassModel(provider: "anthropic", model: "claude-x", source: "saved"))
+            == "Model: claude-x (anthropic, set in Settings)")
+        #expect(headsDownModelLine(HeadsDownPassModel(provider: "openai", model: "gpt", source: "default"))
+            == "Model: gpt (openai, the default chat model)")
+        #expect(headsDownModelLine(nil) == "Model: none available. Add a provider key in Settings.")
+    }
+
+    @Test func earlierPasses() {
+        #expect(earlierPassesLabel(1) == "Show 1 earlier pass")
+        #expect(earlierPassesLabel(4) == "Show 4 earlier passes")
+    }
+
+    @Test func theAddBodyLeavesDefaultsOut() {
+        let every = NewHeadsDownRoutine(name: " check ", description: " d ", schedule: .every(" 3h "),
+                                        tools: parseRoutineTools(" a, ,b "), body: "do it")
+        #expect(every.requestBody == .object([
+            "name": .string("check"), "description": .string("d"), "every": .string("3h"),
+            "tools": .array([.string("a"), .string("b")]), "body": .string("do it"),
+        ]))
+        let once = NewHeadsDownRoutine(name: "x", description: "d", schedule: .once, workingHours: true,
+                                       nightShift: "skip", tools: parseRoutineTools(""), body: "b")
+        #expect(once.requestBody == .object([
+            "name": .string("x"), "description": .string("d"), "once": .bool(true),
+            "workingHours": .bool(true), "nightShift": .string("skip"), "body": .string("b"),
+        ]))
+    }
+
+    @Test func aRefusalShowsTheServersReason() async throws {
+        let (session, id) = StubProtocol.session { _, _ in
+            (400, json(#"{"error":{"formErrors":["give how often it runs, or make it a one-off"],"fieldErrors":{"name":["Invalid"]}}}"#))
+        }
+        let c = YarvisClient(baseURL: base, token: "tok", session: session)
+        let routine = NewHeadsDownRoutine(name: "Bad", description: "d", schedule: .every(""), body: "b")
+        await #expect(throws: YarvisError.http(status: 400, error: "give how often it runs, or make it a one-off; name: Invalid",
+                                               detail: nil)) {
+            try await c.createHeadsDownRoutine(routine)
+        }
+        #expect(bodyJSON(StubProtocol.recorded(id)[0].1)?["every"] == .string(""))
     }
 }
 
@@ -456,19 +544,26 @@ private var utc: Calendar {
 
 @Suite struct HeadsDownRoutesTests {
     private let fixtures: [String: String] = [
-        "/api/sidecar/api/heads-down": #"{"run":null,"lastPass":null,"nextPassAt":null,"openQuestionCount":0}"#,
+        "/api/sidecar/api/heads-down": #"""
+            {"run":null,"lastPass":null,"nextPassAt":null,"openQuestionCount":0,"passesToday":0,"maxPassesPerDay":null,
+             "model":{"provider":"anthropic","model":"claude-x","source":"default"}}
+            """#,
         "/api/sidecar/api/heads-down/config": #"""
             {"minSleepMinutes":5,"maxSleepMinutes":120,"idleSleepMinutes":60,
              "workingHours":{"days":[1,2,3,4,5],"start":"09:00","end":"17:00"},"userAwayAfterMinutes":120,
-             "passTimeoutMinutes":20,"provider":null,"model":null,"guidance":null,"maxRoutinesPerPass":2}
+             "passTimeoutMinutes":20,"provider":null,"model":null,"guidance":null,"maxRoutinesPerPass":2,
+             "routines":{"triage":false}}
             """#,
         "/api/sidecar/api/heads-down/routines": #"""
             {"routines":[{"name":"triage","description":"Sort new issues","everyMinutes":180,"workingHoursOnly":true,
-              "enabled":true,"source":"builtin","lastDoneAt":null}],
+              "nightShift":"skip","enabled":false,"enabledByDefault":true,"switchedTo":false,"once":false,
+              "source":"user","path":"/u/.yarvis/routines/triage.md","tools":["list_issues"],
+              "config":{"repo":"o/r","labels":["bug","p1"]},"body":"Sort them.","lastDoneAt":null,
+              "nextPass":false,"queued":false,"dueAt":null,"heldBy":"off"}],
              "problems":[{"path":"/u/.yarvis/routines/bad.md","message":"no description"}],
-             "userDir":"/u/.yarvis/routines"}
+             "userDir":"/u/.yarvis/routines","maxRoutinesPerPass":2}
             """#,
-        "/api/sidecar/api/heads-down/routines/reload": #"{"routines":[],"problems":[],"userDir":"/u"}"#,
+        "/api/sidecar/api/heads-down/routines/reload": #"{"routines":[],"problems":[],"userDir":"/u","maxRoutinesPerPass":2}"#,
         "/api/sidecar/api/heads-down/allowed-tools": #"[{"id":"mcp:gh:merge","name":"merge"}]"#,
         "/api/sidecar/api/heads-down/passes/p": #"{"pass":{"id":"p","runId":"r","startedAt":"x"},"messages":[]}"#,
         "/api/sidecar/api/work-streams": "[]",
@@ -482,7 +577,8 @@ private var utc: Calendar {
         let fixtures = fixtures
         let (session, id) = StubProtocol.session { req, _ in
             let path = req.url?.path ?? ""
-            return (200, json(req.httpMethod == "GET" || path.hasSuffix("/reload") ? fixtures[path] ?? "{}" : "{}"))
+            let routes = path.contains("/heads-down/routines") ? fixtures["/api/sidecar/api/heads-down/routines/reload"] : nil
+            return (200, json(req.httpMethod == "GET" ? fixtures[path] ?? "{}" : routes ?? "{}"))
         }
         return (YarvisClient(baseURL: base, token: "tok", session: session), id)
     }
@@ -492,7 +588,16 @@ private var utc: Calendar {
         let config = try await c.headsDownConfig()
         #expect(config == HeadsDownConfig())
         let routines = try await c.headsDownRoutines()
-        #expect(routines.routines.first?.everyMinutes == 180 && routines.problems.count == 1)
+        #expect(routines.problems.count == 1 && routines.maxRoutinesPerPass == 2)
+        let triage = try #require(routines.routines.first)
+        #expect(triage == HeadsDownRoutine(
+            name: "triage", description: "Sort new issues", everyMinutes: 180, workingHoursOnly: true,
+            nightShift: "skip", enabled: false, enabledByDefault: true, switchedTo: false, source: "user",
+            path: "/u/.yarvis/routines/triage.md", tools: ["list_issues"],
+            config: ["repo": .one("o/r"), "labels": .many(["bug", "p1"])], body: "Sort them.", heldBy: "off"))
+        #expect(triage.config["labels"]?.text == "bug, p1")
+        let state = try await c.headsDownState()
+        #expect(state.model == HeadsDownPassModel(provider: "anthropic", model: "claude-x", source: "default"))
         #expect(try await c.headsDownAllowedTools() == [HeadsDownAllowedTool(id: "mcp:gh:merge", name: "merge")])
     }
 
@@ -511,6 +616,9 @@ private var utc: Calendar {
         try await c.setHeadsDownToolAllowed("t", allowed: true)
         _ = try await c.headsDownRoutines()
         _ = try await c.reloadHeadsDownRoutines()
+        _ = try await c.createHeadsDownRoutine(NewHeadsDownRoutine(name: "a", description: "d", schedule: .once, body: "b"))
+        _ = try await c.setHeadsDownRoutineEnabled(name: "a", enabled: false)
+        _ = try await c.deleteHeadsDownRoutine(name: "a")
         _ = try await c.headsDownPasses()
         _ = try await c.headsDownPassMessages(id: "p")
         _ = try await c.headsDownMessages()
@@ -527,6 +635,7 @@ private var utc: Calendar {
             "GET \(hd)", "POST \(hd)/start", "POST \(hd)/stop", "POST \(hd)/pause", "POST \(hd)/resume",
             "POST \(hd)/clear", "PUT \(hd)/stop-at", "GET \(hd)/config", "PUT \(hd)/config",
             "GET \(hd)/allowed-tools", "PUT \(hd)/allowed-tools/t", "GET \(hd)/routines", "POST \(hd)/routines/reload",
+            "POST \(hd)/routines", "PUT \(hd)/routines/a/enabled", "DELETE \(hd)/routines/a",
             "GET \(hd)/passes", "GET \(hd)/passes/p", "GET \(hd)/messages", "POST \(hd)/messages",
             "GET \(hd)/questions", "GET \(hd)/auto-approvals", "POST \(hd)/questions/q/answer",
             "POST \(hd)/questions/q/dismiss", "GET /api/sidecar/api/work-streams", "PATCH /api/sidecar/api/work-streams/s",

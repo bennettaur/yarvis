@@ -47,10 +47,20 @@ Native:
 - Alarms: the list, and a takeover driven by `alarm.fire` and
   `alarm.release` events and the `/api/alarms/stream` SSE. The takeover
   is a non-activating panel on every screen.
-- Heads-down mode: the run, questions and approvals, work streams,
-  messages, routines, settings and the merge pop-ups. The live pass
-  comes from `/api/heads-down/stream`, which only sends what happens
-  after it connects, so the lists are read again on each connect.
+- Heads-down mode: the run and the model it uses, questions and
+  approvals, then the web's Overview, Routines, History and Settings
+  tabs, and the merge pop-ups. The live pass comes from
+  `/api/heads-down/stream`, which only sends what happens after it
+  connects, so the lists are read again on each connect. Every routine
+  route (`GET`, `POST /routines`, `POST /routines/reload`,
+  `PUT /routines/:name/enabled`, `DELETE /routines/:name`) answers with
+  the whole list, which replaces the one shown. A routine's status
+  label (`routineStatus`), cadence and the summary line follow
+  `RoutineList.tsx` in `YarvisClient`. Turning one on or off is a
+  switch in the heads-down settings, not a file write, and the settings
+  form doesn't send those switches. The review stream and the newer
+  settings (always on, night shift, the pass limit, ship watching) are
+  still web only.
 - Settings: devices, pairing tokens and the account.
 - Attention: items grouped by workspace or session, server approvals,
   answering `ask_user` questions and permission prompts, dismissing an

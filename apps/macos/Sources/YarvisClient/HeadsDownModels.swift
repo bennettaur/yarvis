@@ -66,18 +66,35 @@ public struct HeadsDownPass: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
+/// The model passes run on, as the run header names it.
+public struct HeadsDownPassModel: Codable, Sendable, Equatable {
+    public var provider: String
+    public var model: String
+    /// `saved` when set in Settings, `default` for the default chat model.
+    public var source: String
+
+    public init(provider: String, model: String, source: String) {
+        self.provider = provider
+        self.model = model
+        self.source = source
+    }
+}
+
 public struct HeadsDownState: Codable, Sendable, Equatable {
     public var run: HeadsDownRun?
     public var lastPass: HeadsDownPass?
     public var nextPassAt: String?
     public var openQuestionCount: Int
+    /// Nil when no model is usable.
+    public var model: HeadsDownPassModel?
 
     public init(run: HeadsDownRun?, lastPass: HeadsDownPass? = nil, nextPassAt: String? = nil,
-                openQuestionCount: Int = 0) {
+                openQuestionCount: Int = 0, model: HeadsDownPassModel? = nil) {
         self.run = run
         self.lastPass = lastPass
         self.nextPassAt = nextPassAt
         self.openQuestionCount = openQuestionCount
+        self.model = model
     }
 }
 
@@ -210,16 +227,96 @@ public struct HeadsDownConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// A routine `config:` setting: one value or a list.
+public enum HeadsDownRoutineSetting: Codable, Sendable, Equatable {
+    case one(String)
+    case many([String])
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let list = try? c.decode([String].self) {
+            self = .many(list)
+        } else {
+            self = .one(try c.decode(String.self))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .one(let s): try c.encode(s)
+        case .many(let list): try c.encode(list)
+        }
+    }
+
+    /// As the page shows it: a list joined with commas.
+    public var text: String {
+        switch self {
+        case .one(let s): return s
+        case .many(let list): return list.joined(separator: ", ")
+        }
+    }
+}
+
 /// A recurring job a pass takes on beside the work streams, read from a markdown file.
 public struct HeadsDownRoutine: Codable, Sendable, Equatable {
     public var name: String
     public var description: String
     public var everyMinutes: Int
     public var workingHoursOnly: Bool
+    /// `run`, `slow` or `skip`: what it does during night shift.
+    public var nightShift: String
+    /// Whether it runs: the user's switch, else `enabledByDefault`.
     public var enabled: Bool
+    /// Its file's `enabled`.
+    public var enabledByDefault: Bool
+    /// The user's switch in the heads-down settings; nil when the file's default decides.
+    public var switchedTo: Bool?
+    /// A one-off: offered until a pass reports it done, then its file is removed.
+    public var once: Bool
     /// `builtin`, or `user` for a file in the user's own folder.
     public var source: String
+    /// The user's file; nil for a shipped routine.
+    public var path: String?
+    public var tools: [String]
+    public var config: [String: HeadsDownRoutineSetting]
+    /// What a pass is told to do.
+    public var body: String
     public var lastDoneAt: String?
+    /// The next pass would be given it, if it started now.
+    public var nextPass: Bool
+    /// Due, but waiting for a free slot on a later pass.
+    public var queued: Bool
+    public var dueAt: String?
+    /// `off`, `working-hours`, `night-shift` or `retry`: why a pass can't be given it now.
+    public var heldBy: String?
+
+    public init(name: String, description: String = "", everyMinutes: Int = 60, workingHoursOnly: Bool = false,
+                nightShift: String = "run", enabled: Bool = true, enabledByDefault: Bool = true,
+                switchedTo: Bool? = nil, once: Bool = false, source: String = "builtin", path: String? = nil,
+                tools: [String] = [], config: [String: HeadsDownRoutineSetting] = [:], body: String = "",
+                lastDoneAt: String? = nil, nextPass: Bool = false, queued: Bool = false, dueAt: String? = nil,
+                heldBy: String? = nil) {
+        self.name = name
+        self.description = description
+        self.everyMinutes = everyMinutes
+        self.workingHoursOnly = workingHoursOnly
+        self.nightShift = nightShift
+        self.enabled = enabled
+        self.enabledByDefault = enabledByDefault
+        self.switchedTo = switchedTo
+        self.once = once
+        self.source = source
+        self.path = path
+        self.tools = tools
+        self.config = config
+        self.body = body
+        self.lastDoneAt = lastDoneAt
+        self.nextPass = nextPass
+        self.queued = queued
+        self.dueAt = dueAt
+        self.heldBy = heldBy
+    }
 }
 
 public struct HeadsDownRoutines: Codable, Sendable, Equatable {
@@ -233,6 +330,62 @@ public struct HeadsDownRoutines: Codable, Sendable, Equatable {
     public var problems: [Problem]
     /// Where the user's own routine files go.
     public var userDir: String
+    /// The most routines one pass takes on. 0 turns them all off.
+    public var maxRoutinesPerPass: Int
+
+    public init(routines: [HeadsDownRoutine], problems: [Problem] = [], userDir: String = "",
+                maxRoutinesPerPass: Int = 2) {
+        self.routines = routines
+        self.problems = problems
+        self.userDir = userDir
+        self.maxRoutinesPerPass = maxRoutinesPerPass
+    }
+}
+
+/// A routine the user writes on the page, saved to their routines folder.
+public struct NewHeadsDownRoutine: Sendable, Equatable {
+    public enum Schedule: Sendable, Equatable {
+        /// Such as `30m`, `3h` or `1d`.
+        case every(String)
+        case once
+    }
+
+    public var name: String
+    public var description: String
+    public var schedule: Schedule
+    public var workingHours: Bool
+    /// `run`, `slow` or `skip`.
+    public var nightShift: String
+    public var tools: [String]
+    public var body: String
+
+    public init(name: String, description: String, schedule: Schedule, workingHours: Bool = false,
+                nightShift: String = "run", tools: [String] = [], body: String) {
+        self.name = name
+        self.description = description
+        self.schedule = schedule
+        self.workingHours = workingHours
+        self.nightShift = nightShift
+        self.tools = tools
+        self.body = body
+    }
+
+    /// The POST body, shaped as the web form sends it: what is at its default is left out.
+    var requestBody: JSONValue {
+        var o: [String: JSONValue] = [
+            "name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "description": .string(description.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "body": .string(body),
+        ]
+        switch schedule {
+        case .every(let every): o["every"] = .string(every.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .once: o["once"] = .bool(true)
+        }
+        if workingHours { o["workingHours"] = .bool(true) }
+        if nightShift != "run" { o["nightShift"] = .string(nightShift) }
+        if !tools.isEmpty { o["tools"] = .array(tools.map(JSONValue.string)) }
+        return .object(o)
+    }
 }
 
 /// An MCP tool heads-down mode may call without asking.
