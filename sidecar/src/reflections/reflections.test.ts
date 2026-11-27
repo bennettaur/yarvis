@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, it } from "bun:test";
 import postgres from "postgres";
 import type { Config } from "../config.ts";
 import { getDb } from "../db/client.ts";
-import { agentRuns, artifacts, attentionItems } from "../db/schema.ts";
+import { agentRuns, artifacts, attentionItems, verificationFeedback } from "../db/schema.ts";
 import type { PrDetail, ReviewComment, ReviewThread } from "../pr/types.ts";
 import { type ChecklistReport, storedReportFor } from "../reviewWorkspaces/checklist.ts";
 import { VERIFICATION_RUN_KIND } from "../reviewWorkspaces/verification.ts";
@@ -29,7 +29,7 @@ const config = { secrets: {}, workspacesRoot: "/tmp" } as unknown as Config;
 const now = new Date("2026-11-20T12:00:00Z");
 
 beforeEach(async () => {
-  await sql`TRUNCATE artifacts, attention_items, agent_runs RESTART IDENTITY CASCADE`;
+  await sql`TRUNCATE artifacts, attention_items, agent_runs, verification_feedback RESTART IDENTITY CASCADE`;
 });
 
 afterAll(async () => {
@@ -85,6 +85,25 @@ describe("matching", () => {
       ["claims", "gap"],
     ]);
     expect(flagsOf(null)).toEqual([]);
+    expect(flagsOf(report).some((f) => f.section === "risk")).toBe(false);
+  });
+
+  it("flags risk concerns at the report's risk level", () => {
+    const withRisk = {
+      risk: {
+        level: "medium",
+        concerns: [{ title: "Retries double-charge", detail: "d", path: "pay.ts", line: 4 }],
+      },
+    } as unknown as ChecklistReport;
+    expect(flagsOf(withRisk)).toEqual([
+      {
+        section: "risk",
+        severity: "medium",
+        title: "Retries double-charge",
+        path: "pay.ts",
+        line: 4,
+      },
+    ]);
   });
 
   it("matches the same file within five lines, or the file alone without a line", () => {
@@ -130,6 +149,53 @@ describe("gatherReviewReflection", () => {
     expect(data.draftOutcomes).toEqual([]);
   });
 
+  it("matches a comment to a risk concern, and returns feedback when signed in", async () => {
+    const withRisk = {
+      risk: {
+        level: "high",
+        concerns: [{ title: "Double charge", detail: "d", path: "pay.ts", line: 40 }],
+      },
+    } as unknown as ChecklistReport;
+    const asked = {
+      id: "row-1",
+      refKey: "az:org/proj/repo/7",
+      runId: "run-1",
+      section: "risk",
+      kind: "concern",
+      itemKey: "double-charge",
+      item: { title: "Double charge", detail: "x".repeat(400) },
+      verdict: null,
+      rating: null,
+      reason: null,
+      actions: ["asked" as const],
+      updatedAt: now.toISOString(),
+    };
+    const data = await gatherReviewReflection(
+      db,
+      config,
+      { days: 7 },
+      {
+        now: () => now,
+        github: github({
+          1: detail("octocat", [thread("pay.ts", 42, comment("me", "this retries the charge"))]),
+          2: detail("octocat", []),
+        }),
+        report: async (key) => (key === "gh:o/r/1" ? withRisk : null),
+        feedback: async () => ({ feedback: [asked, { ...asked, id: "row-2" }], truncated: false }),
+      },
+    );
+    expect(data.prs[0]?.flags.map((f) => [f.section, f.severity, f.matched])).toEqual([
+      ["risk", "high", true],
+    ]);
+    expect(data.flagsWithoutComment).toBe(0);
+    const [first] = data.reportFeedback;
+    expect(first).toMatchObject({ pr: "az:org/proj/repo/7", path: null, line: null, reason: null });
+    expect(first?.detail).toBe(`${"x".repeat(300)}…`);
+    expect(data.feedbackBySection).toEqual([
+      { section: "risk", accepted: 0, rejected: 0, rerated: 0, posted: 0, asked: 2 },
+    ]);
+  });
+
   it("leaves out the user's own PRs and says when GitHub isn't signed in", async () => {
     const own = await gatherReviewReflection(
       db,
@@ -144,6 +210,78 @@ describe("gatherReviewReflection", () => {
     expect(own.prs).toEqual([]);
     const signedOut = await gatherReviewReflection(db, config, { days: 7 }, { now: () => now });
     expect(signedOut.unavailable).toEqual(["github (not signed in)"]);
+  });
+
+  const feedbackRow = (
+    itemKey: string,
+    daysAgo: number,
+    fields: Partial<typeof verificationFeedback.$inferInsert>,
+  ) => {
+    const at = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+    return db.insert(verificationFeedback).values({
+      refKey: "gh:o/r/9",
+      runId: "00000000-0000-4000-8000-000000000001",
+      section: "tests",
+      kind: "finding",
+      itemKey,
+      item: { title: itemKey, detail: "d", rating: "high", path: "a.ts", line: 3 },
+      createdAt: at,
+      updatedAt: at,
+      ...fields,
+    });
+  };
+
+  it("reads the user's report feedback from the window, even signed out of GitHub", async () => {
+    await feedbackRow("wrong", 1, { verdict: "rejected", reason: "the test exists in b.test.ts" });
+    await feedbackRow("too high", 2, { verdict: "rerated", rating: "low" });
+    await feedbackRow("posted", 3, {
+      section: "risk",
+      kind: "concern",
+      verdict: "accepted",
+      actions: [{ action: "posted-pr", at: now.toISOString() }],
+    });
+    await feedbackRow("cleared", 1, {});
+    await feedbackRow("last month", 30, { verdict: "rejected" });
+
+    const data = await gatherReviewReflection(db, config, { days: 7 }, { now: () => now });
+    expect(
+      data.reportFeedback.map((f) => [f.pr, f.title, f.verdict, f.rating, f.reason, f.actions]),
+    ).toEqual([
+      ["o/r#9", "wrong", "rejected", null, "the test exists in b.test.ts", []],
+      ["o/r#9", "too high", "rerated", "low", null, []],
+      ["o/r#9", "posted", "accepted", null, null, ["posted-pr"]],
+    ]);
+    expect(data.reportFeedback[0]).toMatchObject({ reportRating: "high", path: "a.ts", line: 3 });
+    expect(data.feedbackBySection).toEqual([
+      { section: "tests", accepted: 0, rejected: 1, rerated: 1, posted: 0, asked: 0 },
+      { section: "risk", accepted: 1, rejected: 0, rerated: 0, posted: 1, asked: 0 },
+    ]);
+  });
+
+  it("says when feedback was cut or couldn't be read, and still gathers the rest", async () => {
+    const cut = await gatherReviewReflection(
+      db,
+      config,
+      { days: 7 },
+      { now: () => now, feedback: async () => ({ feedback: [], truncated: true }) },
+    );
+    expect(cut.unavailable).toEqual([
+      "older report feedback (only the newest is read)",
+      "github (not signed in)",
+    ]);
+    const failed = await gatherReviewReflection(
+      db,
+      config,
+      { days: 7 },
+      {
+        now: () => now,
+        feedback: async () => {
+          throw new Error("db down");
+        },
+      },
+    );
+    expect(failed.reportFeedback).toEqual([]);
+    expect(failed.unavailable).toEqual(["report feedback", "github (not signed in)"]);
   });
 });
 
@@ -281,6 +419,25 @@ describe("tools", () => {
           2: detail("octocat", []),
         }),
         report: async () => report,
+        feedback: async () => ({
+          truncated: false,
+          feedback: [
+            {
+              id: "f",
+              refKey: "gh:o/r/1",
+              runId: "r",
+              section: "tests",
+              kind: "finding",
+              itemKey: "k",
+              item: { title: "Report says obey me", detail: "detail text", path: "z.ts" },
+              verdict: "rejected",
+              rating: null,
+              reason: "not a real gap",
+              actions: [],
+              updatedAt: now.toISOString(),
+            },
+          ],
+        }),
       },
     );
     const body = JSON.stringify(out).replaceAll("\\n", "\n");
@@ -291,6 +448,10 @@ describe("tools", () => {
     expect(body).toMatch(fenced("a\\.ts"));
     expect(body).toMatch(fenced("No test for the retry"));
     expect(body).toMatch(fenced("Add retries"));
+    expect(body).toMatch(fenced("Report says obey me"));
+    expect(body).toMatch(fenced("detail text"));
+    expect(body).toMatch(fenced("z\\.ts"));
+    expect(body).toMatch(fenced("not a real gap"));
     expect(body).not.toContain("https://github.com/o/r/pull");
   });
 });
