@@ -35,8 +35,25 @@ class FakeWorkspacesApi : WorkspacesApi, PtyApi {
     var createFailure: Exception? = null
     var startFailure: Exception? = null
 
-    /** Emit to drive a provision; it ends after a [ProvisionEvent.Done] or [ProvisionEvent.Error]. */
-    val provisionEvents = MutableSharedFlow<ProvisionEvent>(replay = 64)
+    var archiveFailure: Exception? = null
+
+    /** What a provision stream does next: deliver an event, throw, or end without `done`. */
+    private sealed interface ProvisionStep {
+        data class Event(val event: ProvisionEvent) : ProvisionStep
+        data class Fail(val error: Exception) : ProvisionStep
+        data object End : ProvisionStep
+    }
+
+    private val provisionSteps = MutableSharedFlow<ProvisionStep>(replay = 64)
+
+    /** Drives the provision stream; it ends after a [ProvisionEvent.Done] or [ProvisionEvent.Error]. */
+    suspend fun emitProvision(event: ProvisionEvent) = provisionSteps.emit(ProvisionStep.Event(event))
+
+    /** The stream throws, as a dropped connection does. */
+    suspend fun provisionFailure(error: Exception) = provisionSteps.emit(ProvisionStep.Fail(error))
+
+    /** The stream ends with neither `done` nor `error`. */
+    suspend fun endProvision() = provisionSteps.emit(ProvisionStep.End)
 
     /** Set by [startAgent], so a test can see the session appear. */
     var onStartAgent: (WorkspaceDetail) -> Unit = { ws -> sessions += session("ws-claude:${ws.id}", kind = "agent") }
@@ -60,9 +77,15 @@ class FakeWorkspacesApi : WorkspacesApi, PtyApi {
 
     override fun provision(id: String): Flow<ProvisionEvent> {
         calls += "provision:$id"
-        return provisionEvents.transformWhile {
-            emit(it)
-            it !is ProvisionEvent.Done && it !is ProvisionEvent.Error
+        return provisionSteps.transformWhile { step ->
+            when (step) {
+                is ProvisionStep.Event -> {
+                    emit(step.event)
+                    step.event !is ProvisionEvent.Done && step.event !is ProvisionEvent.Error
+                }
+                is ProvisionStep.Fail -> throw step.error
+                ProvisionStep.End -> false
+            }
         }
     }
 
@@ -72,6 +95,7 @@ class FakeWorkspacesApi : WorkspacesApi, PtyApi {
 
     override suspend fun archiveWorkspace(id: String, request: ArchiveRequest) {
         calls += "archive:$id:$request"
+        archiveFailure?.let { throw it }
     }
 
     override suspend fun repos(): List<Repo> = repos
@@ -109,6 +133,7 @@ class FakeWorkspacesApi : WorkspacesApi, PtyApi {
         cols: Int,
         rows: Int,
         cwd: String?,
+        offset: Long?,
         mayReconnect: (suspend () -> Boolean)?,
     ): PtyConnection = throw UnsupportedOperationException("the workspace screens never attach")
 }

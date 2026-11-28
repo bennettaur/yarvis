@@ -12,7 +12,6 @@ A small native client for a Yarvis server. It does four things:
   deny, answer a question (choices, several choices, or free text), or
   dismiss an item. New items raise a local notification, except while the
   Attention tab is on screen.
-
 - **Workspaces**: the list with each PR's state and checks, a workspace's
   repos, branches, PRs, tasks and issues, creating one (repos, an existing
   branch per repo, a linked task) with its provisioning log streamed in, and

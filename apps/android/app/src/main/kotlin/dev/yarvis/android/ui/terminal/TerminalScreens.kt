@@ -33,7 +33,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -45,11 +44,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -67,7 +66,9 @@ fun TerminalScreen(
     modifier: Modifier = Modifier,
     viewModelKey: String = "",
 ) {
-    val vm = viewModel(key = "terminal:$viewModelKey:$sessionId") { TerminalViewModel(pty, sessionId, cwd) }
+    val vm = viewModel(key = "terminal:$viewModelKey:$sessionId") {
+        TerminalViewModel(pty, sessionId, cwd, appLifecycle = ProcessLifecycleOwner.get().lifecycle)
+    }
     val state by vm.state.collectAsStateWithLifecycle()
     val signedOut by rememberUpdatedState(onSignedOut)
     LaunchedEffect(state.status) {
@@ -102,7 +103,7 @@ fun TerminalScreen(
                     if (state.canStartNewShell) Button(onClick = vm::startNewShell) { Text("Start a new shell") }
                 }
             }
-            is TerminalStatus.Failed -> Banner(status.message, error = true)
+            is TerminalStatus.Failed -> Banner(status.message, error = true, action = "Retry" to vm::retry)
             else -> Unit
         }
         ExtraKeys(state.ctrlArmed, onKey = vm::press, onCtrl = vm::toggleCtrl)
@@ -117,45 +118,47 @@ fun TerminalScreen(
 private fun TerminalPage(vm: TerminalViewModel, fontSize: Int) {
     var generation by remember { mutableIntStateOf(0) }
     key(generation) {
-        val context = LocalContext.current
-        val page = remember {
-            lateinit var view: TerminalWebView
-            val listener = object : TerminalPageListener {
-                override fun onReady() = Unit
-                override fun onData(data: String) = vm.onInput(data)
-                override fun onBinary(data: String) = vm.onBinary(data)
-                override fun onResize(cols: Int, rows: Int) = vm.onViewport(cols, rows)
-                override fun onModes(appCursor: Boolean) = vm.onModes(appCursor)
-                override fun onTap() {
-                    vm.onTap()
-                    view.showKeyboard()
+        AndroidView(
+            factory = { context ->
+                lateinit var view: TerminalWebView
+                val listener = object : TerminalPageListener {
+                    override fun onReady() = Unit
+                    override fun onData(data: String) = vm.onInput(data)
+                    override fun onBinary(data: String) = vm.onBinary(data)
+                    override fun onResize(cols: Int, rows: Int) = vm.onViewport(cols, rows)
+                    override fun onModes(appCursor: Boolean) = vm.onModes(appCursor)
+                    override fun onTap() {
+                        vm.onTap()
+                        view.showKeyboard()
+                    }
+                    override fun onCrashed() {
+                        generation++
+                    }
                 }
-                override fun onCrashed() {
-                    generation++
-                }
-            }
-            view = TerminalWebView(context, listener, fontSize)
-            view
-        }
-        DisposableEffect(page) {
-            vm.attachSink(page)
-            onDispose {
-                vm.detachSink(page)
-                page.destroy()
-            }
-        }
-        LaunchedEffect(page, fontSize) { page.setFontSize(fontSize) }
-        AndroidView(factory = { page }, modifier = Modifier.fillMaxSize())
+                view = TerminalWebView(context, listener, fontSize)
+                vm.attachSink(view)
+                view
+            },
+            update = { it.setFontSize(fontSize) },
+            onRelease = { view ->
+                vm.detachSink(view)
+                view.destroy()
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
 @Composable
-private fun Banner(text: String, error: Boolean = false) {
+private fun Banner(text: String, error: Boolean = false, action: Pair<String, () -> Unit>? = null) {
     Surface(
         color = if (error) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+        Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            action?.let { (label, onClick) -> TextButton(onClick = onClick) { Text(label) } }
+        }
     }
 }
 

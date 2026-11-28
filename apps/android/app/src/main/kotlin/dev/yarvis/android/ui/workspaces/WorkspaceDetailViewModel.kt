@@ -8,7 +8,6 @@ import dev.yarvis.android.api.ProvisionEvent
 import dev.yarvis.android.api.PtyApi
 import dev.yarvis.android.api.PtyIds
 import dev.yarvis.android.api.PtySession
-import dev.yarvis.android.api.ReauthCancelledException
 import dev.yarvis.android.api.WorkspaceDetail
 import dev.yarvis.android.api.WorkspacesApi
 import kotlinx.coroutines.CancellationException
@@ -36,9 +35,12 @@ data class WorkspaceDetailState(
     /** The live provision log, or null when no provision is showing. */
     val provisionLog: String? = null,
     val provisioning: Boolean = false,
-    /** Ignore, archive or provision in flight, so a double tap sends once. */
+    /** Ignore or archive in flight, so a double tap sends once. */
     val busy: Boolean = false,
     val message: String? = null,
+    /** Kept here rather than in the screen, so a rotation can't lose the close that follows a start. */
+    val archiveDialogOpen: Boolean = false,
+    val archiveError: String? = null,
 ) {
     val agentRunning: Boolean get() = detail != null && agentRunning(sessions, detail.id)
     val shells: List<PtySession> get() = detail?.let { workspaceShells(sessions, it.id) }.orEmpty()
@@ -69,6 +71,10 @@ class WorkspaceDetailViewModel(
 
     private var poll: Job? = null
     private var provisionJob: Job? = null
+    private val provisionText = StringBuilder()
+
+    /** Bumped per load, so an older answer that lands last is dropped. */
+    private var generation = 0
 
     init {
         viewModelScope.launch {
@@ -171,12 +177,13 @@ class WorkspaceDetailViewModel(
     /** Starts provisioning, or follows the run already going. */
     fun provision() {
         if (provisionJob?.isActive == true) return
+        provisionText.clear()
         _state.update { it.copy(provisionLog = "", provisioning = true, message = null) }
         provisionJob = viewModelScope.launch {
             var failure: String? = null
             try {
                 api.provision(id).collect { event ->
-                    provisionLogText(event)?.let { text -> _state.update { it.copy(provisionLog = it.provisionLog.orEmpty() + text) } }
+                    provisionLogText(event)?.let(::appendToLog)
                     if (event is ProvisionEvent.Error) failure = event.message
                 }
             } catch (e: CancellationException) {
@@ -186,6 +193,8 @@ class WorkspaceDetailViewModel(
             }
             // A failed repo still ends with `done`; the detail shows its error. Only a
             // failure of the whole run keeps the log up, so its cause stays readable.
+            // A stream that ends with neither counts as done, as on the web: the
+            // reload shows where the workspace stands.
             _state.update {
                 if (failure == null) {
                     it.copy(provisioning = false, provisionLog = null)
@@ -195,6 +204,18 @@ class WorkspaceDetailViewModel(
             }
             reload(background = true)
         }
+    }
+
+    /** Keeps the tail, since a setup script can print far more than anyone scrolls back through. */
+    private fun appendToLog(text: String) {
+        provisionText.append(text)
+        if (provisionText.length > MAX_LOG_CHARS) {
+            val cut = provisionText.length - MAX_LOG_CHARS
+            val lineEnd = provisionText.indexOf("\n", cut)
+            provisionText.delete(0, if (lineEnd in cut until cut + LINE_SLACK) lineEnd + 1 else cut)
+        }
+        val log = provisionText.toString()
+        _state.update { it.copy(provisionLog = log) }
     }
 
     fun closeProvisionLog() {
@@ -207,18 +228,34 @@ class WorkspaceDetailViewModel(
         reload(background = true)
     }
 
+    fun openArchive() {
+        _state.update { it.copy(archiveDialogOpen = true, archiveError = null) }
+    }
+
+    fun closeArchive() {
+        if (_state.value.busy) return
+        _state.update { it.copy(archiveDialogOpen = false, archiveError = null) }
+    }
+
     /**
-     * Starts the archive and follows it until the worktrees are gone or one
-     * refuses to go. [onStarted] runs once the sidecar accepted it, so the
-     * dialog can close while the teardown runs, as the web's does.
+     * Starts the archive. The dialog closes once the sidecar accepts it, as the
+     * web's does; the screen's poll speeds up while the teardown runs.
      */
-    fun archive(request: ArchiveRequest, onStarted: () -> Unit) = runExclusive("Couldn't archive") {
-        api.archiveWorkspace(id, request)
-        onStarted()
-        reload(background = true)
-        while (_state.value.detail?.isTearingDown == true) {
-            delay(TEARDOWN_POLL_MS)
-            reload(background = true)
+    fun archive(request: ArchiveRequest) {
+        if (_state.value.busy) return
+        _state.update { it.copy(busy = true, archiveError = null) }
+        viewModelScope.launch {
+            try {
+                api.archiveWorkspace(id, request)
+                _state.update { it.copy(archiveDialogOpen = false) }
+                reload(background = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(archiveError = "Couldn't archive: ${e.message}") }
+            } finally {
+                _state.update { it.copy(busy = false) }
+            }
         }
     }
 
@@ -234,13 +271,14 @@ class WorkspaceDetailViewModel(
     }
 
     private suspend fun reload(background: Boolean) {
+        val mine = ++generation
         try {
             val detail = api.workspace(id, viewing = true)
-            _state.update { it.copy(detail = detail, loading = false, loadError = null) }
+            if (mine == generation) _state.update { it.copy(detail = detail, loading = false, loadError = null) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            _state.update {
+            if (mine == generation) _state.update {
                 it.copy(loading = false, loadError = if (background && it.detail != null) it.loadError else "Couldn't load the workspace: ${e.message}")
             }
         }
@@ -278,8 +316,6 @@ class WorkspaceDetailViewModel(
             block()
         } catch (e: CancellationException) {
             throw e
-        } catch (_: ReauthCancelledException) {
-            // The user closed the code prompt; nothing was sent.
         } catch (e: Exception) {
             _state.update { it.copy(message = "$failure: ${e.message}") }
         }
@@ -288,5 +324,9 @@ class WorkspaceDetailViewModel(
     private companion object {
         const val POLL_MS = 20_000L
         const val TEARDOWN_POLL_MS = 2_000L
+        const val MAX_LOG_CHARS = 64 * 1024
+
+        /** How far past the cut the tail may start, to begin on a whole line. */
+        const val LINE_SLACK = 1024
     }
 }

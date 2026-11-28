@@ -113,7 +113,6 @@ class WorkspacesClientTest {
                 repoIds = listOf("r1", "r2"),
                 existingBranches = mapOf("r1" to "feature/x", "r2" to ""),
                 taskId = "",
-                startWork = true,
             ),
         )
 
@@ -124,7 +123,7 @@ class WorkspacesClientTest {
         assertEquals("/api/sidecar/api/workspaces", request.url.encodedPath)
         assertEquals(
             Json.parseToJsonElement(
-                """{"name":"Fix login","repoIds":["r1","r2"],"existingBranches":{"r1":"feature/x"},"startWork":true}""",
+                """{"name":"Fix login","repoIds":["r1","r2"],"existingBranches":{"r1":"feature/x"}}""",
             ),
             bodyOf(request),
         )

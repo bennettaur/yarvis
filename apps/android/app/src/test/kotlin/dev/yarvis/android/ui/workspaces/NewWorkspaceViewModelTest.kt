@@ -2,7 +2,6 @@ package dev.yarvis.android.ui.workspaces
 
 import dev.yarvis.android.MainDispatcherRule
 import dev.yarvis.android.api.NewWorkspace
-import dev.yarvis.android.api.ReauthCancelledException
 import dev.yarvis.android.api.WorkspaceTask
 import java.io.IOException
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -117,19 +116,5 @@ class NewWorkspaceViewModelTest {
         vm.create()
         advanceUntilIdle()
         assertEquals("new-1", vm.state.value.created?.id)
-    }
-
-    @Test
-    fun `closing the code prompt cancels quietly`() = runTest {
-        api.createFailure = ReauthCancelledException()
-        val vm = NewWorkspaceViewModel(api)
-        advanceUntilIdle()
-        vm.setName("x")
-
-        vm.create()
-        advanceUntilIdle()
-
-        assertNull(vm.state.value.error)
-        assertFalse(vm.state.value.busy)
     }
 }

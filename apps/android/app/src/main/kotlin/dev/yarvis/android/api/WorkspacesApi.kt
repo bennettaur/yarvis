@@ -46,7 +46,9 @@ interface PtyApi {
 
     /**
      * A connection to `/api/pty/{sessionId}`, not yet started. [cwd] is where a
-     * shell spawned by this attach opens. [mayReconnect] runs before each
+     * shell spawned by this attach opens. [offset] is an earlier connection's
+     * [PtyConnection.offset], so a reattach after a close only catches up
+     * on what the screen missed. [mayReconnect] runs before each
      * reconnect; false ends the connection with [PtyUpdate.Refused] (code 1000).
      * Agent and review ids must pass one that checks [ptyExists], since
      * attaching to a dead id spawns a plain shell there.
@@ -56,6 +58,7 @@ interface PtyApi {
         cols: Int,
         rows: Int,
         cwd: String? = null,
+        offset: Long? = null,
         mayReconnect: (suspend () -> Boolean)? = null,
     ): PtyConnection
 }
@@ -94,6 +97,9 @@ sealed interface PtyUpdate {
 interface PtyConnection {
     /** Hot; collect it before [start] so the first catch-up isn't missed. Completes when the connection ends. */
     val updates: Flow<PtyUpdate>
+
+    /** One past the last byte delivered, or null before any: where a later attach resumes. */
+    val offset: Long?
     fun start()
 
     /** Closes the socket for good. The session keeps running on the server. */

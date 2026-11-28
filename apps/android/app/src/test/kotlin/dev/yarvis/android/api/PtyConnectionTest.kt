@@ -2,6 +2,7 @@ package dev.yarvis.android.api
 
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
@@ -59,6 +60,11 @@ class PtyConnectionTest {
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                     sent.add("bin:${bytes.size}")
                 }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    // As the real server does, so a client's close() releases the socket.
+                    webSocket.close(code, null)
+                }
             }).build(),
         )
     }
@@ -74,7 +80,12 @@ class PtyConnectionTest {
         id: String = "tab:terminal/t1/p1",
         cwd: String? = null,
         mayReconnect: (suspend () -> Boolean)? = null,
-    ) = OkHttpPtyConnection(server.url("/"), "tok-9", testHttp, id, 80, 24, cwd, mayReconnect, reconnectDelayMs = 0)
+        reconnectDelayMs: Long = 0,
+        offset: Long? = null,
+    ) = OkHttpPtyConnection(
+        server.url("/"), "tok-9", testHttp, id, 80, 24,
+        cwd = cwd, offset = offset, mayReconnect = mayReconnect, reconnectDelayMs = reconnectDelayMs,
+    )
 
     private fun nextHello(): JsonObject = hellos.poll(5, TimeUnit.SECONDS) ?: error("no auth message arrived")
 
@@ -181,6 +192,100 @@ class PtyConnectionTest {
         assertEquals(listOf("Reconnecting", "Refused(code=1000)"), updates)
         assertEquals(1, asked)
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a mayReconnect that throws is asked again, then the reconnect resumes`() = runTest {
+        connection { ws ->
+            ws.send(attached("snapshot", 0, 3))
+            ws.send(frame(0, "abc"))
+            ws.close(1011, "internal error")
+        }
+        connection { ws -> ws.close(4401, "done") }
+        var asked = 0
+
+        val updates = run(
+            connect(
+                mayReconnect = {
+                    if (asked++ == 0) throw java.io.IOException("offline")
+                    true
+                },
+            ),
+        )
+
+        assertEquals(listOf("Reset", "out:abc", "Reconnecting", "SignedOut"), updates)
+        assertEquals(2, asked)
+        nextHello()
+        assertEquals(JsonPrimitive(3), nextHello()["offset"])
+    }
+
+    @Test
+    fun `close while waiting to reconnect ends updates and opens no new socket`() = runTest {
+        connection { ws -> ws.close(1011, "internal error") }
+        // Long enough that only close() can end the wait.
+        val connection = connect(reconnectDelayMs = 60_000)
+        connection.start()
+        connection.updates.first { it == PtyUpdate.Reconnecting }
+
+        connection.close()
+
+        assertEquals(emptyList<PtyUpdate>(), connection.updates.toList())
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `a resize while disconnected goes in the next hello`() = runTest {
+        connection { ws -> ws.close(1011, "internal error") }
+        connection { ws -> ws.close(4401, "done") }
+        val gate = CompletableDeferred<Unit>()
+        val connection = connect(mayReconnect = { gate.await(); true })
+        connection.start()
+        connection.updates.first { it == PtyUpdate.Reconnecting }
+
+        connection.resize(120, 40)
+        gate.complete(Unit)
+
+        assertEquals(listOf(PtyUpdate.SignedOut), connection.updates.toList())
+        assertEquals(JsonPrimitive(80), nextHello()["cols"])
+        val second = nextHello()
+        assertEquals(JsonPrimitive(120), second["cols"])
+        assertEquals(JsonPrimitive(40), second["rows"])
+    }
+
+    @Test
+    fun `a dropped transport reconnects`() = runTest {
+        // Cancelling on the server drops the TCP connection with no close frame.
+        connection { ws -> ws.cancel() }
+        connection { ws -> ws.close(4401, "done") }
+
+        assertEquals(listOf("Reconnecting", "SignedOut"), run(connect()))
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `close then a new attach on the same id resumes from the old offset`() = runTest {
+        connection { ws ->
+            ws.send(attached("snapshot", 0, 2))
+            ws.send(frame(0, "ab"))
+        }
+        connection { ws ->
+            ws.send(attached("resume", 1, 4))
+            ws.send(frame(1, "bcd"))
+            ws.close(4401, "done")
+        }
+        val first = connect()
+        first.start()
+        first.updates.first { it is PtyUpdate.Output }
+        first.close()
+        assertEquals(emptyList<PtyUpdate>(), first.updates.toList())
+        assertEquals(2L, first.offset)
+
+        val second = connect(offset = first.offset)
+        assertEquals(listOf("out:cd", "SignedOut"), run(second))
+        assertEquals(4L, second.offset)
+        assertNull(nextHello()["offset"])
+        assertEquals(JsonPrimitive(2), nextHello()["offset"])
+        assertEquals(2, server.requestCount)
     }
 
     @Test

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.text.InputType
@@ -34,8 +35,8 @@ interface TerminalPageListener {
 }
 
 private const val ASSET_HOST = WebViewAssetLoader.DEFAULT_DOMAIN
-private const val PAGE_ORIGIN = "https://$ASSET_HOST/"
-private const val PAGE_URL = "${PAGE_ORIGIN}terminal/terminal.html"
+private const val PAGE_PATH = "/terminal/terminal.html"
+private const val PAGE_URL = "https://$ASSET_HOST$PAGE_PATH"
 
 /**
  * The WebView xterm.js runs in, locked to the bundled page: it loads only
@@ -43,12 +44,13 @@ private const val PAGE_URL = "${PAGE_ORIGIN}terminal/terminal.html"
  * navigates nowhere. The PTY socket and the device token never enter it.
  */
 @SuppressLint("ViewConstructor")
-class TerminalWebView(context: Context, private val listener: TerminalPageListener, fontSize: Int) :
+class TerminalWebView(context: Context, private val listener: TerminalPageListener, private var fontSize: Int) :
     WebView(context), TerminalSink {
     private val batcher = OutputBatcher()
     private var ready = false
     private var flushScheduled = false
     private var destroyed = false
+    private var loadedFontSize = fontSize
 
     // Set from the WebViewClient on the main thread, read on the bridge's own thread.
     @Volatile
@@ -81,8 +83,16 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
 
     override fun write(bytes: ByteArray) = queue { batcher.write(bytes) }
 
+    /** Applied once the page is ready, if it changed since the page was loaded. */
     fun setFontSize(size: Int) {
-        if (ready) evaluateJavascript("yarvis.setFontSize($size)", null)
+        fontSize = size
+        if (ready) applyFontSize()
+    }
+
+    private fun applyFontSize() {
+        if (fontSize == loadedFontSize) return
+        loadedFontSize = fontSize
+        evaluateJavascript("yarvis.setFontSize($fontSize)", null)
     }
 
     /** Raises the keyboard; the page focuses xterm's input on the same tap. */
@@ -133,6 +143,7 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
 
     private fun pageReady() {
         ready = true
+        applyFontSize()
         if (!batcher.isEmpty) queue {}
         listener.onReady()
     }
@@ -157,7 +168,8 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
 
         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-            trustedPage = url != null && url.startsWith(PAGE_URL)
+            val uri = url?.let(Uri::parse)
+            trustedPage = uri != null && uri.scheme == "https" && uri.host == ASSET_HOST && uri.path == PAGE_PATH
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {

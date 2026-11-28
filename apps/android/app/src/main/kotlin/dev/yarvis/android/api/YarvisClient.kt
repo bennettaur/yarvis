@@ -312,8 +312,9 @@ class YarvisClient(
         cols: Int,
         rows: Int,
         cwd: String?,
+        offset: Long?,
         mayReconnect: (suspend () -> Boolean)?,
-    ): PtyConnection = OkHttpPtyConnection(baseUrl, token, streamHttp, sessionId, cols, rows, cwd, mayReconnect)
+    ): PtyConnection = OkHttpPtyConnection(baseUrl, token, streamHttp, sessionId, cols, rows, cwd, offset, mayReconnect)
 
     /** A server core command: `POST api/core/<command>` with its arguments as one JSON object. */
     private suspend fun <T> core(command: String, response: DeserializationStrategy<T>, args: JsonObject = JsonObject(emptyMap())): T =

@@ -145,7 +145,6 @@ data class NewWorkspace(
     /** An existing remote branch per repo id; a repo left out gets a new branch. */
     val existingBranches: Map<String, String>? = null,
     val taskId: String? = null,
-    val startWork: Boolean? = null,
 )
 
 /** What the archive dialog sends (`POST /api/workspaces/{id}/archive`). */
@@ -221,13 +220,6 @@ object PtyIds {
 
     /** True for ids only the server or sidecar may start; attaching to a dead one must not spawn a shell. */
     fun isAgentOrReview(id: String) = id.startsWith(AGENT_PREFIX) || id.startsWith(REVIEW_PREFIX)
-
-    /** The surface, tab and pane of a pane id, or null for any other id, such as `ws-claude:…`. */
-    fun parsePane(id: String): Triple<String, String, String>? {
-        val parts = id.split('/')
-        if (parts.size != 3 || parts.any { it.isEmpty() }) return null
-        return Triple(parts[0], parts[1], parts[2])
-    }
 
     /**
      * A fresh pane id on [surface], in its own tab. Uids are the web's: `t` or `p`,

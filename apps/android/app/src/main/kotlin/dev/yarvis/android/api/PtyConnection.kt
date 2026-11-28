@@ -35,9 +35,10 @@ import okio.ByteString.Companion.toByteString
  * Each frame starts with the stream offset of its first byte, so bytes already
  * fed are trimmed and a resumed catch-up that overlaps never repeats output.
  */
-internal class PtyStreamState {
-    /** One past the last byte fed: the `offset` a reconnect resumes from. */
-    var nextOffset: Long? = null
+internal class PtyStreamState(resumeFrom: Long? = null) {
+    /** One past the last byte fed: the `offset` a reconnect resumes from. Read from any thread. */
+    @Volatile
+    var nextOffset: Long? = resumeFrom
         private set
     private var resetBeforeNextFrame = false
 
@@ -82,6 +83,8 @@ class OkHttpPtyConnection(
     cols: Int,
     rows: Int,
     private val cwd: String? = null,
+    /** An earlier connection's [offset], so the first attach resumes instead of replaying the snapshot. */
+    offset: Long? = null,
     private val mayReconnect: (suspend () -> Boolean)? = null,
     private val reconnectDelayMs: Long = RECONNECT_DELAY_MS,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
@@ -93,7 +96,9 @@ class OkHttpPtyConnection(
     private val channel = Channel<PtyUpdate>(Channel.UNLIMITED)
     override val updates: Flow<PtyUpdate> = channel.receiveAsFlow()
 
-    private val stream = PtyStreamState()
+    private val stream = PtyStreamState(offset)
+
+    override val offset: Long? get() = stream.nextOffset
 
     @Volatile private var cols = cols
 
@@ -110,15 +115,16 @@ class OkHttpPtyConnection(
     @Synchronized
     override fun start() {
         if (job != null || channel.isClosedForSend) return
-        job = scope.launch { run() }
+        // The channel closes only once run() can no longer send to it, even if the job is cancelled before it starts.
+        job = scope.launch { run() }.also { it.invokeOnCompletion { channel.close() } }
     }
 
     @Synchronized
     override fun close() {
-        job?.cancel()
         socket?.close(CLOSE_NORMAL, null)
         socket = null
-        channel.close()
+        val job = job
+        if (job != null) job.cancel() else channel.close()
     }
 
     override fun send(input: ByteArray) {
@@ -179,7 +185,6 @@ class OkHttpPtyConnection(
             }
         } finally {
             socket = null
-            channel.close()
         }
     }
 

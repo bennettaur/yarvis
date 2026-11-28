@@ -13,8 +13,11 @@ class FakePtyConnection(
     val cols: Int,
     val rows: Int,
     val cwd: String?,
+    val startOffset: Long?,
     val mayReconnect: (suspend () -> Boolean)?,
 ) : PtyConnection {
+    override var offset: Long? = null
+
     private val channel = Channel<PtyUpdate>(Channel.UNLIMITED)
     override val updates: Flow<PtyUpdate> = channel.consumeAsFlow()
 
@@ -61,7 +64,8 @@ class FakePtyApi : PtyApi {
     var listError: Exception? = null
     val killed = mutableListOf<String>()
     val connections = mutableListOf<FakePtyConnection>()
-    var existsChecks = 0
+    var existsError: Exception? = null
+    val existsAsked = mutableListOf<String>()
 
     val last: FakePtyConnection get() = connections.last()
 
@@ -76,7 +80,8 @@ class FakePtyApi : PtyApi {
     }
 
     override suspend fun ptyExists(id: String): Boolean {
-        existsChecks++
+        existsAsked += id
+        existsError?.let { throw it }
         return exists
     }
 
@@ -85,8 +90,9 @@ class FakePtyApi : PtyApi {
         cols: Int,
         rows: Int,
         cwd: String?,
+        offset: Long?,
         mayReconnect: (suspend () -> Boolean)?,
-    ): PtyConnection = FakePtyConnection(sessionId, cols, rows, cwd, mayReconnect).also { connections += it }
+    ): PtyConnection = FakePtyConnection(sessionId, cols, rows, cwd, offset, mayReconnect).also { connections += it }
 }
 
 class RecordingSink : TerminalSink {

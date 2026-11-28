@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import dev.yarvis.android.api.PtyApi
 import dev.yarvis.android.api.PtySession
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,9 +30,13 @@ class TerminalSessionsViewModel(private val pty: PtyApi) : ViewModel() {
     private val _state = MutableStateFlow(TerminalSessionsState())
     val state: StateFlow<TerminalSessionsState> = _state.asStateFlow()
 
+    private var load: Job? = null
+
+    /** A newer refresh replaces one still running, so an older answer can't land last. */
     fun refresh() {
+        load?.cancel()
         _state.update { it.copy(loading = true, error = null) }
-        viewModelScope.launch {
+        load = viewModelScope.launch {
             try {
                 val sessions = pty.ptySessions()
                 _state.update { it.copy(sessions = sessions, loading = false) }

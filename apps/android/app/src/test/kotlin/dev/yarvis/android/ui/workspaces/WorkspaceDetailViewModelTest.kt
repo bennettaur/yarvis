@@ -7,7 +7,9 @@ import dev.yarvis.android.api.ArchiveRequest
 import dev.yarvis.android.api.ProvisionEvent
 import dev.yarvis.android.api.PtyIds
 import java.io.IOException
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -110,8 +112,7 @@ class WorkspaceDetailViewModelTest {
         assertEquals(listOf("ws:w1/t1/p1"), vm.state.value.shells.map { it.id })
         assertEquals(TerminalTarget("ws:w1/t1/p1", "Workspace w1 · shell", "/ws/w1"), vm.shellTarget(vm.state.value.shells.single()))
         val fresh = vm.newShell()!!
-        val (surface, _, _) = PtyIds.parsePane(fresh.sessionId)!!
-        assertEquals("ws:w1", surface)
+        assertTrue(fresh.sessionId, Regex("ws:w1/t[0-9a-z]+/p[0-9a-z]+").matches(fresh.sessionId))
         assertEquals("/ws/w1", fresh.cwd)
     }
 
@@ -124,13 +125,13 @@ class WorkspaceDetailViewModelTest {
         assertTrue(vm.state.value.provisioning)
         assertEquals("", vm.state.value.provisionLog)
 
-        api.provisionEvents.emit(ProvisionEvent.RepoStart("wr1", "api"))
-        api.provisionEvents.emit(ProvisionEvent.Log("wr1", "cloning\n"))
+        api.emitProvision(ProvisionEvent.RepoStart("wr1", "api"))
+        api.emitProvision(ProvisionEvent.Log("wr1", "cloning\n"))
         advanceUntilIdle()
         assertEquals("\n=== api ===\ncloning\n", vm.state.value.provisionLog)
 
-        api.provisionEvents.emit(ProvisionEvent.RepoDone("wr1", "ready"))
-        api.provisionEvents.emit(ProvisionEvent.Done("active"))
+        api.emitProvision(ProvisionEvent.RepoDone("wr1", "ready"))
+        api.emitProvision(ProvisionEvent.Done("active"))
         advanceUntilIdle()
 
         assertFalse(vm.state.value.provisioning)
@@ -145,8 +146,8 @@ class WorkspaceDetailViewModelTest {
         val vm = viewModel()
         advanceUntilIdle()
 
-        api.provisionEvents.emit(ProvisionEvent.Log("wr1", "git clone failed\n"))
-        api.provisionEvents.emit(ProvisionEvent.Error("clone failed"))
+        api.emitProvision(ProvisionEvent.Log("wr1", "git clone failed\n"))
+        api.emitProvision(ProvisionEvent.Error("clone failed"))
         advanceUntilIdle()
 
         assertFalse(vm.state.value.provisioning)
@@ -180,39 +181,127 @@ class WorkspaceDetailViewModelTest {
     }
 
     @Test
-    fun `archiving closes the dialog once started and polls until the worktrees are gone`() = runTest {
+    fun `archiving closes the dialog once started and reloads once`() = runTest {
         api.details += detail()
         api.details += detail(status = "archiving")
-        api.details += detail(status = "archiving")
-        api.details += detail(status = "archived")
         val vm = viewModel()
         advanceUntilIdle()
-        var started = false
+        vm.openArchive()
 
         val request = ArchiveRequest(summary = "done", closeIssueIds = listOf("i1"))
-        vm.archive(request, onStarted = { started = true })
+        vm.archive(request)
         advanceUntilIdle()
 
-        assertTrue(started)
         assertTrue("archive:w1:$request" in api.calls)
-        assertEquals("archived", vm.state.value.detail?.status)
-        assertEquals(4, api.calls.count { it.startsWith("workspace:") })
+        assertFalse(vm.state.value.archiveDialogOpen)
+        assertTrue(vm.state.value.detail!!.isTearingDown)
+        assertEquals(2, api.calls.count { it.startsWith("workspace:") })
         assertFalse(vm.state.value.busy)
     }
 
     @Test
-    fun `an archive stopped by unpushed work ends the polling and offers force`() = runTest {
+    fun `a failed archive start keeps the dialog open with the reason`() = runTest {
         api.details += detail()
-        api.details += detail(status = "archiving")
-        api.details += detail(status = "archiving", error = "not removed", repos = listOf(workspaceRepo("api", status = "error", error = "unpushed commits")))
+        api.archiveFailure = IOException("409 provisioning")
+        val vm = viewModel()
+        advanceUntilIdle()
+        vm.openArchive()
+
+        vm.archive(ArchiveRequest())
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.archiveDialogOpen)
+        assertEquals("Couldn't archive: 409 provisioning", vm.state.value.archiveError)
+        assertFalse(vm.state.value.busy)
+        vm.closeArchive()
+        assertFalse(vm.state.value.archiveDialogOpen)
+        assertNull(vm.state.value.archiveError)
+    }
+
+    @Test
+    fun `resuming polls the workspace, faster during a teardown, and pausing stops it`() = runTest {
+        api.details += detail()
+        val vm = viewModel()
+        advanceUntilIdle()
+        fun loads() = api.calls.count { it.startsWith("workspace:") }
+
+        vm.resume()
+        runCurrent()
+        assertEquals(2, loads())
+        advanceTimeBy(20_001)
+        assertEquals(3, loads())
+
+        api.details[0] = detail(status = "archiving")
+        advanceTimeBy(20_001)
+        assertEquals(4, loads())
+        advanceTimeBy(2_001)
+        assertEquals(5, loads())
+
+        vm.pause()
+        advanceTimeBy(60_000)
+        assertEquals(5, loads())
+    }
+
+    @Test
+    fun `a provision stream that throws keeps the log and says why`() = runTest {
+        api.details += detail(status = "creating")
         val vm = viewModel()
         advanceUntilIdle()
 
-        vm.archive(ArchiveRequest(), onStarted = {})
+        api.emitProvision(ProvisionEvent.Log("wr1", "cloning\n"))
+        api.provisionFailure(IOException("connection reset"))
         advanceUntilIdle()
 
-        val stuck = vm.state.value.detail!!
-        assertEquals("api: unpushed commits", archiveBlockedText(stuck))
-        assertFalse(vm.state.value.busy)
+        assertFalse(vm.state.value.provisioning)
+        assertEquals("cloning\n", vm.state.value.provisionLog)
+        assertEquals("Provisioning failed: connection reset", vm.state.value.message)
+    }
+
+    @Test
+    fun `a provision stream that ends without done counts as finished`() = runTest {
+        api.details += detail(status = "creating")
+        api.details += detail(status = "active")
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        api.emitProvision(ProvisionEvent.Log("wr1", "cloning\n"))
+        api.endProvision()
+        advanceUntilIdle()
+
+        assertFalse(vm.state.value.provisioning)
+        assertNull(vm.state.value.provisionLog)
+        assertNull(vm.state.value.message)
+        assertEquals("active", vm.state.value.detail?.status)
+    }
+
+    @Test
+    fun `a second provision during a run follows the same stream`() = runTest {
+        api.details += detail(status = "creating")
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        vm.provision()
+        vm.provision()
+        advanceUntilIdle()
+
+        assertEquals(1, api.calls.count { it.startsWith("provision") })
+        assertTrue(vm.state.value.provisioning)
+    }
+
+    @Test
+    fun `the provision log keeps its tail`() = runTest {
+        api.details += detail(status = "creating")
+        val vm = viewModel()
+        advanceUntilIdle()
+
+        val line = "x".repeat(99) + "\n"
+        repeat(1_000) { api.emitProvision(ProvisionEvent.Log("wr1", line)) }
+        api.emitProvision(ProvisionEvent.Log("wr1", "last\n"))
+        advanceUntilIdle()
+
+        val log = vm.state.value.provisionLog!!
+        assertTrue(log.length <= 64 * 1024)
+        assertTrue(log.startsWith("x"))
+        assertTrue(log.endsWith("last\n"))
     }
 }

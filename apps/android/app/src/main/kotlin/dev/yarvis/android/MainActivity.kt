@@ -37,12 +37,15 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.yarvis.android.ui.CodePromptDialog
 import dev.yarvis.android.ui.attention.AttentionScreen
@@ -168,6 +172,17 @@ private data class NavState(
     fun replaceTop(route: Route) = copy(stacks = stacks + (tab to stack.dropLast(1) + route))
 
     fun pop() = if (stack.size > 1) copy(stacks = stacks + (tab to stack.dropLast(1))) else this
+
+    /**
+     * A key per screen on every stack, the open tab's top last. A key names the
+     * sign-in, tab, depth and route, so a screen keeps its key across a rotation.
+     */
+    fun routeKeys(sessionId: String): Set<String> {
+        fun keysOf(tab: Tab) = (stacks[tab] ?: listOf(tab.root())).mapIndexed { depth, route ->
+            "$sessionId/$tab/$depth/" + navJson.encodeToString(Route.serializer(), route)
+        }
+        return (Tab.entries.filter { it != tab }.flatMap(::keysOf) + keysOf(tab)).toCollection(LinkedHashSet())
+    }
 }
 
 private val navJson = Json { ignoreUnknownKeys = true }
@@ -186,15 +201,18 @@ private fun newThreadKey() = NEW_THREAD_PREFIX + UUID.randomUUID()
 @Composable
 private fun YarvisRoot(container: AppContainer, openAttention: MutableState<Boolean>, askForNotifications: () -> Unit) {
     val auth by container.auth.collectAsStateWithLifecycle()
+    val routeStores = viewModel<RouteStoresViewModel>().stores
     when (val state = auth) {
         AuthState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         is AuthState.SignedOut -> Scaffold { padding ->
+            // Signing out closes every screen, terminals' sockets included.
+            LaunchedEffect(Unit) { routeStores.clearAll() }
             val vm = viewModel(key = "signin:${state.lastServerUrl}") { SignInViewModel(container.signInGateway, state.lastServerUrl) }
             SignInScreen(vm, state.notice, Modifier.padding(padding))
         }
         is AuthState.SignedIn -> {
             LaunchedEffect(Unit) { askForNotifications() }
-            SignedInScreens(container, state.session, openAttention)
+            SignedInScreens(container, state.session, openAttention, routeStores)
         }
     }
     CodePromptDialog(container.codePrompt)
@@ -206,6 +224,7 @@ private fun SignedInScreens(
     container: AppContainer,
     session: SignedInSession,
     openAttention: MutableState<Boolean>,
+    routeStores: RouteStores,
 ) {
     var nav by rememberSaveable(saver = NavStateSaver) { mutableStateOf(NavState()) }
     LaunchedEffect(openAttention.value) {
@@ -222,6 +241,9 @@ private fun SignedInScreens(
         onDispose { container.notifier.attentionVisible = false }
     }
     BackHandler(enabled = nav.stack.size > 1) { nav = nav.pop() }
+
+    // Runs after every change to the stacks, so a screen that left one is cleared.
+    SideEffect { routeStores.retain(nav.routeKeys(session.id)) }
 
     val top = nav.top
     val openTerminal = { target: TerminalTarget -> nav = nav.push(Route.Terminal(target.sessionId, target.title, target.cwd)) }
@@ -262,64 +284,80 @@ private fun SignedInScreens(
             }
         },
     ) { padding ->
+        val topKey = nav.routeKeys(session.id).last()
+        val owner = remember(topKey) { routeStores.owner(topKey) }
         Column(Modifier.fillMaxSize().padding(padding)) {
-            when (top) {
-                Route.ChatList -> {
-                    val vm = viewModel(key = "chats:${session.id}") { ChatListViewModel(session.client) }
-                    ChatListScreen(vm, onOpen = { nav = nav.push(Route.ChatThread(it ?: newThreadKey())) })
-                }
-                is Route.ChatThread -> {
-                    val vm = viewModel(key = "thread:${session.id}:${top.key}") {
-                        ChatThreadViewModel(session.client, container.chatModelPrefs, top.key.takeUnless { it.startsWith(NEW_THREAD_PREFIX) })
-                    }
-                    ChatThreadScreen(vm)
-                }
-                Route.WorkspaceList -> {
-                    val vm = viewModel(key = "workspaces:${session.id}") { WorkspaceListViewModel(session.client) }
-                    WorkspaceListScreen(
-                        vm,
-                        onOpen = { nav = nav.push(Route.Workspace(it.id, it.name)) },
-                        onNew = { nav = nav.push(Route.NewWorkspace) },
-                    )
-                }
-                is Route.Workspace -> {
-                    val vm = viewModel(key = "workspace:${session.id}:${top.id}") {
-                        WorkspaceDetailViewModel(session.client, session.client, top.id)
-                    }
-                    WorkspaceDetailScreen(vm, onOpenTerminal = openTerminal)
-                }
-                Route.NewWorkspace -> {
-                    // A fresh form each time it opens, rather than the last one's leftovers.
-                    val formKey = rememberSaveable { UUID.randomUUID().toString() }
-                    val vm = viewModel(key = "new-workspace:${session.id}:$formKey") { NewWorkspaceViewModel(session.client) }
-                    NewWorkspaceScreen(
-                        vm,
-                        onCreated = { nav = nav.replaceTop(Route.Workspace(it.id, it.name)) },
-                        onCancel = { nav = nav.pop() },
-                    )
-                }
-                Route.TerminalSessions -> TerminalSessionsScreen(
-                    pty = session.client,
-                    onOpen = { sessionId, title -> openTerminal(TerminalTarget(sessionId, title, null)) },
-                    viewModelKey = session.id,
-                )
-                is Route.Terminal -> key(top.sessionId) {
-                    TerminalScreen(
-                        pty = session.client,
-                        sessionId = top.sessionId,
-                        title = top.title,
-                        cwd = top.cwd,
-                        onSignedOut = { container.onSessionRevoked(session) },
-                        viewModelKey = session.id,
-                    )
-                }
-                Route.Attention -> {
-                    val vm = viewModel(key = "attention:${session.id}") {
-                        AttentionViewModel(session.client, session.attention)
-                    }
-                    AttentionScreen(vm)
+            key(topKey) {
+                CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
+                    RouteContent(top, container, session, navigate = { nav = it(nav) }, openTerminal = openTerminal)
                 }
             }
+        }
+    }
+}
+
+/** One screen's content. [navigate] applies a change to the stacks. */
+@Composable
+private fun RouteContent(
+    top: Route,
+    container: AppContainer,
+    session: SignedInSession,
+    navigate: ((NavState) -> NavState) -> Unit,
+    openTerminal: (TerminalTarget) -> Unit,
+) {
+    when (top) {
+        Route.ChatList -> {
+            val vm = viewModel(key = "chats:${session.id}") { ChatListViewModel(session.client) }
+            ChatListScreen(vm, onOpen = { thread -> navigate { it.push(Route.ChatThread(thread ?: newThreadKey())) } })
+        }
+        is Route.ChatThread -> {
+            val vm = viewModel(key = "thread:${session.id}:${top.key}") {
+                ChatThreadViewModel(session.client, container.chatModelPrefs, top.key.takeUnless { it.startsWith(NEW_THREAD_PREFIX) })
+            }
+            ChatThreadScreen(vm)
+        }
+        Route.WorkspaceList -> {
+            val vm = viewModel(key = "workspaces:${session.id}") { WorkspaceListViewModel(session.client) }
+            WorkspaceListScreen(
+                vm,
+                onOpen = { ws -> navigate { it.push(Route.Workspace(ws.id, ws.name)) } },
+                onNew = { navigate { it.push(Route.NewWorkspace) } },
+            )
+        }
+        is Route.Workspace -> {
+            val vm = viewModel(key = "workspace:${session.id}:${top.id}") {
+                WorkspaceDetailViewModel(session.client, session.client, top.id)
+            }
+            WorkspaceDetailScreen(vm, onOpenTerminal = openTerminal)
+        }
+        Route.NewWorkspace -> {
+            val vm = viewModel(key = "new-workspace:${session.id}") { NewWorkspaceViewModel(session.client) }
+            NewWorkspaceScreen(
+                vm,
+                onCreated = { ws -> navigate { it.replaceTop(Route.Workspace(ws.id, ws.name)) } },
+                onCancel = { navigate { it.pop() } },
+            )
+        }
+        Route.TerminalSessions -> TerminalSessionsScreen(
+            pty = session.client,
+            onOpen = { sessionId, title -> openTerminal(TerminalTarget(sessionId, title, null)) },
+            viewModelKey = session.id,
+        )
+        is Route.Terminal -> {
+            TerminalScreen(
+                pty = session.client,
+                sessionId = top.sessionId,
+                title = top.title,
+                cwd = top.cwd,
+                onSignedOut = { container.onSessionRevoked(session) },
+                viewModelKey = session.id,
+            )
+        }
+        Route.Attention -> {
+            val vm = viewModel(key = "attention:${session.id}") {
+                AttentionViewModel(session.client, session.attention)
+            }
+            AttentionScreen(vm)
         }
     }
 }

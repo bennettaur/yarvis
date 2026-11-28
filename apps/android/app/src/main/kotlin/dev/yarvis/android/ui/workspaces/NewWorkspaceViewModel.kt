@@ -3,7 +3,6 @@ package dev.yarvis.android.ui.workspaces
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.yarvis.android.api.NewWorkspace
-import dev.yarvis.android.api.ReauthCancelledException
 import dev.yarvis.android.api.Repo
 import dev.yarvis.android.api.WorkspaceSummary
 import dev.yarvis.android.api.WorkspaceTask
@@ -130,8 +129,6 @@ class NewWorkspaceViewModel(private val api: WorkspacesApi) : ViewModel() {
                 _state.update { it.copy(busy = false, created = created) }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: ReauthCancelledException) {
-                _state.update { it.copy(busy = false) }
             } catch (e: Exception) {
                 _state.update { it.copy(busy = false, error = e.message ?: "Couldn't create the workspace") }
             }
