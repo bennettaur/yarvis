@@ -52,39 +52,104 @@
   new ResizeObserver(refit).observe(container);
   window.addEventListener("resize", refit);
 
-  // xterm 6 doesn't scroll on touch, so a vertical drag scrolls the scrollback and a tap focuses.
+  // Touch scrolling is done here, in one place. xterm bundles VS Code's gesture
+  // handler, which listens on the document and scrolls too; two scrollers on one
+  // drag fight and leave the rows half redrawn. So touches stop at the container.
+  const cellHeight = () =>
+    term.element.querySelector(".xterm-rows")?.firstElementChild?.offsetHeight || 16;
+
+  // Lines in the scrollback, or, for a full-screen app with none (vim, less,
+  // htop), wheel events, which xterm turns into mouse reports or arrow keys.
+  const scrollBy = (lines) => {
+    if (term.buffer.active.type === "normal") {
+      term.scrollLines(lines);
+    } else {
+      const target = term.element.querySelector(".xterm-screen") || term.element;
+      for (let i = 0; i < Math.abs(lines); i++) {
+        target.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: Math.sign(lines) * cellHeight(),
+            deltaMode: 0,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+    }
+  };
+
   let touchY = null;
   let moved = false;
-  container.addEventListener(
-    "touchstart",
-    (e) => {
-      if (e.touches.length !== 1) return;
-      touchY = e.touches[0].clientY;
-      moved = false;
-    },
-    { passive: true },
-  );
-  container.addEventListener(
-    "touchmove",
-    (e) => {
-      if (touchY === null || e.touches.length !== 1) return;
-      const cellHeight =
-        term.element.querySelector(".xterm-rows")?.firstElementChild?.offsetHeight || 16;
-      const lines = Math.trunc((touchY - e.touches[0].clientY) / cellHeight);
-      if (lines !== 0) {
-        moved = true;
-        term.scrollLines(lines);
-        touchY -= lines * cellHeight;
-      }
-      e.preventDefault();
-    },
-    { passive: false },
-  );
-  container.addEventListener("touchend", () => {
+  let leftover = 0; // Pixels dragged that don't yet make a whole line.
+  let velocity = 0; // Pixels a millisecond, positive when dragging up.
+  let lastMove = 0;
+  let fling = 0;
+
+  const stopFling = () => {
+    if (fling) cancelAnimationFrame(fling);
+    fling = 0;
+  };
+
+  const scrollPixels = (dy) => {
+    leftover += dy;
+    const lines = Math.trunc(leftover / cellHeight());
+    if (lines !== 0) {
+      leftover -= lines * cellHeight();
+      scrollBy(lines);
+    }
+  };
+
+  const listen = (type, handler) =>
+    container.addEventListener(
+      type,
+      (e) => {
+        e.stopPropagation();
+        handler(e);
+      },
+      { capture: true, passive: false },
+    );
+
+  listen("touchstart", (e) => {
+    stopFling();
+    if (e.touches.length !== 1) return;
+    touchY = e.touches[0].clientY;
+    moved = false;
+    leftover = 0;
+    velocity = 0;
+    lastMove = e.timeStamp;
+  });
+  listen("touchmove", (e) => {
+    e.preventDefault();
+    if (touchY === null || e.touches.length !== 1) return;
+    const y = e.touches[0].clientY;
+    const dy = touchY - y;
+    if (!moved && Math.abs(dy) < 8) return; // A tap that wobbled.
+    moved = true;
+    const dt = Math.max(1, e.timeStamp - lastMove);
+    velocity = 0.8 * (dy / dt) + 0.2 * velocity;
+    lastMove = e.timeStamp;
+    touchY = y;
+    scrollPixels(dy);
+  });
+  listen("touchend", (e) => {
     if (touchY !== null && !moved) {
       term.focus();
       bridge.onTap();
+    } else if (moved && e.timeStamp - lastMove < 100 && Math.abs(velocity) > 0.3) {
+      // Keep going after a quick swipe, slowing to a stop.
+      let last = performance.now();
+      const step = (now) => {
+        const dt = now - last;
+        last = now;
+        scrollPixels(velocity * dt);
+        velocity *= 0.995 ** dt;
+        fling = Math.abs(velocity) > 0.05 ? requestAnimationFrame(step) : 0;
+      };
+      fling = requestAnimationFrame(step);
     }
+    touchY = null;
+  });
+  listen("touchcancel", () => {
     touchY = null;
   });
 

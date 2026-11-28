@@ -127,7 +127,8 @@ devices list, so you can revoke it there.
   loads only the bundled page in `assets/terminal/`, can't reach the network,
   and only ever sees terminal bytes: the socket and the token stay in Kotlin.
   A row of extra keys gives Esc, Tab, Shift-Tab, Ctrl, the arrows and Ctrl-C.
-  Typing or tapping takes over the PTY's size, as on the other clients.
+  Opening, tapping or typing in a terminal takes over the PTY's size, so the
+  shell draws for the phone rather than for another client's window.
   `assets/terminal/README.md` says how to update the vendored xterm.js.
 - Markdown is rendered with
   [multiplatform-markdown-renderer](https://github.com/mikepenz/multiplatform-markdown-renderer).
