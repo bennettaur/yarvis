@@ -223,8 +223,8 @@ of those pages, or to the API one of them reads, updates the Mac app in the
 same PR, so the two never drift: the same features, the same labels and the
 same rules. If the Mac side can't be done in that PR, say so in the PR's
 description and file an issue for it. `apps/android` is deliberately
-smaller (chat and the attention bell); a change to those two follows the same
-rule there. A sidecar response change that removes or renames a field is a
+smaller (chat, the attention bell, workspaces and terminals); a change to those
+follows the same rule there. A sidecar response change that removes or renames a field is a
 change to every client that decodes it, so check `apps/` before making one.
 Each app folder's `AGENTS.md` repeats this for agents working only there.
 

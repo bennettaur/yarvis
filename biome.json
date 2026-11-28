@@ -16,6 +16,8 @@
       "!**/bun.lock",
       "!**/Cargo.lock",
       "!**/*.min.js",
+      "!**/apps/android/app/src/main/assets/terminal/xterm.js",
+      "!**/apps/android/app/src/main/assets/terminal/addon-fit.js",
       "!**/*.css",
       "!**/*.svg"
     ]

@@ -1,6 +1,6 @@
 # Yarvis for Android
 
-A small native client for a Yarvis server. It does two things:
+A small native client for a Yarvis server. It does four things:
 
 - **Chat** with the assistant: the thread list, a thread's history, sending a
   message with the reply streamed in as markdown, the tools the turn ran,
@@ -13,7 +13,18 @@ A small native client for a Yarvis server. It does two things:
   dismiss an item. New items raise a local notification, except while the
   Attention tab is on screen.
 
-Terminals, settings, devices and first-time setup stay in the web UI.
+- **Workspaces**: the list with each PR's state and checks, a workspace's
+  repos, branches, PRs, tasks and issues, creating one (repos, an existing
+  branch per repo, a linked task) with its provisioning log streamed in, and
+  archiving. From a workspace you start, open or stop its agent session and
+  open its shells.
+- **Terminals**: every PTY session on the server, the agent sessions and
+  shells, opened full screen. New shells open on the Terminal page's surface
+  or the workspace's, with ids in the web's shape, so the other clients see
+  them in the right place.
+
+Changed files, diffs, the editor, settings, devices and first-time setup stay
+in the web UI.
 
 ## Build
 
@@ -89,6 +100,20 @@ devices list, so you can revoke it there.
   Keystore and stored in DataStore. A 401 from any request signs the app out.
   When an answer gets `403 reauth_required`, the app asks for a code, calls
   `/api/auth/reverify`, and retries once.
+- Workspaces go through the sidecar's `/api/workspaces` routes. The agent
+  starts with the core's `pty_start_claude`, as on the web. The app doesn't
+  start an agent just because a workspace was opened, so looking at one on a
+  phone launches nothing.
+- Terminals attach over `/api/pty/{id}` with OkHttp (`api/PtyConnection.kt`).
+  The token goes in the first message, a reconnect resumes from the last byte
+  received, and an agent session's id is checked with `pty_exists` before each
+  attach, since attaching to a dead id would spawn a plain shell there. The
+  screen is xterm.js in a WebView (`ui/terminal/TerminalWebView.kt`) that
+  loads only the bundled page in `assets/terminal/`, can't reach the network,
+  and only ever sees terminal bytes: the socket and the token stay in Kotlin.
+  A row of extra keys gives Esc, Tab, Shift-Tab, Ctrl, the arrows and Ctrl-C.
+  Typing or tapping takes over the PTY's size, as on the other clients.
+  `assets/terminal/README.md` says how to update the vendored xterm.js.
 - Markdown is rendered with
   [multiplatform-markdown-renderer](https://github.com/mikepenz/multiplatform-markdown-renderer).
   No image loader is installed, so a reply can't make the phone fetch a

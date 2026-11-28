@@ -164,6 +164,14 @@ class AppContainer(private val context: Context) {
     }
 
     /**
+     * A screen saw the server refuse [session]'s token outside HTTP, such as a
+     * terminal socket's 4401, so the app signs out as it does on a 401.
+     */
+    fun onSessionRevoked(session: SignedInSession) {
+        scope.launch { forget(session) }
+    }
+
+    /**
      * Signs [session] out. A late 401 from an earlier session leaves the current
      * one alone, and while [signOut] runs, only it decides how the sign-out ends.
      */
