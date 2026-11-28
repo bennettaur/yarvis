@@ -35,6 +35,8 @@ data class TerminalState(
     val status: TerminalStatus = TerminalStatus.Connecting,
     val fontSize: Int = DEFAULT_FONT_SIZE,
     val ctrlArmed: Boolean = false,
+    /** Whether the keyboard composes words (swipe typing works) or sends each key as typed. */
+    val wordInput: Boolean = true,
     /** Agent and review sessions are started by the sidecar only, so they get no "new shell". */
     val canStartNewShell: Boolean = false,
 )
@@ -161,6 +163,8 @@ class TerminalViewModel(
     fun press(key: ExtraKey) = send(TerminalKeys.encode(key, consumeCtrl(), appCursor))
 
     fun toggleCtrl() = _state.update { it.copy(ctrlArmed = !it.ctrlArmed) }
+
+    fun toggleWordInput() = _state.update { it.copy(wordInput = !it.wordInput) }
 
     fun changeFontSize(delta: Int) =
         _state.update { it.copy(fontSize = (it.fontSize + delta).coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE)) }

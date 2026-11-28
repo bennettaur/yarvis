@@ -91,7 +91,7 @@ fun TerminalScreen(
             else -> Unit
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
-            TerminalPage(vm, state.fontSize)
+            TerminalPage(vm, state.fontSize, state.wordInput)
         }
         when (val status = state.status) {
             is TerminalStatus.Exited -> Surface(tonalElevation = 4.dp, modifier = Modifier.fillMaxWidth()) {
@@ -106,7 +106,7 @@ fun TerminalScreen(
             is TerminalStatus.Failed -> Banner(status.message, error = true, action = "Retry" to vm::retry)
             else -> Unit
         }
-        ExtraKeys(state.ctrlArmed, onKey = vm::press, onCtrl = vm::toggleCtrl)
+        ExtraKeys(state.ctrlArmed, state.wordInput, onKey = vm::press, onCtrl = vm::toggleCtrl, onWordInput = vm::toggleWordInput)
     }
 }
 
@@ -115,7 +115,7 @@ fun TerminalScreen(
  * new one is filled from the view model's replay buffer.
  */
 @Composable
-private fun TerminalPage(vm: TerminalViewModel, fontSize: Int) {
+private fun TerminalPage(vm: TerminalViewModel, fontSize: Int, wordInput: Boolean) {
     var generation by remember { mutableIntStateOf(0) }
     key(generation) {
         AndroidView(
@@ -139,7 +139,10 @@ private fun TerminalPage(vm: TerminalViewModel, fontSize: Int) {
                 vm.attachSink(view)
                 view
             },
-            update = { it.setFontSize(fontSize) },
+            update = {
+                it.setFontSize(fontSize)
+                it.wordInput = wordInput
+            },
             onRelease = { view ->
                 vm.detachSink(view)
                 view.destroy()
@@ -164,7 +167,13 @@ private fun Banner(text: String, error: Boolean = false, action: Pair<String, ()
 
 /** Keys the phone keyboard lacks. They never take focus, so the keyboard stays up while they're used. */
 @Composable
-private fun ExtraKeys(ctrlArmed: Boolean, onKey: (ExtraKey) -> Unit, onCtrl: () -> Unit) {
+private fun ExtraKeys(
+    ctrlArmed: Boolean,
+    wordInput: Boolean,
+    onKey: (ExtraKey) -> Unit,
+    onCtrl: () -> Unit,
+    onWordInput: () -> Unit,
+) {
     val noFocus = Modifier.focusProperties { canFocus = false }
     Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -178,6 +187,7 @@ private fun ExtraKeys(ctrlArmed: Boolean, onKey: (ExtraKey) -> Unit, onCtrl: () 
                 KeyButton("Ctrl", noFocus, onCtrl)
             }
             for (key in ExtraKey.entries.drop(3)) KeyButton(key.label, noFocus) { onKey(key) }
+            KeyButton(if (wordInput) "Swipe: on" else "Swipe: off", noFocus, onWordInput)
         }
     }
 }

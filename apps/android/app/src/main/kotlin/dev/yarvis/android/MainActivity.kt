@@ -14,6 +14,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -286,7 +287,7 @@ private fun SignedInScreens(
     ) { padding ->
         val topKey = nav.routeKeys(session.id).last()
         val owner = remember(topKey) { routeStores.owner(topKey) }
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
             key(topKey) {
                 CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
                     RouteContent(top, container, session, navigate = { nav = it(nav) }, openTerminal = openTerminal)

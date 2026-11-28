@@ -19,6 +19,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import java.io.ByteArrayInputStream
 import java.util.Base64
@@ -61,6 +63,9 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
         configure()
         addJavascriptInterface(Bridge(), "YarvisBridge")
         webViewClient = Client(assetLoader(context))
+        // Compose already shrinks this view above the keyboard. A WebView that saw the
+        // keyboard's inset would shrink its own viewport by it again.
+        ViewCompat.setOnApplyWindowInsetsListener(this) { _, _ -> WindowInsetsCompat.CONSUMED }
         loadUrl("$PAGE_URL?fontSize=$fontSize")
     }
 
@@ -96,6 +101,17 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
     }
 
     /** Raises the keyboard; the page focuses xterm's input on the same tap. */
+    /**
+     * True lets the keyboard compose words, which swipe typing needs. False makes
+     * it send each key as it's typed, which suits a shell better.
+     */
+    var wordInput = true
+        set(value) {
+            if (field == value) return
+            field = value
+            context.getSystemService(InputMethodManager::class.java)?.restartInput(this)
+        }
+
     fun showKeyboard() {
         requestFocus()
         context.getSystemService(InputMethodManager::class.java)?.showSoftInput(this, 0)
@@ -113,9 +129,12 @@ class TerminalWebView(context: Context, private val listener: TerminalPageListen
      */
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
         val connection = super.onCreateInputConnection(outAttrs) ?: return null
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // Keyboards turn off swipe typing in password fields, so key mode alone uses one.
+        if (!wordInput) {
+            outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
         outAttrs.imeOptions = outAttrs.imeOptions or EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return connection
     }

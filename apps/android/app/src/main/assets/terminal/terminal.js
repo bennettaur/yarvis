@@ -50,6 +50,7 @@
     if (container.clientWidth > 0 && container.clientHeight > 0) fit.fit();
   };
   new ResizeObserver(refit).observe(container);
+  window.addEventListener("resize", refit);
 
   // xterm 6 doesn't scroll on touch, so a vertical drag scrolls the scrollback and a tap focuses.
   let touchY = null;
