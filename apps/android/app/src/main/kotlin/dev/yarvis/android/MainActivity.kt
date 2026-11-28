@@ -121,9 +121,10 @@ class MainActivity : ComponentActivity() {
 
     private fun unlock() {
         val lock = container.appLock
-        lock.promptShown()
+        if (!lock.beginPrompt()) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            DeviceAuth.prompt(this, lock::promptEnded)
+            // A prompt that can't open must not leave the lock waiting on it.
+            runCatching { DeviceAuth.prompt(this, lock::promptEnded) }.onFailure { lock.promptEnded(false) }
         } else {
             DeviceAuth.screenLockIntent(this)?.let(screenLock::launch) ?: lock.promptEnded(false)
         }
@@ -273,7 +274,9 @@ private fun YarvisRoot(
             SignedInScreens(container, state.session, openAttention, routeStores, unlock)
         }
     }
-    CodePromptDialog(container.codePrompt)
+    // A write that needs a fresh code waits for the unlock rather than asking over the lock screen.
+    val lock by container.appLock.state.collectAsStateWithLifecycle()
+    if (auth !is AuthState.SignedIn || lock == LockState.Unlocked) CodePromptDialog(container.codePrompt)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -292,7 +295,9 @@ private fun SignedInScreens(
             openAttention.value = false
         }
     }
-    // Below the nav state, so the stacks are still there once the app unlocks.
+    // Below the nav state, so the stacks are still there once the app unlocks. The
+    // screens themselves leave composition, so nothing of them stays on screen or
+    // reachable by the keyboard; their `remember` state, such as a chat draft, is lost.
     val lock by container.appLock.state.collectAsStateWithLifecycle()
     if (lock != LockState.Unlocked) {
         LockScreen(container.appLock, lock, unlock)
@@ -461,7 +466,7 @@ private fun AppMenu(container: AppContainer) {
                         if (!canLock) Text("Set up a screen lock first", style = MaterialTheme.typography.bodySmall)
                     }
                 },
-                trailingIcon = { Checkbox(checked = lockEnabled && canLock, onCheckedChange = null) },
+                trailingIcon = { Checkbox(checked = lockEnabled, onCheckedChange = null) },
                 enabled = canLock || lockEnabled,
                 onClick = { container.appLock.setEnabled(!lockEnabled) },
             )

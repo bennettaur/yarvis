@@ -3,6 +3,7 @@ package dev.yarvis.android.lock
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,7 +45,7 @@ class AppLockTest {
     @Test
     fun `locks again only after the grace in the background`() = runTest(UnconfinedTestDispatcher()) {
         val lock = lock()
-        lock.promptShown()
+        lock.beginPrompt()
         lock.promptEnded(passed = true)
         assertEquals(LockState.Unlocked, lock.state.value)
 
@@ -62,7 +63,7 @@ class AppLockTest {
     @Test
     fun `the trip to the screen-lock check doesn't relock`() = runTest(UnconfinedTestDispatcher()) {
         val lock = lock()
-        lock.promptShown()
+        lock.beginPrompt()
         lock.onBackground()
         clock += 30_000
         lock.onForeground()
@@ -74,7 +75,7 @@ class AppLockTest {
     fun `a failed check stays locked and prompts by itself only once`() = runTest(UnconfinedTestDispatcher()) {
         val lock = lock()
         assertTrue(lock.takeAutoPrompt())
-        lock.promptShown()
+        lock.beginPrompt()
         lock.promptEnded(passed = false)
         assertEquals(LockState.Locked, lock.state.value)
         assertFalse(lock.takeAutoPrompt())
@@ -91,6 +92,53 @@ class AppLockTest {
         lock.setEnabled(true)
         assertTrue(lock.enabled.value)
         assertEquals(true, prefs.saved)
+    }
+
+    @Test
+    fun `turned off, it stops relocking`() = runTest(UnconfinedTestDispatcher()) {
+        val prefs = Prefs()
+        val lock = lock(prefs)
+        lock.signedIn()
+        lock.setEnabled(false)
+        assertEquals(false, prefs.saved)
+        lock.onBackground()
+        clock += 5_000
+        lock.onForeground()
+        assertEquals(LockState.Unlocked, lock.state.value)
+    }
+
+    @Test
+    fun `each relock prompts by itself again`() = runTest(UnconfinedTestDispatcher()) {
+        val lock = lock()
+        assertTrue(lock.takeAutoPrompt())
+        lock.beginPrompt()
+        lock.promptEnded(passed = true)
+        assertFalse(lock.takeAutoPrompt())
+        lock.onBackground()
+        clock += 5_000
+        lock.onForeground()
+        assertTrue(lock.takeAutoPrompt())
+    }
+
+    @Test
+    fun `a screen lock removed while away unlocks rather than stranding the user`() = runTest(UnconfinedTestDispatcher()) {
+        val lock = lock()
+        secure = false
+        assertFalse(lock.beginPrompt())
+        assertEquals(LockState.Unlocked, lock.state.value)
+        lock.onBackground()
+        clock += 5_000
+        lock.onForeground()
+        assertEquals(LockState.Unlocked, lock.state.value)
+    }
+
+    @Test
+    fun `a sign-in before the setting loads isn't overwritten`() = runTest {
+        val lock = lock()
+        assertEquals(LockState.Loading, lock.state.value)
+        lock.signedIn()
+        advanceUntilIdle()
+        assertEquals(LockState.Unlocked, lock.state.value)
     }
 
     @Test

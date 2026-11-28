@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 enum class LockState { Loading, Locked, Unlocked }
@@ -48,7 +49,8 @@ class AppLock(
         scope.launch {
             val on = prefs.lockEnabled() ?: true
             _enabled.value = on
-            _state.value = if (on && canAuthenticate()) LockState.Locked else LockState.Unlocked
+            // A sign-in or a passed check that landed first already decided.
+            _state.update { if (it == LockState.Loading) (if (on && canAuthenticate()) LockState.Locked else LockState.Unlocked) else it }
         }
     }
 
@@ -72,8 +74,18 @@ class AppLock(
         return true
     }
 
-    fun promptShown() {
+    /**
+     * Call before opening the device's check. False means there is nothing to
+     * check against any more (the screen lock was removed), so the app unlocks
+     * instead of leaving the user stuck.
+     */
+    fun beginPrompt(): Boolean {
+        if (!canAuthenticate()) {
+            _state.value = LockState.Unlocked
+            return false
+        }
         authenticating = true
+        return true
     }
 
     fun promptEnded(passed: Boolean) {
@@ -83,6 +95,7 @@ class AppLock(
 
     /** Signing in just proved who the user is, so it opens the app as a pass would. */
     fun signedIn() {
+        authenticating = false
         _state.value = LockState.Unlocked
     }
 
@@ -97,6 +110,7 @@ class AppLock(
         // A screen lock removed while the app was away leaves nothing to unlock with.
         if (!canAuthenticate()) return
         autoPrompted = false
+        authenticating = false
         _state.value = LockState.Locked
     }
 }

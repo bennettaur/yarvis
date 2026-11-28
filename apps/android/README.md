@@ -35,8 +35,8 @@ A small native client for a Yarvis server. It does four things:
   opens, and again after a minute in the background. It's on by default
   whenever the phone has a screen lock, and **Require unlock** in the top
   bar's menu turns it off. With it on, the recents screen shows a blank card
-  (Android 13 and later). Notifications still show their text on the lock
-  screen, as Android's own settings for them decide.
+  (Android 13 and later). The lock doesn't cover notifications: on an
+  unlocked phone the shade still shows their full text.
 
 Changed files, diffs, the editor, settings, devices and first-time setup stay
 in the web UI.
