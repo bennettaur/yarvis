@@ -17,6 +17,9 @@ import dev.yarvis.android.data.ChatTurns
 import dev.yarvis.android.data.CodePromptState
 import dev.yarvis.android.data.SavedSession
 import dev.yarvis.android.data.SessionStore
+import dev.yarvis.android.lock.AppLock
+import dev.yarvis.android.lock.DeviceAuth
+import dev.yarvis.android.lock.LockPrefs
 import dev.yarvis.android.notify.AttentionNotifier
 import dev.yarvis.android.ui.signin.SignInGateway
 import java.util.concurrent.TimeUnit
@@ -71,6 +74,16 @@ class AppContainer(private val context: Context) {
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
 
+    /** Kept across sign-outs, since it guards the device rather than one account. */
+    val appLock = AppLock(
+        object : LockPrefs {
+            override suspend fun lockEnabled() = store.lockEnabled()
+            override suspend fun saveLockEnabled(enabled: Boolean) = store.saveLockEnabled(enabled)
+        },
+        canAuthenticate = { DeviceAuth.canAuthenticate(context) },
+        scope = scope,
+    )
+
     private val _auth = MutableStateFlow<AuthState>(AuthState.Loading)
     val auth: StateFlow<AuthState> = _auth.asStateFlow()
 
@@ -85,6 +98,7 @@ class AppContainer(private val context: Context) {
         override suspend fun signIn(server: HttpUrl, request: LoginRequest) {
             val signedIn = AuthClient(server, http).login(request)
             store.save(SavedSession(server.toString(), signedIn.token))
+            appLock.signedIn()
             begin(server, signedIn.token)
         }
 
@@ -104,12 +118,14 @@ class AppContainer(private val context: Context) {
         }
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
+                appLock.onForeground()
                 notifier.foreground = true
                 stopStreamsJob?.cancel()
                 (auth.value as? AuthState.SignedIn)?.session?.attention?.start()
             }
 
             override fun onStop(owner: LifecycleOwner) {
+                appLock.onBackground()
                 notifier.foreground = false
                 // Keep listening for a while after the app leaves the screen, so a
                 // prompt that arrives just after still notifies. Past that, real

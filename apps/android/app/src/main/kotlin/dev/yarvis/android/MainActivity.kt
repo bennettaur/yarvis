@@ -20,9 +20,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.Badge
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -33,7 +37,6 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -57,10 +60,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.yarvis.android.api.PtyIds
+import dev.yarvis.android.lock.DeviceAuth
+import dev.yarvis.android.lock.LockScreen
+import dev.yarvis.android.lock.LockState
 import dev.yarvis.android.ui.CodePromptDialog
 import dev.yarvis.android.ui.attention.AttentionDestination
 import dev.yarvis.android.ui.attention.AttentionScreen
@@ -81,6 +88,7 @@ import dev.yarvis.android.ui.workspaces.WorkspaceDetailViewModel
 import dev.yarvis.android.ui.workspaces.WorkspaceListScreen
 import dev.yarvis.android.ui.workspaces.WorkspaceListViewModel
 import java.util.UUID
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -89,16 +97,35 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
+    private val container get() = (application as YarvisApp).container
+
+    private val screenLock = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        container.appLock.promptEnded(it.resultCode == RESULT_OK)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // Only a fresh launch follows the notification's extra; a rotation keeps the user's tab.
         if (savedInstanceState == null) openAttention.value = intent.getBooleanExtra(EXTRA_OPEN_ATTENTION, false)
-        val container = (application as YarvisApp).container
+        // With the lock on, the recents screen shows a blank card rather than what was open.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            lifecycleScope.launch { container.appLock.enabled.collect { setRecentsScreenshotEnabled(!it) } }
+        }
         setContent {
             YarvisTheme {
-                YarvisRoot(container, openAttention, ::askForNotifications)
+                YarvisRoot(container, openAttention, ::askForNotifications, ::unlock)
             }
+        }
+    }
+
+    private fun unlock() {
+        val lock = container.appLock
+        lock.promptShown()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            DeviceAuth.prompt(this, lock::promptEnded)
+        } else {
+            DeviceAuth.screenLockIntent(this)?.let(screenLock::launch) ?: lock.promptEnded(false)
         }
     }
 
@@ -225,7 +252,12 @@ private const val NEW_THREAD_PREFIX = "new:"
 private fun newThreadKey() = NEW_THREAD_PREFIX + UUID.randomUUID()
 
 @Composable
-private fun YarvisRoot(container: AppContainer, openAttention: MutableState<Boolean>, askForNotifications: () -> Unit) {
+private fun YarvisRoot(
+    container: AppContainer,
+    openAttention: MutableState<Boolean>,
+    askForNotifications: () -> Unit,
+    unlock: () -> Unit,
+) {
     val auth by container.auth.collectAsStateWithLifecycle()
     val routeStores = viewModel<RouteStoresViewModel>().stores
     when (val state = auth) {
@@ -238,7 +270,7 @@ private fun YarvisRoot(container: AppContainer, openAttention: MutableState<Bool
         }
         is AuthState.SignedIn -> {
             LaunchedEffect(Unit) { askForNotifications() }
-            SignedInScreens(container, state.session, openAttention, routeStores)
+            SignedInScreens(container, state.session, openAttention, routeStores, unlock)
         }
     }
     CodePromptDialog(container.codePrompt)
@@ -251,6 +283,7 @@ private fun SignedInScreens(
     session: SignedInSession,
     openAttention: MutableState<Boolean>,
     routeStores: RouteStores,
+    unlock: () -> Unit,
 ) {
     var nav by rememberSaveable(saver = NavStateSaver) { mutableStateOf(NavState()) }
     LaunchedEffect(openAttention.value) {
@@ -258,6 +291,12 @@ private fun SignedInScreens(
             nav = nav.select(Tab.Attention)
             openAttention.value = false
         }
+    }
+    // Below the nav state, so the stacks are still there once the app unlocks.
+    val lock by container.appLock.state.collectAsStateWithLifecycle()
+    if (lock != LockState.Unlocked) {
+        LockScreen(container.appLock, lock, unlock)
+        return
     }
     val attention by session.attention.state.collectAsStateWithLifecycle()
     val pending = attention.items.size + attention.approvals.size
@@ -285,7 +324,7 @@ private fun SignedInScreens(
                         }
                     }
                 },
-                actions = { TextButton(onClick = container::signOut) { Text("Sign out") } },
+                actions = { AppMenu(container) },
             )
         },
         bottomBar = {
@@ -402,6 +441,36 @@ private fun title(route: Route): String = when (route) {
     Route.TerminalSessions -> "Terminal"
     is Route.Terminal -> route.title
     Route.Attention -> "Attention"
+}
+
+/** Settings that belong to this phone, and signing out. */
+@Composable
+private fun AppMenu(container: AppContainer) {
+    var open by remember { mutableStateOf(false) }
+    val lockEnabled by container.appLock.enabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    // Read when the menu opens, so a screen lock set up meanwhile counts.
+    val canLock = remember(open) { DeviceAuth.canAuthenticate(context) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Menu") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("Require unlock")
+                        if (!canLock) Text("Set up a screen lock first", style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                trailingIcon = { Checkbox(checked = lockEnabled && canLock, onCheckedChange = null) },
+                enabled = canLock || lockEnabled,
+                onClick = { container.appLock.setEnabled(!lockEnabled) },
+            )
+            DropdownMenuItem(text = { Text("Sign out") }, onClick = {
+                open = false
+                container.signOut()
+            })
+        }
+    }
 }
 
 @Composable

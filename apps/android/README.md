@@ -31,6 +31,13 @@ A small native client for a Yarvis server. It does four things:
   or the workspace's, with ids in the web's shape, so the other clients see
   them in the right place.
 
+- **App lock**: the app asks for your fingerprint, face or screen lock when it
+  opens, and again after a minute in the background. It's on by default
+  whenever the phone has a screen lock, and **Require unlock** in the top
+  bar's menu turns it off. With it on, the recents screen shows a blank card
+  (Android 13 and later). Notifications still show their text on the lock
+  screen, as Android's own settings for them decide.
+
 Changed files, diffs, the editor, settings, devices and first-time setup stay
 in the web UI.
 

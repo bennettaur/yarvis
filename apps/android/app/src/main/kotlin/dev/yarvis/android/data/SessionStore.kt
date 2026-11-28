@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -62,6 +63,12 @@ class SessionStore(private val context: Context) {
         }
     }
 
+    suspend fun lockEnabled(): Boolean? = context.dataStore.data.first()[LOCK_ENABLED]
+
+    suspend fun saveLockEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[LOCK_ENABLED] = enabled }
+    }
+
     private fun key(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }
         (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
@@ -99,5 +106,6 @@ class SessionStore(private val context: Context) {
         val TOKEN = stringPreferencesKey("device_token")
         val CHAT_PROVIDER = stringPreferencesKey("chat_provider")
         val CHAT_MODEL = stringPreferencesKey("chat_model")
+        val LOCK_ENABLED = booleanPreferencesKey("lock_enabled")
     }
 }
