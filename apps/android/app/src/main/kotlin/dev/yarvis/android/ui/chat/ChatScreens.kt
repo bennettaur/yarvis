@@ -22,7 +22,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -55,6 +54,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.UriHandler
 import androidx.compose.ui.text.font.FontFamily
@@ -66,8 +69,8 @@ import com.mikepenz.markdown.m3.Markdown
 import dev.yarvis.android.api.ToolActivity
 import dev.yarvis.android.data.ChatTurns
 import dev.yarvis.android.data.PendingApproval
-import kotlinx.coroutines.delay
 import java.time.Instant
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -394,7 +397,7 @@ private fun Composer(running: Boolean, onSend: (String) -> Unit, onStop: () -> U
             maxLines = 6,
         )
         if (running) {
-            FilledTonalIconButton(onClick = onStop) { Icon(Icons.Filled.Close, contentDescription = "Stop") }
+            FilledTonalIconButton(onClick = onStop) { Icon(StopIcon, contentDescription = "Stop") }
         } else {
             FilledIconButton(
                 enabled = text.isNotBlank(),
@@ -405,4 +408,20 @@ private fun Composer(running: Boolean, onSend: (String) -> Unit, onStop: () -> U
             ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send") }
         }
     }
+}
+
+/**
+ * Material's "stop" square, drawn here because material-icons-core lacks it and
+ * the extended set would add several megabytes for one icon.
+ */
+private val StopIcon: ImageVector by lazy {
+    ImageVector.Builder(name = "Stop", defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
+        .path(fill = SolidColor(Color.Black)) {
+            moveTo(6f, 6f)
+            horizontalLineToRelative(12f)
+            verticalLineToRelative(12f)
+            horizontalLineTo(6f)
+            close()
+        }
+        .build()
 }
