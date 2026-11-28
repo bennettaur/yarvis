@@ -3,30 +3,20 @@ package dev.yarvis.android.ui.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.yarvis.android.api.ChatApi
-import dev.yarvis.android.api.ChatEvent
 import dev.yarvis.android.api.ChatMessage
-import dev.yarvis.android.api.ChatRequest
 import dev.yarvis.android.api.ProviderInfo
 import dev.yarvis.android.api.ReauthCancelledException
 import dev.yarvis.android.api.ToolActivity
 import dev.yarvis.android.data.ChatModelPrefs
+import dev.yarvis.android.data.ChatTurns
+import dev.yarvis.android.data.PendingApproval
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.JsonElement
-
-/** A tool call waiting for the user's yes or no, from a `tool_approval_request` event. */
-data class PendingApproval(
-    val id: String,
-    val name: String,
-    val server: String,
-    val args: JsonElement?,
-    val reason: String?,
-)
+import java.util.UUID
 
 data class ThreadMessage(val role: String, val content: String, val toolCalls: List<ToolActivity> = emptyList())
 
@@ -34,11 +24,8 @@ data class ThreadState(
     val sessionId: String? = null,
     val messages: List<ThreadMessage> = emptyList(),
     val loading: Boolean = false,
-    /** The reply so far, while a turn runs. */
-    val streaming: String? = null,
-    val activity: List<ToolActivity> = emptyList(),
-    /** Oldest first; the approval bar answers the front one. */
-    val approvals: List<PendingApproval> = emptyList(),
+    /** The thread's turn: running, or failed and waiting for a retry. */
+    val turn: ChatTurns.Turn? = null,
     val providers: List<ProviderInfo> = emptyList(),
     val provider: String = "",
     val model: String = "",
@@ -46,27 +33,48 @@ data class ThreadState(
     /** Something the user did, such as stopping a turn. Shown without alarm. */
     val notice: String? = null,
 ) {
-    val running: Boolean get() = streaming != null
+    val running: Boolean get() = turn?.running == true
+
+    /** The reply so far, while a turn runs. */
+    val streaming: String? get() = turn?.takeIf { it.running }?.reply
+    val activity: List<ToolActivity> get() = turn?.takeIf { it.running }?.activity.orEmpty()
+    val approvals: List<PendingApproval> get() = turn?.approvals.orEmpty()
+
+    /** Why the last turn failed; the thread offers a retry. */
+    val failure: String? get() = turn?.failure
+
+    /**
+     * The turn's message, shown until the saved thread has it. A retry is
+     * collapsed onto the user row the sidecar already saved, so it isn't shown twice.
+     */
+    val pendingMessage: String?
+        get() = turn?.text?.takeUnless(messages::endsWithUser)
 }
 
 /**
- * One chat thread: its history, a running turn's streamed reply and tool
- * activity, and the tool approvals the turn waits on. [sessionId] is null for
- * a thread that starts with the first message.
+ * One chat thread: its history, plus the turn [ChatTurns] runs for it. The
+ * turn outlives this view model, so leaving the thread doesn't stop it and
+ * reopening the thread shows it still going. [threadKey] finds the turn: the
+ * session id, or the "new chat" key for a thread that starts with the first
+ * message, until that message creates the session.
  */
 class ChatThreadViewModel(
     private val api: ChatApi,
     private val prefs: ChatModelPrefs,
+    private val turns: ChatTurns,
     sessionId: String?,
+    private val threadKey: String = sessionId ?: "new:${UUID.randomUUID()}",
 ) : ViewModel() {
     private val _state = MutableStateFlow(ThreadState(sessionId = sessionId, loading = sessionId != null))
     val state: StateFlow<ThreadState> = _state.asStateFlow()
 
-    private var turn: Job? = null
+    // Set by [stop], so the turn's end shows the stop notice instead of a reply.
+    private var stopping = false
 
     init {
         viewModelScope.launch { loadProviders() }
         if (sessionId != null) viewModelScope.launch { loadMessages(sessionId) }
+        viewModelScope.launch { turns.turn(threadKey).collect(::onTurn) }
     }
 
     private suspend fun loadProviders() {
@@ -96,6 +104,42 @@ class ChatThreadViewModel(
         }
     }
 
+    private fun onTurn(turn: ChatTurns.Turn?) {
+        val previous = _state.value.turn
+        _state.update { it.copy(turn = turn, sessionId = turn?.sessionId ?: it.sessionId) }
+        if (previous?.running != true) return
+        when {
+            turn == null && stopping -> {
+                stopping = false
+                // The sidecar saves nothing for a stopped turn, so the partial reply goes too.
+                keepMessage(previous, reply = false)
+                _state.update { it.copy(notice = "Turn stopped. Nothing was saved for it.") }
+            }
+            turn == null -> {
+                // Shown at once, then replaced by the saved thread.
+                keepMessage(previous, reply = true)
+                reload()
+            }
+            // The sidecar saved the user's message before the turn failed.
+            !turn.running -> reload()
+        }
+    }
+
+    private fun keepMessage(turn: ChatTurns.Turn, reply: Boolean) = _state.update { s ->
+        val user = if (s.messages.endsWithUser(turn.text)) emptyList() else listOf(ThreadMessage("user", turn.text))
+        val answer = if (reply && (turn.reply.isNotEmpty() || turn.activity.isNotEmpty())) {
+            listOf(ThreadMessage("assistant", turn.reply, turn.activity))
+        } else {
+            emptyList()
+        }
+        s.copy(messages = s.messages + user + answer)
+    }
+
+    private fun reload() {
+        val sessionId = _state.value.sessionId ?: return
+        viewModelScope.launch { loadMessages(sessionId) }
+    }
+
     fun chooseModel(provider: String, model: String) {
         _state.update { it.copy(provider = provider, model = model) }
         viewModelScope.launch { prefs.save(provider, model) }
@@ -111,52 +155,30 @@ class ChatThreadViewModel(
             _state.update { it.copy(error = "No chat model is set up on the server.") }
             return
         }
-        _state.update {
-            it.copy(
-                messages = it.messages + ThreadMessage("user", message),
-                streaming = "",
-                activity = emptyList(),
-                error = null,
-                notice = null,
-            )
-        }
-        turn = viewModelScope.launch {
-            try {
-                val sessionId = before.sessionId ?: api.createSession().id.also { id -> _state.update { it.copy(sessionId = id) } }
-                // The sidecar saves no reply for a turn that ended in an error, so neither do we.
-                var failed = false
-                api.streamChat(ChatRequest(sessionId, message, before.provider, before.model)).collect { event ->
-                    if (event.type == "error") failed = true
-                    applyEvent(event)
-                }
-                finishTurn(saveReply = !failed)
-                loadMessages(sessionId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _state.update { it.copy(error = "The turn failed: ${e.message}") }
-                finishTurn(saveReply = false)
-            }
-        }
+        _state.update { it.copy(error = null, notice = null) }
+        turns.send(threadKey, before.sessionId, message, before.provider, before.model)
     }
 
     /**
-     * Stops the running turn by dropping its stream, which the sidecar takes as
-     * the user's stop. It saves nothing for the turn, so the partial reply goes too.
+     * Sends a failed turn's message again. The sidecar collapses it onto the
+     * user row it already saved, so the thread doesn't get the message twice.
      */
+    fun retry() {
+        val failed = _state.value.turn?.takeIf { !it.running } ?: return
+        send(failed.text)
+    }
+
+    /** Stops the running turn. Leaving the thread doesn't; only this does. */
     fun stop() {
-        val job = turn ?: return
-        if (!job.isActive) return
-        job.cancel()
-        finishTurn(saveReply = false)
-        _state.update { it.copy(notice = "Turn stopped. Nothing was saved for it.") }
+        stopping = true
+        if (!turns.stop(threadKey)) stopping = false
     }
 
     fun answerApproval(approval: PendingApproval, approved: Boolean) {
         viewModelScope.launch {
             try {
                 api.answerToolApproval(approval.id, approved)
-                _state.update { s -> s.copy(approvals = s.approvals.filterNot { it.id == approval.id }) }
+                turns.dropApproval(threadKey, approval.id)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: ReauthCancelledException) {
@@ -166,49 +188,8 @@ class ChatThreadViewModel(
             }
         }
     }
-
-    private fun applyEvent(event: ChatEvent) {
-        _state.update { s ->
-            when (event.type) {
-                "delta" -> s.copy(streaming = (s.streaming ?: "") + event.text.orEmpty())
-                "tool_call" -> {
-                    val id = event.id ?: return@update s
-                    s.copy(
-                        activity = s.activity + ToolActivity(id, event.name ?: id, event.server, event.args, "pending"),
-                    )
-                }
-                "tool_result" -> s.copy(
-                    activity = s.activity.map {
-                        if (it.id != event.id) {
-                            it
-                        } else {
-                            it.copy(status = event.status ?: "ok", result = event.result, durationMs = event.durationMs)
-                        }
-                    },
-                )
-                "tool_approval_request" -> {
-                    val id = event.id ?: return@update s
-                    if (s.approvals.any { it.id == id }) return@update s
-                    s.copy(approvals = s.approvals + PendingApproval(id, event.name ?: id, event.server.orEmpty(), event.args, event.reason))
-                }
-                "error" -> s.copy(error = listOfNotNull(event.message, event.detail).joinToString("\n\n"))
-                else -> s
-            }
-        }
-    }
-
-    private fun finishTurn(saveReply: Boolean) {
-        _state.update { s ->
-            val reply = s.streaming
-            val messages = if (saveReply && (!reply.isNullOrEmpty() || s.activity.isNotEmpty())) {
-                s.messages + ThreadMessage("assistant", reply.orEmpty(), s.activity)
-            } else {
-                s.messages
-            }
-            // Approvals the turn didn't get answered can't be answered after it.
-            s.copy(messages = messages, streaming = null, activity = emptyList(), approvals = emptyList())
-        }
-    }
 }
+
+private fun List<ThreadMessage>.endsWithUser(text: String) = lastOrNull()?.let { it.role == "user" && it.content == text } == true
 
 private fun ChatMessage.toThreadMessage() = ThreadMessage(role, content, toolCalls.orEmpty())

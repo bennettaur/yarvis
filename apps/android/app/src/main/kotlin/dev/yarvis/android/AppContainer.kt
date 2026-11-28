@@ -13,6 +13,7 @@ import dev.yarvis.android.api.ServerUrl
 import dev.yarvis.android.api.YarvisClient
 import dev.yarvis.android.data.AttentionRepository
 import dev.yarvis.android.data.ChatModelPrefs
+import dev.yarvis.android.data.ChatTurns
 import dev.yarvis.android.data.CodePromptState
 import dev.yarvis.android.data.SavedSession
 import dev.yarvis.android.data.SessionStore
@@ -38,6 +39,8 @@ class SignedInSession(
     val serverUrl: HttpUrl,
     val client: YarvisClient,
     val attention: AttentionRepository,
+    /** Chat turns, which outlive the thread that started them until sign-out. */
+    val chatTurns: ChatTurns,
     val id: String = UUID.randomUUID().toString(),
 )
 
@@ -135,7 +138,7 @@ class AppContainer(private val context: Context) {
         )
         val events = ServerEventsSocket(server, token, streamHttp)
         val attention = AttentionRepository(client, events::signals, scope, onSignedOut = { scope.launch { forget(session) } })
-        session = SignedInSession(server, client, attention)
+        session = SignedInSession(server, client, attention, ChatTurns(client, scope))
         notifier.follow(scope, attention.arrivals)
         _auth.value = AuthState.SignedIn(session)
         if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) attention.start()
@@ -183,6 +186,7 @@ class AppContainer(private val context: Context) {
         // waiting can't pass the identity check above and overwrite the notice.
         _auth.value = AuthState.SignedOut(session.serverUrl.toString(), notice)
         session.attention.stop()
+        session.chatTurns.stopAll()
         notifier.stopFollowing()
         store.clearToken()
     }

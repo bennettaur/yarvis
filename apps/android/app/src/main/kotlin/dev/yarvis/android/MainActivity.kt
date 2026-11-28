@@ -36,6 +36,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -53,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
@@ -93,7 +96,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) openAttention.value = intent.getBooleanExtra(EXTRA_OPEN_ATTENTION, false)
         val container = (application as YarvisApp).container
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+            YarvisTheme {
                 YarvisRoot(container, openAttention, ::askForNotifications)
             }
         }
@@ -330,12 +333,18 @@ private fun RouteContent(
 ) {
     when (top) {
         Route.ChatList -> {
-            val vm = viewModel(key = "chats:${session.id}") { ChatListViewModel(session.client) }
+            val vm = viewModel(key = "chats:${session.id}") { ChatListViewModel(session.client, session.chatTurns) }
             ChatListScreen(vm, onOpen = { thread -> navigate { it.push(Route.ChatThread(thread ?: newThreadKey())) } })
         }
         is Route.ChatThread -> {
             val vm = viewModel(key = "thread:${session.id}:${top.key}") {
-                ChatThreadViewModel(session.client, container.chatModelPrefs, top.key.takeUnless { it.startsWith(NEW_THREAD_PREFIX) })
+                ChatThreadViewModel(
+                    session.client,
+                    container.chatModelPrefs,
+                    session.chatTurns,
+                    sessionId = top.key.takeUnless { it.startsWith(NEW_THREAD_PREFIX) },
+                    threadKey = top.key,
+                )
             }
             ChatThreadScreen(vm)
         }
@@ -404,4 +413,19 @@ private fun TabIcon(tab: Tab) {
         Tab.Attention -> Icons.Filled.Notifications
     }
     Icon(icon, contentDescription = null)
+}
+
+/** The wallpaper's colours on Android 12 and later, Material's defaults before that. */
+@Composable
+private fun YarvisTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    val colors = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val context = LocalContext.current
+            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        dark -> darkColorScheme()
+        else -> lightColorScheme()
+    }
+    MaterialTheme(colorScheme = colors, content = content)
 }
