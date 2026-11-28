@@ -57,7 +57,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.yarvis.android.api.PtyIds
 import dev.yarvis.android.ui.CodePromptDialog
+import dev.yarvis.android.ui.attention.AttentionDestination
 import dev.yarvis.android.ui.attention.AttentionScreen
 import dev.yarvis.android.ui.attention.AttentionViewModel
 import dev.yarvis.android.ui.chat.ChatListScreen
@@ -115,11 +117,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Serializable
-private enum class Tab { Chat, Workspaces, Terminal, Attention }
+internal enum class Tab { Chat, Workspaces, Terminal, Attention }
 
 /** A screen within a tab. Each tab keeps a stack of these, and Back pops it. */
 @Serializable
-private sealed interface Route {
+internal sealed interface Route {
     @Serializable
     data object ChatList : Route
 
@@ -147,7 +149,7 @@ private sealed interface Route {
     data object Attention : Route
 }
 
-private fun Tab.root(): Route = when (this) {
+internal fun Tab.root(): Route = when (this) {
     Tab.Chat -> Route.ChatList
     Tab.Workspaces -> Route.WorkspaceList
     Tab.Terminal -> Route.TerminalSessions
@@ -156,7 +158,7 @@ private fun Tab.root(): Route = when (this) {
 
 /** The open tab and every tab's stack, so switching tabs keeps where each one was. */
 @Serializable
-private data class NavState(
+internal data class NavState(
     val tab: Tab = Tab.Chat,
     val stacks: Map<Tab, List<Route>> = Tab.entries.associateWith { listOf(it.root()) },
 ) {
@@ -173,6 +175,26 @@ private data class NavState(
     fun replaceTop(route: Route) = copy(stacks = stacks + (tab to stack.dropLast(1) + route))
 
     fun pop() = if (stack.size > 1) copy(stacks = stacks + (tab to stack.dropLast(1))) else this
+
+    /**
+     * Goes where an attention item points, building that tab's stack so Back
+     * walks up from it: a workspace's terminal sits over the workspace, which
+     * sits over the list.
+     */
+    fun open(destination: AttentionDestination): NavState = when (destination) {
+        is AttentionDestination.Workspace -> {
+            val terminal = destination.terminal?.let { id ->
+                val kind = if (PtyIds.isAgentOrReview(id)) "Claude" else "shell"
+                Route.Terminal(id, "${destination.name} · $kind", cwd = null)
+            }
+            show(Tab.Workspaces, listOfNotNull(Route.WorkspaceList, Route.Workspace(destination.workspaceId, destination.name), terminal))
+        }
+        is AttentionDestination.Terminal ->
+            show(Tab.Terminal, listOf(Route.TerminalSessions, Route.Terminal(destination.sessionKey, "Terminal", cwd = null)))
+        is AttentionDestination.ChatThread -> show(Tab.Chat, listOf(Route.ChatList, Route.ChatThread(destination.sessionId)))
+    }
+
+    private fun show(tab: Tab, stack: List<Route>) = copy(tab = tab, stacks = stacks + (tab to stack))
 
     /**
      * A key per screen on every stack, the open tab's top last. A key names the
@@ -358,7 +380,7 @@ private fun RouteContent(
             val vm = viewModel(key = "attention:${session.id}") {
                 AttentionViewModel(session.client, session.attention)
             }
-            AttentionScreen(vm)
+            AttentionScreen(vm, onNavigate = { destination -> navigate { it.open(destination) } })
         }
     }
 }

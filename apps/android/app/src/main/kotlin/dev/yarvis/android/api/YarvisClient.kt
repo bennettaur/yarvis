@@ -52,6 +52,9 @@ interface AttentionApi {
     /** Live item changes. Forward-only: after a drop, reload with [pendingAttention]. */
     fun attentionStream(): Flow<AttentionItem>
     suspend fun setAttentionStatus(id: String, status: String)
+
+    /** Moves every pending item of one workspace or one session at once. Give exactly one of the two. */
+    suspend fun clearAttention(workspaceId: String?, sessionKey: String?, status: String)
     suspend fun permissions(sessionKey: String): List<PermissionRequest>
 
     /** False when the prompt was already settled elsewhere, such as in the terminal. */
@@ -168,6 +171,15 @@ class YarvisClient(
 
     override suspend fun setAttentionStatus(id: String, status: String) {
         rest.patch("$SIDECAR/attention/${encode(id)}", AttentionPatch(status), AttentionPatch.serializer())
+    }
+
+    override suspend fun clearAttention(workspaceId: String?, sessionKey: String?, status: String) {
+        rest.post(
+            "$SIDECAR/attention/clear",
+            AttentionClear(workspaceId, sessionKey, status),
+            AttentionClear.serializer(),
+            ListSerializer(AttentionItem.serializer()),
+        )
     }
 
     override suspend fun permissions(sessionKey: String): List<PermissionRequest> = rest.get(

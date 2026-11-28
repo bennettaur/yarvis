@@ -131,6 +131,41 @@ data class ToolApprovalAnswer(val approved: Boolean)
 
 // ---- attention (sidecar /api/attention) ----
 
+/**
+ * Where an attention item leads, from the sidecar's `AttentionNavTarget` union.
+ * Only the targets this app can open are named; the rest are [Other].
+ */
+sealed interface AttentionNavTarget {
+    data class Workspace(val workspaceId: String) : AttentionNavTarget
+
+    /** The workspace's own agent session. */
+    data class WorkspaceAgent(val workspaceId: String) : AttentionNavTarget
+
+    /** A terminal session by its PTY id, with its workspace when it has one. */
+    data class Terminal(val sessionKey: String, val workspaceId: String?) : AttentionNavTarget
+
+    /** A chat thread, or the assistant overlay when [sessionId] is null. */
+    data class Chat(val sessionId: String?) : AttentionNavTarget
+
+    /** A PR, issue, task, heads-down, artifact or review target, which only the web opens. */
+    data class Other(val type: String?) : AttentionNavTarget
+
+    companion object {
+        fun from(raw: JsonElement?): AttentionNavTarget? {
+            val obj = raw as? JsonObject ?: return null
+            fun field(name: String) = (obj[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull?.takeIf { it.isNotEmpty() }
+            val type = field("type")
+            return when (type) {
+                "workspace" -> field("workspaceId")?.let(::Workspace)
+                "workspace-claude" -> field("workspaceId")?.let(::WorkspaceAgent)
+                "terminal" -> field("sessionKey")?.let { Terminal(it, field("workspaceId")) }
+                "chat" -> Chat(field("sessionId"))
+                else -> null
+            } ?: Other(type)
+        }
+    }
+}
+
 @Serializable
 data class AttentionItem(
     val id: String,
@@ -139,16 +174,31 @@ data class AttentionItem(
     val source: String,
     val sessionKey: String? = null,
     val workspaceId: String? = null,
-    /** "permission", "idle", "completed", "error", "info" or "question". */
+    /** "permission", "question", "idle", "error", "action", "info", "completed" or "message". */
     val kind: String,
+    /** "review", "build", "slack" or "general". */
+    val category: String = "general",
     val title: String,
     val body: String? = null,
     /** "pending", "read", "resolved" or "dismissed". */
     val status: String,
+    /** Where tapping the item leads. Kept raw and read through [target], so a target this build doesn't know still loads. */
+    val navTarget: JsonElement? = null,
+    /** A prepared PR's verification risk: "low", "medium" or "high". */
+    val risk: String? = null,
     val payload: JsonElement? = null,
     val createdAt: String,
     val updatedAt: String,
 ) {
+    val target: AttentionNavTarget? get() = AttentionNavTarget.from(navTarget)
+
+    /**
+     * Answered in a sheet over the list rather than by going to it: a coding
+     * agent's question, a heads-down item, or a Claude Code permission prompt
+     * for a known session.
+     */
+    val hasAnswerDialog: Boolean get() = kind == "question" || headsDownQuestionId != null || isClaudePermission
+
     /**
      * The heads-down question this item stands for. A coding agent's `ask_user`
      * can pick its own session key, so `question` items never count.
@@ -177,6 +227,10 @@ data class AttentionStreamEvent(val type: String, val item: AttentionItem? = nul
 
 @Serializable
 data class AttentionPatch(val status: String)
+
+/** `POST /api/attention/clear`. The sidecar wants exactly one scope field; a null one is left out. */
+@Serializable
+data class AttentionClear(val workspaceId: String? = null, val sessionKey: String? = null, val status: String)
 
 /** A Claude Code permission prompt held by the sidecar while its hook waits. */
 @Serializable

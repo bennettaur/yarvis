@@ -227,19 +227,9 @@ fun TerminalSessionsScreen(
                 if (!state.loading && state.sessions.isEmpty() && state.error == null) {
                     item { Text("No terminals running.", modifier = Modifier.padding(16.dp)) }
                 }
-                for ((heading, sessions) in state.sections) {
-                    item(key = "heading:$heading") {
-                        Text(
-                            heading,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
-                        )
-                    }
-                    items(sessions, key = { it.id }) { session ->
-                        SessionRow(session, onOpen = { onOpen(session.id, sessionTitle(session)) }, onKill = { confirmKill = session })
-                        HorizontalDivider()
-                    }
+                items(state.sessions, key = { it.id }) { session ->
+                    SessionRow(session, onOpen = { onOpen(session.id, sessionTitle(session)) }, onKill = { confirmKill = session })
+                    HorizontalDivider()
                 }
             }
         }

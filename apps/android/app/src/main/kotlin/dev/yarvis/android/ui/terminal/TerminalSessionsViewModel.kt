@@ -3,6 +3,7 @@ package dev.yarvis.android.ui.terminal
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.yarvis.android.api.PtyApi
+import dev.yarvis.android.api.PtyIds
 import dev.yarvis.android.api.PtySession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -16,16 +17,13 @@ data class TerminalSessionsState(
     val sessions: List<PtySession> = emptyList(),
     val loading: Boolean = true,
     val error: String? = null,
-) {
-    /** Agent and review sessions first, then shells, each oldest first as the server lists them. */
-    val sections: List<Pair<String, List<PtySession>>>
-        get() = listOf(
-            "Agents" to sessions.filter { it.kind != "shell" },
-            "Shells" to sessions.filter { it.kind == "shell" },
-        ).filter { it.second.isNotEmpty() }
-}
+)
 
-/** The Terminal tab's list. The screen refreshes it on resume, so nothing loads until it's shown. */
+/**
+ * The Terminal tab's list: the web Terminal page's own panes, oldest first.
+ * Agent sessions and workspace shells belong to their workspace's page, as on
+ * the web. The screen refreshes it on resume, so nothing loads until it's shown.
+ */
 class TerminalSessionsViewModel(private val pty: PtyApi) : ViewModel() {
     private val _state = MutableStateFlow(TerminalSessionsState())
     val state: StateFlow<TerminalSessionsState> = _state.asStateFlow()
@@ -38,7 +36,7 @@ class TerminalSessionsViewModel(private val pty: PtyApi) : ViewModel() {
         _state.update { it.copy(loading = true, error = null) }
         load = viewModelScope.launch {
             try {
-                val sessions = pty.ptySessions()
+                val sessions = pty.ptySessions().filter { it.id.startsWith(TERMINAL_PAGE_PREFIX) }
                 _state.update { it.copy(sessions = sessions, loading = false) }
             } catch (e: CancellationException) {
                 throw e
@@ -62,6 +60,8 @@ class TerminalSessionsViewModel(private val pty: PtyApi) : ViewModel() {
         }
     }
 }
+
+private const val TERMINAL_PAGE_PREFIX = "${PtyIds.TERMINAL_SURFACE}/"
 
 /** What a session is called, in the list and on the terminal's header. */
 fun sessionTitle(session: PtySession): String = when (session.kind) {

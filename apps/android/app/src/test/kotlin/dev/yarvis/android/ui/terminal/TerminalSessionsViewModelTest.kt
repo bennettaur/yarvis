@@ -18,15 +18,15 @@ class TerminalSessionsViewModelTest {
     private val api = FakePtyApi()
 
     @Test
-    fun `lists agents before shells`() = runTest {
+    fun `lists only the Terminal page's own panes, as the web page does`() = runTest {
         api.sessions += session("tab:terminal/t1/p1", cwd = "/src/app")
         api.sessions += session("ws-claude:w1", kind = "agent", workspaceId = "w1")
+        api.sessions += session("ws:w1/t2/p2", workspaceId = "w1")
+        api.sessions += session("review-claude:r1", kind = "review", workspaceId = "r1")
         val vm = TerminalSessionsViewModel(api)
         vm.refresh()
 
-        val sections = vm.state.value.sections
-        assertEquals(listOf("Agents", "Shells"), sections.map { it.first })
-        assertEquals("ws-claude:w1", sections[0].second.single().id)
+        assertEquals(listOf("tab:terminal/t1/p1"), vm.state.value.sessions.map { it.id })
         assertFalse(vm.state.value.loading)
     }
 
@@ -42,15 +42,15 @@ class TerminalSessionsViewModelTest {
 
     @Test
     fun `killing a session ends it and drops it from the list`() = runTest {
-        api.sessions += session("a")
-        api.sessions += session("b")
+        api.sessions += session("tab:terminal/t1/a")
+        api.sessions += session("tab:terminal/t1/b")
         val vm = TerminalSessionsViewModel(api)
         vm.refresh()
 
-        vm.kill("a")
+        vm.kill("tab:terminal/t1/a")
 
-        assertEquals(listOf("a"), api.killed)
-        assertEquals(listOf("b"), vm.state.value.sessions.map { it.id })
+        assertEquals(listOf("tab:terminal/t1/a"), api.killed)
+        assertEquals(listOf("tab:terminal/t1/b"), vm.state.value.sessions.map { it.id })
     }
 
     @Test

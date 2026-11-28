@@ -95,6 +95,9 @@ class FakeAttentionApi : AttentionApi {
     override suspend fun setAttentionStatus(id: String, status: String) {
         calls += "status:$id:$status"
     }
+    override suspend fun clearAttention(workspaceId: String?, sessionKey: String?, status: String) {
+        calls += "clear:${workspaceId ?: sessionKey}:$status"
+    }
     override suspend fun permissions(sessionKey: String) = permissionList.filter { it.sessionKey == sessionKey }
     override suspend fun decidePermission(id: String, decision: PermissionDecision): Boolean {
         calls += "permission:$id:$decision"

@@ -8,10 +8,19 @@ A small native client for a Yarvis server. It does four things:
 - **Attention**: what the web UI's attention bell shows. That is Claude Code
   permission prompts, `ask_user` questions from the assistant and from coding
   agents, heads-down questions and approvals, items the assistant or the app
-  surfaced, and server approvals such as git signatures. You can approve or
-  deny, answer a question (choices, several choices, or free text), or
-  dismiss an item. New items raise a local notification, except while the
-  Attention tab is on screen.
+  surfaced, and server approvals such as git signatures. As on the web, items
+  are grouped into one row per workspace (or per terminal session, for one
+  outside a workspace), led by the most urgent with a count of the rest, and
+  the rows are sorted into Review, Build, Slack and General sections, with
+  review PRs ordered by risk. Dismissing a row clears every item in its
+  workspace or session in one request. Tapping a row answers it in place when
+  it is a permission prompt or a question. Otherwise the app marks it read and
+  goes where it points: a workspace, a workspace's agent or shell (opened over
+  the workspace, so Back returns to it), a Terminal-page session, or a chat
+  thread. Targets only the web opens, such as a PR or an issue, open in a
+  sheet. You can approve or deny, answer a question (choices, several choices,
+  or free text), or dismiss an item. New items raise a local notification,
+  except while the Attention tab is on screen.
 - **Workspaces**: the list with each PR's state and checks, a workspace's
   repos, branches, PRs, tasks and issues, creating one (repos, an existing
   branch per repo, a linked task) with its provisioning log streamed in, and

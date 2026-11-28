@@ -16,13 +16,16 @@ import dev.yarvis.android.api.ReauthCancelledException
 import dev.yarvis.android.approval
 import dev.yarvis.android.data.AttentionRepository
 import dev.yarvis.android.item
+import dev.yarvis.android.ui.attention.AttentionDestination
 import dev.yarvis.android.ui.attention.AttentionViewModel
+import dev.yarvis.android.ui.attention.groupAttentionItems
 import dev.yarvis.android.ui.attention.ItemDetail
 import dev.yarvis.android.ui.attention.permissionAnswers
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -215,5 +218,64 @@ class AttentionViewModelTest {
             mapOf("Which files?" to "a.kt, b.kt\nand tests", "Anything else?" to "no"),
             permissionAnswers(questions, answers),
         )
+    }
+
+    private fun agentItem(id: String, seq: Long, kind: String) =
+        item(id, seq, kind = kind, sessionKey = "ws-claude:w1", source = "claude-hook").copy(
+            workspaceId = "w1",
+            title = "api",
+            navTarget = Json.parseToJsonElement("""{"type":"workspace-claude","workspaceId":"w1"}"""),
+        )
+
+    @Test
+    fun `opening a waiting agent marks it read and returns where to go`() = runTest {
+        api.pending += agentItem("a1", 1, kind = "idle")
+        val (vm, repo) = viewModel()
+        repo.reloadAttention()
+
+        val destination = vm.open(api.pending.single())
+        advanceUntilIdle()
+
+        assertEquals(AttentionDestination.Workspace("w1", "api", terminal = "ws-claude:w1"), destination)
+        assertEquals(listOf("status:a1:read"), api.calls)
+        assertTrue(repo.state.value.items.isEmpty())
+        assertNull(vm.opened.value)
+    }
+
+    @Test
+    fun `opening a permission prompt opens the sheet instead`() = runTest {
+        val prompt = agentItem("a1", 1, kind = "permission")
+        val (vm, _) = viewModel()
+
+        assertNull(vm.open(prompt))
+        advanceUntilIdle()
+
+        assertEquals("a1", vm.opened.value?.item?.id)
+        assertTrue(api.calls.none { it.startsWith("status") })
+    }
+
+    @Test
+    fun `clearing a workspace's row clears its whole scope in one request`() = runTest {
+        api.pending += listOf(agentItem("a2", 2, kind = "idle"), agentItem("a1", 1, kind = "completed"))
+        val (vm, repo) = viewModel()
+        repo.reloadAttention()
+
+        vm.clearGroup(groupAttentionItems(repo.state.value.items).single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("clear:w1:dismissed"), api.calls)
+        assertTrue(repo.state.value.items.isEmpty())
+    }
+
+    @Test
+    fun `a lone note is read, and an item with no origin is dismissed on its own`() = runTest {
+        val (vm, _) = viewModel()
+
+        vm.clearGroup(groupAttentionItems(listOf(item("n1", 2, kind = "message"))).single())
+        advanceUntilIdle()
+        vm.clearGroup(groupAttentionItems(listOf(item("i1", 1, kind = "action"))).single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("status:n1:read", "status:i1:dismissed"), api.calls)
     }
 }
