@@ -1,6 +1,6 @@
 # Yarvis for Android
 
-A small native client for a Yarvis server. It does two things:
+A small native client for a Yarvis server. It does four things:
 
 - **Chat** with the assistant: the thread list, a thread's history, sending a
   message with the reply streamed in as markdown, the tools the turn ran,
@@ -8,12 +8,38 @@ A small native client for a Yarvis server. It does two things:
 - **Attention**: what the web UI's attention bell shows. That is Claude Code
   permission prompts, `ask_user` questions from the assistant and from coding
   agents, heads-down questions and approvals, items the assistant or the app
-  surfaced, and server approvals such as git signatures. You can approve or
-  deny, answer a question (choices, several choices, or free text), or
-  dismiss an item. New items raise a local notification, except while the
-  Attention tab is on screen.
+  surfaced, and server approvals such as git signatures. As on the web, items
+  are grouped into one row per workspace (or per terminal session, for one
+  outside a workspace), led by the most urgent with a count of the rest, and
+  the rows are sorted into Review, Build, Slack and General sections, with
+  review PRs ordered by risk. Dismissing a row clears every item in its
+  workspace or session in one request. Tapping a row answers it in place when
+  it is a permission prompt or a question. Otherwise the app marks it read and
+  goes where it points: a workspace, a workspace's agent or shell (opened over
+  the workspace, so Back returns to it), a Terminal-page session, or a chat
+  thread. Targets only the web opens, such as a PR or an issue, open in a
+  sheet. You can approve or deny, answer a question (choices, several choices,
+  or free text), or dismiss an item. New items raise a local notification,
+  except while the Attention tab is on screen.
+- **Workspaces**: the list with each PR's state and checks, a workspace's
+  repos, branches, PRs, tasks and issues, creating one (repos, an existing
+  branch per repo, a linked task) with its provisioning log streamed in, and
+  archiving. From a workspace you start, open or stop its agent session and
+  open its shells.
+- **Terminals**: every PTY session on the server, the agent sessions and
+  shells, opened full screen. New shells open on the Terminal page's surface
+  or the workspace's, with ids in the web's shape, so the other clients see
+  them in the right place.
 
-Terminals, settings, devices and first-time setup stay in the web UI.
+- **App lock**: the app asks for your fingerprint, face or screen lock when it
+  opens, and again after a minute in the background. It's on by default
+  whenever the phone has a screen lock, and **Require unlock** in the top
+  bar's menu turns it off. With it on, the recents screen shows a blank card
+  (Android 13 and later). The lock doesn't cover notifications: on an
+  unlocked phone the shade still shows their full text.
+
+Changed files, diffs, the editor, settings, devices and first-time setup stay
+in the web UI.
 
 ## Build
 
@@ -89,6 +115,21 @@ devices list, so you can revoke it there.
   Keystore and stored in DataStore. A 401 from any request signs the app out.
   When an answer gets `403 reauth_required`, the app asks for a code, calls
   `/api/auth/reverify`, and retries once.
+- Workspaces go through the sidecar's `/api/workspaces` routes. The agent
+  starts with the core's `pty_start_claude`, as on the web. The app doesn't
+  start an agent just because a workspace was opened, so looking at one on a
+  phone launches nothing.
+- Terminals attach over `/api/pty/{id}` with OkHttp (`api/PtyConnection.kt`).
+  The token goes in the first message, a reconnect resumes from the last byte
+  received, and an agent session's id is checked with `pty_exists` before each
+  attach, since attaching to a dead id would spawn a plain shell there. The
+  screen is xterm.js in a WebView (`ui/terminal/TerminalWebView.kt`) that
+  loads only the bundled page in `assets/terminal/`, can't reach the network,
+  and only ever sees terminal bytes: the socket and the token stay in Kotlin.
+  A row of extra keys gives Esc, Tab, Shift-Tab, Ctrl, the arrows and Ctrl-C.
+  Opening, tapping or typing in a terminal takes over the PTY's size, so the
+  shell draws for the phone rather than for another client's window.
+  `assets/terminal/README.md` says how to update the vendored xterm.js.
 - Markdown is rendered with
   [multiplatform-markdown-renderer](https://github.com/mikepenz/multiplatform-markdown-renderer).
   No image loader is installed, so a reply can't make the phone fetch a

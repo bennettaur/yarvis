@@ -96,6 +96,38 @@ class AttentionViewModel(
         _opened.value = null
     }
 
+    /**
+     * Opens [item] from the list. An item with somewhere to go in the app is
+     * marked read and its destination returned for the caller to navigate to;
+     * anything else opens in the sheet and this returns null.
+     */
+    fun open(item: AttentionItem): AttentionDestination? {
+        val destination = attentionDestination(item)
+        if (destination == null) {
+            openItem(item)
+            return null
+        }
+        repository.forgetItem(item.id)
+        viewModelScope.launch { reportingFailure("Couldn't mark it read") { api.setAttentionStatus(item.id, "read") } }
+        return destination
+    }
+
+    /**
+     * Clears a whole row: everything from its workspace or session in one
+     * request, as the web's dismiss does. A lone note is read rather than
+     * dismissed, since reading it is all it asks.
+     */
+    fun clearGroup(group: AttentionGroup) = runExclusive {
+        val lead = group.lead
+        when {
+            lead.kind == "message" && group.items.size == 1 -> api.setAttentionStatus(lead.id, "read")
+            group.scope.workspaceId != null || group.scope.sessionKey != null ->
+                api.clearAttention(group.scope.workspaceId, group.scope.sessionKey, "dismissed")
+            else -> api.setAttentionStatus(lead.id, "dismissed")
+        }
+        for (item in group.items) repository.forgetItem(item.id)
+    }
+
     fun decidePermission(request: PermissionRequest, decision: PermissionDecision) = runExclusive {
         val delivered = api.decidePermission(request.id, decision)
         if (!delivered) _message.value = "That prompt was already answered in the terminal."

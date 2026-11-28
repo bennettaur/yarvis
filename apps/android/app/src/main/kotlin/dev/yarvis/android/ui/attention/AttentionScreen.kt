@@ -5,9 +5,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -24,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,10 +38,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.yarvis.android.api.AgentQuestion
-import dev.yarvis.android.api.AttentionItem
 import dev.yarvis.android.api.HeadsDownAnswer
 import dev.yarvis.android.api.HeadsDownQuestion
 import dev.yarvis.android.api.PermissionDecision
@@ -54,8 +57,13 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 @Composable
-fun AttentionScreen(viewModel: AttentionViewModel, modifier: Modifier = Modifier) {
+fun AttentionScreen(
+    viewModel: AttentionViewModel,
+    onNavigate: (AttentionDestination) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val attention by viewModel.attention.collectAsStateWithLifecycle()
+    val sections = remember(attention.items) { arrangeAttention(groupAttentionItems(attention.items)) }
     val opened by viewModel.opened.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
@@ -83,15 +91,19 @@ fun AttentionScreen(viewModel: AttentionViewModel, modifier: Modifier = Modifier
                 ServerApprovalRow(approval, busy) { approve -> viewModel.answerApproval(approval, approve) }
                 HorizontalDivider()
             }
-            items(attention.items, key = { it.id }) { item ->
-                ListItem(
-                    overlineContent = { Text(kindLabel(item)) },
-                    headlineContent = { Text(item.title) },
-                    supportingContent = item.body?.let { body -> { Text(body, maxLines = 3) } },
-                    trailingContent = { TextButton(onClick = { viewModel.dismiss(item) }) { Text("Dismiss") } },
-                    modifier = Modifier.clickable { viewModel.openItem(item) },
-                )
-                HorizontalDivider()
+            for (section in sections) {
+                section.category?.let { category ->
+                    item(key = "category:$category") { CategoryHeader(categoryLabel(category), section.groups.size) }
+                }
+                items(section.groups, key = { it.key }) { group ->
+                    GroupRow(
+                        group,
+                        busy = busy,
+                        onOpen = { viewModel.open(group.lead)?.let(onNavigate) },
+                        onClear = { viewModel.clearGroup(group) },
+                    )
+                    HorizontalDivider()
+                }
             }
         }
     }
@@ -99,11 +111,51 @@ fun AttentionScreen(viewModel: AttentionViewModel, modifier: Modifier = Modifier
     opened?.let { ItemSheet(it, busy, viewModel) }
 }
 
-private fun kindLabel(item: AttentionItem): String = when {
-    item.isClaudePermission -> "Permission prompt"
-    item.kind == "question" -> "Question"
-    item.headsDownQuestionId != null -> if (item.kind == "permission") "Heads-down approval" else "Heads-down question"
-    else -> item.kind.replaceFirstChar { it.uppercase() }
+@Composable
+private fun CategoryHeader(label: String, count: Int) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+        Text("$count", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/**
+ * One row per workspace or session: the most urgent item speaks for the rest,
+ * with a count, and clearing the row clears them all.
+ */
+@Composable
+private fun GroupRow(group: AttentionGroup, busy: Boolean, onOpen: () -> Unit, onClear: () -> Unit) {
+    val lead = group.lead
+    val isNote = lead.kind == "message" && group.items.size == 1
+    val count = group.items.size
+    ListItem(
+        overlineContent = {
+            Text(listOfNotNull(kindHint(lead), lead.risk?.let { "$it risk" }).joinToString(" · "))
+        },
+        headlineContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(lead.title, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (count > 1) {
+                    Spacer(Modifier.width(8.dp))
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = MaterialTheme.shapes.small) {
+                        Text("$count", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                    }
+                }
+            }
+        },
+        supportingContent = {
+            Column {
+                sessionSummary(group.sessionKeys)?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                lead.body?.let { Text(it, maxLines = if (isNote) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis) }
+            }
+        },
+        trailingContent = {
+            TextButton(enabled = !busy, onClick = onClear) {
+                Text(if (isNote) "Mark read" else if (count > 1) "Dismiss $count" else "Dismiss")
+            }
+        },
+        modifier = Modifier.clickable(onClick = onOpen),
+    )
 }
 
 @Composable

@@ -157,6 +157,20 @@ class YarvisClientTest {
     }
 
     @Test
+    fun `a scoped clear posts one scope field and the status`() = runTest {
+        server.enqueue(json(200, "[]"))
+        server.enqueue(json(200, "[]"))
+        client.clearAttention(workspaceId = "w1", sessionKey = null, status = "dismissed")
+        client.clearAttention(workspaceId = null, sessionKey = "tab:terminal/t1/p1", status = "dismissed")
+
+        val byWorkspace = server.next()
+        assertEquals("POST", byWorkspace.method)
+        assertEquals("/api/sidecar/api/attention/clear", byWorkspace.url.encodedPath)
+        assertEquals(Json.parseToJsonElement("""{"workspaceId":"w1","status":"dismissed"}"""), bodyOf(byWorkspace))
+        assertEquals(Json.parseToJsonElement("""{"sessionKey":"tab:terminal/t1/p1","status":"dismissed"}"""), bodyOf(server.next()))
+    }
+
+    @Test
     fun `a question item without a session key loads its question by id`() = runTest {
         val item = AttentionItem(
             id = "a2", seq = 1, source = "system", kind = "question", title = "t", status = "pending",

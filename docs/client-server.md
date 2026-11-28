@@ -450,10 +450,12 @@ bodies (`{ "error": "...", "detail": "..." }`), and WebSocket messages as
 tagged JSON (`{"type": "...", ...}`).
 
 **Android app.** A Kotlin and Jetpack Compose app in `apps/android/`, scoped to
-chat and the attention stream: answering tool approvals, permission prompts,
-questions and server approvals from a phone. It signs in with the passphrase
-and a code, keeps its token encrypted with a Keystore key, and needs an HTTPS
-origin, normally a `tailscale serve` name. It follows the sidecar's attention
+chat, the attention stream, workspaces and terminals: answering tool approvals,
+permission prompts, questions and server approvals from a phone, creating,
+following and archiving workspaces, and attaching to their agent sessions and
+shells over `/api/pty/{id}`. Terminals render with xterm.js in a local WebView.
+It signs in with the passphrase and a code, keeps its token encrypted with a
+Keystore key, and needs an HTTPS origin, normally a `tailscale serve` name. It follows the sidecar's attention
 SSE stream for the bell's items and `/api/events` for server approvals. It has
 no push, so it notifies only while open or shortly after. See
 [apps/android/README.md](../apps/android/README.md).

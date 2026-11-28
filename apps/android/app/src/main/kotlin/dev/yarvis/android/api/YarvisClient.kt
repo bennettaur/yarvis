@@ -5,9 +5,16 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -45,6 +52,9 @@ interface AttentionApi {
     /** Live item changes. Forward-only: after a drop, reload with [pendingAttention]. */
     fun attentionStream(): Flow<AttentionItem>
     suspend fun setAttentionStatus(id: String, status: String)
+
+    /** Moves every pending item of one workspace or one session at once. Give exactly one of the two. */
+    suspend fun clearAttention(workspaceId: String?, sessionKey: String?, status: String)
     suspend fun permissions(sessionKey: String): List<PermissionRequest>
 
     /** False when the prompt was already settled elsewhere, such as in the terminal. */
@@ -66,13 +76,13 @@ interface AttentionApi {
  * request is retried once.
  */
 class YarvisClient(
-    baseUrl: HttpUrl,
-    token: String,
+    private val baseUrl: HttpUrl,
+    private val token: String,
     http: OkHttpClient,
-    /** For the SSE streams, which need no read timeout. */
+    /** For the SSE streams and terminal sockets, which need no read timeout. */
     private val streamHttp: OkHttpClient = http,
     private val codePrompt: CodePrompt,
-) : ChatApi, AttentionApi {
+) : ChatApi, AttentionApi, WorkspacesApi, PtyApi {
     private val rest = Rest(baseUrl, http, token)
 
     /**
@@ -163,6 +173,15 @@ class YarvisClient(
         rest.patch("$SIDECAR/attention/${encode(id)}", AttentionPatch(status), AttentionPatch.serializer())
     }
 
+    override suspend fun clearAttention(workspaceId: String?, sessionKey: String?, status: String) {
+        rest.post(
+            "$SIDECAR/attention/clear",
+            AttentionClear(workspaceId, sessionKey, status),
+            AttentionClear.serializer(),
+            ListSerializer(AttentionItem.serializer()),
+        )
+    }
+
     override suspend fun permissions(sessionKey: String): List<PermissionRequest> = rest.get(
         "$SIDECAR/attention/permissions?sessionKey=${encode(sessionKey)}",
         ListSerializer(PermissionRequest.serializer()),
@@ -221,6 +240,98 @@ class YarvisClient(
         }
     }
 
+    // ---- workspaces ----
+    // No route here is fresh-only on the server or the sidecar, so none goes through withFreshAuth.
+
+    override suspend fun workspaces(badges: Boolean): List<WorkspaceSummary> = rest.get(
+        "$SIDECAR/workspaces${if (badges) "?badges=1" else ""}",
+        ListSerializer(WorkspaceSummary.serializer()),
+    )
+
+    override suspend fun workspace(id: String, viewing: Boolean): WorkspaceDetail = rest.get(
+        "$SIDECAR/workspaces/${encode(id)}${if (viewing) "?viewing=1" else ""}",
+        WorkspaceDetail.serializer(),
+    )
+
+    override suspend fun createWorkspace(new: NewWorkspace): WorkspaceSummary {
+        // The sidecar wants a task id to be a uuid, so a blank one is a 400.
+        val body = new.copy(
+            existingBranches = new.existingBranches?.filterValues { it.isNotEmpty() }?.takeIf { it.isNotEmpty() },
+            taskId = new.taskId?.takeIf { it.isNotEmpty() },
+        )
+        return rest.post("$SIDECAR/workspaces", body, NewWorkspace.serializer(), WorkspaceSummary.serializer())
+    }
+
+    override fun provision(id: String): Flow<ProvisionEvent> {
+        val call = streamHttp.newCall(
+            rest.request("$SIDECAR/workspaces/${encode(id)}/provision")
+                .header("Accept", "text/event-stream")
+                .post(ByteArray(0).toRequestBody(null))
+                .build(),
+        )
+        return sseFlow(call).mapNotNull(::decodeProvisionEvent)
+    }
+
+    override suspend fun ignoreWorkspaceError(id: String) {
+        rest.postEmpty("$SIDECAR/workspaces/${encode(id)}/ignore-error")
+    }
+
+    override suspend fun archiveWorkspace(id: String, request: ArchiveRequest) {
+        rest.post("$SIDECAR/workspaces/${encode(id)}/archive", request, ArchiveRequest.serializer(), Unit.serializer())
+    }
+
+    override suspend fun repos(): List<Repo> = rest.get("$SIDECAR/repos", ListSerializer(Repo.serializer()))
+
+    override suspend fun repoBranches(repoId: String): List<String> =
+        rest.get("$SIDECAR/repos/${encode(repoId)}/branches", ListSerializer(String.serializer()))
+
+    override suspend fun openTasks(): List<WorkspaceTask> =
+        rest.get("$SIDECAR/tasks?status=open", ListSerializer(WorkspaceTask.serializer()))
+
+    override suspend fun agentConfig(): AgentConfig = core("get_agent_config", AgentConfig.serializer())
+
+    override suspend fun startAgent(workspace: WorkspaceDetail, harness: String?) {
+        core(
+            "pty_start_claude",
+            Unit.serializer(),
+            buildJsonObject {
+                put("workspaceId", workspace.id)
+                put("cwd", workspace.rootPath)
+                put("name", workspace.name)
+                put("remoteControl", false)
+                if (harness != null) put("harness", harness)
+            },
+        )
+    }
+
+    override suspend fun stopAgent(workspaceId: String) {
+        rest.postEmpty("$SIDECAR/workspaces/${encode(workspaceId)}/agent/stop")
+    }
+
+    // ---- terminals ----
+
+    override suspend fun ptySessions(): List<PtySession> = rest.get("api/pty", PtySessionList.serializer()).sessions
+
+    override suspend fun ptyKill(id: String) {
+        core("pty_kill", Unit.serializer(), buildJsonObject { put("id", id) })
+    }
+
+    override suspend fun ptyExists(id: String): Boolean =
+        core("pty_exists", Boolean.serializer(), buildJsonObject { put("id", id) })
+
+    override fun attachPty(
+        sessionId: String,
+        cols: Int,
+        rows: Int,
+        cwd: String?,
+        offset: Long?,
+        mayReconnect: (suspend () -> Boolean)?,
+    ): PtyConnection = OkHttpPtyConnection(baseUrl, token, streamHttp, sessionId, cols, rows, cwd, offset, mayReconnect)
+
+    /** A server core command: `POST api/core/<command>` with its arguments as one JSON object. */
+    private suspend fun <T> core(command: String, response: DeserializationStrategy<T>, args: JsonObject = JsonObject(emptyMap())): T =
+        rest.post("api/core/${encode(command)}", args, JsonObject.serializer(), response)
+
     private companion object {
         const val SIDECAR = "api/sidecar/api"
         const val MAX_CODE_ATTEMPTS = 3
@@ -278,5 +389,24 @@ internal class Rest(private val baseUrl: HttpUrl, private val http: OkHttpClient
 
     private companion object {
         val JSON = "application/json".toMediaType()
+    }
+}
+
+@Serializable
+private class PtySessionList(val sessions: List<PtySession>)
+
+/** One provision message, or null for one this build doesn't know or can't read. Missing fields read as "". */
+internal fun decodeProvisionEvent(data: String): ProvisionEvent? {
+    val message = runCatching { YarvisJson.parseToJsonElement(data).jsonObject }.getOrNull() ?: return null
+    fun field(key: String) = (message[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+    val repoId = field("workspaceRepoId")
+    return when (field("type")) {
+        "repo-start" -> ProvisionEvent.RepoStart(repoId, field("repo"))
+        "log" -> ProvisionEvent.Log(repoId, field("text"))
+        "repo-done" -> ProvisionEvent.RepoDone(repoId, field("status"))
+        "repo-error" -> ProvisionEvent.RepoError(repoId, field("message"))
+        "done" -> ProvisionEvent.Done(field("status"))
+        "error" -> ProvisionEvent.Error(field("message"))
+        else -> null
     }
 }
