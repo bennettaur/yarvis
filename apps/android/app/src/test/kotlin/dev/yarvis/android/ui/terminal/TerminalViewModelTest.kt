@@ -169,15 +169,17 @@ class TerminalViewModelTest {
     }
 
     @Test
-    fun `after a reconnect the size is taken back only if the user had tapped`() = runTest {
+    fun `opening takes the size, and a reconnect takes it back only on screen`() = runTest {
         val vm = viewModel()
         vm.onViewport(80, 24)
         api.last.emit(PtyUpdate.Output("a".toByteArray()))
+        assertEquals(1, api.last.focusCount)
+
         api.last.emit(PtyUpdate.Reconnecting)
         api.last.emit(PtyUpdate.Output("b".toByteArray()))
-        assertEquals(0, api.last.focusCount)
+        assertEquals(2, api.last.focusCount)
 
-        vm.onTap()
+        vm.onAppStopped()
         api.last.emit(PtyUpdate.Reconnecting)
         api.last.emit(PtyUpdate.Output("c".toByteArray()))
         assertEquals(2, api.last.focusCount)

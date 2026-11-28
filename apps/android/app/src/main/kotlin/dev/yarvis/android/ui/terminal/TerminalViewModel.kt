@@ -94,10 +94,15 @@ class TerminalViewModel(
     private var appCursor = false
     private var refusal: String? = null
 
-    // Only a tap takes the PTY size over. Typing does it on the server, which
-    // also leaves out the automatic replies a terminal sends, so input never does.
-    private var tapped = false
+    // The PTY has one size, set by whichever client owns it. Opening the terminal
+    // and tapping it take the size, so the shell draws for the phone's screen
+    // rather than the Mac's. Typing does it on the server, which leaves out the
+    // automatic replies a terminal sends, so input never does.
+    private var claimed = false
     private var refocusPending = false
+
+    // A reconnect in the background must not take the size from someone typing on another client.
+    private var inForeground = true
 
     private var backgroundClose: Job? = null
     private var closedInBackground = false
@@ -139,7 +144,7 @@ class TerminalViewModel(
     }
 
     fun onTap() {
-        tapped = true
+        claimed = true
         connection?.focus()
     }
 
@@ -184,6 +189,7 @@ class TerminalViewModel(
     }
 
     fun onAppStopped() {
+        inForeground = false
         backgroundClose?.cancel()
         backgroundClose = viewModelScope.launch {
             delay(backgroundGraceMs)
@@ -197,6 +203,7 @@ class TerminalViewModel(
     }
 
     fun onAppStarted() {
+        inForeground = true
         backgroundClose?.cancel()
         backgroundClose = null
         if (!closedInBackground) return
@@ -215,7 +222,9 @@ class TerminalViewModel(
     private fun connect(checkFirst: Boolean) {
         collector?.cancel()
         refusal = null
-        refocusPending = tapped
+        // Every attach is the user opening, resuming or retrying this terminal.
+        claimed = true
+        refocusPending = true
         _state.update { it.copy(status = TerminalStatus.Connecting, canStartNewShell = false) }
         collector = viewModelScope.launch {
             try {
@@ -255,7 +264,7 @@ class TerminalViewModel(
             }
             is PtyUpdate.Size -> live()
             PtyUpdate.Reconnecting -> {
-                refocusPending = tapped
+                refocusPending = claimed && inForeground
                 setStatus(TerminalStatus.Reconnecting)
             }
             is PtyUpdate.Exit -> exited(update.code)
@@ -266,7 +275,7 @@ class TerminalViewModel(
         }
     }
 
-    // The first frame after an attach or a reconnect: give the size back to the phone if the user had taken it.
+    // The first frame after an attach or a reconnect: take the size for the phone.
     private fun live() {
         if (refocusPending) {
             refocusPending = false
